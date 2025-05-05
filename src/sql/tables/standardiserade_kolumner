@@ -1,0 +1,23 @@
+-- Table: public.standardiserade_kolumner
+
+-- DROP TABLE IF EXISTS public.standardiserade_kolumner;
+
+CREATE TABLE IF NOT EXISTS public.standardiserade_kolumner
+(
+    gid integer NOT NULL GENERATED ALWAYS AS IDENTITY ( INCREMENT 1 START 1 MINVALUE 1 MAXVALUE 2147483647 CACHE 1 ),
+    kolumnnamn text COLLATE pg_catalog."default" NOT NULL,
+    ordinal_position integer NOT NULL,
+    datatyp text COLLATE pg_catalog."default" NOT NULL,
+    beskrivning text COLLATE pg_catalog."default",
+    CONSTRAINT standardiserade_kolumner_kolumnnamn_key UNIQUE (kolumnnamn),
+    CONSTRAINT valid_kolumnnamn_length CHECK (length(kolumnnamn) <= 63),
+    CONSTRAINT valid_ordinal_position CHECK (ordinal_position <> 0)
+)
+
+TABLESPACE pg_default;
+
+ALTER TABLE IF EXISTS public.standardiserade_kolumner
+    OWNER to postgres;
+
+COMMENT ON TABLE public.standardiserade_kolumner
+    IS E'Definierar standardkolumner för tabellstrukturer.\\n\\nordinal_position:\\n  > 0: kolumnen placeras först i angiven ordning\\n  < 0: kolumnen placeras sist i omvänd ordning\\n  NULL/0 är inte tillåtet';
