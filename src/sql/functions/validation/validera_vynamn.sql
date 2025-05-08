@@ -1,10 +1,8 @@
 -- FUNCTION: public.validera_vynamn(text, text)
 
--- DROP FUNCTION IF EXISTS public.validera_vynamn(text, text);
-
 CREATE OR REPLACE FUNCTION public.validera_vynamn(
-	p_schema_namn text,
-	p_vy_namn text)
+    p_schema_namn text,
+    p_vy_namn text)
     RETURNS void
     LANGUAGE 'plpgsql'
     COST 100
@@ -12,53 +10,53 @@ CREATE OR REPLACE FUNCTION public.validera_vynamn(
 AS $BODY$
 
 /******************************************************************************
-* Validerar att ett vynamn foljer namngivningskonventionen:
-* 1. Maste borja med schemanamn + _v_
-*    Exempel: teknik.teknik_v_ledningar_p
+* Validerar att ett vynamn följer namngivningskonventionen:
+* 1. Måste börja med v_
+*    Exempel: v_ledningar_p
 *
-* 2. Suffix baserat pa vyns geometriinnehall enligt geometry_columns:
+* 2. Suffix baserat på vyns geometriinnehåll enligt geometry_columns:
 *    - Ingen geometri: Inget suffix
-*    - En geometri: _p, _l eller _y baserat pa geometrityp
+*    - En geometri: _p, _l eller _y baserat på geometrityp
 *    - Flera geometrier: _g
 *
-* Vid geometritransformationer (ST_-funktioner) maste resultatet
-* explicit typkonverteras for att tydliggora vilken geometrityp som
+* Vid geometritransformationer (ST_-funktioner) måste resultatet
+* explicit typkonverteras för att tydliggöra vilken geometrityp som
 * skapas, t.ex:
 *   ST_Buffer(geom, 100)::geometry(Polygon,3007)
 *   ST_Union(geom)::geometry(LineString,3007)
 ******************************************************************************/
 DECLARE
    antal_geom integer;       -- Antal geometrikolumner i vyn
-   geom_typ text;           -- Geometrityp fran systemtabell
+   geom_typ text;           -- Geometrityp från systemtabell
    forvantat_suffix text;   -- Vilket suffix vynamnet ska ha
-   begart_suffix text;      -- Suffixet som anvandaren forsoker anvanda
-   har_transformation boolean; -- Om vyn innehaller ST_-funktioner
+   begart_suffix text;      -- Suffixet som användaren försöker använda
+   har_transformation boolean; -- Om vyn innehåller ST_-funktioner
 BEGIN
    RAISE NOTICE E'\n=== START validera_vynamn() ===';
    RAISE NOTICE 'Validerar vy %.%', p_schema_namn, p_vy_namn;
 
-   -- Extrahera onskat suffix fran vynamnet (sista tva tecknen)
+   -- Extrahera önskat suffix från vynamnet (sista två tecknen)
    begart_suffix := right(p_vy_namn, 2);
 
-   -- Kontrollera om vyn innehaller geometritransformationer
+   -- Kontrollera om vyn innehåller geometritransformationer
    SELECT definition ~* 'ST_[A-Za-z]+\s*\(' INTO har_transformation
    FROM pg_views
    WHERE schemaname = p_schema_namn 
    AND viewname = p_vy_namn;
 
-   -- Rakna antalet geometrikolumner
+   -- Räkna antalet geometrikolumner
    SELECT COUNT(*) INTO antal_geom
    FROM geometry_columns
    WHERE f_table_schema = p_schema_namn 
    AND f_table_name = p_vy_namn;
 
-   -- Bestam forvantat suffix baserat pa antal geometrier
+   -- Bestäm förväntat suffix baserat på antal geometrier
    CASE 
        -- Ingen geometri - inget suffix
        WHEN antal_geom = 0 THEN
            forvantat_suffix := '';
            
-       -- En geometri - suffix alltid baserat pa typ i systemtabell
+       -- En geometri - suffix alltid baserat på typ i systemtabell
        WHEN antal_geom = 1 THEN
            SELECT type INTO STRICT geom_typ 
            FROM geometry_columns 
@@ -79,10 +77,10 @@ BEGIN
    END CASE;
 
    -- Validera v-prefix och suffix
-   IF NOT (p_vy_namn LIKE p_schema_namn || '_v_%' AND 
-           (forvantat_suffix = '' OR p_vy_namn LIKE '%' || forvantat_suffix)) THEN
+   IF NOT (p_vy_namn LIKE 'v_%' AND 
+          (forvantat_suffix = '' OR p_vy_namn LIKE '%' || forvantat_suffix)) THEN
        
-       -- Om geometritransformation OCH generisk geometri, ge hjalpsamt meddelande
+       -- Om geometritransformation OCH generisk geometri, ge hjälpsamt meddelande
        IF har_transformation AND geom_typ = 'GEOMETRY' THEN
            RAISE EXCEPTION E'Ogiltigt vynamn "%.%".\n'
                'Vyn innehåller geometritransformationer (ST_-funktioner).\n'
@@ -95,12 +93,12 @@ BEGIN
                begart_suffix;
        ELSE
            RAISE EXCEPTION E'Ogiltigt vynamn "%.%".\n'
-               'Vynamn måste börja med schemanamn följt av _v_\n'
+               'Vynamn måste börja med v_\n'
                'och sluta med korrekt suffix för geometritypen (%)\n'
-               'Exempel: %_v_mittnamn%',
+               'Exempel: v_mittnamn%',
                p_schema_namn, p_vy_namn,
                forvantat_suffix,
-               p_schema_namn, forvantat_suffix;
+               forvantat_suffix;
        END IF;
    END IF;
 

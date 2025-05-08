@@ -1,11 +1,9 @@
 -- FUNCTION: public.validera_tabell(text, text)
 
--- DROP FUNCTION IF EXISTS public.validera_tabell(text, text);
-
 CREATE OR REPLACE FUNCTION public.validera_tabell(
-	p_schema_namn text,
-	p_tabell_namn text,
-	OUT p_geometriinfo geom_info)
+    p_schema_namn text,
+    p_tabell_namn text,
+    OUT p_geometriinfo geom_info)
     RETURNS geom_info
     LANGUAGE 'plpgsql'
     COST 100
@@ -13,13 +11,10 @@ CREATE OR REPLACE FUNCTION public.validera_tabell(
 AS $BODY$
 
 /******************************************************************************
- * Denna funktion validerar att en tabell följer systemets namngivningsregler
- * och krav på geometrikolumner.
+ * Denna funktion validerar att en tabell följer systemets krav på 
+ * geometrikolumner och suffixnamn.
  *
- * För alla tabeller valideras:
- * - Att tabellnamnet börjar med schemanamn + understreck (schema_*)
- *
- * För tabeller utan geometri valideras även:
+ * För tabeller utan geometri valideras:
  * - Att tabellnamnet INTE slutar med något av de reserverade suffixen
  *   (_p, _l, _y, _g) som är vikta för tabeller med geometri
  *
@@ -61,16 +56,6 @@ BEGIN
     IF antal_geom = 0 THEN
         valideringssteg := 'validering av tabell utan geometri';
         RAISE NOTICE '[validera_tabell] Steg 2a: Validerar tabell utan geometri';
-
-        -- Kontrollera prefix
-        IF NOT p_tabell_namn LIKE p_schema_namn || '\_%' THEN
-            RAISE EXCEPTION E'[validera_tabell] Ogiltigt tabellnamn "%.%".\n'
-                '[validera_tabell] Även tabeller utan geometri måste börja med schemanamn '
-                'följt av understreck (%_)',
-                p_schema_namn, p_tabell_namn,
-                p_schema_namn;
-        END IF;
-        RAISE NOTICE '[validera_tabell]   ✓ Tabellnamn har korrekt prefix: %_', p_schema_namn;
 
         -- Kontrollera att inget geometrisuffix används
         IF p_tabell_namn LIKE '%\_p' OR 
@@ -147,20 +132,17 @@ BEGIN
     RAISE NOTICE '[validera_tabell]   » Förväntat suffix för %: %', 
         p_geometriinfo.typ_basal, forvantat_suffix;
 
-    -- Validera både prefix och suffix
-    IF NOT (p_tabell_namn LIKE p_schema_namn || '\_%' AND 
-            p_tabell_namn LIKE '%' || forvantat_suffix) THEN
+    -- Validera suffix (inga krav på prefix längre)
+    IF NOT p_tabell_namn LIKE '%' || forvantat_suffix THEN
         RAISE EXCEPTION E'[validera_tabell] Ogiltigt tabellnamn "%.%".\n'
-            '[validera_tabell] Tabellnamn måste:\n'
-            '[validera_tabell] 1. Börja med schemanamn följt av understreck (%_)\n'
-            '[validera_tabell] 2. Sluta med suffix för geometrityp (%)\n'
-            '[validera_tabell] Exempel på giltigt namn: %_mittnamn%',
+            '[validera_tabell] Tabellnamn med geometri måste:\n'
+            '[validera_tabell] Sluta med suffix för geometrityp (%)\n'
+            '[validera_tabell] Exempel på giltigt namn: mittnamn%',
             p_schema_namn, p_tabell_namn,
-            p_schema_namn,
             forvantat_suffix,
-            p_schema_namn, forvantat_suffix;
+            forvantat_suffix;
     END IF;
-    RAISE NOTICE '[validera_tabell]   ✓ Tabellnamn har korrekt prefix och suffix';
+    RAISE NOTICE '[validera_tabell]   ✓ Tabellnamn har korrekt suffix';
 
     RAISE NOTICE '[validera_tabell]   ✓ Validering slutförd för tabell med geometri';
     RAISE NOTICE '[validera_tabell] === SLUT ===';
@@ -181,9 +163,3 @@ $BODY$;
 
 ALTER FUNCTION public.validera_tabell(text, text)
     OWNER TO postgres;
-
-COMMENT ON FUNCTION public.validera_tabell(text, text)
-    IS 'Validerar att en tabell följer systemets namnkonventioner och krav på
-geometrikolumner. Accepterar tabeller utan geometri men validerar då att de
-inte använder reserverade geometrisuffix. Returnerar geometriinfo för tabellen
-eller NULL om tabellen saknar geometri.';
