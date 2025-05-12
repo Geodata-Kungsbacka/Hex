@@ -21,3 +21,8 @@ ALTER TABLE IF EXISTS public.standardiserade_kolumner
 
 COMMENT ON TABLE public.standardiserade_kolumner
     IS E'Definierar standardkolumner för tabellstrukturer.\\n\\nordinal_position:\\n  > 0: kolumnen placeras först i angiven ordning\\n  < 0: kolumnen placeras sist i omvänd ordning\\n  NULL/0 är inte tillåtet';
+
+INSERT INTO public.standardiserade_kolumner(
+	kolumnnamn, ordinal_position, datatyp, beskrivning)
+	VALUES ('gid', 1, 'integer GENERATED ALWAYS AS IDENTITY', 'Primärnyckel'),
+	('skapad_tidpunkt', -1, 'timestamptz DEFAULT NOW()', 'Tidpunkt för radens skapande');
