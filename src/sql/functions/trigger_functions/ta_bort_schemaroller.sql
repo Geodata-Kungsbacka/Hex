@@ -78,4 +78,4 @@ ALTER FUNCTION public.ta_bort_schemaroller()
 
 COMMENT ON FUNCTION public.ta_bort_schemaroller()
     IS 'Tar automatiskt bort roller (r_schema och w_schema) när motsvarande schema tas bort.
-Denna funktion behåller databasen ren från oanvända roller.';
+Denna funktion behåller databasen ren från oanvända roller.'
