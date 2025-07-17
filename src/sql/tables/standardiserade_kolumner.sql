@@ -8,30 +8,33 @@ CREATE TABLE IF NOT EXISTS public.standardiserade_kolumner
     kolumnnamn text COLLATE pg_catalog."default" NOT NULL,
     ordinal_position integer NOT NULL,
     datatyp text COLLATE pg_catalog."default" NOT NULL,
-    schema_uttryck text COLLATE pg_catalog."default" DEFAULT 'LIKE ''%'''::text,
     beskrivning text COLLATE pg_catalog."default",
+    schema_uttryck text COLLATE pg_catalog."default" NOT NULL DEFAULT 'IS NOT NULL',
+    
     CONSTRAINT standardiserade_kolumner_kolumnnamn_key UNIQUE (kolumnnamn),
     CONSTRAINT valid_kolumnnamn_length CHECK (length(kolumnnamn) <= 63),
-    CONSTRAINT valid_ordinal_position CHECK (ordinal_position <> 0)
+    CONSTRAINT valid_ordinal_position CHECK (ordinal_position <> 0),
+    CONSTRAINT valid_schema_uttryck CHECK (
+        schema_uttryck NOT LIKE '%;%' AND
+        length(schema_uttryck) < 200 AND
+        schema_uttryck ~* '^(=|<>|!=|<|<=|>|>=|LIKE|NOT|IN|IS)\s'
+    )
 )
 
 TABLESPACE pg_default;
 
 ALTER TABLE IF EXISTS public.standardiserade_kolumner
-    OWNER to gis_admin;
+    OWNER to postgres;
 
 COMMENT ON TABLE public.standardiserade_kolumner
-    IS 'Definierar standardkolumner för tabellstrukturer.
-- "ordinal_position": 
-> 0: kolumnen placeras först i angiven ordning
-< 0: kolumnen placeras sist i omvänd ordning
-NULL/0 är inte tillåtet
-- "schema_uttryck":
-SQL-uttryck för att matcha scheman där kolumnen ska appliceras, 
-    t.ex. "= ''''sk0_kba_bm''''" för exakt matchning eller 
-    "LIKE ''''%_ext_%''''" för mönstermatchning';
+    IS E'Definierar standardkolumner för tabellstrukturer.\\n\\nordinal_position:\\n  > 0: kolumnen placeras först i angiven ordning\\n  < 0: kolumnen placeras sist i omvänd ordning\\n  NULL/0 är inte tillåtet\\n\\nschema_uttryck:\\n  SQL-uttryck som avgör vilka scheman kolumnen ska appliceras på.\\n  Exempel: "LIKE ''%_ext_%''", "= ''sk0_ext_sgu''", "IS NOT NULL"';
 
+COMMENT ON COLUMN public.standardiserade_kolumner.schema_uttryck
+    IS 'SQL-uttryck som avgör vilka scheman kolumnen ska appliceras på. Värdet sätts in efter "WHERE p_schema_namn [detta_värde]". Exempel: "= ''sk0_ext_sgu''", "LIKE ''%_ext_%''", "IN (''sk0_ext_sgu'', ''sk1_ext_region'')"';
+
+-- Lägg till grundläggande standardkolumner
 INSERT INTO public.standardiserade_kolumner(
-	kolumnnamn, ordinal_position, datatyp, schema_uttryck, beskrivning)
-	VALUES ('gid', 1, 'integer GENERATED ALWAYS AS IDENTITY', 'LIKE ''%''', 'Primärnyckel'),
-	('skapad_tidpunkt', -1, 'timestamptz DEFAULT NOW()', 'LIKE ''%''', 'Tidpunkt för radens skapande');
+    kolumnnamn, ordinal_position, datatyp, beskrivning, schema_uttryck)
+VALUES 
+    ('gid', 1, 'integer GENERATED ALWAYS AS IDENTITY', 'Primärnyckel', 'IS NOT NULL'),
+    ('skapad_tidpunkt', -1, 'timestamptz DEFAULT NOW()', 'Tidpunkt för radens skapande', 'IS NOT NULL');
