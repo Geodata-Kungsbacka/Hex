@@ -95,7 +95,7 @@ BEGIN
     -- Steg 3: Återskapa DEFAULT-värden
     op_steg := 'default-värden';
     antal_default := COALESCE(array_length(p_egenskaper.default_defs, 1), 0);
-    
+
     IF antal_default > 0 THEN
         RAISE NOTICE '[aterskapa_kolumnegenskaper] Steg 3: Återskapar % DEFAULT-värden', 
             antal_default;
@@ -104,7 +104,20 @@ BEGIN
             DECLARE
                 kolumn_namn text := split_part(p_egenskaper.default_defs[i], ';', 1);
                 default_varde text := split_part(p_egenskaper.default_defs[i], ';', 2);
+                ar_standardkolumn boolean;
             BEGIN
+                -- Kontrollera om detta är en standardkolumn
+                SELECT EXISTS (
+                    SELECT 1 FROM standardiserade_kolumner 
+                    WHERE kolumnnamn = kolumn_namn
+                ) INTO ar_standardkolumn;
+                
+                IF ar_standardkolumn THEN
+                    RAISE NOTICE '[aterskapa_kolumnegenskaper]   Hoppar över standardkolumn: % (har redan korrekt DEFAULT)', 
+                        kolumn_namn;
+                    CONTINUE;
+                END IF;
+                
                 sql_sats := format(
                     'ALTER TABLE %I.%I ALTER COLUMN %I SET DEFAULT %s',
                     p_schema_namn, p_tabell_namn,

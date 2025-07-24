@@ -8,8 +8,10 @@ CREATE TABLE IF NOT EXISTS public.standardiserade_kolumner
     kolumnnamn text COLLATE pg_catalog."default" NOT NULL,
     ordinal_position integer NOT NULL,
     datatyp text COLLATE pg_catalog."default" NOT NULL,
-    beskrivning text COLLATE pg_catalog."default",
+    default_varde text,   
     schema_uttryck text COLLATE pg_catalog."default" NOT NULL DEFAULT 'IS NOT NULL',
+    historik_qa boolean DEFAULT false,
+    beskrivning text COLLATE pg_catalog."default",
     
     CONSTRAINT standardiserade_kolumner_kolumnnamn_key UNIQUE (kolumnnamn),
     CONSTRAINT valid_kolumnnamn_length CHECK (length(kolumnnamn) <= 63),
@@ -34,7 +36,10 @@ COMMENT ON COLUMN public.standardiserade_kolumner.schema_uttryck
 
 -- Lägg till grundläggande standardkolumner
 INSERT INTO public.standardiserade_kolumner(
-    kolumnnamn, ordinal_position, datatyp, beskrivning, schema_uttryck)
+    kolumnnamn, ordinal_position, datatyp, default_varde, beskrivning, schema_uttryck, historik_qa)
 VALUES 
-    ('gid', 1, 'integer GENERATED ALWAYS AS IDENTITY', 'Primärnyckel', 'IS NOT NULL'),
-    ('skapad_tidpunkt', -1, 'timestamptz DEFAULT NOW()', 'Tidpunkt för radens skapande', 'IS NOT NULL');
+    ('gid', 1, 'integer GENERATED ALWAYS AS IDENTITY', NULL, 'Primärnyckel', 'IS NOT NULL', false),
+	('skapad_tidpunkt', -4, 'timestamptz', 'NOW()', 'Tidpunkt då raden skapades', 'IS NOT NULL', false),
+	('skapad_av', -3, 'character varying', 'current_user', 'Användare som skapade raden', 'LIKE ''%_kba_%''', false),
+	('andrad_tidpunkt', -2, 'timestamptz', 'NOW()', 'Senaste ändringstidpunkt', 'LIKE ''%_kba_%''', true),
+	('andrad_av', -1, 'character varying', 'current_user', 'Användare som senast ändrade', 'LIKE ''%_kba_%''', true);

@@ -1,7 +1,3 @@
--- FUNCTION: public.hamta_kolumnstandard(text, text, geom_info)
-
--- DROP FUNCTION IF EXISTS public.hamta_kolumnstandard(text, text, geom_info);
-
 CREATE OR REPLACE FUNCTION public.hamta_kolumnstandard(
     p_schema_namn text,
     p_tabell_namn text,
@@ -11,7 +7,6 @@ CREATE OR REPLACE FUNCTION public.hamta_kolumnstandard(
     COST 100
     VOLATILE PARALLEL UNSAFE
 AS $BODY$
-
 /******************************************************************************
  * SYFTE: Denna funktion tar en befintlig tabell och bestämmer vilka kolumner
  * som ska finnas i den "standardiserade" versionen av tabellen. Den blandar
@@ -51,6 +46,10 @@ AS $BODY$
  * - "IS NOT NULL" → Alla scheman (standardvärde)
  * - "NOT LIKE '%_sys_%'" → Alla utom systemscheman
  * - "LIKE '%_kba_%'" → Endast interna datakällor (sk1_kba_mh_bygg, sk2_kba_plan)
+ *
+ * HISTORIK_QA HANTERING:
+ * - Om historik_qa = false och default_varde finns: DEFAULT läggs till i CREATE TABLE
+ * - Om historik_qa = true: Ingen DEFAULT (värdet sätts av trigger istället)
  *
  * KONKRET EXEMPEL PÅ FUNKTIONENS ANVÄNDNING:
  * 
@@ -125,15 +124,15 @@ BEGIN
     -- men inte "sk1_kba_mh_bygg". Matchande kolumner sparas i temp_filtrerade_standardkolumner.
     RAISE NOTICE '[hamta_kolumnstandard] Steg 3: Filtrerar standardkolumner baserat på schema_uttryck';
     
-    -- Skapa temporär tabell för filtrerade standardkolumner
+    -- Skapa temporär tabell för filtrerade standardkolumner (nu med historik_qa och default_varde)
     CREATE TEMP TABLE temp_filtrerade_standardkolumner AS
-        SELECT kolumnnamn, ordinal_position, datatyp 
+        SELECT kolumnnamn, ordinal_position, datatyp, historik_qa, default_varde
         FROM standardiserade_kolumner 
         WHERE false; -- Tom tabell med rätt struktur
 
     -- Loop genom alla standardkolumner och testa schema_uttryck
     FOR standardkolumn IN 
-        SELECT kolumnnamn, ordinal_position, datatyp, schema_uttryck
+        SELECT kolumnnamn, ordinal_position, datatyp, schema_uttryck, historik_qa, default_varde
         FROM standardiserade_kolumner 
         ORDER BY ordinal_position
     LOOP
@@ -145,7 +144,13 @@ BEGIN
             
             IF matchar THEN
                 INSERT INTO temp_filtrerade_standardkolumner 
-                VALUES (standardkolumn.kolumnnamn, standardkolumn.ordinal_position, standardkolumn.datatyp);
+                VALUES (
+                    standardkolumn.kolumnnamn, 
+                    standardkolumn.ordinal_position, 
+                    standardkolumn.datatyp,
+                    standardkolumn.historik_qa,
+                    standardkolumn.default_varde
+                );
                 
                 RAISE NOTICE '[hamta_kolumnstandard]   ✓ Kolumn % matchade schema_uttryck: %', 
                     standardkolumn.kolumnnamn, standardkolumn.schema_uttryck;
@@ -158,6 +163,20 @@ BEGIN
                 RAISE WARNING '[hamta_kolumnstandard] Fel vid evaluering av schema_uttryck för kolumn %: % (Fel: %)', 
                     standardkolumn.kolumnnamn, standardkolumn.schema_uttryck, SQLERRM;
         END;
+    END LOOP;
+
+    -- Debug: visa vad som finns i temp_filtrerade_standardkolumner
+    RAISE NOTICE '[hamta_kolumnstandard] Debug - Innehåll i temp_filtrerade_standardkolumner:';
+    FOR standardkolumn IN 
+        SELECT * FROM temp_filtrerade_standardkolumner
+        ORDER BY ordinal_position
+    LOOP
+        RAISE NOTICE '[hamta_kolumnstandard]   % | % | % | historik_qa=% | default_varde=%',
+            standardkolumn.kolumnnamn,
+            standardkolumn.ordinal_position,
+            standardkolumn.datatyp,
+            standardkolumn.historik_qa,
+            standardkolumn.default_varde;
     END LOOP;
 
     -- Räkna hur många kolumner som matchade
@@ -182,12 +201,19 @@ BEGIN
         -- Exempel: gid integer GENERATED ALWAYS AS IDENTITY (position 1)
         SELECT 
             kolumnnamn, 
-            ordinal_position, 
-            datatyp,
+            ordinal_position,
+            -- Hantera DEFAULT baserat på historik_qa
+            CASE 
+                WHEN historik_qa = true OR default_varde IS NULL THEN
+                    datatyp  -- Ingen DEFAULT
+                ELSE
+                    datatyp || ' DEFAULT ' || default_varde  -- Lägg till DEFAULT
+            END as datatyp,
             false as is_generated, 
             NULL::text as generated_expr
         FROM temp_filtrerade_standardkolumner
         WHERE ordinal_position > 0
+        
 
         UNION ALL
 
@@ -229,8 +255,14 @@ BEGIN
         -- Exempel: skapad_tidpunkt timestamptz DEFAULT NOW() (position -1)
         SELECT 
             kolumnnamn, 
-            ordinal_position, 
-            datatyp,
+            ordinal_position,
+            -- Hantera DEFAULT baserat på historik_qa
+            CASE 
+                WHEN historik_qa = true OR default_varde IS NULL THEN
+                    datatyp  -- Ingen DEFAULT
+                ELSE
+                    datatyp || ' DEFAULT ' || default_varde  -- Lägg till DEFAULT
+            END as datatyp,
             false as is_generated, 
             NULL::text as generated_expr
         FROM temp_filtrerade_standardkolumner 
@@ -322,7 +354,8 @@ ALTER FUNCTION public.hamta_kolumnstandard(text, text, geom_info)
 COMMENT ON FUNCTION public.hamta_kolumnstandard(text, text, geom_info)
     IS 'Sammanställer en komplett kolumnlista för en tabell genom att kombinera 
 kolumner från standardiserade_kolumner (filtrerade baserat på schema_uttryck) 
-och originaltabellen samt eventuell geometri. Använder tvåstegsfiltrering:
-1) Loop för schema_uttryck-evaluering 2) Vanlig UNION ALL för sammansättning.
-Returnerar en array med kolumnkonfig-objekt som används för att skapa den
-standardiserade tabellstrukturen.';
+och originaltabellen samt eventuell geometri. Hanterar historik_qa-flaggan för
+att avgöra om DEFAULT ska läggas till eller hanteras av triggers. Använder 
+tvåstegsfiltrering: 1) Loop för schema_uttryck-evaluering 2) Vanlig UNION ALL 
+för sammansättning. Returnerar en array med kolumnkonfig-objekt som används 
+för att skapa den standardiserade tabellstrukturen.';

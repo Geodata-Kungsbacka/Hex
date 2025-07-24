@@ -76,22 +76,36 @@ BEGIN
 
         -- Kontrollera om vi ska hantera denna tabell
         -- Vi hoppar över tabeller i public-schemat och tabeller som redan modifieras
-        IF schema_namn = 'public' OR 
-           EXISTS (
-               SELECT 1 
-               FROM information_schema.columns 
-               WHERE table_schema = schema_namn
-               AND table_name = tabell_namn
-               AND column_name LIKE '%_temp0001'
-           ) THEN
-            RAISE NOTICE '[hantera_kolumntillagg] Hoppar över tabell: public-schema eller temporär operation pågår';
+        IF schema_namn = 'public' OR tabell_namn LIKE '%\_h' OR
+            EXISTS (
+                SELECT 1 
+                FROM information_schema.columns 
+                WHERE table_schema = schema_namn
+                AND table_name = tabell_namn
+                AND column_name LIKE '%_temp0001'
+        ) THEN
+            RAISE NOTICE '[hantera_kolumntillagg] Hoppar över tabell: %', 
+                CASE 
+                    WHEN schema_namn = 'public' THEN 'public-schema'
+                    WHEN tabell_namn LIKE '%\_h' THEN 'historiktabell'
+                    ELSE 'temporär operation pågår'
+                END;
             CONTINUE;
         END IF;
 
         -- Steg 3: Hämta standardkolumner som ska flyttas
         RAISE NOTICE '[hantera_kolumntillagg] (3/4) Identifierar kolumner som ska flyttas';
         SELECT array_agg(
-            ROW(kolumnnamn, ordinal_position, datatyp)::kolumnkonfig 
+            ROW(
+                kolumnnamn, 
+                ordinal_position, 
+                CASE 
+                    WHEN default_varde IS NOT NULL AND historik_qa = false THEN
+                        datatyp || ' DEFAULT ' || default_varde
+                    ELSE
+                        datatyp
+                END
+            )::kolumnkonfig 
             ORDER BY ordinal_position
         )
         INTO flyttkolumner
