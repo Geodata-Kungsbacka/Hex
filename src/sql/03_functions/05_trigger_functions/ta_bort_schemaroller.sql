@@ -1,5 +1,3 @@
--- FUNCTION: public.ta_bort_schemaroller()
-
 CREATE OR REPLACE FUNCTION public.ta_bort_schemaroller()
     RETURNS event_trigger
     LANGUAGE 'plpgsql'
@@ -9,66 +7,102 @@ AS $BODY$
 
 /******************************************************************************
  * Tar automatiskt bort roller kopplade till scheman som tas bort.
- * För borttaget schema "exempel" tas rollerna "r_exempel" och "w_exempel" bort.
- *
- * Funktionen:
- * - Identifierar scheman som tas bort
- * - Tar bort motsvarande r_ och w_ roller
- * - Undviker systemscheman
+ * Läser nu konfiguration från standardiserade_roller istället för hårdkodade rollnamn.
+ * 
+ * UPPDATERAD FUNKTIONALITET:
+ * - Tar endast bort roller där ta_bort_med_schema = true
+ * - Hanterar både grupproller och LOGIN-roller
+ * - Bevarar globala roller (ta_bort_med_schema = false)
  ******************************************************************************/
 DECLARE
     kommando record;
     schema_namn text;
-    r_roll_namn text;
-    w_roll_namn text;
-    r_roll_existerar boolean;
-    w_roll_existerar boolean;
+    rollkonfiguration record;
+    slutligt_rollnamn text;
+    login_rollnamn text;
+    roll_existerar boolean;
+    antal_borttagna integer := 0;
 BEGIN
-    RAISE NOTICE 'Startar ta_bort_schemaroller()';
+    RAISE NOTICE E'[ta_bort_schemaroller] === START ===';
+    RAISE NOTICE '[ta_bort_schemaroller] Hanterar rollborttagning för borttagna scheman';
     
     -- Identifiera borttagna scheman från trigger-händelsen
     FOR kommando IN SELECT * FROM pg_event_trigger_dropped_objects()
     WHERE object_type = 'schema'
     LOOP
         schema_namn := kommando.object_name;
-        r_roll_namn := 'r_' || schema_namn;
-        w_roll_namn := 'w_' || schema_namn;
         
-        RAISE NOTICE 'Schema borttaget: %, kontrollerar roller: % och %', 
-                     schema_namn, r_roll_namn, w_roll_namn;
+        RAISE NOTICE E'[ta_bort_schemaroller] ================';
+        RAISE NOTICE '[ta_bort_schemaroller] Schema borttaget: %', schema_namn;
         
         -- Hoppa över systemscheman
         IF schema_namn = 'public' OR schema_namn LIKE 'pg\_%' OR schema_namn = 'information_schema' THEN
-            RAISE NOTICE 'Hoppar över systemschema: %', schema_namn;
+            RAISE NOTICE '[ta_bort_schemaroller] Hoppar över systemschema: %', schema_namn;
             CONTINUE;
         END IF;
         
-        -- Kontrollera om rollerna existerar
-        SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = r_roll_namn) INTO r_roll_existerar;
-        SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = w_roll_namn) INTO w_roll_existerar;
+        -- Loopa genom rollkonfigurationer som ska tas bort med schema
+        FOR rollkonfiguration IN 
+            SELECT * FROM standardiserade_roller 
+            WHERE ta_bort_med_schema = true
+            ORDER BY gid
+        LOOP
+            -- Bygg rollnamn
+            slutligt_rollnamn := replace(rollkonfiguration.rollnamn, '{schema}', schema_namn);
+            
+            RAISE NOTICE '[ta_bort_schemaroller] Kontrollerar roll: %', slutligt_rollnamn;
+            
+            -- Ta bort LOGIN-roller först (de har beroenden till grupproll)
+            FOR i IN 1..COALESCE(array_length(rollkonfiguration.login_roller, 1), 0) LOOP
+                DECLARE
+                    login_definition text := rollkonfiguration.login_roller[i];
+                BEGIN
+                    -- Bygg LOGIN-rollnamn
+                    IF login_definition LIKE '\_%' THEN
+                        login_rollnamn := slutligt_rollnamn || login_definition;
+                    ELSIF login_definition LIKE '%\_' THEN
+                        login_rollnamn := login_definition || slutligt_rollnamn;
+                    ELSE
+                        CONTINUE; -- Hoppa över ogiltiga format
+                    END IF;
+                    
+                    -- Kontrollera om LOGIN-roll existerar
+                    SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = login_rollnamn) INTO roll_existerar;
+                    
+                    IF roll_existerar THEN
+                        EXECUTE format('DROP ROLE %I', login_rollnamn);
+                        RAISE NOTICE '[ta_bort_schemaroller]   ✓ LOGIN-roll borttagen: %', login_rollnamn;
+                        antal_borttagna := antal_borttagna + 1;
+                    ELSE
+                        RAISE NOTICE '[ta_bort_schemaroller]   - LOGIN-roll existerar inte: %', login_rollnamn;
+                    END IF;
+                END;
+            END LOOP;
+            
+            -- Ta bort grupproll
+            SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = slutligt_rollnamn) INTO roll_existerar;
+            
+            IF roll_existerar THEN
+                EXECUTE format('DROP ROLE %I', slutligt_rollnamn);
+                RAISE NOTICE '[ta_bort_schemaroller]   ✓ Grupproll borttagen: %', slutligt_rollnamn;
+                antal_borttagna := antal_borttagna + 1;
+            ELSE
+                RAISE NOTICE '[ta_bort_schemaroller]   - Grupproll existerar inte: %', slutligt_rollnamn;
+            END IF;
+        END LOOP;
         
-        -- Ta bort r_roll om den existerar
-        IF r_roll_existerar THEN
-            EXECUTE format('DROP ROLE %I', r_roll_namn);
-            RAISE NOTICE 'Roll % borttagen', r_roll_namn;
-        ELSE
-            RAISE NOTICE 'Roll % existerar inte, ingen åtgärd', r_roll_namn;
-        END IF;
-        
-        -- Ta bort w_roll om den existerar
-        IF w_roll_existerar THEN
-            EXECUTE format('DROP ROLE %I', w_roll_namn);
-            RAISE NOTICE 'Roll % borttagen', w_roll_namn;
-        ELSE
-            RAISE NOTICE 'Roll % existerar inte, ingen åtgärd', w_roll_namn;
-        END IF;
-        
-        RAISE NOTICE 'Upprensning slutförd för schema: %', schema_namn;
+        RAISE NOTICE '[ta_bort_schemaroller] Sammanfattning för schema %: % roller borttagna', 
+            schema_namn, antal_borttagna;
+        antal_borttagna := 0; -- Återställ för nästa schema
     END LOOP;
+
+    RAISE NOTICE '[ta_bort_schemaroller] === SLUT ===';
 
 EXCEPTION
     WHEN OTHERS THEN
-        RAISE NOTICE 'FEL vid borttagning av roller: %', SQLERRM;
+        RAISE NOTICE '[ta_bort_schemaroller] !!! FEL UPPSTOD !!!';
+        RAISE NOTICE '[ta_bort_schemaroller]   - Schema: %', schema_namn;
+        RAISE NOTICE '[ta_bort_schemaroller]   - Fel: %', SQLERRM;
         RAISE;
 END;
 $BODY$;
@@ -77,5 +111,6 @@ ALTER FUNCTION public.ta_bort_schemaroller()
     OWNER TO postgres;
 
 COMMENT ON FUNCTION public.ta_bort_schemaroller()
-    IS 'Tar automatiskt bort roller (r_schema och w_schema) när motsvarande schema tas bort.
-Denna funktion behåller databasen ren från oanvända roller.'
+    IS 'Tar automatiskt bort roller när scheman tas bort. Läser konfiguration från 
+    standardiserade_roller och tar endast bort roller där ta_bort_med_schema = true. 
+    Hanterar både grupproller och LOGIN-roller i korrekt ordning.';
