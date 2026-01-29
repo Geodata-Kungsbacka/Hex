@@ -38,6 +38,7 @@ För scheman konfigurerade med QA-kolumner skapas:
 -- 2. Alla filer i /02_tables/
 -- 3. Alla filer i /03_functions/ (i underkatalogers nummerordning)
 -- 4. Alla filer i /04_triggers/
+-- Alternativt kör "install_praxis.py" och mata in databas detaljer.
 ```
 
 ### Detaljerad installationsordning
