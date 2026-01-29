@@ -39,6 +39,10 @@ För scheman konfigurerade med QA-kolumner skapas:
 -- 3. Alla filer i /03_functions/ (i underkatalogers nummerordning)
 -- 4. Alla filer i /04_triggers/
 -- Alternativt kör "install_praxis.py" och mata in databas detaljer.
+    Can run as:
+        python install_praxis.py --uninstall
+        python install_praxis.py
+    to install or uninstall as needed.
 ```
 
 ### Detaljerad installationsordning
