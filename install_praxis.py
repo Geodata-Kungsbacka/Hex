@@ -7,6 +7,7 @@ Usage:
 """
 
 import argparse
+import re
 import psycopg2
 from pathlib import Path
 
@@ -15,7 +16,7 @@ from pathlib import Path
 # =============================================================================
 
 # Database connection
-#OBS - must run as postgres to create event triggers, but will set owner to OWNER_ROLE where applicable
+# OBS - must run as postgres to create event triggers
 DB_CONFIG = {
     "host": "localhost",
     "port": 5432,
@@ -132,25 +133,24 @@ DROP TYPE IF EXISTS public.geom_info;
 # =============================================================================
 
 def process_sql(sql: str) -> str:
-    """Process SQL content - replace or strip OWNER TO statements."""
-    lines = sql.split('\n')
-    processed = []
+    """Process SQL content - replace or strip OWNER TO statements.
     
-    for line in lines:
-        if 'OWNER TO' in line.upper():
-            if OWNER_ROLE:
-                import re
-                line = re.sub(
-                    r'OWNER TO \w+',
-                    f'OWNER TO {OWNER_ROLE}',
-                    line,
-                    flags=re.IGNORECASE
-                )
-                processed.append(line)
-        else:
-            processed.append(line)
+    Event triggers must be owned by a superuser, so those keep postgres ownership.
+    """
+    # Event trigger files must keep superuser ownership
+    is_event_trigger_file = 'CREATE EVENT TRIGGER' in sql.upper()
     
-    return '\n'.join(processed)
+    if is_event_trigger_file:
+        # Keep postgres ownership for event triggers
+        return sql
+    
+    if not OWNER_ROLE:
+        # Strip OWNER TO lines entirely
+        lines = [line for line in sql.split('\n') if 'OWNER TO' not in line.upper()]
+        return '\n'.join(lines)
+    
+    # Replace all OWNER TO with configured role
+    return re.sub(r'OWNER TO \w+', f'OWNER TO {OWNER_ROLE}', sql, flags=re.IGNORECASE)
 
 
 def uninstall():
