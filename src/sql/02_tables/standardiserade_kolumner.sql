@@ -35,11 +35,12 @@ COMMENT ON COLUMN public.standardiserade_kolumner.schema_uttryck
     IS 'SQL-uttryck som avgör vilka scheman kolumnen ska appliceras på. Värdet sätts in efter "WHERE p_schema_namn [detta_värde]". Exempel: "= ''sk0_ext_sgu''", "LIKE ''%_ext_%''", "IN (''sk0_ext_sgu'', ''sk1_ext_region'')"';
 
 -- Lägg till grundläggande standardkolumner
+-- ÄNDRING: Använder session_user istället för current_user för att fånga faktisk autentiserad användare
 INSERT INTO public.standardiserade_kolumner(
     kolumnnamn, ordinal_position, datatyp, default_varde, beskrivning, schema_uttryck, historik_qa)
 VALUES 
     ('gid', 1, 'integer GENERATED ALWAYS AS IDENTITY', NULL, 'Primärnyckel', 'IS NOT NULL', false),
 	('skapad_tidpunkt', -4, 'timestamptz', 'NOW()', 'Tidpunkt då raden skapades', 'IS NOT NULL', false),
-	('skapad_av', -3, 'character varying', 'current_user', 'Användare som skapade raden', 'LIKE ''%_kba_%''', false),
+	('skapad_av', -3, 'character varying', 'session_user', 'Användare som skapade raden', 'LIKE ''%_kba_%''', false),
 	('andrad_tidpunkt', -2, 'timestamptz', 'NOW()', 'Senaste ändringstidpunkt', 'LIKE ''%_kba_%''', true),
-	('andrad_av', -1, 'character varying', 'current_user', 'Användare som senast ändrade', 'LIKE ''%_kba_%''', true);
+	('andrad_av', -1, 'character varying', 'session_user', 'Användare som senast ändrade', 'LIKE ''%_kba_%''', true);
