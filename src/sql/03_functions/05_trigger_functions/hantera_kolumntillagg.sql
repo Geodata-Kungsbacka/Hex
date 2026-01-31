@@ -10,6 +10,25 @@ CREATE OR REPLACE FUNCTION public.hantera_kolumntillagg()
 AS $BODY$
 
 /******************************************************************************
+ * Denna funktion hanterar omstrukturering av tabeller när kolumner ändras
+ * via ALTER TABLE-operationer. När nya kolumner läggs till hamnar de sist i
+ * tabellen, vilket kräver omorganisering för att bibehålla systemets standarder.
+ *
+ * Funktionen utför följande operationer:
+ * 1. Flyttar standardkolumner med negativ ordinal_position så att de hamnar
+ *    efter nyligen tillagda kolumner
+ * 2. Flyttar geometrikolumnen sist för korrekt struktur
+ * 3. Kontrollerar strukturskillnader mellan modertabeller och historiktabeller
+ * 4. UPPDATERAD: Lägger automatiskt till saknade kolumner i historiktabeller
+ * 5. Ger användaren instruktioner för manuell synkronisering vid typskillnader
+ *
+ * Loggningsstrategi:
+ * - Alla meddelanden prefixas med funktionsnamnet för tydlig källhänvisning
+ * - Huvudsteg och tabelloperationer loggas på övergripande nivå
+ * - SQL-satser loggas precis innan exekvering för felsökning
+ * - Vid fel loggas detaljerad diagnostikinformation med operationskontext
+ * - Tydliga avgränsare används för att separera olika operationer i loggen
+ * - Varningsmeddelanden för historiktabeller använder WARNING-nivå för synlighet
  ******************************************************************************/
 DECLARE
     -- Grundläggande variabler för tabellhantering
