@@ -414,6 +414,94 @@ BEGIN
                         END LOOP;
                         
                         RAISE NOTICE '[hantera_kolumntillagg] Historiktabell synkroniserad: % kolumner tillagda', antal_tillagda;
+                        
+                        -- Regenerera trigger-funktionen med uppdaterad kolumnlista
+                        IF antal_tillagda > 0 THEN
+                            RAISE NOTICE '[hantera_kolumntillagg] Regenererar trigger-funktion för att inkludera nya kolumner...';
+                            
+                            DECLARE
+                                ny_kolumn_lista text;
+                                trigger_funktionsnamn text := 'trg_fn_' || tabell_namn || '_qa';
+                                qa_kolumner text[];
+                                qa_uttryck text[];
+                                trigger_satser text := '';
+                                j integer;
+                            BEGIN
+                                -- Hämta uppdaterad kolumnlista från modertabellen
+                                SELECT string_agg(c.column_name, ', ' ORDER BY c.ordinal_position)
+                                INTO ny_kolumn_lista
+                                FROM information_schema.columns c
+                                WHERE c.table_schema = schema_namn
+                                AND c.table_name = tabell_namn;
+                                
+                                -- Hämta QA-kolumner och deras uttryck
+                                SELECT 
+                                    array_agg(sk.kolumnnamn ORDER BY sk.ordinal_position),
+                                    array_agg(sk.default_varde ORDER BY sk.ordinal_position)
+                                INTO qa_kolumner, qa_uttryck
+                                FROM standardiserade_kolumner sk
+                                WHERE sk.historik_qa = true
+                                AND sk.default_varde IS NOT NULL
+                                AND EXISTS (
+                                    SELECT 1 FROM information_schema.columns c
+                                    WHERE c.table_schema = schema_namn 
+                                    AND c.table_name = tabell_namn 
+                                    AND c.column_name = sk.kolumnnamn
+                                );
+                                
+                                -- Bygg trigger-satser för QA-uppdatering
+                                FOR j IN 1..COALESCE(array_length(qa_kolumner, 1), 0) LOOP
+                                    trigger_satser := trigger_satser || format(
+                                        E'        rad.%I = %s;\n',
+                                        qa_kolumner[j], qa_uttryck[j]
+                                    );
+                                END LOOP;
+                                
+                                -- Återskapa trigger-funktionen med ny kolumnlista
+                                EXECUTE format($TRIG$
+                                    CREATE OR REPLACE FUNCTION %I.%I()
+                                    RETURNS TRIGGER AS $$
+                                    DECLARE
+                                        rad %I.%I%%ROWTYPE;
+                                    BEGIN
+                                        IF TG_OP = 'UPDATE' THEN
+                                            rad := NEW;
+                                            
+                                            -- Sätt QA-värden
+%s                
+                                            -- Kopiera gamla värdet till historik
+                                            INSERT INTO %I.%I (h_typ, h_tidpunkt, h_av, %s)
+                                            SELECT 'U', NOW(), session_user, OLD.*;
+                                            
+                                            RETURN rad;
+                                        ELSE -- DELETE
+                                            rad := OLD;
+                                            
+                                            -- Sätt QA-värden även för DELETE (för konsistens)
+%s                
+                                            -- Kopiera till historik
+                                            INSERT INTO %I.%I (h_typ, h_tidpunkt, h_av, %s)
+                                            SELECT 'D', NOW(), session_user, rad.*;
+                                            
+                                            RETURN OLD;
+                                        END IF;
+                                    END;
+                                    $$ LANGUAGE plpgsql;
+                                $TRIG$,
+                                    schema_namn, trigger_funktionsnamn,
+                                    schema_namn, tabell_namn,
+                                    trigger_satser,
+                                    schema_namn, historik_tabell_namn, ny_kolumn_lista,
+                                    trigger_satser,
+                                    schema_namn, historik_tabell_namn, ny_kolumn_lista
+                                );
+                                
+                                RAISE NOTICE '[hantera_kolumntillagg]   ✓ Trigger-funktion % regenererad', trigger_funktionsnamn;
+                            EXCEPTION
+                                WHEN OTHERS THEN
+                                    RAISE WARNING '[hantera_kolumntillagg]   ✗ Kunde inte regenerera trigger-funktion: %', SQLERRM;
+                            END;
+                        END IF;
                     END IF;
                     
                     -- Visa kolumner som finns extra i historik (bara info, ingen åtgärd)
