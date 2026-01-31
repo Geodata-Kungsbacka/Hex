@@ -19,9 +19,8 @@ AS $BODY$
  *    efter nyligen tillagda kolumner
  * 2. Flyttar geometrikolumnen sist för korrekt struktur
  * 3. Kontrollerar strukturskillnader mellan modertabeller och historiktabeller
- * 4. Inaktiverar QA-triggers temporärt vid strukturskillnader för att undvika
- *    krascher under kolumnflyttning
- * 5. Ger användaren instruktioner för manuell synkronisering av historiktabeller
+ * 4. UPPDATERAD: Lägger automatiskt till saknade kolumner i historiktabeller
+ * 5. Ger användaren instruktioner för manuell synkronisering vid typskillnader
  *
  * Loggningsstrategi:
  * - Alla meddelanden prefixas med funktionsnamnet för tydlig källhänvisning
@@ -279,7 +278,7 @@ BEGIN
             RAISE NOTICE '[hantera_kolumntillagg] Ingen geometrikolumn att hantera';
         END IF;
 
-        -- Steg 6: Kontrollera historiktabell och analysera skillnader
+        -- Steg 6: Kontrollera historiktabell och synkronisera automatiskt
         RAISE NOTICE E'[hantera_kolumntillagg] ----------';
         RAISE NOTICE '[hantera_kolumntillagg] (4/4) Kontrollerar historiktabellsynkronisering';
         
@@ -295,7 +294,7 @@ BEGIN
             ) INTO har_historiktabell;
             
             IF har_historiktabell THEN
-                RAISE NOTICE '[hantera_kolumntillagg] Hittade historiktabell %s.%s - analyserar strukturskillnader', 
+                RAISE NOTICE '[hantera_kolumntillagg] Hittade historiktabell %s.%s - analyserar och synkroniserar', 
                     schema_namn, historik_tabell_namn;
                 
                 -- Analysera strukturskillnader mellan moder- och historiktabell
@@ -303,7 +302,8 @@ BEGIN
                     saknade_i_historik text[];      -- Kolumner som finns i moder men saknas i historik
                     extra_i_historik text[];        -- Kolumner som finns i historik men saknas i moder  
                     typ_skillnader text[];          -- Kolumner med olika datatyper
-                    kolumn_info text;
+                    kolumn_info record;
+                    antal_tillagda integer := 0;
                 BEGIN
                     -- Hitta kolumner som finns i modertabell men saknas i historiktabell
                     -- (exkluderar h_-kolumner som bara finns i historik)
@@ -370,33 +370,65 @@ BEGIN
                         END;
                     END IF;
                     
-                    IF antal_skillnader > 0 THEN
-                        -- Det finns skillnader - visa koncisa varningar
-                        RAISE WARNING '[hantera_kolumntillagg] Strukturskillnader funna: %s st', antal_skillnader;
-                        RAISE WARNING '[hantera_kolumntillagg] Modertabell: %s.%s, Historiktabell: %s.%s', 
-                            schema_namn, tabell_namn, schema_namn, historik_tabell_namn;
+                    -- NYTT: Lägg automatiskt till saknade kolumner i historiktabellen
+                    IF array_length(saknade_i_historik, 1) > 0 THEN
+                        RAISE NOTICE '[hantera_kolumntillagg] Lägger till %s saknade kolumner i historiktabell:', 
+                            array_length(saknade_i_historik, 1);
                         
-                        -- Visa kolumner som saknas i historik
-                        IF array_length(saknade_i_historik, 1) > 0 THEN
-                            RAISE WARNING '[hantera_kolumntillagg] Saknas i historik: %s', 
-                                array_to_string(saknade_i_historik, ', ');
-                        END IF;
+                        FOR kolumn_info IN 
+                            SELECT 
+                                m.column_name,
+                                CASE 
+                                    WHEN m.data_type = 'USER-DEFINED' THEN m.udt_name
+                                    WHEN m.data_type = 'character varying' THEN 
+                                        'character varying' || 
+                                        CASE WHEN m.character_maximum_length IS NOT NULL 
+                                             THEN '(' || m.character_maximum_length || ')'
+                                             ELSE ''
+                                        END
+                                    WHEN m.data_type = 'numeric' AND m.numeric_precision IS NOT NULL THEN 
+                                        'numeric(' || m.numeric_precision || ',' || COALESCE(m.numeric_scale, 0) || ')'
+                                    ELSE m.data_type
+                                END as full_data_type
+                            FROM information_schema.columns m
+                            WHERE m.table_schema = schema_namn 
+                            AND m.table_name = tabell_namn
+                            AND m.column_name = ANY(saknade_i_historik)
+                            ORDER BY m.ordinal_position
+                        LOOP
+                            BEGIN
+                                sql_sats := format(
+                                    'ALTER TABLE %I.%I ADD COLUMN %I %s',
+                                    schema_namn, historik_tabell_namn,
+                                    kolumn_info.column_name, kolumn_info.full_data_type
+                                );
+                                RAISE NOTICE '[hantera_kolumntillagg]   SQL: %', sql_sats;
+                                EXECUTE sql_sats;
+                                antal_tillagda := antal_tillagda + 1;
+                                RAISE NOTICE '[hantera_kolumntillagg]   ✓ Lade till kolumn: %', kolumn_info.column_name;
+                            EXCEPTION
+                                WHEN OTHERS THEN
+                                    RAISE WARNING '[hantera_kolumntillagg]   ✗ Kunde inte lägga till kolumn %: %', 
+                                        kolumn_info.column_name, SQLERRM;
+                            END;
+                        END LOOP;
                         
-                        -- Visa kolumner som finns extra i historik
-                        IF array_length(extra_i_historik, 1) > 0 THEN
-                            RAISE WARNING '[hantera_kolumntillagg] Extra i historik: %s', 
-                                array_to_string(extra_i_historik, ', ');
-                        END IF;
-                        
-                        -- Visa kolumner med olika datatyper
-                        IF array_length(typ_skillnader, 1) > 0 THEN
-                            RAISE WARNING '[hantera_kolumntillagg] Olika datatyper: %s', 
-                                array_to_string(typ_skillnader, ', ');
-                        END IF;
-                        
-                        RAISE WARNING '[hantera_kolumntillagg] QA-trigger inaktiverad temporärt för säker kolumnflyttning';
-                        RAISE WARNING '[hantera_kolumntillagg] Utför samma ALTER TABLE-operation på historiktabellen för synkronisering';
-                    ELSE
+                        RAISE NOTICE '[hantera_kolumntillagg] Historiktabell synkroniserad: % kolumner tillagda', antal_tillagda;
+                    END IF;
+                    
+                    -- Visa kolumner som finns extra i historik (bara info, ingen åtgärd)
+                    IF array_length(extra_i_historik, 1) > 0 THEN
+                        RAISE NOTICE '[hantera_kolumntillagg] Extra kolumner i historik (behålls): %s', 
+                            array_to_string(extra_i_historik, ', ');
+                    END IF;
+                    
+                    -- Visa kolumner med olika datatyper (kräver manuell åtgärd)
+                    IF array_length(typ_skillnader, 1) > 0 THEN
+                        RAISE WARNING '[hantera_kolumntillagg] Olika datatyper (kräver manuell åtgärd): %s', 
+                            array_to_string(typ_skillnader, ', ');
+                    END IF;
+                    
+                    IF antal_skillnader = 0 THEN
                         -- Inga skillnader - tabellerna är synkroniserade
                         RAISE NOTICE '[hantera_kolumntillagg] Historiktabell %s.%s är redan synkroniserad', 
                             schema_namn, historik_tabell_namn;
@@ -419,9 +451,6 @@ BEGIN
                     schema_namn, tabell_namn, tabell_namn);
                 RAISE NOTICE '[hantera_kolumntillagg] QA-trigger återaktiverad efter strukturändring';
                 
-                -- Strukturloggning hoppas över pga CHECK constraint i historiktabell
-                RAISE NOTICE '[hantera_kolumntillagg] Strukturändring slutförd (loggning hoppas över på grund av constraints)';
-                
             EXCEPTION
                 WHEN OTHERS THEN
                     RAISE WARNING '[hantera_kolumntillagg] KRITISKT: Kunde inte återaktivera QA-trigger: %s', SQLERRM;
@@ -436,9 +465,7 @@ BEGIN
         RAISE NOTICE '[hantera_kolumntillagg]   » Flyttade kolumner: %s', antal_flyttade;
         RAISE NOTICE '[hantera_kolumntillagg]   » Problem uppstod: %s', antal_fel;
         RAISE NOTICE '[hantera_kolumntillagg]   » Historiktabell: %s', 
-            CASE WHEN NOT tabell_namn LIKE '%\_h' AND har_historiktabell AND antal_skillnader > 0
-                 THEN format('%s skillnader funna', antal_skillnader)
-                 WHEN NOT tabell_namn LIKE '%\_h' AND har_historiktabell AND antal_skillnader = 0
+            CASE WHEN NOT tabell_namn LIKE '%\_h' AND har_historiktabell
                  THEN 'Synkroniserad'
                  WHEN NOT tabell_namn LIKE '%\_h' AND NOT har_historiktabell
                  THEN 'Ingen historik'
@@ -495,20 +522,15 @@ COMMENT ON FUNCTION public.hantera_kolumntillagg()
    kolumnordning enligt systemets standarder.
 
 3. Analyserar strukturskillnader mellan modertabeller och deras motsvarande 
-   historiktabeller (_h). När skillnader upptäcks visas tydliga varningar som 
-   anger exakt vilka kolumner som skiljer sig åt.
+   historiktabeller (_h).
 
-4. AUTOMATISK SÄKRING: När strukturskillnader upptäcks inaktiveras QA-triggers 
-   temporärt under kolumnflyttning för att undvika krascher från strukturmismatch. 
-   Triggers återaktiveras automatiskt efter slutförd operation.
+4. UPPDATERAD: Lägger automatiskt till saknade kolumner i historiktabeller för att
+   hålla dem synkroniserade med modertabellen och undvika QA-trigger-krascher.
 
-5. Instruerar användaren att manuellt utföra samma ALTER TABLE-operation på 
-   historiktabellen för att behålla fullständig synkronisering.
+5. Varnar för typskillnader som kräver manuell åtgärd.
 
-6. Behandlar nu även historiktabeller direkt för att säkerställa korrekt 
+6. Behandlar även historiktabeller direkt för att säkerställa korrekt 
    kolumnordning i dessa tabeller också.
-
-7. Loggar strukturändringar i historiktabeller för spårbarhet när det är möjligt.
 
 Funktionen använder detaljerad loggning med tydlig funktionsmarkering för att 
 underlätta felsökning och omfattar rekursionskontroll för att undvika oändliga 
