@@ -14,6 +14,9 @@ AS $BODY$
  * - h_av: Vem som utförde operationen
  * Följt av alla kolumner från modertabellen.
  *
+ * UPPDATERAD: Använder nu session_user istället för current_user för att
+ * fånga den faktiskt autentiserade användaren (inte SET ROLE-identitet).
+ *
  * UPPDATERAD: Använder nu hamta_geometri_definition() för korrekt 
  * geometrihantering i historiktabeller.
  ******************************************************************************/
@@ -142,6 +145,7 @@ BEGIN
         CASE WHEN length(kolumn_lista) > 50 THEN '...' ELSE '' END;
     
     -- Steg 4: Skapa historiktabell
+    -- ÄNDRING: Använder session_user istället för current_user
     op_steg := 'skapa historiktabell';
     RAISE NOTICE '[skapa_historik_qa] Steg 4: Skapar historiktabell';
     RAISE NOTICE '[skapa_historik_qa]   » Tabellnamn: %s.%s', p_schema_namn, p_tabell_namn || '_h';
@@ -151,7 +155,7 @@ BEGIN
         'CREATE TABLE %I.%I (
         h_typ char(1) NOT NULL CHECK (h_typ IN (''U'', ''D'')),
         h_tidpunkt timestamptz NOT NULL DEFAULT NOW(),
-        h_av text NOT NULL DEFAULT current_user,
+        h_av text NOT NULL DEFAULT session_user,
         %s
     )',
         p_schema_namn, p_tabell_namn || '_h',
@@ -183,6 +187,7 @@ BEGIN
     RAISE NOTICE '[skapa_historik_qa]   » Trigger kommer sätta %s QA-värden', antal_qa_kolumner;
     
     -- Steg 7: Skapa triggerfunktion
+    -- ÄNDRING: Använder session_user istället för current_user
     op_steg := 'skapa triggerfunktion';
     trigger_funktionsnamn := 'trg_fn_' || p_tabell_namn || '_qa';
     RAISE NOTICE '[skapa_historik_qa] Steg 7: Skapar triggerfunktion %s', trigger_funktionsnamn;
@@ -200,7 +205,7 @@ BEGIN
 %s                
                 -- Kopiera gamla värdet till historik
                 INSERT INTO %I.%I (h_typ, h_tidpunkt, h_av, %s)
-                SELECT 'U', NOW(), current_user, OLD.*;
+                SELECT 'U', NOW(), session_user, OLD.*;
                 
                 RETURN rad;
             ELSE -- DELETE
@@ -210,7 +215,7 @@ BEGIN
 %s                
                 -- Kopiera till historik
                 INSERT INTO %I.%I (h_typ, h_tidpunkt, h_av, %s)
-                SELECT 'D', NOW(), current_user, rad.*;
+                SELECT 'D', NOW(), session_user, rad.*;
                 
                 RETURN OLD;
             END IF;
@@ -285,6 +290,7 @@ ALTER FUNCTION public.skapa_historik_qa(text, text)
 
 COMMENT ON FUNCTION public.skapa_historik_qa(text, text)
     IS 'Skapar historiktabell och QA-triggers för tabeller som har QA-kolumner med historik_qa=true.
+Använder session_user för att fånga den faktiskt autentiserade användaren (inte SET ROLE-identitet).
 Använder hamta_geometri_definition() för korrekt geometrihantering i historiktabeller, vilket 
 säkerställer att geometrikolumner behåller sin specifika typ och SRID (t.ex. geometry(PolygonZ,3007))
 istället för generisk geometry-typ. Detta förhindrar QA-trigger-krascher vid geometrikopiering.';

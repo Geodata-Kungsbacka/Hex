@@ -58,11 +58,12 @@ BEGIN
         RAISE NOTICE '[validera_tabell] Steg 2a: Validerar tabell utan geometri';
 
         -- Kontrollera att inget geometrisuffix används
+        -- FIX: Ändrat från RAISE NOTICE till RAISE EXCEPTION
         IF p_tabell_namn LIKE '%\_p' OR 
            p_tabell_namn LIKE '%\_l' OR 
            p_tabell_namn LIKE '%\_y' OR 
            p_tabell_namn LIKE '%\_g' THEN
-            RAISE NOTICE E'[validera_tabell] Ogiltigt tabellnamn "%.%".\n'
+            RAISE EXCEPTION E'[validera_tabell] Ogiltigt tabellnamn "%.%".\n'
                 '[validera_tabell] Tabeller utan geometri får inte använda suffixen _p, _l, _y '
                 'eller _g då dessa är reserverade för tabeller med '
                 'geometrikolumner.',
@@ -163,3 +164,8 @@ $BODY$;
 
 ALTER FUNCTION public.validera_tabell(text, text)
     OWNER TO postgres;
+
+COMMENT ON FUNCTION public.validera_tabell(text, text)
+    IS 'Validerar att en tabell följer systemets krav på geometrikolumner och suffixnamn.
+Tabeller utan geometri får INTE använda reserverade suffix (_p, _l, _y, _g).
+Tabeller med geometri MÅSTE ha korrekt suffix baserat på geometrityp.';
