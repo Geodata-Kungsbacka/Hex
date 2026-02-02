@@ -502,6 +502,61 @@ BEGIN
                                     RAISE WARNING '[hantera_kolumntillagg]   ✗ Kunde inte regenerera trigger-funktion: %', SQLERRM;
                             END;
                         END IF;
+                        
+                        -- Flytta geom till slutet av historiktabellen om den finns
+                        IF EXISTS (
+                            SELECT 1 FROM information_schema.columns
+                            WHERE table_schema = schema_namn
+                            AND table_name = historik_tabell_namn
+                            AND column_name = 'geom'
+                        ) THEN
+                            RAISE NOTICE '[hantera_kolumntillagg] Flyttar geom till slutet av historiktabellen...';
+                            
+                            DECLARE
+                                h_geom_def text;
+                            BEGIN
+                                -- Hämta geometridefinition från modertabellen
+                                SELECT geometriinfo.definition INTO h_geom_def;
+                                
+                                -- Om vi inte har geometriinfo, hämta från history table
+                                IF h_geom_def IS NULL THEN
+                                    SELECT format('geometry(%s,%s)', type, srid)
+                                    INTO h_geom_def
+                                    FROM geometry_columns
+                                    WHERE f_table_schema = schema_namn
+                                    AND f_table_name = historik_tabell_namn
+                                    AND f_geometry_column = 'geom';
+                                END IF;
+                                
+                                IF h_geom_def IS NOT NULL THEN
+                                    -- Temp kolumn
+                                    EXECUTE format(
+                                        'ALTER TABLE %I.%I ADD COLUMN geom_temp0001 %s',
+                                        schema_namn, historik_tabell_namn, h_geom_def
+                                    );
+                                    -- Kopiera data
+                                    EXECUTE format(
+                                        'UPDATE %I.%I SET geom_temp0001 = geom',
+                                        schema_namn, historik_tabell_namn
+                                    );
+                                    -- Ta bort original
+                                    EXECUTE format(
+                                        'ALTER TABLE %I.%I DROP COLUMN geom',
+                                        schema_namn, historik_tabell_namn
+                                    );
+                                    -- Döp om
+                                    EXECUTE format(
+                                        'ALTER TABLE %I.%I RENAME COLUMN geom_temp0001 TO geom',
+                                        schema_namn, historik_tabell_namn
+                                    );
+                                    
+                                    RAISE NOTICE '[hantera_kolumntillagg]   ✓ geom flyttad till slutet av %', historik_tabell_namn;
+                                END IF;
+                            EXCEPTION
+                                WHEN OTHERS THEN
+                                    RAISE WARNING '[hantera_kolumntillagg]   ✗ Kunde inte flytta geom i historiktabell: %', SQLERRM;
+                            END;
+                        END IF;
                     END IF;
                     
                     -- Visa kolumner som finns extra i historik (bara info, ingen åtgärd)
