@@ -503,6 +503,69 @@ BEGIN
                             END;
                         END IF;
                         
+                        -- Flytta standardkolumner med negativ ordinal_position till rätt plats i historiktabellen
+                        RAISE NOTICE '[hantera_kolumntillagg] Reorganiserar standardkolumner i historiktabellen...';
+                        
+                        DECLARE
+                            h_kolumn record;
+                            h_kolumn_typ text;
+                        BEGIN
+                            FOR h_kolumn IN 
+                                SELECT sk.kolumnnamn
+                                FROM standardiserade_kolumner sk
+                                WHERE sk.ordinal_position < 0
+                                AND EXISTS (
+                                    SELECT 1 FROM information_schema.columns c
+                                    WHERE c.table_schema = schema_namn
+                                    AND c.table_name = historik_tabell_namn
+                                    AND c.column_name = sk.kolumnnamn
+                                )
+                                ORDER BY sk.ordinal_position
+                            LOOP
+                                -- Hämta kolumntyp från historiktabellen
+                                SELECT 
+                                    CASE 
+                                        WHEN c.data_type = 'USER-DEFINED' THEN c.udt_name
+                                        WHEN c.data_type = 'character varying' THEN 
+                                            'character varying' || 
+                                            CASE WHEN c.character_maximum_length IS NOT NULL 
+                                                 THEN '(' || c.character_maximum_length || ')'
+                                                 ELSE ''
+                                            END
+                                        ELSE c.data_type
+                                    END
+                                INTO h_kolumn_typ
+                                FROM information_schema.columns c
+                                WHERE c.table_schema = schema_namn
+                                AND c.table_name = historik_tabell_namn
+                                AND c.column_name = h_kolumn.kolumnnamn;
+                                
+                                -- Flytta kolumnen med temp-kolumn-teknik
+                                EXECUTE format(
+                                    'ALTER TABLE %I.%I ADD COLUMN %I_temp0001 %s',
+                                    schema_namn, historik_tabell_namn, h_kolumn.kolumnnamn, h_kolumn_typ
+                                );
+                                EXECUTE format(
+                                    'UPDATE %I.%I SET %I_temp0001 = %I',
+                                    schema_namn, historik_tabell_namn, h_kolumn.kolumnnamn, h_kolumn.kolumnnamn
+                                );
+                                EXECUTE format(
+                                    'ALTER TABLE %I.%I DROP COLUMN %I',
+                                    schema_namn, historik_tabell_namn, h_kolumn.kolumnnamn
+                                );
+                                EXECUTE format(
+                                    'ALTER TABLE %I.%I RENAME COLUMN %I_temp0001 TO %I',
+                                    schema_namn, historik_tabell_namn, h_kolumn.kolumnnamn, h_kolumn.kolumnnamn
+                                );
+                                
+                                RAISE NOTICE '[hantera_kolumntillagg]   ✓ Flyttade % till slutet av %', 
+                                    h_kolumn.kolumnnamn, historik_tabell_namn;
+                            END LOOP;
+                        EXCEPTION
+                            WHEN OTHERS THEN
+                                RAISE WARNING '[hantera_kolumntillagg]   ✗ Kunde inte reorganisera standardkolumner i historiktabell: %', SQLERRM;
+                        END;
+                        
                         -- Flytta geom till slutet av historiktabellen om den finns
                         IF EXISTS (
                             SELECT 1 FROM information_schema.columns
