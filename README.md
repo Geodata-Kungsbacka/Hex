@@ -380,7 +380,7 @@ src/sql/04_triggers/validera_schemanamn_trigger.sql
 -- Korrekt namngivning - fungerar
 CREATE SCHEMA sk0_ext_sgu;      -- Öppen data från SGU
 CREATE SCHEMA sk1_kba_bygg;     -- Kommunal byggdata
-CREATE SCHEMA sk2_sys_admin;    -- Känslig systemdata
+CREATE SCHEMA sk2_sys_admin;    -- Begränsad systemdata
 
 -- Felaktig namngivning - blockeras av validering
 CREATE SCHEMA min_data;         -- FEL: Följer inte mönstret
