@@ -49,6 +49,7 @@ INSTALL_ORDER = [
     "src/sql/03_functions/02_validation/validera_tabell.sql",
     "src/sql/03_functions/02_validation/validera_vynamn.sql",
     "src/sql/03_functions/02_validation/validera_schemanamn.sql",
+    "src/sql/03_functions/02_validation/validera_geometri.sql",  # NEW: Geometry validation for _kba_ constraints
     # Functions - Rules
     "src/sql/03_functions/03_rules/spara_tabellregler.sql",
     "src/sql/03_functions/03_rules/spara_kolumnegenskaper.sql",
@@ -113,6 +114,7 @@ DROP FUNCTION IF EXISTS public.spara_kolumnegenskaper(text, text);
 DROP FUNCTION IF EXISTS public.spara_tabellregler(text, text);
 
 -- Validation Functions
+DROP FUNCTION IF EXISTS public.validera_geometri(geometry, float);
 DROP FUNCTION IF EXISTS public.validera_schemanamn();
 DROP FUNCTION IF EXISTS public.validera_vynamn(text, text);
 DROP FUNCTION IF EXISTS public.validera_tabell(text, text);
