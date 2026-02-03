@@ -24,7 +24,7 @@ Schemanamn måste följa mönstret `sk[0-2]_(ext|kba|sys)_*`:
 Exempel på giltiga schemanamn:
 - `sk0_ext_sgu`
 - `sk1_kba_bygg`
-- `sk2_sys_fg`
+- `sk2_sys_admin`
 
 #### Tabellnamn
 Systemet kräver specifika suffix baserat på geometrityp:
@@ -53,11 +53,11 @@ För scheman konfigurerade med QA-kolumner skapas:
 -- 3. Alla filer i /03_functions/ (i underkatalogers nummerordning)
 -- 4. Alla filer i /04_triggers/
 
--- Alternativt kör "install_praxis.py" och mata in databas detaljer.
---    kan köras som:
---        python install_praxis.py 
---        python install_praxis.py --uninstall
---    för att installera eller ta bort.
+Alternativt kör "install_praxis.py" och mata in databas detaljer.
+    kan köras som:
+        python install_praxis.py 
+        python install_praxis.py --uninstall
+    för att installera eller ta bort.
 ```
 
 ### Detaljerad installationsordning
@@ -380,7 +380,7 @@ src/sql/04_triggers/validera_schemanamn_trigger.sql
 -- Korrekt namngivning - fungerar
 CREATE SCHEMA sk0_ext_sgu;      -- Öppen data från SGU
 CREATE SCHEMA sk1_kba_bygg;     -- Kommunal byggdata
-CREATE SCHEMA sk2_sys_fg;    -- Känslig systemdata
+CREATE SCHEMA sk2_sys_admin;    -- Känslig systemdata
 
 -- Felaktig namngivning - blockeras av validering
 CREATE SCHEMA min_data;         -- FEL: Följer inte mönstret
