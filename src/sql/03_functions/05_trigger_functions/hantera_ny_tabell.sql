@@ -13,7 +13,9 @@ AS $BODY$
  * 5. Ersätter originaltabellen med den temporära
  * 6. Döper om tillhörande sekvenser för IDENTITY-kolumner
  * 7. Återskapar alla tabellregler och kolumnegenskaper
- * 8. Skapar historiktabell och QA-triggers om behövs
+ * 8. Skapar GiST-index för geometrikolumn (alla scheman)
+ * 9. Lägger till geometrivalidering för _kba_-scheman
+ * 10. Skapar historiktabell och QA-triggers om behövs
  ******************************************************************************/
 DECLARE
     -- Grundläggande variabler för tabellhantering
@@ -69,23 +71,23 @@ BEGIN
         BEGIN
             -- Steg 1: Validera
             op_steg := 'validering';
-            RAISE NOTICE 'Steg 1/8: Validerar tabell';
+            RAISE NOTICE 'Steg 1/10: Validerar tabell';
             geometriinfo := validera_tabell(schema_namn, tabell_namn);
             
             -- Steg 2: Spara tabellregler och kolumnegenskaper
             op_steg := 'spara regler';
-            RAISE NOTICE 'Steg 2/8: Sparar tabellregler och kolumnegenskaper';
+            RAISE NOTICE 'Steg 2/10: Sparar tabellregler och kolumnegenskaper';
             tabell_regler := spara_tabellregler(schema_namn, tabell_namn);
             kolumn_egenskaper := spara_kolumnegenskaper(schema_namn, tabell_namn);
             
             -- Steg 3: Bestäm kolumner
             op_steg := 'kolumnstruktur';
-            RAISE NOTICE 'Steg 3/8: Bestämmer kolumnstruktur';
+            RAISE NOTICE 'Steg 3/10: Bestämmer kolumnstruktur';
             standardkolumner := hamta_kolumnstandard(schema_namn, tabell_namn, geometriinfo);
             
             -- Steg 4: Skapa temporär tabell
             op_steg := 'skapa temporär tabell';
-            RAISE NOTICE 'Steg 4/8: Skapar temporär tabell';
+            RAISE NOTICE 'Steg 4/10: Skapar temporär tabell';
             DECLARE
                 kolumn_sql text;
             BEGIN
@@ -106,7 +108,7 @@ BEGIN
             
             -- Steg 5: Byt ut tabeller
             op_steg := 'byt tabeller';
-            RAISE NOTICE 'Steg 5/8: Byter ut tabeller';
+            RAISE NOTICE 'Steg 5/10: Byter ut tabeller';
             PERFORM byt_ut_tabell(schema_namn, tabell_namn, temp_tabellnamn);
             
             -- Hantera sekvenser
@@ -121,17 +123,59 @@ BEGIN
             
             -- Steg 6: Återskapa tabellregler
             op_steg := 'återskapa regler';
-            RAISE NOTICE 'Steg 6/8: Återskapar tabellregler';
+            RAISE NOTICE 'Steg 6/10: Återskapar tabellregler';
             PERFORM aterskapa_tabellregler(schema_namn, tabell_namn, tabell_regler);
             
             -- Steg 7: Återskapa kolumnegenskaper
             op_steg := 'återskapa egenskaper';
-            RAISE NOTICE 'Steg 7/8: Återskapar kolumnegenskaper';
+            RAISE NOTICE 'Steg 7/10: Återskapar kolumnegenskaper';
             PERFORM aterskapa_kolumnegenskaper(schema_namn, tabell_namn, kolumn_egenskaper);
             
-            -- Steg 8: Skapa historik och QA om behövs
+            -- Steg 8: Skapa GiST-index för geometrikolumn (alla scheman med geometri)
+            op_steg := 'skapa gist-index';
+            RAISE NOTICE 'Steg 8/10: Kontrollerar GiST-index';
+            IF geometriinfo.kolumnnamn IS NOT NULL THEN
+                DECLARE
+                    index_namn text := tabell_namn || '_geom_gidx';
+                BEGIN
+                    EXECUTE format(
+                        'CREATE INDEX %I ON %I.%I USING GIST (geom)',
+                        index_namn,
+                        schema_namn,
+                        tabell_namn
+                    );
+                    RAISE NOTICE '  ✓ GiST-index skapat: %', index_namn;
+                END;
+            ELSE
+                RAISE NOTICE '  - Ingen geometri, GiST-index ej relevant';
+            END IF;
+            
+            -- Steg 9: Lägg till geometrivalidering för _kba_-scheman
+            op_steg := 'geometrivalidering';
+            RAISE NOTICE 'Steg 9/10: Kontrollerar geometrivalidering';
+            IF geometriinfo.kolumnnamn IS NOT NULL AND schema_namn LIKE '%\_kba\_%' THEN
+                DECLARE
+                    constraint_namn text := 'validera_geom_' || tabell_namn;
+                BEGIN
+                    EXECUTE format(
+                        'ALTER TABLE %I.%I ADD CONSTRAINT %I CHECK (validera_geometri(geom))',
+                        schema_namn,
+                        tabell_namn,
+                        constraint_namn
+                    );
+                    RAISE NOTICE '  ✓ Geometrivalidering tillagd: %', constraint_namn;
+                END;
+            ELSE
+                IF geometriinfo.kolumnnamn IS NULL THEN
+                    RAISE NOTICE '  - Ingen geometri, validering ej relevant';
+                ELSE
+                    RAISE NOTICE '  - Schema %.% är inte _kba_, validering ej tillagd', schema_namn, tabell_namn;
+                END IF;
+            END IF;
+            
+            -- Steg 10: Skapa historik och QA om behövs
             op_steg := 'skapa historik/qa';
-            RAISE NOTICE 'Steg 8/8: Kontrollerar historik/QA-behov';
+            RAISE NOTICE 'Steg 10/10: Kontrollerar historik/QA-behov';
             IF skapa_historik_qa(schema_namn, tabell_namn) THEN
                 RAISE NOTICE '  ✓ Historiktabell och QA-triggers skapade';
             ELSE
@@ -168,5 +212,6 @@ COMMENT ON FUNCTION public.hantera_ny_tabell()
 omstrukturera tabeller enligt standardiserade kolumner. Funktionen validerar
 namngivning, sparar tabellregler och kolumnegenskaper separat, skapar en 
 standardiserad tabellstruktur, hanterar sekvenser för IDENTITY-kolumner,
-återskapar regler och egenskaper, samt skapar historiktabeller och QA-triggers
-för scheman som konfigurerats för detta.';
+återskapar regler och egenskaper, skapar GiST-index för geometrikolumner,
+lägger till geometrivalidering för _kba_-scheman, samt skapar historiktabeller 
+och QA-triggers för scheman som konfigurerats för detta.';
