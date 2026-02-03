@@ -48,6 +48,7 @@ INSTALL_ORDER = [
     # Functions - Validation
     "src/sql/03_functions/02_validation/validera_tabell.sql",
     "src/sql/03_functions/02_validation/validera_vynamn.sql",
+    "src/sql/03_functions/02_validation/validera_schemanamn.sql",
     # Functions - Rules
     "src/sql/03_functions/03_rules/spara_tabellregler.sql",
     "src/sql/03_functions/03_rules/spara_kolumnegenskaper.sql",
@@ -72,6 +73,7 @@ INSTALL_ORDER = [
     "src/sql/04_triggers/hantera_ny_vy_trigger.sql",
     "src/sql/04_triggers/ta_bort_schemaroller_trigger.sql",
     "src/sql/04_triggers/hantera_standardiserade_roller_trigger.sql",
+    "src/sql/04_triggers/validera_schemanamn_trigger.sql",
 ]
 
 # =============================================================================
@@ -80,6 +82,7 @@ INSTALL_ORDER = [
 
 UNINSTALL_SQL = """
 -- Event Triggers (must be dropped first)
+DROP EVENT TRIGGER IF EXISTS validera_schemanamn_trigger;
 DROP EVENT TRIGGER IF EXISTS hantera_standardiserade_roller_trigger;
 DROP EVENT TRIGGER IF EXISTS ta_bort_schemaroller_trigger;
 DROP EVENT TRIGGER IF EXISTS hantera_ny_vy_trigger;
@@ -110,6 +113,7 @@ DROP FUNCTION IF EXISTS public.spara_kolumnegenskaper(text, text);
 DROP FUNCTION IF EXISTS public.spara_tabellregler(text, text);
 
 -- Validation Functions
+DROP FUNCTION IF EXISTS public.validera_schemanamn();
 DROP FUNCTION IF EXISTS public.validera_vynamn(text, text);
 DROP FUNCTION IF EXISTS public.validera_tabell(text, text);
 
