@@ -13,7 +13,7 @@ AS $BODY$
  * MÖNSTER: sk[0-2]_(ext|kba|sys)_*
  * 
  * Där:
- *   sk0, sk1, sk2 = Säkerhetsnivå (0=öppen, 1=kommun, 2=begränsad)
+ *   sk0, sk1, sk2 = Säkerhetsnivå (0=öppen, 1=kommun, 2=känslig)
  *   ext = Externa datakällor
  *   kba = Interna kommunala datakällor  
  *   sys = Systemdata
@@ -89,7 +89,7 @@ BEGIN
             RAISE EXCEPTION E'[validera_schemanamn] Ogiltigt schemanamn: "%"\n'
                 'Schemanamn måste följa mönstret: sk[0-2]_(ext|kba|sys)_*\n\n'
                 'Där:\n'
-                '  sk0, sk1, sk2 = Säkerhetsnivå (0=öppen, 1=kommun, 2=begränsad)\n'
+                '  sk0, sk1, sk2 = Säkerhetsnivå (0=öppen, 1=kommun, 2=känslig)\n'
                 '  ext = Externa datakällor\n'
                 '  kba = Interna kommunala datakällor\n'
                 '  sys = Systemdata\n\n'
