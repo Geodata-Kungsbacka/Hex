@@ -49,7 +49,6 @@ INSTALL_ORDER = [
     "src/sql/03_functions/02_validation/validera_tabell.sql",
     "src/sql/03_functions/02_validation/validera_vynamn.sql",
     "src/sql/03_functions/02_validation/validera_schemanamn.sql",
-    "src/sql/03_functions/02_validation/validera_geometri.sql",  # NEW: Geometry validation for _kba_ constraints
     # Functions - Rules
     "src/sql/03_functions/03_rules/spara_tabellregler.sql",
     "src/sql/03_functions/03_rules/spara_kolumnegenskaper.sql",
@@ -114,7 +113,6 @@ DROP FUNCTION IF EXISTS public.spara_kolumnegenskaper(text, text);
 DROP FUNCTION IF EXISTS public.spara_tabellregler(text, text);
 
 -- Validation Functions
-DROP FUNCTION IF EXISTS public.validera_geometri(geometry, float);
 DROP FUNCTION IF EXISTS public.validera_schemanamn();
 DROP FUNCTION IF EXISTS public.validera_vynamn(text, text);
 DROP FUNCTION IF EXISTS public.validera_tabell(text, text);
@@ -122,6 +120,9 @@ DROP FUNCTION IF EXISTS public.validera_tabell(text, text);
 -- Structure Functions
 DROP FUNCTION IF EXISTS public.hamta_kolumnstandard(text, text, geom_info);
 DROP FUNCTION IF EXISTS public.hamta_geometri_definition(text, text);
+
+-- Config Functions
+DROP FUNCTION IF EXISTS public.praxis_owner();
 
 -- Tables
 DROP TABLE IF EXISTS public.standardiserade_roller;
@@ -199,6 +200,31 @@ def install(base_path="."):
     installed = 0
     
     try:
+        # Validate OWNER_ROLE exists if specified
+        owner_role = OWNER_ROLE or 'postgres'
+        cur.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (owner_role,))
+        if not cur.fetchone():
+            raise ValueError(f"OWNER_ROLE '{owner_role}' does not exist in database")
+        
+        # Create praxis_owner() function dynamically
+        praxis_owner_sql = f"""
+CREATE OR REPLACE FUNCTION public.praxis_owner()
+    RETURNS text
+    LANGUAGE 'sql'
+    IMMUTABLE
+AS $BODY$
+    SELECT '{owner_role}'::text;
+$BODY$;
+
+ALTER FUNCTION public.praxis_owner() OWNER TO postgres;
+
+COMMENT ON FUNCTION public.praxis_owner()
+    IS 'Returnerar ägarrollen för Praxis-skapade roller. Genererad av installer.';
+"""
+        print("Installing praxis_owner()...")
+        cur.execute(praxis_owner_sql)
+        installed += 1
+        
         for sql_file in INSTALL_ORDER:
             path = Path(base_path) / sql_file
             if not path.exists():
