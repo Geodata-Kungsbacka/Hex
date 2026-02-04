@@ -11,8 +11,6 @@ När du skapar en tabell med `CREATE TABLE` omstruktureras den automatiskt med:
 - Standardkolumner som `gid` (primärnyckel), `skapad_tidpunkt`, `skapad_av`, `andrad_tidpunkt`, `andrad_av`
 - Korrekt kolumnordning (standardkolumner först/sist, geometri alltid sist)
 - Bevarande av alla ursprungliga tabellregler och begränsningar
-- **GiST-index** för geometrikolumner (alla scheman med geometri)
-- **Geometrivalidering** för _kba_-scheman (förhindrar ogiltiga geometrier)
 
 ### 2. **Namngivningsvalidering**
 
@@ -46,32 +44,38 @@ För scheman konfigurerade med QA-kolumner skapas:
 - Historiktabeller (`tabellnamn_h`) som loggar alla ändringar
 - Triggers som automatiskt uppdaterar `andrad_tidpunkt` och `andrad_av`
 
-### 5. **Spatial prestanda och datakvalitet**
-Systemet skapar automatiskt:
-- **GiST-index** på geometrikolumner för alla scheman (ext, kba, sys)
-- **Geometrivalidering** via CHECK-constraint för _kba_-scheman
-
-GiST-index förbättrar prestanda för spatiala sökningar. Geometrivalidering tillämpas endast på _kba_-scheman eftersom dessa innehåller manuellt redigerad data där kvalitetskontroll är kritiskt.
-
 ## Installation
 
+### Automatisk installation (rekommenderat)
+
+```bash
+# Redigera install_praxis.py och ange:
+# - DB_CONFIG (host, port, dbname, user, password)
+# - OWNER_ROLE (rollen som ska äga Praxis-objekt och hantera roller)
+
+python install_praxis.py              # Installera
+python install_praxis.py --uninstall  # Avinstallera
+```
+
+### Manuell installation
+
 ```sql
--- Kör skripten i följande ordning:
+-- 0. FÖRST: Redigera praxis_owner.sql och ändra 'gis_admin' till din ägarroll
+--    Kör sedan filen:
+src/sql/00_config/praxis_owner.sql
+
 -- 1. Alla filer i /01_types/
 -- 2. Alla filer i /02_tables/
 -- 3. Alla filer i /03_functions/ (i underkatalogers nummerordning)
 -- 4. Alla filer i /04_triggers/
-
-Alternativt kör "install_praxis.py" och mata in databas detaljer.
-    kan köras som:
-        python install_praxis.py 
-        python install_praxis.py --uninstall
-    för att installera eller ta bort.
 ```
 
 ### Detaljerad installationsordning
 
 ```sql
+-- 0. Konfiguration (MÅSTE köras först, redigera filen innan!)
+src/sql/00_config/praxis_owner.sql
+
 -- 1. Skapa anpassade datatyper
 src/sql/01_types/geom_info.sql
 src/sql/01_types/kolumnegenskaper.sql
@@ -91,7 +95,6 @@ src/sql/03_functions/01_structure/hamta_kolumnstandard.sql
 src/sql/03_functions/02_validation/validera_tabell.sql
 src/sql/03_functions/02_validation/validera_vynamn.sql
 src/sql/03_functions/02_validation/validera_schemanamn.sql
-src/sql/03_functions/02_validation/validera_geometri.sql
 
 -- 3.3 Regelhantering
 src/sql/03_functions/03_rules/spara_tabellregler.sql
@@ -230,24 +233,6 @@ src/sql/04_triggers/validera_schemanamn_trigger.sql
 
 **Exempel på korrekt vy**: `v_ledningar_p` för en vy med punktgeometrier.
 
-#### `validera_geometri(geom, tolerans)`
-**Syfte**: Kontrollerar geometrikvalitet för _kba_-scheman.
-
-**Validering omfattar**:
-1. **ST_IsValid** - OGC-kompatibel geometri
-2. **NOT ST_IsEmpty** - Geometrin innehåller koordinater
-3. **Inga duplicerade punkter** - Jämför antal punkter före/efter ST_RemoveRepeatedPoints
-4. **Rimlig area** - Polygoner måste ha area > tolerans² (förhindrar degenererade ytor)
-5. **Rimlig längd** - Linjer måste ha längd > tolerans (förhindrar degenererade linjer)
-
-**Parametrar**:
-- `geom` - Geometri att validera
-- `tolerans` - Tolerans i kartenheter (default 0.001 = 1mm för SWEREF99 TM)
-
-**Returvärde**: `true` om geometrin uppfyller alla krav, `false` annars.
-
-**Användning**: Läggs automatiskt till som CHECK-constraint på tabeller i _kba_-scheman.
-
 ### Regelhanteringsfunktioner
 
 #### `spara_tabellregler(schema, tabell)`
@@ -332,7 +317,7 @@ src/sql/04_triggers/validera_schemanamn_trigger.sql
 #### `hantera_ny_tabell()`
 **Syfte**: Huvudfunktion som omstrukturerar nyskapade tabeller.
 
-**Process (10 steg)**:
+**Process (8 steg)**:
 1. Validerar tabellnamn och geometri
 2. Sparar befintliga regler och egenskaper
 3. Bestämmer ny kolumnstruktur
@@ -340,9 +325,7 @@ src/sql/04_triggers/validera_schemanamn_trigger.sql
 5. Byter ut tabellerna
 6. Återskapar alla regler
 7. Återskapar alla egenskaper
-8. **Skapar GiST-index** för geometrikolumn (alla scheman)
-9. **Lägger till geometrivalidering** för _kba_-scheman
-10. Skapar historik/QA om konfigurerat
+8. Skapar historik/QA om konfigurerat
 
 **Trigger**: Körs automatiskt vid CREATE TABLE.
 
@@ -437,8 +420,6 @@ CREATE TABLE sk1_kba_bygg.vattenledningar_l (
 -- andrad_tidpunkt
 -- andrad_av
 -- geom (flyttad sist)
--- + GiST-index: vattenledningar_l_geom_gidx
--- + CHECK-constraint: validera_geom_vattenledningar_l
 ```
 
 ### Lägga till kolumner
@@ -464,22 +445,6 @@ SELECT
     gid,
     ST_Buffer(geom, 10)::geometry(Polygon, 3007) as geom
 FROM sk1_kba_bygg.vattenledningar_l;
-```
-
-### Tillämpa GiST-index och geometrivalidering på befintliga tabeller
-
-```sql
--- Lägg till GiST-index manuellt på en befintlig tabell
-CREATE INDEX brunnar_p_geom_gidx ON sk1_kba_bygg.brunnar_p USING GIST (geom);
-
--- Lägg till geometrivalidering på en befintlig _kba_-tabell
-ALTER TABLE sk1_kba_bygg.brunnar_p 
-    ADD CONSTRAINT validera_geom_brunnar_p CHECK (validera_geometri(geom));
-
--- Kontrollera att befintlig data uppfyller valideringen innan constraint läggs till
-SELECT gid, ST_AsText(geom)
-FROM sk1_kba_bygg.brunnar_p
-WHERE NOT validera_geometri(geom);
 ```
 
 ## Konfiguration
@@ -584,12 +549,6 @@ CREATE TABLE sk0_ext_test.test_tabell_p (
 **Problem**: Historiktabell skapas inte  
 **Lösning**: Verifiera att minst en kolumn har `historik_qa = true` i `standardiserade_kolumner`
 
-**Problem**: Geometrivalidering blockerar INSERT  
-**Lösning**: Kontrollera att geometrin uppfyller alla valideringskrav med `SELECT validera_geometri(geom)`
-
-**Problem**: GiST-index saknas på befintlig tabell  
-**Lösning**: Skapa manuellt med `CREATE INDEX tabellnamn_geom_gidx ON schema.tabell USING GIST (geom)`
-
 ### Kontrollera systemstatus
 
 ```sql
@@ -609,18 +568,6 @@ FROM pg_proc
 WHERE proname LIKE 'hantera_%' 
    OR proname LIKE 'validera_%'
 ORDER BY proname;
-
--- Kontrollera GiST-index på en tabell
-SELECT indexname, indexdef
-FROM pg_indexes
-WHERE tablename = 'tabellnamn'
-AND indexdef LIKE '%gist%';
-
--- Kontrollera geometrivaliderings-constraint
-SELECT conname, pg_get_constraintdef(oid)
-FROM pg_constraint
-WHERE conrelid = 'schema.tabell'::regclass
-AND conname LIKE 'validera_geom_%';
 ```
 
 ## Avinstallation
