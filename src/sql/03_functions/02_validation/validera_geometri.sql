@@ -13,7 +13,7 @@ AS $BODY$
  * 1. ST_IsValid       - Geometrin följer OGC-specifikationen
  * 2. NOT ST_IsEmpty   - Geometrin innehåller faktiska koordinater
  * 3. Inga duplicerade - Inga upprepade punkter inom toleransen
- * 4. Area > tolerans² - Polygoner har rimlig area (ej degenererade)
+ * 4. Area > tolerans^2 - Polygoner har rimlig area (ej degenererade)
  * 5. Längd > tolerans - Linjer har rimlig längd (ej degenererade)
  *
  * PARAMETRAR:
@@ -46,7 +46,7 @@ BEGIN
         AND NOT ST_IsEmpty(geom)
         -- 3. Inga duplicerade punkter (jämför antal punkter före/efter borttagning)
         AND ST_NPoints(geom) = ST_NPoints(ST_RemoveRepeatedPoints(geom, tolerans))
-        -- 4. Polygoner måste ha rimlig area (> 1mm² med default-tolerans)
+        -- 4. Polygoner måste ha rimlig area (> 1mm^2 med default-tolerans)
         AND (ST_Dimension(geom) != 2 OR ST_Area(geom) > tolerans * tolerans)
         -- 5. Linjer måste ha rimlig längd (> 1mm med default-tolerans)
         AND (ST_Dimension(geom) != 1 OR ST_Length(geom) > tolerans);
