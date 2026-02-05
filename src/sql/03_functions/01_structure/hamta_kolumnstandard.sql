@@ -41,11 +41,11 @@ AS $BODY$
  * Uttrycket sätts in efter "WHERE p_schema_namn [uttryck]" i SQL.
  *
  * EXEMPEL:
- * - "LIKE '%_ext_%'" → â€™ Endast externa datakällor (sk0_ext_sgu, sk1_ext_lantmateriet)
- * - "= 'sk0_ext_sgu'" → â€™ Endast detta specifika schema
- * - "IS NOT NULL" → â€™ Alla scheman (standardvärde)
- * - "NOT LIKE '%_sys_%'" → â€™ Alla utom systemscheman
- * - "LIKE '%_kba_%'" → â€™ Endast interna datakällor (sk1_kba_mh_bygg, sk2_kba_plan)
+ * - "LIKE '%_ext_%'" → Endast externa datakällor (sk0_ext_sgu, sk1_ext_lantmateriet)
+ * - "= 'sk0_ext_sgu'" → Endast detta specifika schema
+ * - "IS NOT NULL" → Alla scheman (standardvärde)
+ * - "NOT LIKE '%_sys_%'" → Alla utom systemscheman
+ * - "LIKE '%_kba_%'" → Endast interna datakällor (sk1_kba_mh_bygg, sk2_kba_plan)
  *
  * HISTORIK_QA HANTERING:
  * - Om historik_qa = false och default_varde finns: DEFAULT läggs till i CREATE TABLE
