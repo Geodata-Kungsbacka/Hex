@@ -69,8 +69,8 @@ BEGIN
                     IF NOT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = slutligt_rollnamn) THEN
                         EXECUTE format('CREATE ROLE %I WITH NOLOGIN', slutligt_rollnamn);
                         -- Ge ägarrollen ADMIN OPTION så den kan hantera denna roll
-                        EXECUTE format('GRANT %I TO %I WITH ADMIN OPTION', slutligt_rollnamn, praxis_owner());
-                        RAISE NOTICE '[hantera_standardiserade_roller]   âœ“ Skapade grupproll (NOLOGIN): %', slutligt_rollnamn;
+                        EXECUTE format('GRANT %I TO %I WITH ADMIN OPTION', slutligt_rollnamn, system_owner());
+                        RAISE NOTICE '[hantera_standardiserade_roller]   ✓ Skapade grupproll (NOLOGIN): %', slutligt_rollnamn;
                         antal_roller := antal_roller + 1;
                         
                         -- Tilldela rättigheter till grupproll
@@ -105,13 +105,13 @@ BEGIN
                                 -- Skapa LOGIN-roll
                                 EXECUTE format('CREATE ROLE %I WITH LOGIN', login_rollnamn);
                                 -- Ge ägarrollen ADMIN OPTION så den kan hantera denna roll
-                                EXECUTE format('GRANT %I TO %I WITH ADMIN OPTION', login_rollnamn, praxis_owner());
-                                RAISE NOTICE '[hantera_standardiserade_roller]   âœ“ Skapade LOGIN-roll: %', login_rollnamn;
+                                EXECUTE format('GRANT %I TO %I WITH ADMIN OPTION', login_rollnamn, system_owner());
+                                RAISE NOTICE '[hantera_standardiserade_roller]   ✓ Skapade LOGIN-roll: %', login_rollnamn;
                                 antal_login_roller := antal_login_roller + 1;
                                 
                                 -- Gör LOGIN-rollen medlem i grupproll (ärver alla rättigheter)
                                 EXECUTE format('GRANT %I TO %I', slutligt_rollnamn, login_rollnamn);
-                                RAISE NOTICE '[hantera_standardiserade_roller]   âœ“ Tilldelade grupproll % till LOGIN-roll %', 
+                                RAISE NOTICE '[hantera_standardiserade_roller]   ✓ Tilldelade grupproll % till LOGIN-roll %', 
                                     slutligt_rollnamn, login_rollnamn;
                             ELSE
                                 RAISE NOTICE '[hantera_standardiserade_roller]   - LOGIN-roll finns redan: %', login_rollnamn;
@@ -131,8 +131,8 @@ BEGIN
         
         -- Sammanfattning för detta schema
         RAISE NOTICE '[hantera_standardiserade_roller] Sammanfattning för schema %:', schema_namn;
-        RAISE NOTICE '[hantera_standardiserade_roller]   Â» Grupproller skapade: %', antal_roller;
-        RAISE NOTICE '[hantera_standardiserade_roller]   Â» LOGIN-roller skapade: %', antal_login_roller;
+        RAISE NOTICE '[hantera_standardiserade_roller]   ‚» Grupproller skapade: %', antal_roller;
+        RAISE NOTICE '[hantera_standardiserade_roller]   ‚» LOGIN-roller skapade: %', antal_login_roller;
         
         -- Återställ räknare för nästa schema
         antal_roller := 0;
