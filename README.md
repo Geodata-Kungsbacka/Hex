@@ -49,20 +49,20 @@ För scheman konfigurerade med QA-kolumner skapas:
 ### Automatisk installation (rekommenderat)
 
 ```bash
-# Redigera install_praxis.py och ange:
+# Redigera install_hex.py och ange:
 # - DB_CONFIG (host, port, dbname, user, password)
-# - OWNER_ROLE (rollen som ska äga Praxis-objekt och hantera roller)
+# - OWNER_ROLE (rollen som ska äga Hex-objekt och hantera roller)
 
-python install_praxis.py              # Installera
-python install_praxis.py --uninstall  # Avinstallera
+python install_hex.py              # Installera
+python install_hex.py --uninstall  # Avinstallera
 ```
 
 ### Manuell installation
 
 ```sql
--- 0. FÖRST: Redigera praxis_owner.sql och ändra 'gis_admin' till din ägarroll
+-- 0. FÖRST: Redigera system_owner.sql och ändra 'gis_admin' till din ägarroll
 --    Kör sedan filen:
-src/sql/00_config/praxis_owner.sql
+src/sql/00_config/system_owner.sql
 
 -- 1. Alla filer i /01_types/
 -- 2. Alla filer i /02_tables/
@@ -74,7 +74,7 @@ src/sql/00_config/praxis_owner.sql
 
 ```sql
 -- 0. Konfiguration (MÅSTE köras först, redigera filen innan!)
-src/sql/00_config/praxis_owner.sql
+src/sql/00_config/system_owner.sql
 
 -- 1. Skapa anpassade datatyper
 src/sql/01_types/geom_info.sql
@@ -198,7 +198,7 @@ src/sql/04_triggers/validera_schemanamn_trigger.sql
 ### Valideringsfunktioner
 
 #### `validera_schemanamn()`
-**Syfte**: Säkerställer att schemanamn följer Praxis namngivningskonvention.
+**Syfte**: Säkerställer att schemanamn följer Hex namngivningskonvention.
 
 **Mönster**: `sk[0-2]_(ext|kba|sys)_*`
 
