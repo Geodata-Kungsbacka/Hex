@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Praxis Installer - runs SQL files in dependency order
+Hex Installer - runs SQL files in dependency order
 Usage: 
-    python install_praxis.py              # Install
-    python install_praxis.py --uninstall  # Remove all Praxis objects
+    python install_hex.py              # Install
+    python install_hex.py --uninstall  # Remove all Hex objects
 """
 
 import argparse
@@ -122,7 +122,7 @@ DROP FUNCTION IF EXISTS public.hamta_kolumnstandard(text, text, geom_info);
 DROP FUNCTION IF EXISTS public.hamta_geometri_definition(text, text);
 
 -- Config Functions
-DROP FUNCTION IF EXISTS public.praxis_owner();
+DROP FUNCTION IF EXISTS public.system_owner();
 
 -- Tables
 DROP TABLE IF EXISTS public.standardiserade_roller;
@@ -161,9 +161,9 @@ def process_sql(sql: str) -> str:
 
 
 def uninstall():
-    """Remove all Praxis components from database."""
+    """Remove all Hex components from database."""
     print("=" * 60)
-    print("Praxis Uninstaller")
+    print("Hex Uninstaller")
     print("=" * 60)
     print(f"Database: {DB_CONFIG['dbname']}@{DB_CONFIG['host']}")
     print("=" * 60)
@@ -172,10 +172,11 @@ def uninstall():
     cur = conn.cursor()
     
     try:
-        print("Removing Praxis objects...")
+        print("Removing Hex objects...")
         cur.execute(UNINSTALL_SQL)
         conn.commit()
         print("Uninstall complete.")
+        print("+++melon melon melon+++")
     except Exception as e:
         conn.rollback()
         print(f"FAILED: {e}")
@@ -186,9 +187,9 @@ def uninstall():
 
 
 def install(base_path="."):
-    """Install all Praxis components to database."""
+    """Install all Hex components to database."""
     print("=" * 60)
-    print("Praxis Installer")
+    print("Hex Installer")
     print("=" * 60)
     print(f"Database: {DB_CONFIG['dbname']}@{DB_CONFIG['host']}")
     print(f"Owner role: {OWNER_ROLE or '(connecting user)'}")
@@ -206,9 +207,9 @@ def install(base_path="."):
         if not cur.fetchone():
             raise ValueError(f"OWNER_ROLE '{owner_role}' does not exist in database")
         
-        # Create praxis_owner() function dynamically
-        praxis_owner_sql = f"""
-CREATE OR REPLACE FUNCTION public.praxis_owner()
+        # Create system_owner() function dynamically
+        system_owner_sql = f"""
+CREATE OR REPLACE FUNCTION public.system_owner()
     RETURNS text
     LANGUAGE 'sql'
     IMMUTABLE
@@ -216,13 +217,13 @@ AS $BODY$
     SELECT '{owner_role}'::text;
 $BODY$;
 
-ALTER FUNCTION public.praxis_owner() OWNER TO postgres;
+ALTER FUNCTION public.system_owner() OWNER TO postgres;
 
-COMMENT ON FUNCTION public.praxis_owner()
-    IS 'Returnerar ägarrollen för Praxis-skapade roller. Genererad av installer.';
+COMMENT ON FUNCTION public.system_owner()
+    IS 'Returnerar ägarrollen för Hex-skapade roller. Genererad av installer.';
 """
-        print("Installing praxis_owner()...")
-        cur.execute(praxis_owner_sql)
+        print("Installing system_owner()...")
+        cur.execute(system_owner_sql)
         installed += 1
         
         for sql_file in INSTALL_ORDER:
@@ -240,11 +241,13 @@ COMMENT ON FUNCTION public.praxis_owner()
         print("=" * 60)
         print(f"Installed {installed} components successfully.")
         print("=" * 60)
+        print("+++Anthill Inside+++")
         
     except Exception as e:
         conn.rollback()
         print(f"FAILED: {e}")
         print("Transaction rolled back - no changes made.")
+        print("+++Divide By Cucumber Error. Please Reinstall Universe And Reboot+++")
         raise
     finally:
         cur.close()
@@ -252,8 +255,8 @@ COMMENT ON FUNCTION public.praxis_owner()
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Praxis Installer")
-    parser.add_argument("--uninstall", action="store_true", help="Remove all Praxis objects")
+    parser = argparse.ArgumentParser(description="Hex Installer")
+    parser.add_argument("--uninstall", action="store_true", help="Remove all Hex objects")
     args = parser.parse_args()
     
     if args.uninstall:
