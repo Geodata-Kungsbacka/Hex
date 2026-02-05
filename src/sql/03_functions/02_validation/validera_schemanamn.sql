@@ -8,7 +8,7 @@ CREATE OR REPLACE FUNCTION public.validera_schemanamn()
 AS $BODY$
 
 /******************************************************************************
- * Validerar att nya scheman följer Praxis namngivningskonvention.
+ * Validerar att nya scheman följer Hex namngivningskonvention.
  * 
  * MÖNSTER: sk[0-2]_(ext|kba|sys)_*
  * 
@@ -38,7 +38,7 @@ DECLARE
     valideringssteg text;
 BEGIN
     RAISE NOTICE E'[validera_schemanamn] ======== START ========';
-    RAISE NOTICE '[validera_schemanamn] Kontrollerar schemanamn mot Praxis namngivningskonvention';
+    RAISE NOTICE '[validera_schemanamn] Kontrollerar schemanamn mot Hex namngivningskonvention';
     RAISE NOTICE '[validera_schemanamn] Förväntat mönster: sk[0-2]_(ext|kba|sys)_*';
     
     -- Steg 1: Hämta CREATE SCHEMA-kommandon
@@ -140,6 +140,6 @@ ALTER FUNCTION public.validera_schemanamn()
     OWNER TO postgres;
 
 COMMENT ON FUNCTION public.validera_schemanamn()
-    IS 'Event trigger-funktion som validerar schemanamn mot Praxis namngivningskonvention.
+    IS 'Event trigger-funktion som validerar schemanamn mot Hex namngivningskonvention.
 Blockerar skapande av scheman som inte matchar mönstret sk[0-2]_(ext|kba|sys)_*.
 Systemscheman (public, information_schema, pg_*) undantas från validering.';
