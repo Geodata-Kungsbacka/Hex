@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Praxis Installer - runs SQL files in dependency order
+Hex Installer - runs SQL files in dependency order
 Usage: 
-    python install_praxis.py              # Install
-    python install_praxis.py --uninstall  # Remove all Praxis objects
+    python install_hex.py              # Install
+    python install_hex.py --uninstall  # Remove all Hex objects
 """
 
 import argparse
@@ -48,6 +48,7 @@ INSTALL_ORDER = [
     # Functions - Validation
     "src/sql/03_functions/02_validation/validera_tabell.sql",
     "src/sql/03_functions/02_validation/validera_vynamn.sql",
+    "src/sql/03_functions/02_validation/validera_schemanamn.sql",
     # Functions - Rules
     "src/sql/03_functions/03_rules/spara_tabellregler.sql",
     "src/sql/03_functions/03_rules/spara_kolumnegenskaper.sql",
@@ -72,6 +73,7 @@ INSTALL_ORDER = [
     "src/sql/04_triggers/hantera_ny_vy_trigger.sql",
     "src/sql/04_triggers/ta_bort_schemaroller_trigger.sql",
     "src/sql/04_triggers/hantera_standardiserade_roller_trigger.sql",
+    "src/sql/04_triggers/validera_schemanamn_trigger.sql",
 ]
 
 # =============================================================================
@@ -80,6 +82,7 @@ INSTALL_ORDER = [
 
 UNINSTALL_SQL = """
 -- Event Triggers (must be dropped first)
+DROP EVENT TRIGGER IF EXISTS validera_schemanamn_trigger;
 DROP EVENT TRIGGER IF EXISTS hantera_standardiserade_roller_trigger;
 DROP EVENT TRIGGER IF EXISTS ta_bort_schemaroller_trigger;
 DROP EVENT TRIGGER IF EXISTS hantera_ny_vy_trigger;
@@ -110,12 +113,16 @@ DROP FUNCTION IF EXISTS public.spara_kolumnegenskaper(text, text);
 DROP FUNCTION IF EXISTS public.spara_tabellregler(text, text);
 
 -- Validation Functions
+DROP FUNCTION IF EXISTS public.validera_schemanamn();
 DROP FUNCTION IF EXISTS public.validera_vynamn(text, text);
 DROP FUNCTION IF EXISTS public.validera_tabell(text, text);
 
 -- Structure Functions
 DROP FUNCTION IF EXISTS public.hamta_kolumnstandard(text, text, geom_info);
 DROP FUNCTION IF EXISTS public.hamta_geometri_definition(text, text);
+
+-- Config Functions
+DROP FUNCTION IF EXISTS public.system_owner();
 
 -- Tables
 DROP TABLE IF EXISTS public.standardiserade_roller;
@@ -154,9 +161,9 @@ def process_sql(sql: str) -> str:
 
 
 def uninstall():
-    """Remove all Praxis components from database."""
+    """Remove all Hex components from database."""
     print("=" * 60)
-    print("Praxis Uninstaller")
+    print("Hex Uninstaller")
     print("=" * 60)
     print(f"Database: {DB_CONFIG['dbname']}@{DB_CONFIG['host']}")
     print("=" * 60)
@@ -165,10 +172,11 @@ def uninstall():
     cur = conn.cursor()
     
     try:
-        print("Removing Praxis objects...")
+        print("Removing Hex objects...")
         cur.execute(UNINSTALL_SQL)
         conn.commit()
         print("Uninstall complete.")
+        print("+++melon melon melon+++")
     except Exception as e:
         conn.rollback()
         print(f"FAILED: {e}")
@@ -179,9 +187,9 @@ def uninstall():
 
 
 def install(base_path="."):
-    """Install all Praxis components to database."""
+    """Install all Hex components to database."""
     print("=" * 60)
-    print("Praxis Installer")
+    print("Hex Installer")
     print("=" * 60)
     print(f"Database: {DB_CONFIG['dbname']}@{DB_CONFIG['host']}")
     print(f"Owner role: {OWNER_ROLE or '(connecting user)'}")
@@ -193,6 +201,31 @@ def install(base_path="."):
     installed = 0
     
     try:
+        # Validate OWNER_ROLE exists if specified
+        owner_role = OWNER_ROLE or 'postgres'
+        cur.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (owner_role,))
+        if not cur.fetchone():
+            raise ValueError(f"OWNER_ROLE '{owner_role}' does not exist in database")
+        
+        # Create system_owner() function dynamically
+        system_owner_sql = f"""
+CREATE OR REPLACE FUNCTION public.system_owner()
+    RETURNS text
+    LANGUAGE 'sql'
+    IMMUTABLE
+AS $BODY$
+    SELECT '{owner_role}'::text;
+$BODY$;
+
+ALTER FUNCTION public.system_owner() OWNER TO postgres;
+
+COMMENT ON FUNCTION public.system_owner()
+    IS 'Returnerar ägarrollen för Hex-skapade roller. Genererad av installer.';
+"""
+        print("Installing system_owner()...")
+        cur.execute(system_owner_sql)
+        installed += 1
+        
         for sql_file in INSTALL_ORDER:
             path = Path(base_path) / sql_file
             if not path.exists():
@@ -208,11 +241,13 @@ def install(base_path="."):
         print("=" * 60)
         print(f"Installed {installed} components successfully.")
         print("=" * 60)
+        print("+++Anthill Inside+++")
         
     except Exception as e:
         conn.rollback()
         print(f"FAILED: {e}")
         print("Transaction rolled back - no changes made.")
+        print("+++Divide By Cucumber Error. Please Reinstall Universe And Reboot+++")
         raise
     finally:
         cur.close()
@@ -220,8 +255,8 @@ def install(base_path="."):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Praxis Installer")
-    parser.add_argument("--uninstall", action="store_true", help="Remove all Praxis objects")
+    parser = argparse.ArgumentParser(description="Hex Installer")
+    parser.add_argument("--uninstall", action="store_true", help="Remove all Hex objects")
     args = parser.parse_args()
     
     if args.uninstall:

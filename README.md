@@ -13,6 +13,20 @@ När du skapar en tabell med `CREATE TABLE` omstruktureras den automatiskt med:
 - Bevarande av alla ursprungliga tabellregler och begränsningar
 
 ### 2. **Namngivningsvalidering**
+
+#### Schemanamn
+Schemanamn måste följa mönstret `sk[0-2]_(ext|kba|sys)_*`:
+- `sk0`, `sk1`, `sk2` = Säkerhetsnivå (0=öppen, 1=kommun, 2=begränsad)
+- `ext` = Externa datakällor
+- `kba` = Interna kommunala datakällor
+- `sys` = Systemdata
+
+Exempel på giltiga schemanamn:
+- `sk0_ext_sgu`
+- `sk1_kba_bygg`
+- `sk2_sys_admin`
+
+#### Tabellnamn
 Systemet kräver specifika suffix baserat på geometrityp:
 - `_p` för punktgeometrier (POINT, MULTIPOINT)
 - `_l` för linjegeometrier (LINESTRING, MULTILINESTRING)
@@ -32,23 +46,36 @@ För scheman konfigurerade med QA-kolumner skapas:
 
 ## Installation
 
+### Automatisk installation (rekommenderat)
+
+```bash
+# Redigera install_hex.py och ange:
+# - DB_CONFIG (host, port, dbname, user, password)
+# - OWNER_ROLE (rollen som ska äga Hex-objekt och hantera roller)
+
+python install_hex.py              # Installera
+python install_hex.py --uninstall  # Avinstallera
+```
+
+### Manuell installation
+
 ```sql
--- Kör skripten i följande ordning:
+-- 0. FÖRST: Redigera system_owner.sql och ändra 'gis_admin' till din ägarroll
+--    Kör sedan filen:
+src/sql/00_config/system_owner.sql
+
 -- 1. Alla filer i /01_types/
 -- 2. Alla filer i /02_tables/
 -- 3. Alla filer i /03_functions/ (i underkatalogers nummerordning)
 -- 4. Alla filer i /04_triggers/
-
-Alternativt kör "install_praxis.py" och mata in databas detaljer.
-    kan köras som:
-        python install_praxis.py 
-        python install_praxis.py --uninstall
-    för att installera eller ta bort.
 ```
 
 ### Detaljerad installationsordning
 
 ```sql
+-- 0. Konfiguration (MÅSTE köras först, redigera filen innan!)
+src/sql/00_config/system_owner.sql
+
 -- 1. Skapa anpassade datatyper
 src/sql/01_types/geom_info.sql
 src/sql/01_types/kolumnegenskaper.sql
@@ -57,6 +84,7 @@ src/sql/01_types/tabellregler.sql
 
 -- 2. Skapa konfigurationstabell
 src/sql/02_tables/standardiserade_kolumner.sql
+src/sql/02_tables/standardiserade_roller.sql
 
 -- 3. Skapa funktioner (i beroendeordning)
 -- 3.1 Strukturhantering
@@ -66,6 +94,7 @@ src/sql/03_functions/01_structure/hamta_kolumnstandard.sql
 -- 3.2 Validering
 src/sql/03_functions/02_validation/validera_tabell.sql
 src/sql/03_functions/02_validation/validera_vynamn.sql
+src/sql/03_functions/02_validation/validera_schemanamn.sql
 
 -- 3.3 Regelhantering
 src/sql/03_functions/03_rules/spara_tabellregler.sql
@@ -77,6 +106,7 @@ src/sql/03_functions/03_rules/aterskapa_kolumnegenskaper.sql
 src/sql/03_functions/04_utility/byt_ut_tabell.sql
 src/sql/03_functions/04_utility/uppdatera_sekvensnamn.sql
 src/sql/03_functions/04_utility/skapa_historik_qa.sql
+src/sql/03_functions/04_utility/tilldela_rollrattigheter.sql
 
 -- 3.5 Triggerfunktioner
 src/sql/03_functions/05_trigger_functions/hantera_ny_tabell.sql
@@ -85,14 +115,15 @@ src/sql/03_functions/05_trigger_functions/hantera_ny_vy.sql
 src/sql/03_functions/05_trigger_functions/skapa_ny_schemaroll_r.sql
 src/sql/03_functions/05_trigger_functions/skapa_ny_schemaroll_w.sql
 src/sql/03_functions/05_trigger_functions/ta_bort_schemaroller.sql
+src/sql/03_functions/05_trigger_functions/hantera_standardiserade_roller.sql
 
 -- 4. Skapa databastriggers
 src/sql/04_triggers/hantera_ny_tabell_trigger.sql
 src/sql/04_triggers/hantera_kolumntillagg_trigger.sql
 src/sql/04_triggers/hantera_ny_vy_trigger.sql
-src/sql/04_triggers/skapa_ny_schemaroll_r_trigger.sql
-src/sql/04_triggers/skapa_ny_schemaroll_w_trigger.sql
 src/sql/04_triggers/ta_bort_schemaroller_trigger.sql
+src/sql/04_triggers/hantera_standardiserade_roller_trigger.sql
+src/sql/04_triggers/validera_schemanamn_trigger.sql
 ```
 
 ## Detaljerad funktionsbeskrivning
@@ -165,6 +196,20 @@ src/sql/04_triggers/ta_bort_schemaroller_trigger.sql
 **Returvärde**: Array med `kolumnkonfig`-objekt i rätt ordning för den nya tabellstrukturen.
 
 ### Valideringsfunktioner
+
+#### `validera_schemanamn()`
+**Syfte**: Säkerställer att schemanamn följer Hex namngivningskonvention.
+
+**Mönster**: `sk[0-2]_(ext|kba|sys)_*`
+
+**Validering omfattar**:
+- Kontroll av säkerhetsnivå (sk0, sk1, sk2)
+- Kontroll av kategori (ext, kba, sys)
+- Krav på beskrivande suffix efter kategori
+
+**Undantag**: Systemscheman (`public`, `information_schema`, `pg_*`) valideras inte.
+
+**Trigger**: Körs vid CREATE SCHEMA - blockerar skapande av scheman med ogiltiga namn.
 
 #### `validera_tabell(schema, tabell)`
 **Syfte**: Säkerställer att tabeller följer namngivningsstandarden.
@@ -308,6 +353,15 @@ src/sql/04_triggers/ta_bort_schemaroller_trigger.sql
 
 **Felmeddelanden**: Ger tydliga instruktioner om korrekt namngivning.
 
+#### `validera_schemanamn()`
+**Syfte**: Validerar att nya scheman följer namngivningskonventionen.
+
+**Validering**: Kontrollerar att schemanamn matchar mönstret `sk[0-2]_(ext|kba|sys)_*`.
+
+**Trigger**: Körs vid CREATE SCHEMA - blockerar ogiltiga schemanamn.
+
+**Undantag**: Systemscheman (public, information_schema, pg_*) valideras inte.
+
 #### `skapa_ny_schemaroll_r()` och `skapa_ny_schemaroll_w()`
 **Syfte**: Automatiserar säkerhetshantering genom att skapa roller för nya scheman.
 
@@ -333,11 +387,25 @@ src/sql/04_triggers/ta_bort_schemaroller_trigger.sql
 
 ## Exempel på användning
 
+### Skapa schema med korrekt namngivning
+
+```sql
+-- Korrekt namngivning - fungerar
+CREATE SCHEMA sk0_ext_sgu;      -- Öppen data från SGU
+CREATE SCHEMA sk1_kba_bygg;     -- Kommunal byggdata
+CREATE SCHEMA sk2_sys_admin;    -- Begränsad systemdata
+
+-- Felaktig namngivning - blockeras av validering
+CREATE SCHEMA min_data;         -- FEL: Följer inte mönstret
+CREATE SCHEMA sk3_ext_test;     -- FEL: sk3 finns inte
+CREATE SCHEMA sk0_foo_bar;      -- FEL: "foo" är inte ext/kba/sys
+```
+
 ### Grundläggande tabellskapande
 
 ```sql
 -- Skapa en tabell - systemet lägger automatiskt till standardkolumner
-CREATE TABLE mitt_schema.vattenledningar_l (
+CREATE TABLE sk1_kba_bygg.vattenledningar_l (
     diameter integer,
     material text,
     geom geometry(LineString, 3007)
@@ -358,7 +426,7 @@ CREATE TABLE mitt_schema.vattenledningar_l (
 
 ```sql
 -- Lägg till en kolumn - strukturen bevaras automatiskt
-ALTER TABLE mitt_schema.vattenledningar_l ADD COLUMN tryck numeric;
+ALTER TABLE sk1_kba_bygg.vattenledningar_l ADD COLUMN tryck numeric;
 
 -- Kolumnen läggs till före standardkolumnerna och geometrin
 ```
@@ -367,16 +435,16 @@ ALTER TABLE mitt_schema.vattenledningar_l ADD COLUMN tryck numeric;
 
 ```sql
 -- Korrekt namngivning för vy med punktgeometrier
-CREATE VIEW mitt_schema.v_brunnar_p AS
-SELECT * FROM mitt_schema.brunnar_p
+CREATE VIEW sk1_kba_bygg.v_brunnar_p AS
+SELECT * FROM sk1_kba_bygg.brunnar_p
 WHERE status = 'aktiv';
 
 -- Vid geometritransformationer, använd explicit typkonvertering
-CREATE VIEW mitt_schema.v_buffrade_ledningar_y AS
+CREATE VIEW sk1_kba_bygg.v_buffrade_ledningar_y AS
 SELECT 
     gid,
     ST_Buffer(geom, 10)::geometry(Polygon, 3007) as geom
-FROM mitt_schema.vattenledningar_l;
+FROM sk1_kba_bygg.vattenledningar_l;
 ```
 
 ## Konfiguration
@@ -455,16 +523,19 @@ schema_uttryck = 'LIKE ''sk%'' AND NOT LIKE ''%_sys_%'''
 SET client_min_messages = 'notice';
 
 -- Testa systemet med en enkel tabell
-CREATE TABLE test_schema.test_tabell_p (
+CREATE TABLE sk0_ext_test.test_tabell_p (
     namn text,
     geom geometry(Point, 3007)
 );
 
 -- Kontrollera resultatet
-\d test_schema.test_tabell_p
+\d sk0_ext_test.test_tabell_p
 ```
 
 ### Vanliga problem och lösningar
+
+**Problem**: Schema kan inte skapas  
+**Lösning**: Kontrollera att schemanamnet följer mönstret `sk[0-2]_(ext|kba|sys)_*`
 
 **Problem**: Tabell skapas inte med standardkolumner  
 **Lösning**: Kontrollera att alla triggers är aktiverade och att schemat inte är 'public'
@@ -488,7 +559,7 @@ ORDER BY evtname;
 
 -- Kontrollera standardkolumner för ett schema
 SELECT * FROM standardiserade_kolumner
-WHERE 'mitt_schema' LIKE schema_uttryck
+WHERE 'sk1_kba_bygg' LIKE schema_uttryck
 ORDER BY ordinal_position;
 
 -- Verifiera att funktioner finns
@@ -505,11 +576,11 @@ Om du behöver ta bort systemet:
 
 ```sql
 -- 1. Ta bort triggers
+DROP EVENT TRIGGER IF EXISTS validera_schemanamn_trigger CASCADE;
 DROP EVENT TRIGGER IF EXISTS hantera_ny_tabell_trigger CASCADE;
 DROP EVENT TRIGGER IF EXISTS hantera_kolumntillagg_trigger CASCADE;
 DROP EVENT TRIGGER IF EXISTS hantera_ny_vy_trigger CASCADE;
-DROP EVENT TRIGGER IF EXISTS skapa_ny_schemaroll_r_trigger CASCADE;
-DROP EVENT TRIGGER IF EXISTS skapa_ny_schemaroll_w_trigger CASCADE;
+DROP EVENT TRIGGER IF EXISTS hantera_standardiserade_roller_trigger CASCADE;
 DROP EVENT TRIGGER IF EXISTS ta_bort_schemaroller_trigger CASCADE;
 
 -- 2. Ta bort funktioner (i omvänd beroendeordning)
@@ -517,6 +588,7 @@ DROP EVENT TRIGGER IF EXISTS ta_bort_schemaroller_trigger CASCADE;
 
 -- 3. Ta bort konfigurationstabell
 DROP TABLE IF EXISTS standardiserade_kolumner CASCADE;
+DROP TABLE IF EXISTS standardiserade_roller CASCADE;
 
 -- 4. Ta bort anpassade typer
 DROP TYPE IF EXISTS tabellregler CASCADE;
