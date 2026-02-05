@@ -48,7 +48,7 @@ BEGIN
         IF NOT roll_existerar THEN
             EXECUTE format('CREATE ROLE %I WITH NOLOGIN', roll_namn);
             -- Ge ägarrollen ADMIN OPTION så den kan hantera denna roll
-            EXECUTE format('GRANT %I TO %I WITH ADMIN OPTION', roll_namn, praxis_owner());
+            EXECUTE format('GRANT %I TO %I WITH ADMIN OPTION', roll_namn, system_owner());
             EXECUTE format('COMMENT ON ROLE %I IS ''Läs- och skrivrättigheter för schema %I''', 
                          roll_namn, schema_namn);
         END IF;
