@@ -270,8 +270,8 @@ BEGIN
                         RAISE WARNING '[hantera_kolumntillagg] Felmeddelande: %s', SQLERRM;
                 END;
             ELSE
-                RAISE WARNING '[hantera_kolumntillagg] ⚠  Geometrikolumn hittad men ingen giltig definition returnerades';
-                RAISE WARNING '[hantera_kolumntillagg] ⚠  Geometriinfo: %', geometriinfo;
+                RAISE WARNING '[hantera_kolumntillagg] ⚠ Geometrikolumn hittad men ingen giltig definition returnerades';
+                RAISE WARNING '[hantera_kolumntillagg] ⚠ Geometriinfo: %', geometriinfo;
                 antal_fel := antal_fel + 1;
             END IF;
         ELSE
