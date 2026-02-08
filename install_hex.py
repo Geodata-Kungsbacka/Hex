@@ -119,7 +119,7 @@ DROP FUNCTION IF EXISTS public.hamta_kolumnstandard(text, text, geom_info);
 DROP FUNCTION IF EXISTS public.hamta_geometri_definition(text, text);
 
 -- Config Functions
-DROP FUNCTION IF EXISTS public.system_owner();
+DROP FUNCTION IF EXISTS public.system_();
 
 -- Tables
 DROP TABLE IF EXISTS public.standardiserade_roller;
@@ -198,6 +198,10 @@ def install(base_path="."):
     installed = 0
     
     try:
+        # Ensure PostGIS is available
+        print("Ensuring PostGIS extension...")
+        cur.execute("CREATE EXTENSION IF NOT EXISTS postgis")
+        
         # Validate OWNER_ROLE exists if specified
         owner_role = OWNER_ROLE or 'postgres'
         cur.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (owner_role,))
@@ -260,4 +264,5 @@ if __name__ == "__main__":
         uninstall()
     else:
         install()
+
 
