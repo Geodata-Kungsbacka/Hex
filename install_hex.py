@@ -23,6 +23,7 @@ DB_CONFIG = {
     "dbname": "your_database",
     "user": "postgres",
     "password": "your_password",
+    "client_encoding": "UTF8",
 }
 
 # Owner role for all created objects (types, tables, functions, triggers)
@@ -228,7 +229,7 @@ COMMENT ON FUNCTION public.system_owner()
                 raise FileNotFoundError(f"Missing: {sql_file}")
             
             print(f"Installing {path.name}...")
-            sql = process_sql(path.read_text())
+            sql = process_sql(path.read_text(encoding='utf-8'))
             cur.execute(sql)
             installed += 1
         
@@ -259,3 +260,4 @@ if __name__ == "__main__":
         uninstall()
     else:
         install()
+
