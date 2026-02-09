@@ -3,12 +3,18 @@ CREATE OR REPLACE FUNCTION public.ta_bort_schemaroller()
     LANGUAGE 'plpgsql'
     COST 100
     VOLATILE NOT LEAKPROOF
+    SECURITY DEFINER
 AS $BODY$
 
 /******************************************************************************
  * Tar automatiskt bort roller kopplade till scheman som tas bort.
  * Läser nu konfiguration från standardiserade_roller istället för hårdkodade rollnamn.
- * 
+ *
+ * SECURITY DEFINER: Körs som funktionens ägare (postgres) för att säkerställa
+ * att roller kan tas bort oavsett vilken användare som droppar schemat.
+ * I PostgreSQL 16+ krävs CREATEROLE + ADMIN OPTION för att droppa roller,
+ * och SECURITY DEFINER garanterar att postgres (superuser) hanterar detta.
+ *
  * UPPDATERAD FUNKTIONALITET:
  * - Tar endast bort roller där ta_bort_med_schema = true
  * - Hanterar både grupproller och LOGIN-roller
