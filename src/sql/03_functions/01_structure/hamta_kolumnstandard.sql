@@ -240,7 +240,7 @@ BEGIN
                  ELSE NULL END as generated_expr
         FROM information_schema.columns c
         JOIN pg_attribute a ON (
-            a.attrelid = (p_schema_namn || '.' || p_tabell_namn)::regclass 
+            a.attrelid = format('%I.%I', p_schema_namn, p_tabell_namn)::regclass
             AND a.attname = c.column_name
         )
         LEFT JOIN pg_attrdef d ON (a.attrelid, a.attnum) = (d.adrelid, d.adnum)
@@ -284,6 +284,21 @@ BEGIN
     RAISE NOTICE '[hamta_kolumnstandard] Steg 5: Analyserar slutliga kolumner';
     SELECT COUNT(*) INTO antal_tabellkolumner FROM temp_kolumner_till_fardig_tabell;
     RAISE NOTICE '[hamta_kolumnstandard]   - Totalt antal kolumner efter sammansättning: %', antal_tabellkolumner;
+
+    -- Varna om användaren har egna IDENTITY-kolumner (gid läggs alltid till som IDENTITY)
+    IF EXISTS (
+        SELECT 1 FROM pg_attribute a
+        WHERE a.attrelid = format('%I.%I', p_schema_namn, p_tabell_namn)::regclass
+        AND a.attidentity != ''
+        AND a.attname != 'gid'
+        AND NOT a.attisdropped
+    ) THEN
+        RAISE WARNING '[hamta_kolumnstandard] OBS: Tabellen %.% har en egen IDENTITY-kolumn. '
+            'Hex lägger automatiskt till "gid" som IDENTITY-primärnyckel. '
+            'Detta resulterar i två sekvenser per tabell. '
+            'Överväg att använda en vanlig integer-kolumn istället.',
+            p_schema_namn, p_tabell_namn;
+    END IF;
 
     -- Steg 6: Logga kolumnerna och deras definitioner
     RAISE NOTICE '[hamta_kolumnstandard] Steg 6: Loggar slutliga kolumner';

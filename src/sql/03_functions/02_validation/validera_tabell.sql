@@ -59,10 +59,7 @@ BEGIN
 
         -- Kontrollera att inget geometrisuffix används
         -- FIX: Ändrat från RAISE NOTICE till RAISE EXCEPTION
-        IF p_tabell_namn LIKE '%\_p' OR 
-           p_tabell_namn LIKE '%\_l' OR 
-           p_tabell_namn LIKE '%\_y' OR 
-           p_tabell_namn LIKE '%\_g' THEN
+        IF p_tabell_namn ~ '_[plyg]$' THEN
             RAISE EXCEPTION E'[validera_tabell] Ogiltigt tabellnamn "%.%".\n'
                 '[validera_tabell] Tabeller utan geometri får inte använda suffixen _p, _l, _y '
                 'eller _g då dessa är reserverade för tabeller med '

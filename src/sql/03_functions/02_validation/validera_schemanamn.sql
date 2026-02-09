@@ -50,7 +50,7 @@ BEGIN
     WHERE command_tag = 'CREATE SCHEMA'
     LOOP
         antal_scheman := antal_scheman + 1;
-        schema_namn := split_part(kommando.object_identity, '.', 1);
+        schema_namn := replace(split_part(kommando.object_identity, '.', 1), '"', '');
         
         RAISE NOTICE E'[validera_schemanamn] --------------------------------------------------';
         RAISE NOTICE '[validera_schemanamn] Bearbetar schema #%: %', antal_scheman, schema_namn;
@@ -69,7 +69,7 @@ BEGIN
             CONTINUE;
         END IF;
         
-        IF schema_namn LIKE 'pg\_%' THEN
+        IF schema_namn ~ '^pg_' THEN
             RAISE NOTICE '[validera_schemanamn]   » Schema "%" är PostgreSQL-systemschema - hoppar över', schema_namn;
             CONTINUE;
         END IF;
@@ -87,16 +87,20 @@ BEGIN
             RAISE NOTICE '[validera_schemanamn] Transaktion kommer att rullas tillbaka';
             
             RAISE EXCEPTION E'[validera_schemanamn] Ogiltigt schemanamn: "%"\n'
-                'Schemanamn måste följa mönstret: sk[0-2]_(ext|kba|sys)_*\n\n'
+                'Schemanamn måste följa mönstret: sk[0-2]_(ext|kba|sys)_<namn>\n\n'
                 'Där:\n'
                 '  sk0, sk1, sk2 = Säkerhetsnivå (0=öppen, 1=kommun, 2=begränsad)\n'
                 '  ext = Externa datakällor\n'
                 '  kba = Interna kommunala datakällor\n'
-                '  sys = Systemdata\n\n'
+                '  sys = Systemdata\n'
+                '  <namn> = Beskrivande namn med gemener, siffror och understreck\n\n'
+                'OBS: Undvik svenska tecken (åäö) i schemanamn.\n'
+                'Använd istället ASCII-alternativ (a, a, o).\n\n'
                 'Exempel:\n'
-                '  sk0_ext_sgu\n'
-                '  sk1_kba_bygg\n'
-                '  sk2_sys_admin',
+                '  sk0_ext_sgu          (inte sk0_ext_sgü)\n'
+                '  sk1_kba_bygg         (inte sk1_kba_byggnämnden)\n'
+                '  sk2_sys_admin\n'
+                '  sk0_ext_alvsborg     (inte sk0_ext_älvsborg)',
                 schema_namn;
         END IF;
         

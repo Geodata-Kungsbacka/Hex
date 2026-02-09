@@ -36,13 +36,13 @@ BEGIN
     FOR kommando IN SELECT * FROM pg_event_trigger_ddl_commands()
     WHERE command_tag = 'CREATE SCHEMA'
     LOOP
-        schema_namn := split_part(kommando.object_identity, '.', 1);
+        schema_namn := replace(split_part(kommando.object_identity, '.', 1), '"', '');
         
         RAISE NOTICE E'[hantera_standardiserade_roller] ================';
         RAISE NOTICE '[hantera_standardiserade_roller] Bearbetar schema: %', schema_namn;
         
         -- Hoppa över systemscheman
-        IF schema_namn IN ('public', 'information_schema') OR schema_namn LIKE 'pg\_%' THEN
+        IF schema_namn IN ('public', 'information_schema') OR schema_namn ~ '^pg_' THEN
             RAISE NOTICE '[hantera_standardiserade_roller] Hoppar över systemschema: %', schema_namn;
             CONTINUE;
         END IF;
@@ -89,10 +89,10 @@ BEGIN
                             login_rollnamn text;
                         BEGIN
                             -- Kontrollera om det är suffix (börjar med _) eller prefix (slutar med _)
-                            IF login_definition LIKE '\_%' THEN
-                                -- Suffix: r_sk0_global + _geoserver = r_sk0_global_geoserver  
+                            IF login_definition ~ '^_' THEN
+                                -- Suffix: r_sk0_global + _geoserver = r_sk0_global_geoserver
                                 login_rollnamn := slutligt_rollnamn || login_definition;
-                            ELSIF login_definition LIKE '%\_' THEN
+                            ELSIF login_definition ~ '_$' THEN
                                 -- Prefix: geoserver_ + r_sk0_global = geoserver_r_sk0_global
                                 login_rollnamn := login_definition || slutligt_rollnamn;
                             ELSE

@@ -76,8 +76,8 @@ BEGIN
     WHERE command_tag = 'ALTER TABLE'
     LOOP
         -- Identifiera vilken tabell som modifieras
-        schema_namn := split_part(kommando.object_identity, '.', 1);
-        tabell_namn := split_part(kommando.object_identity, '.', 2);
+        schema_namn := replace(split_part(kommando.object_identity, '.', 1), '"', '');
+        tabell_namn := replace(split_part(kommando.object_identity, '.', 2), '"', '');
 
         RAISE NOTICE E'[hantera_kolumntillagg] --------------------------------------------------';
         RAISE NOTICE '[hantera_kolumntillagg] Bearbetar tabell %s.%s', schema_namn, tabell_namn;
@@ -285,7 +285,7 @@ BEGIN
         -- Bestäm historiktabellnamn (hoppa över om detta redan ÄR en historiktabell)
         historik_tabell_namn := tabell_namn || '_h';
         
-        IF NOT tabell_namn LIKE '%\_h' THEN
+        IF NOT tabell_namn ~ '_h$' THEN
             -- Detta är en modertabell, kontrollera om det finns motsvarande historiktabell
             SELECT EXISTS(
                 SELECT 1 FROM information_schema.tables 
@@ -671,9 +671,9 @@ BEGIN
         RAISE NOTICE '[hantera_kolumntillagg]   » Flyttade kolumner: %s', antal_flyttade;
         RAISE NOTICE '[hantera_kolumntillagg]   » Problem uppstod: %s', antal_fel;
         RAISE NOTICE '[hantera_kolumntillagg]   » Historiktabell: %s', 
-            CASE WHEN NOT tabell_namn LIKE '%\_h' AND har_historiktabell
+            CASE WHEN NOT tabell_namn ~ '_h$' AND har_historiktabell
                  THEN 'Synkroniserad'
-                 WHEN NOT tabell_namn LIKE '%\_h' AND NOT har_historiktabell
+                 WHEN NOT tabell_namn ~ '_h$' AND NOT har_historiktabell
                  THEN 'Ingen historik'
                  ELSE 'Historiktabell'
             END;
