@@ -56,7 +56,7 @@ BEGIN
         temp_tabellnamn := tabell_namn || '_temp_0001';
 
         -- Kontrollera undantag
-        IF schema_namn = 'public' OR tabell_namn LIKE '%\_h' THEN
+        IF schema_namn = 'public' OR tabell_namn ~ '_h$' THEN
             RAISE NOTICE 'Hoppar över tabell %.% - %', 
                 schema_namn, tabell_namn,
                 CASE 
@@ -153,12 +153,14 @@ BEGIN
             -- Steg 9: Lägg till geometrivalidering för _kba_-scheman
             op_steg := 'geometrivalidering';
             RAISE NOTICE 'Steg 9/10: Kontrollerar geometrivalidering';
-            IF geometriinfo.kolumnnamn IS NOT NULL AND schema_namn LIKE '%\_kba\_%' THEN
+            RAISE NOTICE '  - geometriinfo.kolumnnamn: %', geometriinfo.kolumnnamn;
+            RAISE NOTICE '  - schema_namn: %, matchar kba: %', schema_namn, (schema_namn ~ '^sk[0-2]_kba_');
+            IF geometriinfo.kolumnnamn IS NOT NULL AND schema_namn ~ '^sk[0-2]_kba_' THEN
                 DECLARE
                     constraint_namn text := 'validera_geom_' || tabell_namn;
                 BEGIN
                     EXECUTE format(
-                        'ALTER TABLE %I.%I ADD CONSTRAINT %I CHECK (validera_geometri(geom))',
+                        'ALTER TABLE %I.%I ADD CONSTRAINT %I CHECK (public.validera_geometri(geom))',
                         schema_namn,
                         tabell_namn,
                         constraint_namn

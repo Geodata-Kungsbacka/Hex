@@ -44,6 +44,20 @@ För scheman konfigurerade med QA-kolumner skapas:
 - Historiktabeller (`tabellnamn_h`) som loggar alla ändringar
 - Triggers som automatiskt uppdaterar `andrad_tidpunkt` och `andrad_av`
 
+#### `validera_geometri(geom, tolerans)`
+Validerar geometrikvalitet för _kba_-scheman (manuellt redigerade data).
+
+**Kontroller**:
+- ST_IsValid - geometrin följer OGC-specifikationen
+- NOT ST_IsEmpty - geometrin innehåller faktiska koordinater
+- Inga duplicerade punkter inom tolerans
+- Polygoner har rimlig area (> tolerans²)
+- Linjer har rimlig längd (> tolerans)
+
+**Användning**: Används som CHECK constraint, appliceras automatiskt av `hantera_ny_tabell` för _kba_-scheman.
+
+**Parameter**: `tolerans` i meter (default 0.001 = 1mm för SWEREF99 TM).
+
 ## Installation
 
 ### Automatisk installation (rekommenderat)
@@ -92,6 +106,7 @@ src/sql/03_functions/01_structure/hamta_geometri_definition.sql
 src/sql/03_functions/01_structure/hamta_kolumnstandard.sql
 
 -- 3.2 Validering
+src/sql/03_functions/02_validation/validera_geometri.sql
 src/sql/03_functions/02_validation/validera_tabell.sql
 src/sql/03_functions/02_validation/validera_vynamn.sql
 src/sql/03_functions/02_validation/validera_schemanamn.sql
@@ -112,8 +127,6 @@ src/sql/03_functions/04_utility/tilldela_rollrattigheter.sql
 src/sql/03_functions/05_trigger_functions/hantera_ny_tabell.sql
 src/sql/03_functions/05_trigger_functions/hantera_kolumntillagg.sql
 src/sql/03_functions/05_trigger_functions/hantera_ny_vy.sql
-src/sql/03_functions/05_trigger_functions/skapa_ny_schemaroll_r.sql
-src/sql/03_functions/05_trigger_functions/skapa_ny_schemaroll_w.sql
 src/sql/03_functions/05_trigger_functions/ta_bort_schemaroller.sql
 src/sql/03_functions/05_trigger_functions/hantera_standardiserade_roller.sql
 
@@ -362,19 +375,16 @@ src/sql/04_triggers/validera_schemanamn_trigger.sql
 
 **Undantag**: Systemscheman (public, information_schema, pg_*) valideras inte.
 
-#### `skapa_ny_schemaroll_r()` och `skapa_ny_schemaroll_w()`
-**Syfte**: Automatiserar säkerhetshantering genom att skapa roller för nya scheman.
+#### `hantera_standardiserade_roller()`
+**Syfte**: Skapar roller automatiskt när nya scheman skapas, baserat på konfiguration i tabellen `standardiserade_roller`.
 
-**r_-roll (read)**:
-- SELECT på alla tabeller, vyer och sekvenser
-- USAGE på schemat
+**Funktionalitet**:
+- Läser rollkonfiguration från `standardiserade_roller`-tabellen
+- Evaluerar `schema_uttryck` för att avgöra vilka roller som ska skapas
+- Skapar både NOLOGIN-grupproller och LOGIN-roller för specifika applikationer
+- Stöder globala roller (sk0_global) och schemaspecifika roller
 
-**w_-roll (write)**:
-- ALL PRIVILEGES på tabeller och vyer
-- EXECUTE på funktioner och procedurer
-- Fullständiga rättigheter
-
-**Trigger**: Körs vid CREATE SCHEMA.
+**Trigger**: Körs vid CREATE SCHEMA via `hantera_standardiserade_roller_trigger`.
 
 #### `ta_bort_schemaroller()`
 **Syfte**: Städar upp oanvända roller när scheman tas bort.
