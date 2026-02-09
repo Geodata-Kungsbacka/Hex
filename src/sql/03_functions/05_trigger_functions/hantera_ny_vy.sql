@@ -36,8 +36,8 @@ BEGIN
     WHERE command_tag = 'CREATE VIEW'
     LOOP
         -- Extrahera schema- och vynamn
-        schema_namn := split_part(kommando.object_identity, '.', 1);
-        vy_namn := split_part(kommando.object_identity, '.', 2);
+        schema_namn := replace(split_part(kommando.object_identity, '.', 1), '"', '');
+        vy_namn := replace(split_part(kommando.object_identity, '.', 2), '"', '');
         
         RAISE NOTICE 'Validerar vy %.%', schema_namn, vy_namn;
         

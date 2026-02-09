@@ -36,7 +36,7 @@ BEGIN
         RAISE NOTICE '[ta_bort_schemaroller] Schema borttaget: %', schema_namn;
         
         -- Hoppa över systemscheman
-        IF schema_namn = 'public' OR schema_namn LIKE 'pg\_%' OR schema_namn = 'information_schema' THEN
+        IF schema_namn = 'public' OR schema_namn ~ '^pg_' OR schema_namn = 'information_schema' THEN
             RAISE NOTICE '[ta_bort_schemaroller] Hoppar över systemschema: %', schema_namn;
             CONTINUE;
         END IF;
@@ -58,9 +58,9 @@ BEGIN
                     login_definition text := rollkonfiguration.login_roller[i];
                 BEGIN
                     -- Bygg LOGIN-rollnamn
-                    IF login_definition LIKE '\_%' THEN
+                    IF login_definition ~ '^_' THEN
                         login_rollnamn := slutligt_rollnamn || login_definition;
-                    ELSIF login_definition LIKE '%\_' THEN
+                    ELSIF login_definition ~ '_$' THEN
                         login_rollnamn := login_definition || slutligt_rollnamn;
                     ELSE
                         CONTINUE; -- Hoppa över ogiltiga format

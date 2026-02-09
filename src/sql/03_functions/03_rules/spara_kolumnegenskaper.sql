@@ -50,13 +50,10 @@ BEGIN
     RAISE NOTICE E'[spara_kolumnegenskaper] === START ===';
     RAISE NOTICE '[spara_kolumnegenskaper] Analyserar kolumnegenskaper för %.%', p_schema_namn, p_tabell_namn;
     
-    -- Steg 1: Hämta tabellens OID
+    -- Steg 1: Hämta tabellens OID (via regclass för korrekt hantering av
+    -- specialtecken som åäö i tabell-/schemanamn)
     RAISE NOTICE '[spara_kolumnegenskaper] Steg 1: Hämtar tabellidentifierare';
-    SELECT c.oid INTO STRICT tabell_oid
-    FROM pg_class c
-    JOIN pg_namespace n ON n.oid = c.relnamespace
-    WHERE n.nspname = p_schema_namn
-    AND c.relname = p_tabell_namn;
+    tabell_oid := format('%I.%I', p_schema_namn, p_tabell_namn)::regclass::oid;
 
     RAISE NOTICE '[spara_kolumnegenskaper]   » Tabell-OID: %', tabell_oid;
 
@@ -152,7 +149,7 @@ BEGIN
     WITH identity_data AS (
         SELECT 
             attname,
-            pg_get_serial_sequence(p_schema_namn || '.' || p_tabell_namn, attname) as sequence_name
+            pg_get_serial_sequence(format('%I.%I', p_schema_namn, p_tabell_namn), attname) as sequence_name
         FROM pg_attribute
         WHERE attrelid = tabell_oid
         AND NOT attisdropped

@@ -28,13 +28,13 @@ BEGIN
     FOR kommando IN SELECT * FROM pg_event_trigger_ddl_commands()
     WHERE command_tag = 'CREATE SCHEMA'
     LOOP
-        schema_namn := split_part(kommando.object_identity, '.', 1);
+        schema_namn := replace(split_part(kommando.object_identity, '.', 1), '"', '');
         roll_namn := 'r_' || schema_namn;
         
         RAISE NOTICE 'Bearbetar schema: %, roll: %', schema_namn, roll_namn;
         
         -- Hoppa över systemscheman
-        IF schema_namn = 'public' OR schema_namn LIKE 'pg\_%' OR schema_namn = 'information_schema' THEN
+        IF schema_namn = 'public' OR schema_namn ~ '^pg_' OR schema_namn = 'information_schema' THEN
             RAISE NOTICE 'Hoppar över systemschema: %', schema_namn;
             CONTINUE;
         END IF;

@@ -50,13 +50,14 @@ BEGIN
     FOR kommando IN SELECT * FROM pg_event_trigger_ddl_commands()
     WHERE command_tag = 'CREATE TABLE'
     LOOP
-        -- Extrahera schema och tabellnamn
-        schema_namn := split_part(kommando.object_identity, '.', 1);
-        tabell_namn := split_part(kommando.object_identity, '.', 2);
+        -- Extrahera schema och tabellnamn (ta bort eventuella citattecken
+        -- som PostgreSQL lägger till för namn med specialtecken som åäö)
+        schema_namn := replace(split_part(kommando.object_identity, '.', 1), '"', '');
+        tabell_namn := replace(split_part(kommando.object_identity, '.', 2), '"', '');
         temp_tabellnamn := tabell_namn || '_temp_0001';
 
         -- Kontrollera undantag
-        IF schema_namn = 'public' OR tabell_namn LIKE '%\_h' THEN
+        IF schema_namn = 'public' OR tabell_namn ~ '_h$' THEN
             RAISE NOTICE 'Hoppar över tabell %.% - %', 
                 schema_namn, tabell_namn,
                 CASE 
@@ -134,42 +135,46 @@ BEGIN
             -- Steg 8: Skapa GiST-index för geometrikolumn (alla scheman med geometri)
             op_steg := 'skapa gist-index';
             RAISE NOTICE 'Steg 8/10: Kontrollerar GiST-index';
-            IF geometriinfo.kolumnnamn IS NOT NULL THEN
+            RAISE NOTICE '  Debug: geometriinfo.kolumnnamn = %', geometriinfo.kolumnnamn;
+            IF geometriinfo IS NOT NULL AND geometriinfo.kolumnnamn IS NOT NULL THEN
                 DECLARE
                     index_namn text := tabell_namn || '_geom_gidx';
                 BEGIN
                     EXECUTE format(
-                        'CREATE INDEX %I ON %I.%I USING GIST (geom)',
+                        'CREATE INDEX %I ON %I.%I USING GIST (%I)',
                         index_namn,
                         schema_namn,
-                        tabell_namn
+                        tabell_namn,
+                        geometriinfo.kolumnnamn
                     );
                     RAISE NOTICE '  ✓ GiST-index skapat: %', index_namn;
                 END;
             ELSE
                 RAISE NOTICE '  - Ingen geometri, GiST-index ej relevant';
             END IF;
-            
+
             -- Steg 9: Lägg till geometrivalidering för _kba_-scheman
             op_steg := 'geometrivalidering';
             RAISE NOTICE 'Steg 9/10: Kontrollerar geometrivalidering';
-            IF geometriinfo.kolumnnamn IS NOT NULL AND schema_namn LIKE '%\_kba\_%' THEN
+            RAISE NOTICE '  Debug: schema_namn = %, matches _kba_ = %', schema_namn, (schema_namn ~ '_kba_');
+            IF geometriinfo IS NOT NULL AND geometriinfo.kolumnnamn IS NOT NULL AND schema_namn ~ '_kba_' THEN
                 DECLARE
                     constraint_namn text := 'validera_geom_' || tabell_namn;
                 BEGIN
                     EXECUTE format(
-                        'ALTER TABLE %I.%I ADD CONSTRAINT %I CHECK (validera_geometri(geom))',
+                        'ALTER TABLE %I.%I ADD CONSTRAINT %I CHECK (validera_geometri(%I))',
                         schema_namn,
                         tabell_namn,
-                        constraint_namn
+                        constraint_namn,
+                        geometriinfo.kolumnnamn
                     );
                     RAISE NOTICE '  ✓ Geometrivalidering tillagd: %', constraint_namn;
                 END;
             ELSE
-                IF geometriinfo.kolumnnamn IS NULL THEN
+                IF geometriinfo IS NULL OR geometriinfo.kolumnnamn IS NULL THEN
                     RAISE NOTICE '  - Ingen geometri, validering ej relevant';
                 ELSE
-                    RAISE NOTICE '  - Schema %.% är inte _kba_, validering ej tillagd', schema_namn, tabell_namn;
+                    RAISE NOTICE '  - Schema % är inte _kba_, validering ej tillagd', schema_namn;
                 END IF;
             END IF;
             
