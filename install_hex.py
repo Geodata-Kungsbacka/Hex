@@ -23,6 +23,7 @@ DB_CONFIG = {
     "dbname": "your_database",
     "user": "postgres",
     "password": "your_password",
+    "client_encoding": "UTF8",
 }
 
 # Owner role for all created objects (types, tables, functions, triggers)
@@ -49,6 +50,7 @@ INSTALL_ORDER = [
     "src/sql/03_functions/02_validation/validera_tabell.sql",
     "src/sql/03_functions/02_validation/validera_vynamn.sql",
     "src/sql/03_functions/02_validation/validera_schemanamn.sql",
+    "src/sql/03_functions/02_validation/validera_geometri.sql",
     # Functions - Rules
     "src/sql/03_functions/03_rules/spara_tabellregler.sql",
     "src/sql/03_functions/03_rules/spara_kolumnegenskaper.sql",
@@ -63,8 +65,6 @@ INSTALL_ORDER = [
     "src/sql/03_functions/05_trigger_functions/hantera_ny_tabell.sql",
     "src/sql/03_functions/05_trigger_functions/hantera_kolumntillagg.sql",
     "src/sql/03_functions/05_trigger_functions/hantera_ny_vy.sql",
-    "src/sql/03_functions/05_trigger_functions/skapa_ny_schemaroll_r.sql",
-    "src/sql/03_functions/05_trigger_functions/skapa_ny_schemaroll_w.sql",
     "src/sql/03_functions/05_trigger_functions/ta_bort_schemaroller.sql",
     "src/sql/03_functions/05_trigger_functions/hantera_standardiserade_roller.sql",
     # Triggers
@@ -88,14 +88,10 @@ DROP EVENT TRIGGER IF EXISTS ta_bort_schemaroller_trigger;
 DROP EVENT TRIGGER IF EXISTS hantera_ny_vy_trigger;
 DROP EVENT TRIGGER IF EXISTS hantera_kolumntillagg_trigger;
 DROP EVENT TRIGGER IF EXISTS hantera_ny_tabell_trigger;
-DROP EVENT TRIGGER IF EXISTS skapa_ny_schemaroll_w_trigger;
-DROP EVENT TRIGGER IF EXISTS skapa_ny_schemaroll_r_trigger;
 
 -- Trigger Functions
 DROP FUNCTION IF EXISTS public.hantera_standardiserade_roller();
 DROP FUNCTION IF EXISTS public.ta_bort_schemaroller();
-DROP FUNCTION IF EXISTS public.skapa_ny_schemaroll_w();
-DROP FUNCTION IF EXISTS public.skapa_ny_schemaroll_r();
 DROP FUNCTION IF EXISTS public.hantera_ny_vy();
 DROP FUNCTION IF EXISTS public.hantera_kolumntillagg();
 DROP FUNCTION IF EXISTS public.hantera_ny_tabell();
@@ -113,6 +109,7 @@ DROP FUNCTION IF EXISTS public.spara_kolumnegenskaper(text, text);
 DROP FUNCTION IF EXISTS public.spara_tabellregler(text, text);
 
 -- Validation Functions
+DROP FUNCTION IF EXISTS public.validera_geometri(geometry, float);
 DROP FUNCTION IF EXISTS public.validera_schemanamn();
 DROP FUNCTION IF EXISTS public.validera_vynamn(text, text);
 DROP FUNCTION IF EXISTS public.validera_tabell(text, text);
@@ -122,7 +119,7 @@ DROP FUNCTION IF EXISTS public.hamta_kolumnstandard(text, text, geom_info);
 DROP FUNCTION IF EXISTS public.hamta_geometri_definition(text, text);
 
 -- Config Functions
-DROP FUNCTION IF EXISTS public.system_owner();
+DROP FUNCTION IF EXISTS public.system_();
 
 -- Tables
 DROP TABLE IF EXISTS public.standardiserade_roller;
@@ -201,6 +198,10 @@ def install(base_path="."):
     installed = 0
     
     try:
+        # Ensure PostGIS is available
+        print("Ensuring PostGIS extension...")
+        cur.execute("CREATE EXTENSION IF NOT EXISTS postgis")
+        
         # Validate OWNER_ROLE exists if specified
         owner_role = OWNER_ROLE or 'postgres'
         cur.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (owner_role,))
@@ -232,7 +233,7 @@ COMMENT ON FUNCTION public.system_owner()
                 raise FileNotFoundError(f"Missing: {sql_file}")
             
             print(f"Installing {path.name}...")
-            sql = process_sql(path.read_text())
+            sql = process_sql(path.read_text(encoding='utf-8'))
             cur.execute(sql)
             installed += 1
         
@@ -263,3 +264,5 @@ if __name__ == "__main__":
         uninstall()
     else:
         install()
+
+
