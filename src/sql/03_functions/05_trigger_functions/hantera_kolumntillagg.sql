@@ -67,6 +67,13 @@ BEGIN
         RETURN;
     END IF;
 
+    -- Kontrollera om hantera_ny_tabell pågår - avbryt för att inte störa
+    -- steg 8 (GiST-index) och steg 9 (geometrivalidering)
+    IF current_setting('temp.tabellstrukturering_pagar', true) = 'true' THEN
+        RAISE NOTICE '[hantera_kolumntillagg] hantera_ny_tabell pågår - avbryter';
+        RETURN;
+    END IF;
+
     PERFORM set_config('temp.reorganization_in_progress', 'true', true);
     RAISE NOTICE '[hantera_kolumntillagg] Rekursionsflagga satt - påbörjar omstrukturering';
 
