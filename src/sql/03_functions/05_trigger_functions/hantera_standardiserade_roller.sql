@@ -3,11 +3,16 @@ CREATE OR REPLACE FUNCTION public.hantera_standardiserade_roller()
     LANGUAGE 'plpgsql'
     COST 100
     VOLATILE NOT LEAKPROOF
+    SECURITY DEFINER
 AS $BODY$
 
 /******************************************************************************
  * Event trigger-funktion som skapar roller automatiskt när nya scheman skapas.
- * 
+ *
+ * SECURITY DEFINER: Körs som funktionens ägare (postgres) för att säkerställa
+ * att roller kan skapas och hanteras korrekt oavsett vilken användare som
+ * skapar schemat.
+ *
  * FUNKTIONALITET:
  * 1. Läser konfiguration från standardiserade_roller-tabellen
  * 2. Evaluerar schema_uttryck för att avgöra vilka roller som ska skapas

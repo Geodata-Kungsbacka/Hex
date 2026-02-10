@@ -6,18 +6,20 @@
  *   2. Spatial (GiST) indexes created for geometry tables (Issue 2)
  *   3. Swedish characters (åäö) in table/schema names (Issue 3)
  *   4. Schema validation error messages (Issue 4)
- *   5. Dual IDENTITY column warning (Issue 5)
+ *   5. Non-geometry tables (regression check) (Issue 5)
+ *   6. DROP TABLE cleans up history tables and trigger functions (Issue 6)
  *
  * PREREQUISITES:
- *   - Hex must be installed in the target database
+ *   - Hex must be installed in the target database (all functions deployed)
  *   - PostGIS extension must be available
  *   - Run as a superuser or the Hex system owner
  *
  * USAGE:
  *   psql -d your_database -f test_regression.sql
+ *   Or run the statements in PgAdmin query tool.
  *
- * Each test section is wrapped in a transaction that rolls back,
- * so no permanent changes are made to the database.
+ * The test cleans up after itself using DROP SCHEMA ... CASCADE at the end.
+ * The test is idempotent - safe to run multiple times.
  ******************************************************************************/
 
 \echo '============================================================'
@@ -25,18 +27,26 @@
 \echo '============================================================'
 
 ------------------------------------------------------------------------
+-- INITIAL CLEANUP (idempotent - safe if schemas don't exist)
+------------------------------------------------------------------------
+\echo ''
+\echo '--- Initial cleanup of previous test runs ---'
+DROP SCHEMA IF EXISTS sk1_kba_test CASCADE;
+DROP SCHEMA IF EXISTS sk0_ext_test CASCADE;
+
+------------------------------------------------------------------------
+-- SETUP: Create test schemas
+------------------------------------------------------------------------
+\echo ''
+\echo '--- Creating test schemas ---'
+CREATE SCHEMA sk1_kba_test;
+CREATE SCHEMA sk0_ext_test;
+
+------------------------------------------------------------------------
 -- TEST 1: Geometry validation is applied to _kba_ schemas
 ------------------------------------------------------------------------
 \echo ''
 \echo '--- TEST 1: Geometry validation on _kba_ schemas ---'
-
-DO $$
-BEGIN
-    -- Setup: Create test schema if not exists
-    IF NOT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'sk1_kba_test') THEN
-        CREATE SCHEMA sk1_kba_test;
-    END IF;
-END $$;
 
 -- Create a geometry table in _kba_ schema
 CREATE TABLE sk1_kba_test.test_validering_y (
@@ -82,14 +92,6 @@ DROP TABLE IF EXISTS sk1_kba_test.test_validering_y;
 ------------------------------------------------------------------------
 \echo ''
 \echo '--- TEST 2: Spatial GiST index creation ---'
-
--- Create test schema for ext (non-kba)
-DO $$
-BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'sk0_ext_test') THEN
-        CREATE SCHEMA sk0_ext_test;
-    END IF;
-END $$;
 
 CREATE TABLE sk0_ext_test.test_index_y (
     data text,
@@ -304,6 +306,132 @@ END $$;
 
 -- Cleanup
 DROP TABLE IF EXISTS sk0_ext_test.metadata;
+
+------------------------------------------------------------------------
+-- TEST 6: DROP TABLE cleans up history tables and trigger functions
+------------------------------------------------------------------------
+\echo ''
+\echo '--- TEST 6: DROP TABLE history cleanup ---'
+
+-- Create a _kba_ table that will get a history table
+CREATE TABLE sk1_kba_test.historiktest_y (
+    beskrivning text,
+    geom geometry(Polygon, 3007)
+);
+
+-- Verify history table was created
+DO $$
+DECLARE
+    has_history boolean;
+BEGIN
+    SELECT EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'sk1_kba_test'
+        AND table_name = 'historiktest_y_h'
+    ) INTO has_history;
+
+    IF has_history THEN
+        RAISE NOTICE 'TEST 6a PASSED: History table created for _kba_ table';
+    ELSE
+        RAISE WARNING 'TEST 6a FAILED: No history table created for _kba_ table';
+    END IF;
+END $$;
+
+-- Verify trigger function was created
+DO $$
+DECLARE
+    has_trigger_fn boolean;
+BEGIN
+    SELECT EXISTS (
+        SELECT 1 FROM pg_proc p
+        JOIN pg_namespace n ON p.pronamespace = n.oid
+        WHERE n.nspname = 'sk1_kba_test'
+        AND p.proname = 'trg_fn_historiktest_y_qa'
+    ) INTO has_trigger_fn;
+
+    IF has_trigger_fn THEN
+        RAISE NOTICE 'TEST 6b PASSED: QA trigger function created for _kba_ table';
+    ELSE
+        RAISE WARNING 'TEST 6b FAILED: No QA trigger function created for _kba_ table';
+    END IF;
+END $$;
+
+-- Now DROP the main table - this should cascade to history + trigger function
+DROP TABLE sk1_kba_test.historiktest_y;
+
+-- Verify history table was removed
+DO $$
+DECLARE
+    has_history boolean;
+BEGIN
+    SELECT EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'sk1_kba_test'
+        AND table_name = 'historiktest_y_h'
+    ) INTO has_history;
+
+    IF NOT has_history THEN
+        RAISE NOTICE 'TEST 6c PASSED: History table removed when main table dropped';
+    ELSE
+        RAISE WARNING 'TEST 6c FAILED: History table still exists after main table dropped';
+    END IF;
+END $$;
+
+-- Verify trigger function was removed
+DO $$
+DECLARE
+    has_trigger_fn boolean;
+BEGIN
+    SELECT EXISTS (
+        SELECT 1 FROM pg_proc p
+        JOIN pg_namespace n ON p.pronamespace = n.oid
+        WHERE n.nspname = 'sk1_kba_test'
+        AND p.proname = 'trg_fn_historiktest_y_qa'
+    ) INTO has_trigger_fn;
+
+    IF NOT has_trigger_fn THEN
+        RAISE NOTICE 'TEST 6d PASSED: QA trigger function removed when main table dropped';
+    ELSE
+        RAISE WARNING 'TEST 6d FAILED: QA trigger function still exists after main table dropped';
+    END IF;
+END $$;
+
+-- Test that table restructuring still works (DROP TABLE during byt_ut_tabell
+-- should NOT cascade to history because of the recursion guard)
+CREATE TABLE sk1_kba_test.omstrukt_test_y (
+    data text,
+    geom geometry(Polygon, 3007)
+);
+
+DO $$
+DECLARE
+    has_gid boolean;
+    has_history boolean;
+BEGIN
+    SELECT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'sk1_kba_test'
+        AND table_name = 'omstrukt_test_y'
+        AND column_name = 'gid'
+    ) INTO has_gid;
+
+    SELECT EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'sk1_kba_test'
+        AND table_name = 'omstrukt_test_y_h'
+    ) INTO has_history;
+
+    IF has_gid AND has_history THEN
+        RAISE NOTICE 'TEST 6e PASSED: Table restructuring still works with DROP TABLE trigger active';
+    ELSIF NOT has_gid THEN
+        RAISE WARNING 'TEST 6e FAILED: Table not restructured (missing gid)';
+    ELSE
+        RAISE WARNING 'TEST 6e FAILED: History table not created during restructuring';
+    END IF;
+END $$;
+
+-- Cleanup
+DROP TABLE IF EXISTS sk1_kba_test.omstrukt_test_y;
 
 ------------------------------------------------------------------------
 -- FINAL CLEANUP
