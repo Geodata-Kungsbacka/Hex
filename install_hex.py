@@ -67,12 +67,14 @@ INSTALL_ORDER = [
     "src/sql/03_functions/05_trigger_functions/hantera_ny_vy.sql",
     "src/sql/03_functions/05_trigger_functions/ta_bort_schemaroller.sql",
     "src/sql/03_functions/05_trigger_functions/hantera_standardiserade_roller.sql",
+    "src/sql/03_functions/05_trigger_functions/hantera_borttagen_tabell.sql",
     # Triggers
     "src/sql/04_triggers/hantera_ny_tabell_trigger.sql",
     "src/sql/04_triggers/hantera_kolumntillagg_trigger.sql",
     "src/sql/04_triggers/hantera_ny_vy_trigger.sql",
     "src/sql/04_triggers/ta_bort_schemaroller_trigger.sql",
     "src/sql/04_triggers/hantera_standardiserade_roller_trigger.sql",
+    "src/sql/04_triggers/hantera_borttagen_tabell_trigger.sql",
     "src/sql/04_triggers/validera_schemanamn_trigger.sql",
 ]
 
@@ -88,6 +90,7 @@ DROP EVENT TRIGGER IF EXISTS ta_bort_schemaroller_trigger;
 DROP EVENT TRIGGER IF EXISTS hantera_ny_vy_trigger;
 DROP EVENT TRIGGER IF EXISTS hantera_kolumntillagg_trigger;
 DROP EVENT TRIGGER IF EXISTS hantera_ny_tabell_trigger;
+DROP EVENT TRIGGER IF EXISTS hantera_borttagen_tabell_trigger;
 
 -- Trigger Functions
 DROP FUNCTION IF EXISTS public.hantera_standardiserade_roller();
@@ -95,6 +98,7 @@ DROP FUNCTION IF EXISTS public.ta_bort_schemaroller();
 DROP FUNCTION IF EXISTS public.hantera_ny_vy();
 DROP FUNCTION IF EXISTS public.hantera_kolumntillagg();
 DROP FUNCTION IF EXISTS public.hantera_ny_tabell();
+DROP FUNCTION IF EXISTS public.hantera_borttagen_tabell();
 
 -- Utility Functions
 DROP FUNCTION IF EXISTS public.tilldela_rollrattigheter(text, text, text);
