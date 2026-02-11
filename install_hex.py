@@ -109,7 +109,7 @@ DROP FUNCTION IF EXISTS public.spara_kolumnegenskaper(text, text);
 DROP FUNCTION IF EXISTS public.spara_tabellregler(text, text);
 
 -- Validation Functions
-DROP FUNCTION IF EXISTS public.validera_geometri(geometry, float);
+DROP FUNCTION IF EXISTS public.validera_geometri(geometry, float) CASCADE;
 DROP FUNCTION IF EXISTS public.validera_schemanamn();
 DROP FUNCTION IF EXISTS public.validera_vynamn(text, text);
 DROP FUNCTION IF EXISTS public.validera_tabell(text, text);
