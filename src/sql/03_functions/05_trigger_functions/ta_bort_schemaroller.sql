@@ -76,6 +76,8 @@ BEGIN
                     SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = login_rollnamn) INTO roll_existerar;
                     
                     IF roll_existerar THEN
+                        EXECUTE format('REASSIGN OWNED BY %I TO postgres', login_rollnamn);
+                        EXECUTE format('DROP OWNED BY %I', login_rollnamn);
                         EXECUTE format('DROP ROLE %I', login_rollnamn);
                         RAISE NOTICE '[ta_bort_schemaroller]   ✓ LOGIN-roll borttagen: %', login_rollnamn;
                         antal_borttagna := antal_borttagna + 1;
@@ -89,6 +91,8 @@ BEGIN
             SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = slutligt_rollnamn) INTO roll_existerar;
             
             IF roll_existerar THEN
+                EXECUTE format('REASSIGN OWNED BY %I TO postgres', slutligt_rollnamn);
+                EXECUTE format('DROP OWNED BY %I', slutligt_rollnamn);
                 EXECUTE format('DROP ROLE %I', slutligt_rollnamn);
                 RAISE NOTICE '[ta_bort_schemaroller]   ✓ Grupproll borttagen: %', slutligt_rollnamn;
                 antal_borttagna := antal_borttagna + 1;

@@ -74,7 +74,7 @@ BEGIN
                     IF NOT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = slutligt_rollnamn) THEN
                         EXECUTE format('CREATE ROLE %I WITH NOLOGIN', slutligt_rollnamn);
                         -- Ge ägarrollen ADMIN OPTION så den kan hantera denna roll
-                        EXECUTE format('GRANT %I TO %I WITH ADMIN OPTION', slutligt_rollnamn, system_owner());
+                        EXECUTE format('GRANT %I TO %I', slutligt_rollnamn, system_owner());
                         RAISE NOTICE '[hantera_standardiserade_roller]   ✓ Skapade grupproll (NOLOGIN): %', slutligt_rollnamn;
                         antal_roller := antal_roller + 1;
                         
@@ -110,7 +110,7 @@ BEGIN
                                 -- Skapa LOGIN-roll
                                 EXECUTE format('CREATE ROLE %I WITH LOGIN', login_rollnamn);
                                 -- Ge ägarrollen ADMIN OPTION så den kan hantera denna roll
-                                EXECUTE format('GRANT %I TO %I WITH ADMIN OPTION', login_rollnamn, system_owner());
+                                EXECUTE format('GRANT %I TO %I', login_rollnamn, system_owner());
                                 RAISE NOTICE '[hantera_standardiserade_roller]   ✓ Skapade LOGIN-roll: %', login_rollnamn;
                                 antal_login_roller := antal_login_roller + 1;
                                 
