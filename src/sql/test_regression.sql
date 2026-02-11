@@ -2,12 +2,15 @@
  * REGRESSION TEST SUITE FOR HEX BUG FIXES
  *
  * Tests cover:
- *   1. Geometry validation applied to _kba_ schemas (Issue 1)
- *   2. Spatial (GiST) indexes created for geometry tables (Issue 2)
- *   3. Swedish characters (åäö) in table/schema names (Issue 3)
- *   4. Schema validation error messages (Issue 4)
- *   5. Non-geometry tables (regression check) (Issue 5)
- *   6. DROP TABLE cleans up history tables and trigger functions (Issue 6)
+ *   1. Geometry validation applied to _kba_ schemas
+ *   2. Spatial (GiST) indexes created for geometry tables
+ *   3. Swedish characters (åäö) in table/schema names
+ *   4. Schema validation error messages
+ *   5. Non-geometry tables (regression check)
+ *   6. DROP TABLE cleans up history tables and trigger functions
+ *   7. Column order is clean after CREATE TABLE (no ordinal gaps)
+ *   8. Standard columns are added correctly
+ *   9. DROP SCHEMA cleans up roles
  *
  * PREREQUISITES:
  *   - Hex must be installed in the target database (all functions deployed)
@@ -33,6 +36,7 @@
 \echo '--- Initial cleanup of previous test runs ---'
 DROP SCHEMA IF EXISTS sk1_kba_test CASCADE;
 DROP SCHEMA IF EXISTS sk0_ext_test CASCADE;
+DROP SCHEMA IF EXISTS sk2_ext_rolltest CASCADE;
 
 ------------------------------------------------------------------------
 -- SETUP: Create test schemas
@@ -432,6 +436,187 @@ END $$;
 
 -- Cleanup
 DROP TABLE IF EXISTS sk1_kba_test.omstrukt_test_y;
+
+------------------------------------------------------------------------
+-- TEST 7: Column order is clean (no ordinal position gaps)
+------------------------------------------------------------------------
+\echo ''
+\echo '--- TEST 7: Column order after CREATE TABLE ---'
+
+CREATE TABLE sk1_kba_test.kolumnordning_y (
+    beskrivning text,
+    geom geometry(Polygon, 3007)
+);
+
+-- If hantera_kolumntillagg fires during CREATE TABLE, columns get dropped
+-- and re-added, causing gaps in ordinal_position (e.g. 1,2,13,14,15,16,17).
+-- With the fix, max(ordinal_position) should equal count(*).
+DO $$
+DECLARE
+    col_count integer;
+    max_pos integer;
+BEGIN
+    SELECT COUNT(*), MAX(ordinal_position)
+    INTO col_count, max_pos
+    FROM information_schema.columns
+    WHERE table_schema = 'sk1_kba_test'
+    AND table_name = 'kolumnordning_y';
+
+    IF col_count = max_pos THEN
+        RAISE NOTICE 'TEST 7a PASSED: Column positions are sequential (% columns, max position %)', col_count, max_pos;
+    ELSE
+        RAISE WARNING 'TEST 7a FAILED: Column position gaps detected (% columns but max position %)', col_count, max_pos;
+    END IF;
+END $$;
+
+-- Cleanup
+DROP TABLE IF EXISTS sk1_kba_test.kolumnordning_y;
+
+------------------------------------------------------------------------
+-- TEST 8: Standard columns are added correctly
+------------------------------------------------------------------------
+\echo ''
+\echo '--- TEST 8: Standard columns ---'
+
+CREATE TABLE sk0_ext_test.standardkol_y (
+    data text,
+    geom geometry(Polygon, 3007)
+);
+
+-- Verify all expected standard columns exist
+DO $$
+DECLARE
+    missing text[];
+BEGIN
+    SELECT array_agg(expected) INTO missing
+    FROM unnest(ARRAY['gid', 'skapad_tidpunkt', 'skapad_av', 'andrad_tidpunkt', 'andrad_av']) AS expected
+    WHERE NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'sk0_ext_test'
+        AND table_name = 'standardkol_y'
+        AND column_name = expected
+    );
+
+    IF missing IS NULL THEN
+        RAISE NOTICE 'TEST 8a PASSED: All standard columns present';
+    ELSE
+        RAISE WARNING 'TEST 8a FAILED: Missing standard columns: %', array_to_string(missing, ', ');
+    END IF;
+END $$;
+
+-- Verify gid is first column
+DO $$
+DECLARE
+    gid_pos integer;
+BEGIN
+    SELECT ordinal_position INTO gid_pos
+    FROM information_schema.columns
+    WHERE table_schema = 'sk0_ext_test'
+    AND table_name = 'standardkol_y'
+    AND column_name = 'gid';
+
+    IF gid_pos = 1 THEN
+        RAISE NOTICE 'TEST 8b PASSED: gid is first column (position 1)';
+    ELSE
+        RAISE WARNING 'TEST 8b FAILED: gid at position % (expected 1)', gid_pos;
+    END IF;
+END $$;
+
+-- Verify geom is last column
+DO $$
+DECLARE
+    geom_pos integer;
+    max_pos integer;
+BEGIN
+    SELECT ordinal_position INTO geom_pos
+    FROM information_schema.columns
+    WHERE table_schema = 'sk0_ext_test'
+    AND table_name = 'standardkol_y'
+    AND column_name = 'geom';
+
+    SELECT MAX(ordinal_position) INTO max_pos
+    FROM information_schema.columns
+    WHERE table_schema = 'sk0_ext_test'
+    AND table_name = 'standardkol_y';
+
+    IF geom_pos = max_pos THEN
+        RAISE NOTICE 'TEST 8c PASSED: geom is last column (position %)', geom_pos;
+    ELSE
+        RAISE WARNING 'TEST 8c FAILED: geom at position % but max is %', geom_pos, max_pos;
+    END IF;
+END $$;
+
+-- Cleanup
+DROP TABLE IF EXISTS sk0_ext_test.standardkol_y;
+
+------------------------------------------------------------------------
+-- TEST 9: DROP SCHEMA cleans up roles
+------------------------------------------------------------------------
+\echo ''
+\echo '--- TEST 9: DROP SCHEMA role cleanup ---'
+
+-- Use sk2_ext schema to test both w_{schema} and r_{schema} role creation
+DROP SCHEMA IF EXISTS sk2_ext_rolltest CASCADE;
+CREATE SCHEMA sk2_ext_rolltest;
+
+-- Verify write role was created (w_{schema} matches all schemas)
+DO $$
+DECLARE
+    has_role boolean;
+BEGIN
+    SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = 'w_sk2_ext_rolltest') INTO has_role;
+
+    IF has_role THEN
+        RAISE NOTICE 'TEST 9a PASSED: Write role w_sk2_ext_rolltest created on schema creation';
+    ELSE
+        RAISE WARNING 'TEST 9a FAILED: Write role w_sk2_ext_rolltest not created';
+    END IF;
+END $$;
+
+-- Verify read role was created (r_{schema} matches sk2_%)
+DO $$
+DECLARE
+    has_role boolean;
+BEGIN
+    SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = 'r_sk2_ext_rolltest') INTO has_role;
+
+    IF has_role THEN
+        RAISE NOTICE 'TEST 9b PASSED: Read role r_sk2_ext_rolltest created on schema creation';
+    ELSE
+        RAISE WARNING 'TEST 9b FAILED: Read role r_sk2_ext_rolltest not created';
+    END IF;
+END $$;
+
+-- Drop the schema - roles should be cleaned up
+DROP SCHEMA sk2_ext_rolltest CASCADE;
+
+-- Verify write role was removed
+DO $$
+DECLARE
+    has_role boolean;
+BEGIN
+    SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = 'w_sk2_ext_rolltest') INTO has_role;
+
+    IF NOT has_role THEN
+        RAISE NOTICE 'TEST 9c PASSED: Write role removed on DROP SCHEMA';
+    ELSE
+        RAISE WARNING 'TEST 9c FAILED: Write role w_sk2_ext_rolltest still exists after DROP SCHEMA';
+    END IF;
+END $$;
+
+-- Verify read role was removed
+DO $$
+DECLARE
+    has_role boolean;
+BEGIN
+    SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = 'r_sk2_ext_rolltest') INTO has_role;
+
+    IF NOT has_role THEN
+        RAISE NOTICE 'TEST 9d PASSED: Read role removed on DROP SCHEMA';
+    ELSE
+        RAISE WARNING 'TEST 9d FAILED: Read role r_sk2_ext_rolltest still exists after DROP SCHEMA';
+    END IF;
+END $$;
 
 ------------------------------------------------------------------------
 -- FINAL CLEANUP
