@@ -11,6 +11,7 @@
  *   7. Column order is clean after CREATE TABLE (no ordinal gaps)
  *   8. Standard columns are added correctly
  *   9. DROP SCHEMA cleans up roles
+ *  10. Edge cases: _h bypass, bad suffixes, name collisions, CTAS, ADD COLUMN
  *
  * PREREQUISITES:
  *   - Hex must be installed in the target database (all functions deployed)
@@ -643,6 +644,199 @@ BEGIN
     ELSE
         RAISE WARNING 'TEST 9d FAILED: Read role r_sk2_ext_rolltest still exists after DROP SCHEMA';
     END IF;
+END $$;
+
+------------------------------------------------------------------------
+-- TEST 10: Edge cases and adversarial inputs
+------------------------------------------------------------------------
+\echo ''
+\echo '--- TEST 10: Edge cases ---'
+
+-- 10a: Table ending in _h skips restructuring (by design - history tables)
+CREATE TABLE sk0_ext_test.sneaky_h (
+    data text
+);
+
+DO $$
+DECLARE
+    has_gid boolean;
+BEGIN
+    SELECT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'sk0_ext_test'
+        AND table_name = 'sneaky_h'
+        AND column_name = 'gid'
+    ) INTO has_gid;
+
+    IF NOT has_gid THEN
+        RAISE NOTICE 'TEST 10a PASSED: _h table skipped by restructuring (by design)';
+    ELSE
+        RAISE WARNING 'TEST 10a FAILED: _h table was unexpectedly restructured';
+    END IF;
+END $$;
+
+DROP TABLE IF EXISTS sk0_ext_test.sneaky_h;
+
+-- 10b: Reserved geometry suffix without geometry (should be rejected)
+DO $$
+BEGIN
+    CREATE TABLE sk0_ext_test.trick_p (name text);
+    RAISE WARNING 'TEST 10b FAILED: Table with geometry suffix but no geometry was accepted';
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE NOTICE 'TEST 10b PASSED: Table with geometry suffix but no geometry rejected: %', SQLERRM;
+END $$;
+
+-- 10c: User column named 'gid' (should be silently replaced by standard gid)
+CREATE TABLE sk0_ext_test.usergid_y (
+    gid text,
+    geom geometry(Polygon, 3007)
+);
+
+DO $$
+DECLARE
+    gid_type text;
+BEGIN
+    SELECT data_type INTO gid_type
+    FROM information_schema.columns
+    WHERE table_schema = 'sk0_ext_test'
+    AND table_name = 'usergid_y'
+    AND column_name = 'gid';
+
+    IF gid_type = 'integer' THEN
+        RAISE NOTICE 'TEST 10c PASSED: User gid (text) replaced by standard gid (integer)';
+    ELSE
+        RAISE WARNING 'TEST 10c FAILED: gid is % instead of integer', gid_type;
+    END IF;
+END $$;
+
+DROP TABLE IF EXISTS sk0_ext_test.usergid_y;
+
+-- 10d: CREATE TABLE AS SELECT (different DDL tag - may bypass Hex)
+CREATE TABLE sk0_ext_test.source_y (
+    data text,
+    geom geometry(Polygon, 3007)
+);
+
+CREATE TABLE sk0_ext_test.ctas_y AS SELECT * FROM sk0_ext_test.source_y;
+
+DO $$
+DECLARE
+    has_gid boolean;
+BEGIN
+    SELECT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'sk0_ext_test'
+        AND table_name = 'ctas_y'
+        AND column_name = 'gid'
+    ) INTO has_gid;
+
+    IF has_gid THEN
+        RAISE NOTICE 'TEST 10d INFO: CREATE TABLE AS SELECT WAS restructured by Hex';
+    ELSE
+        RAISE WARNING 'TEST 10d INFO: CREATE TABLE AS SELECT bypasses Hex (no restructuring). Use INSERT INTO ... SELECT instead.';
+    END IF;
+END $$;
+
+DROP TABLE IF EXISTS sk0_ext_test.ctas_y;
+DROP TABLE IF EXISTS sk0_ext_test.source_y;
+
+-- 10e: Reserved column name on wrong schema (skapad_av on _ext_ table)
+-- skapad_av is a standard column for _kba_ only, but the filter removes it
+-- from ALL schemas. On _ext_ it gets silently dropped.
+CREATE TABLE sk0_ext_test.reserverat_y (
+    skapad_av text,
+    other_data text,
+    geom geometry(Polygon, 3007)
+);
+
+DO $$
+DECLARE
+    has_skapad_av boolean;
+BEGIN
+    SELECT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'sk0_ext_test'
+        AND table_name = 'reserverat_y'
+        AND column_name = 'skapad_av'
+    ) INTO has_skapad_av;
+
+    IF has_skapad_av THEN
+        RAISE NOTICE 'TEST 10e INFO: User column skapad_av preserved on ext table';
+    ELSE
+        RAISE WARNING 'TEST 10e INFO: User column skapad_av silently dropped on ext table (reserved name). Avoid using standard column names on non-kba schemas.';
+    END IF;
+END $$;
+
+DROP TABLE IF EXISTS sk0_ext_test.reserverat_y;
+
+-- 10f: Geometry column not named 'geom' (should be rejected)
+DO $$
+BEGIN
+    CREATE TABLE sk0_ext_test.badgeom_y (
+        data text,
+        the_geom geometry(Polygon, 3007)
+    );
+    RAISE WARNING 'TEST 10f FAILED: Table with geometry not named geom was accepted';
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE NOTICE 'TEST 10f PASSED: Geometry column must be named geom: %', SQLERRM;
+END $$;
+
+-- 10g: ALTER TABLE ADD COLUMN on existing table (hantera_kolumntillagg)
+CREATE TABLE sk0_ext_test.addcol_y (
+    data text,
+    geom geometry(Polygon, 3007)
+);
+
+ALTER TABLE sk0_ext_test.addcol_y ADD COLUMN extra_info text;
+
+DO $$
+DECLARE
+    geom_pos integer;
+    max_pos integer;
+    extra_exists boolean;
+BEGIN
+    SELECT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'sk0_ext_test'
+        AND table_name = 'addcol_y'
+        AND column_name = 'extra_info'
+    ) INTO extra_exists;
+
+    SELECT ordinal_position INTO geom_pos
+    FROM information_schema.columns
+    WHERE table_schema = 'sk0_ext_test'
+    AND table_name = 'addcol_y'
+    AND column_name = 'geom';
+
+    SELECT MAX(ordinal_position) INTO max_pos
+    FROM information_schema.columns
+    WHERE table_schema = 'sk0_ext_test'
+    AND table_name = 'addcol_y';
+
+    IF extra_exists AND geom_pos = max_pos THEN
+        RAISE NOTICE 'TEST 10g PASSED: ADD COLUMN works and geom stays last';
+    ELSIF NOT extra_exists THEN
+        RAISE WARNING 'TEST 10g FAILED: extra_info column not found after ADD COLUMN';
+    ELSE
+        RAISE WARNING 'TEST 10g FAILED: geom not last after ADD COLUMN (pos % of %)', geom_pos, max_pos;
+    END IF;
+END $$;
+
+DROP TABLE IF EXISTS sk0_ext_test.addcol_y;
+
+-- 10h: Multiple geometry columns (should be rejected)
+DO $$
+BEGIN
+    CREATE TABLE sk0_ext_test.multigeom_y (
+        geom geometry(Polygon, 3007),
+        geom2 geometry(Point, 3007)
+    );
+    RAISE WARNING 'TEST 10h FAILED: Table with multiple geometry columns was accepted';
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE NOTICE 'TEST 10h PASSED: Multiple geometry columns rejected: %', SQLERRM;
 END $$;
 
 ------------------------------------------------------------------------
