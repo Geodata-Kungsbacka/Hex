@@ -141,11 +141,12 @@ def process_sql(sql: str) -> str:
     
     Event triggers must be owned by a superuser, so those keep postgres ownership.
     """
-    # Event trigger files must keep superuser ownership
-    is_event_trigger_file = 'CREATE EVENT TRIGGER' in sql.upper()
-    
-    if is_event_trigger_file:
-        # Keep postgres ownership for event triggers
+    # Event triggers and SECURITY DEFINER functions must keep superuser ownership
+    needs_superuser = ('CREATE EVENT TRIGGER' in sql.upper() or
+                       'SECURITY DEFINER' in sql.upper())
+
+    if needs_superuser:
+        # Keep postgres ownership for superuser-dependent objects
         return sql
     
     if not OWNER_ROLE:
