@@ -483,13 +483,13 @@ CREATE TABLE sk0_ext_test.standardkol_y (
     geom geometry(Polygon, 3007)
 );
 
--- Verify all expected standard columns exist
+-- Verify standard columns on _ext_ schema (only gid + skapad_tidpunkt)
 DO $$
 DECLARE
     missing text[];
 BEGIN
     SELECT array_agg(expected) INTO missing
-    FROM unnest(ARRAY['gid', 'skapad_tidpunkt', 'skapad_av', 'andrad_tidpunkt', 'andrad_av']) AS expected
+    FROM unnest(ARRAY['gid', 'skapad_tidpunkt']) AS expected
     WHERE NOT EXISTS (
         SELECT 1 FROM information_schema.columns
         WHERE table_schema = 'sk0_ext_test'
@@ -498,9 +498,35 @@ BEGIN
     );
 
     IF missing IS NULL THEN
-        RAISE NOTICE 'TEST 8a PASSED: All standard columns present';
+        RAISE NOTICE 'TEST 8a PASSED: Standard columns present on ext table (gid, skapad_tidpunkt)';
     ELSE
-        RAISE WARNING 'TEST 8a FAILED: Missing standard columns: %', array_to_string(missing, ', ');
+        RAISE WARNING 'TEST 8a FAILED: Missing standard columns on ext table: %', array_to_string(missing, ', ');
+    END IF;
+END $$;
+
+-- Verify _kba_ table gets ALL standard columns (gid + skapad_tidpunkt + skapad_av + andrad_tidpunkt + andrad_av)
+CREATE TABLE sk1_kba_test.standardkol_kba_y (
+    data text,
+    geom geometry(Polygon, 3007)
+);
+
+DO $$
+DECLARE
+    missing text[];
+BEGIN
+    SELECT array_agg(expected) INTO missing
+    FROM unnest(ARRAY['gid', 'skapad_tidpunkt', 'skapad_av', 'andrad_tidpunkt', 'andrad_av']) AS expected
+    WHERE NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'sk1_kba_test'
+        AND table_name = 'standardkol_kba_y'
+        AND column_name = expected
+    );
+
+    IF missing IS NULL THEN
+        RAISE NOTICE 'TEST 8b PASSED: All standard columns present on kba table';
+    ELSE
+        RAISE WARNING 'TEST 8b FAILED: Missing standard columns on kba table: %', array_to_string(missing, ', ');
     END IF;
 END $$;
 
@@ -516,9 +542,9 @@ BEGIN
     AND column_name = 'gid';
 
     IF gid_pos = 1 THEN
-        RAISE NOTICE 'TEST 8b PASSED: gid is first column (position 1)';
+        RAISE NOTICE 'TEST 8c PASSED: gid is first column (position 1)';
     ELSE
-        RAISE WARNING 'TEST 8b FAILED: gid at position % (expected 1)', gid_pos;
+        RAISE WARNING 'TEST 8c FAILED: gid at position % (expected 1)', gid_pos;
     END IF;
 END $$;
 
@@ -540,14 +566,15 @@ BEGIN
     AND table_name = 'standardkol_y';
 
     IF geom_pos = max_pos THEN
-        RAISE NOTICE 'TEST 8c PASSED: geom is last column (position %)', geom_pos;
+        RAISE NOTICE 'TEST 8d PASSED: geom is last column (position %)', geom_pos;
     ELSE
-        RAISE WARNING 'TEST 8c FAILED: geom at position % but max is %', geom_pos, max_pos;
+        RAISE WARNING 'TEST 8d FAILED: geom at position % but max is %', geom_pos, max_pos;
     END IF;
 END $$;
 
 -- Cleanup
 DROP TABLE IF EXISTS sk0_ext_test.standardkol_y;
+DROP TABLE IF EXISTS sk1_kba_test.standardkol_kba_y;
 
 ------------------------------------------------------------------------
 -- TEST 9: DROP SCHEMA cleans up roles
