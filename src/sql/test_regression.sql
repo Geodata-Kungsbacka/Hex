@@ -652,30 +652,42 @@ END $$;
 \echo ''
 \echo '--- TEST 10: Edge cases ---'
 
--- 10a: Table ending in _h skips restructuring (by design - history tables)
-CREATE TABLE sk0_ext_test.sneaky_h (
-    data text
+-- 10a: Orphan _h table (no parent) should be BLOCKED (rolled back)
+DO $$
+BEGIN
+    CREATE TABLE sk0_ext_test.sneaky_h (data text);
+    RAISE WARNING 'TEST 10a FAILED: Orphan _h table was accepted (parent does not exist)';
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE NOTICE 'TEST 10a PASSED: Orphan _h table blocked: %', SQLERRM;
+END $$;
+
+-- 10a2: Legitimate _h table (parent exists) should be SKIPPED (allowed through)
+CREATE TABLE sk0_ext_test.parent_y (
+    data text,
+    geom geometry(Polygon, 3007)
 );
 
 DO $$
-DECLARE
-    has_gid boolean;
 BEGIN
-    SELECT EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema = 'sk0_ext_test'
-        AND table_name = 'sneaky_h'
-        AND column_name = 'gid'
-    ) INTO has_gid;
+    CREATE TABLE sk0_ext_test.parent_y_h (data text);
 
-    IF NOT has_gid THEN
-        RAISE NOTICE 'TEST 10a PASSED: _h table skipped by restructuring (by design)';
+    IF EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'sk0_ext_test'
+        AND table_name = 'parent_y_h'
+    ) THEN
+        RAISE NOTICE 'TEST 10a2 PASSED: _h table with existing parent was allowed';
     ELSE
-        RAISE WARNING 'TEST 10a FAILED: _h table was unexpectedly restructured';
+        RAISE WARNING 'TEST 10a2 FAILED: _h table with existing parent was blocked';
     END IF;
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE WARNING 'TEST 10a2 FAILED: _h table with existing parent was rejected: %', SQLERRM;
 END $$;
 
-DROP TABLE IF EXISTS sk0_ext_test.sneaky_h;
+DROP TABLE IF EXISTS sk0_ext_test.parent_y_h;
+DROP TABLE IF EXISTS sk0_ext_test.parent_y;
 
 -- 10b: Reserved geometry suffix without geometry (should be rejected)
 DO $$
