@@ -56,15 +56,33 @@ BEGIN
         tabell_namn := replace(split_part(kommando.object_identity, '.', 2), '"', '');
         temp_tabellnamn := tabell_namn || '_temp_0001';
 
-        -- Kontrollera undantag
-        IF schema_namn = 'public' OR tabell_namn ~ '_h$' THEN
-            RAISE NOTICE 'Hoppar över tabell %.% - %', 
-                schema_namn, tabell_namn,
-                CASE 
-                    WHEN schema_namn = 'public' THEN 'public-schema'
-                    ELSE 'historiktabell'
-                END;
+        -- Kontrollera undantag: public-schema
+        IF schema_namn = 'public' THEN
+            RAISE NOTICE 'Hoppar över tabell %.% - public-schema', schema_namn, tabell_namn;
             CONTINUE;
+        END IF;
+
+        -- Kontrollera undantag: _h-suffix (reserverat för historiktabeller)
+        -- Systemets egna _h-tabeller (skapade av skapa_historik_qa i steg 10)
+        -- når aldrig hit - de fångas av rekursionsskyddet (temp.tabellstrukturering_pagar)
+        IF tabell_namn ~ '_h$' THEN
+            IF EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_schema = schema_namn
+                AND table_name = regexp_replace(tabell_namn, '_h$', '')
+            ) THEN
+                RAISE NOTICE 'Hoppar över tabell %.% - historiktabell (modertabell finns)',
+                    schema_namn, tabell_namn;
+                CONTINUE;
+            ELSE
+                RAISE EXCEPTION E'[hantera_ny_tabell] Ogiltigt tabellnamn "%.%".\n'
+                    '[hantera_ny_tabell] Suffixet _h är reserverat för historiktabeller.\n'
+                    '[hantera_ny_tabell] Modertabell "%" saknas i schema "%".\n'
+                    '[hantera_ny_tabell] Byt namn eller skapa modertabellen först.',
+                    schema_namn, tabell_namn,
+                    regexp_replace(tabell_namn, '_h$', ''),
+                    schema_namn;
+            END IF;
         END IF;
 
         RAISE NOTICE E'\n--- Bearbetar %.% ---', schema_namn, tabell_namn;
