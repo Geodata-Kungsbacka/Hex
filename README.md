@@ -39,7 +39,18 @@ För varje nytt schema skapas automatiskt:
 - `r_schemanamn` - roll med läsrättigheter
 - `w_schemanamn` - roll med läs- och skrivrättigheter
 
-### 4. **Historik och kvalitetssäkring**
+### 4. **Automatisk GeoServer-publicering**
+När sk0- eller sk1-scheman skapas skickas en `pg_notify` som fångas av en Python-lyssnare.
+Lyssnaren skapar automatiskt:
+- En workspace i GeoServer med samma namn som schemat
+- En JNDI PostGIS-datastore i den workspace med samma namn som schemat
+
+Schemaprefix mappas till JNDI-anslutningar via konfigurerbara miljövariabler (t.ex. `sk0` → `java:comp/env/jdbc/db-devkarta.geodata_sk0_oppen`). sk2-scheman exkluderas — de kräver manuell konfiguration.
+
+Lyssnaren körs som en Windows-tjänst (`HexGeoServerListener`) via `services.msc`.
+Se `src/geoserver/SETUP.md` för fullständig installationsguide.
+
+### 5. **Historik och kvalitetssäkring**
 För scheman konfigurerade med QA-kolumner skapas:
 - Historiktabeller (`tabellnamn_h`) som loggar alla ändringar
 - Triggers som automatiskt uppdaterar `andrad_tidpunkt` och `andrad_av`
@@ -129,6 +140,8 @@ src/sql/03_functions/05_trigger_functions/hantera_kolumntillagg.sql
 src/sql/03_functions/05_trigger_functions/hantera_ny_vy.sql
 src/sql/03_functions/05_trigger_functions/ta_bort_schemaroller.sql
 src/sql/03_functions/05_trigger_functions/hantera_standardiserade_roller.sql
+src/sql/03_functions/05_trigger_functions/hantera_borttagen_tabell.sql
+src/sql/03_functions/05_trigger_functions/notifiera_geoserver.sql
 
 -- 4. Skapa databastriggers
 src/sql/04_triggers/hantera_ny_tabell_trigger.sql
@@ -136,7 +149,9 @@ src/sql/04_triggers/hantera_kolumntillagg_trigger.sql
 src/sql/04_triggers/hantera_ny_vy_trigger.sql
 src/sql/04_triggers/ta_bort_schemaroller_trigger.sql
 src/sql/04_triggers/hantera_standardiserade_roller_trigger.sql
+src/sql/04_triggers/hantera_borttagen_tabell_trigger.sql
 src/sql/04_triggers/validera_schemanamn_trigger.sql
+src/sql/04_triggers/notifiera_geoserver_trigger.sql
 ```
 
 ## Detaljerad funktionsbeskrivning
@@ -395,6 +410,27 @@ src/sql/04_triggers/validera_schemanamn_trigger.sql
 
 **Nytta**: Håller databasen ren från oanvända säkerhetsobjekt.
 
+#### `hantera_borttagen_tabell()`
+**Syfte**: Städar upp historiktabeller och QA-triggerfunktioner när bastabeller tas bort.
+
+**Process**: Identifierar borttagna tabeller och tar bort motsvarande historiktabell (`_h`) och triggerfunktion.
+
+**Trigger**: Körs vid DROP TABLE (SQL_DROP-event).
+
+**Nytta**: Förhindrar att övergivna historiktabeller och funktioner ackumuleras i databasen.
+
+#### `notifiera_geoserver()`
+**Syfte**: Skickar `pg_notify` till GeoServer-lyssnaren när nya sk0/sk1-scheman skapas.
+
+**Funktionalitet**:
+- Filtrerar till enbart scheman med prefix `sk0` eller `sk1`
+- Skickar schemanamnet som payload på kanalen `geoserver_schema`
+- Fel i notifieringen blockerar **inte** schemaskapandet
+
+**Trigger**: Körs vid CREATE SCHEMA via `notifiera_geoserver_trigger`.
+
+**Mottagare**: Python-lyssnaren (`geoserver_listener.py`) som skapar workspace och JNDI-datastore i GeoServer.
+
 ## Exempel på användning
 
 ### Skapa schema med korrekt namngivning
@@ -573,10 +609,11 @@ WHERE 'sk1_kba_bygg' LIKE schema_uttryck
 ORDER BY ordinal_position;
 
 -- Verifiera att funktioner finns
-SELECT proname 
-FROM pg_proc 
-WHERE proname LIKE 'hantera_%' 
+SELECT proname
+FROM pg_proc
+WHERE proname LIKE 'hantera_%'
    OR proname LIKE 'validera_%'
+   OR proname LIKE 'notifiera_%'
 ORDER BY proname;
 ```
 
@@ -586,12 +623,14 @@ Om du behöver ta bort systemet:
 
 ```sql
 -- 1. Ta bort triggers
+DROP EVENT TRIGGER IF EXISTS notifiera_geoserver_trigger CASCADE;
 DROP EVENT TRIGGER IF EXISTS validera_schemanamn_trigger CASCADE;
-DROP EVENT TRIGGER IF EXISTS hantera_ny_tabell_trigger CASCADE;
-DROP EVENT TRIGGER IF EXISTS hantera_kolumntillagg_trigger CASCADE;
-DROP EVENT TRIGGER IF EXISTS hantera_ny_vy_trigger CASCADE;
+DROP EVENT TRIGGER IF EXISTS hantera_borttagen_tabell_trigger CASCADE;
 DROP EVENT TRIGGER IF EXISTS hantera_standardiserade_roller_trigger CASCADE;
 DROP EVENT TRIGGER IF EXISTS ta_bort_schemaroller_trigger CASCADE;
+DROP EVENT TRIGGER IF EXISTS hantera_ny_vy_trigger CASCADE;
+DROP EVENT TRIGGER IF EXISTS hantera_kolumntillagg_trigger CASCADE;
+DROP EVENT TRIGGER IF EXISTS hantera_ny_tabell_trigger CASCADE;
 
 -- 2. Ta bort funktioner (i omvänd beroendeordning)
 -- [Lista alla DROP FUNCTION-satser här]
