@@ -22,6 +22,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import select
 import sys
 import time
@@ -297,12 +298,29 @@ class GeoServerClient:
 # SCHEMA HANDLER
 # =============================================================================
 
+# Regex som matchar giltiga schemanamn for GeoServer-publicering.
+# Maste overensstamma med SQL-valideringen i validera_schemanamn(),
+# men begransat till sk0/sk1 (sk2 publiceras inte till GeoServer).
+SCHEMA_PATTERN = re.compile(r"^sk[01]_(ext|kba|sys)_.+$")
+
+
 def handle_schema_notification(schema_name, config, gs_client):
     """Hanterar en notifiering om nytt schema.
 
     Skapar workspace och JNDI-datastore i GeoServer.
     """
     log.info("Mottog notifiering for schema: %s", schema_name)
+
+    # Validera schemanamnet innan vi gor nagot mot GeoServer.
+    # SQL-triggern filtrerar redan, men pg_notify-kanalen ar oppen
+    # sa vem som helst med NOTIFY-rattighet kan skicka godtycklig payload.
+    if not SCHEMA_PATTERN.match(schema_name):
+        log.warning(
+            "  Ogiltigt schemanamn '%s' - matchar inte monster '%s'. Ignorerar.",
+            schema_name,
+            SCHEMA_PATTERN.pattern,
+        )
+        return False
 
     # Extrahera prefix (sk0 eller sk1)
     prefix = schema_name.split("_")[0]  # t.ex. "sk0"
