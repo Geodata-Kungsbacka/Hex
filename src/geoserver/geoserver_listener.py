@@ -342,9 +342,16 @@ def handle_schema_notification(schema_name, config, gs_client):
 # POSTGRESQL LISTENER
 # =============================================================================
 
-def listen_loop(config, gs_client):
-    """Huvudloop som lyssnar pa pg_notify och hanterar notifieringar."""
-    while True:
+def listen_loop(config, gs_client, stop_event=None):
+    """Huvudloop som lyssnar pa pg_notify och hanterar notifieringar.
+
+    Args:
+        config: Konfigurationsdict fran load_config()
+        gs_client: GeoServerClient-instans
+        stop_event: threading.Event som signalerar att loopen ska avslutas
+                    (anvands av Windows-tjansten for graceful shutdown)
+    """
+    while not (stop_event and stop_event.is_set()):
         conn = None
         try:
             log.info("Ansluter till PostgreSQL %s@%s:%d/%s...",
@@ -365,9 +372,10 @@ def listen_loop(config, gs_client):
             log.info("Lyssnar pa kanal 'geoserver_schema'...")
             log.info("Vantar pa nya scheman...")
 
-            while True:
-                # Vanta pa notifiering med 60s timeout (for keepalive)
-                if select.select([conn], [], [], 60) == ([], [], []):
+            while not (stop_event and stop_event.is_set()):
+                # Vanta pa notifiering med 5s timeout
+                # Kort timeout sa att stop_event kontrolleras regelbundet
+                if select.select([conn], [], [], 5) == ([], [], []):
                     # Timeout - skicka keepalive
                     cur.execute("SELECT 1")
                     continue
@@ -394,9 +402,14 @@ def listen_loop(config, gs_client):
             if conn and not conn.closed:
                 conn.close()
 
+        if stop_event and stop_event.is_set():
+            break
+
         delay = config["reconnect_delay"]
         log.info("Ateransluter om %d sekunder...", delay)
         time.sleep(delay)
+
+    log.info("Lyssnaren avslutad.")
 
 
 # =============================================================================
