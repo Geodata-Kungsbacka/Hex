@@ -39,7 +39,7 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from geoserver_listener import load_config, GeoServerClient, listen_loop, log
+from geoserver_listener import load_config, GeoServerClient, run_all_listeners, log
 
 
 # =============================================================================
@@ -120,25 +120,25 @@ class HexGeoServerService(win32serviceutil.ServiceFramework):
 
             config = load_config()
 
+            log.info("GeoServer:  %s", config["gs_url"])
+            log.info("Databaser:  %d st", len(config["databases"]))
+            for db in config["databases"]:
+                log.info("  [%s] %s@%s:%d/%s",
+                         db["dbname"], db["user"], db["host"], db["port"], db["dbname"])
+                for prefix, jndi in sorted(db["jndi_mappings"].items()):
+                    log.info("    %s -> %s", prefix, jndi)
+
             gs_client = GeoServerClient(
                 base_url=config["gs_url"],
                 user=config["gs_user"],
                 password=config["gs_password"],
             )
 
-            log.info("PostgreSQL: %s@%s:%d/%s",
-                     config["pg_user"], config["pg_host"],
-                     config["pg_port"], config["pg_dbname"])
-            log.info("GeoServer:  %s", config["gs_url"])
-            log.info("JNDI-kopplingar:")
-            for prefix, jndi in sorted(config["jndi_mappings"].items()):
-                log.info("  %s -> %s", prefix, jndi)
-
             if not gs_client.test_connection():
                 log.error("Kunde inte ansluta till GeoServer vid uppstart")
                 log.error("Tjansten fortsatter - forsoker igen vid nasta notifiering")
 
-            listen_loop(config, gs_client, stop_event=self.stop_event)
+            run_all_listeners(config, stop_event=self.stop_event)
 
         except Exception as e:
             log.error("Tjansten avslutades med fel: %s", e)

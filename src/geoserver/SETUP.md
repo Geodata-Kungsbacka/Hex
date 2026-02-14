@@ -29,6 +29,10 @@ GeoServer REST API:
   2. POST /rest/.../datastores      --> JNDI store "sk0_kba_test"
 ```
 
+> **Tips:** Om Hex ligger pa en annan enhet an `C:` (t.ex. `D:`) maste du
+> byta enhet forst innan `cd` fungerar. Anvand `cd /D D:\sokvag\till\Hex`
+> eller skriv `D:` foljt av `cd \sokvag\till\Hex` i tva steg.
+
 ---
 
 ## Steg 1: Installera Python-beroenden
@@ -85,7 +89,78 @@ WHERE evtname = 'notifiera_geoserver_trigger';
 
 ---
 
-## Steg 3: Konfigurera miljovariabler
+## Steg 3: Skapa dedikerade tjanstekonton
+
+Lyssnaren behover **inte** superuser-rattigheter i PostgreSQL och bor **inte**
+anvanda `postgres`-kontot. Skapa istallet dedikerade konton med minimala
+rattigheter.
+
+### PostgreSQL - Lyssnarroll
+
+Lyssnaren gor bara tva saker mot PostgreSQL:
+
+1. `LISTEN geoserver_schema` - prenumerera pa notify-kanalen
+2. `SELECT 1` - keepalive var 5:e sekund
+
+Detta kraver enbart `CONNECT`-rattighet pa databasen:
+
+```sql
+-- Kor som postgres/superuser
+CREATE ROLE hex_listener WITH LOGIN PASSWORD 'starkt_losenord_har';
+GRANT CONNECT ON DATABASE geodata TO hex_listener;
+```
+
+Ingen ytterligare rattighet behovs - `LISTEN` pa en kanal ar tillganligt for
+alla roller som kan ansluta till databasen.
+
+### GeoServer - REST API-anvandare
+
+Lyssnaren anropar GeoServer REST API for att:
+
+- Kontrollera om workspace/datastore redan finns (`GET`)
+- Skapa workspace och JNDI-datastore (`POST`)
+
+Att skapa workspaces och datastores kraver **administratorsrattigheter** i
+GeoServer. Det gar inte att begransar med finare granularitet i GeoServer REST API.
+
+Skapa ett dedikerat administratorskonto i GeoServer istallet for att anvanda
+standardkontot `admin`:
+
+1. Ga till **Security > Users/Groups** i GeoServer webbgranssnittet
+2. Skapa en ny anvandare, t.ex. `hex_publisher`
+3. Tilldela rollen **ADMIN**
+
+> **OBS:** Andrade aldrig losenordet pa standardkontot `admin` utan att forst
+> verifiera att det nya kontot fungerar.
+
+---
+
+## Steg 4: Tillat localhost i GeoServer CSRF-filter
+
+GeoServer blockerar POST/PUT/DELETE-anrop fran origon den inte kanner igen.
+Eftersom lyssnaren anropar GeoServer REST API fran `localhost` maste vi
+vitlista det i GeoServers `web.xml`.
+
+**Hitta filen:**
+```
+<GeoServer-katalog>\webapps\geoserver\WEB-INF\web.xml
+```
+
+**Lagg till `localhost` i CSRF-vitlistan:**
+
+```xml
+<context-param>
+    <param-name>GEOSERVER_CSRF_WHITELIST</param-name>
+    <param-value>[din-geoserver-doman], localhost</param-value>
+</context-param>
+```
+
+> **OBS:** Om parametern redan finns, lagg bara till `, localhost` i
+> befintligt `<param-value>`. Starta om GeoServer efterat.
+
+---
+
+## Steg 5: Konfigurera miljovariabler
 
 ### Alternativ A: .env-fil (enklast for testning)
 
@@ -98,25 +173,32 @@ notepad .env
 Fyll i dina varden i `.env`:
 
 ```env
-# PostgreSQL
+# PostgreSQL - delade standardvarden (anvand INTE postgres-kontot)
 HEX_PG_HOST=localhost
 HEX_PG_PORT=5432
-HEX_PG_DBNAME=geodata
-HEX_PG_USER=postgres
-HEX_PG_PASSWORD=ditt_postgres_losenord
+HEX_PG_USER=hex_listener
+HEX_PG_PASSWORD=ditt_listener_losenord
 
-# GeoServer
+# GeoServer (dedikerad admin-anvandare - anvand INTE standardkontot admin)
 HEX_GS_URL=http://localhost:8080/geoserver
-HEX_GS_USER=admin
+HEX_GS_USER=hex_publisher
 HEX_GS_PASSWORD=ditt_geoserver_losenord
 
-# JNDI-kopplingar
-HEX_JNDI_sk0=java:comp/env/jdbc/db-devkarta.geodata_sk0_oppen
-HEX_JNDI_sk1=java:comp/env/jdbc/db-devkarta.geodata_sk1_kommun
+# Databaser - en grupp per PostgreSQL-databas
+HEX_DB_1_DBNAME=geodata_sk0
+HEX_DB_1_JNDI_sk0=java:comp/env/jdbc/server.geodata_sk0
 
-# Framtida prefix laggs till har:
-# HEX_JNDI_sk3=java:comp/env/jdbc/db-prod.geodata_sk3_ngt
+HEX_DB_2_DBNAME=geodata_sk1
+HEX_DB_2_JNDI_sk1=java:comp/env/jdbc/server.geodata_sk1
+
+# Framtida databaser laggs till har:
+# HEX_DB_3_DBNAME=geodata_sk3
+# HEX_DB_3_JNDI_sk3=java:comp/env/jdbc/server.geodata_sk3
 ```
+
+Varje `HEX_DB_N_`-grupp maste ha ett `DBNAME` och minst en `JNDI_`-koppling.
+HOST/PORT/USER/PASSWORD kan anges per databas om de skiljer sig fran
+standardvardena ovan (t.ex. `HEX_DB_2_HOST=annan-server`).
 
 ### Alternativ B: Systemvida miljovariabler (sakrare for produktion)
 
@@ -127,12 +209,13 @@ Fordelen: ingen `.env`-fil pa disk med losenord.
 Alternativt via kommandotolken (som admin):
 
 ```cmd
-setx /M HEX_PG_DBNAME "geodata"
-setx /M HEX_PG_PASSWORD "ditt_postgres_losenord"
-setx /M HEX_GS_USER "admin"
+setx /M HEX_PG_PASSWORD "ditt_listener_losenord"
+setx /M HEX_GS_USER "hex_publisher"
 setx /M HEX_GS_PASSWORD "ditt_geoserver_losenord"
-setx /M HEX_JNDI_sk0 "java:comp/env/jdbc/db-devkarta.geodata_sk0_oppen"
-setx /M HEX_JNDI_sk1 "java:comp/env/jdbc/db-devkarta.geodata_sk1_kommun"
+setx /M HEX_DB_1_DBNAME "geodata_sk0"
+setx /M HEX_DB_1_JNDI_sk0 "java:comp/env/jdbc/server.geodata_sk0"
+setx /M HEX_DB_2_DBNAME "geodata_sk1"
+setx /M HEX_DB_2_JNDI_sk1 "java:comp/env/jdbc/server.geodata_sk1"
 ```
 
 > **OBS:** `setx /M` satter systemvida variabler. Du maste starta om
@@ -140,7 +223,7 @@ setx /M HEX_JNDI_sk1 "java:comp/env/jdbc/db-devkarta.geodata_sk1_kommun"
 
 ---
 
-## Steg 4: Testa anslutningen
+## Steg 6: Testa anslutningen
 
 Testa att lyssnaren kan na bade PostgreSQL och GeoServer:
 
@@ -155,11 +238,12 @@ Forvantad utskrift:
 2026-02-13 10:00:00 [INFO] ============================================================
 2026-02-13 10:00:00 [INFO] GeoServer Schema Listener
 2026-02-13 10:00:00 [INFO] ============================================================
-2026-02-13 10:00:00 [INFO] PostgreSQL: postgres@localhost:5432/geodata
 2026-02-13 10:00:00 [INFO] GeoServer:  http://localhost:8080/geoserver
-2026-02-13 10:00:00 [INFO] JNDI-kopplingar:
-2026-02-13 10:00:00 [INFO]   sk0 -> java:comp/env/jdbc/db-devkarta.geodata_sk0_oppen
-2026-02-13 10:00:00 [INFO]   sk1 -> java:comp/env/jdbc/db-devkarta.geodata_sk1_kommun
+2026-02-13 10:00:00 [INFO] Databaser:  2 st
+2026-02-13 10:00:00 [INFO]   [geodata_sk0] hex_listener@localhost:5432/geodata_sk0
+2026-02-13 10:00:00 [INFO]     sk0 -> java:comp/env/jdbc/server.geodata_sk0
+2026-02-13 10:00:00 [INFO]   [geodata_sk1] hex_listener@localhost:5432/geodata_sk1
+2026-02-13 10:00:00 [INFO]     sk1 -> java:comp/env/jdbc/server.geodata_sk1
 2026-02-13 10:00:00 [INFO] ============================================================
 2026-02-13 10:00:00 [INFO] Ansluten till GeoServer 2.26.x pa http://localhost:8080/geoserver
 2026-02-13 10:00:00 [INFO] Anslutningstest lyckat
@@ -169,14 +253,14 @@ Forvantad utskrift:
 
 | Felmeddelande | Orsak | Losning |
 |---|---|---|
-| `Saknade miljovariabler: HEX_PG_DBNAME` | .env saknas eller oifylld | Fyll i .env enligt steg 3 |
+| `Saknade miljovariabler: HEX_DB_1_DBNAME` | .env saknas eller oifylld | Fyll i .env enligt steg 5 |
 | `Kan inte ansluta till GeoServer` | GeoServer ar inte igang | Starta GeoServer forst |
 | `Autentisering misslyckades` | Fel anvandardnamn/losenord | Kontrollera HEX_GS_USER/PASSWORD |
 | `connection refused` (PostgreSQL) | PostgreSQL ar inte igang | Kontrollera pg-tjansten |
 
 ---
 
-## Steg 5: Testa manuellt (dry-run)
+## Steg 7: Testa manuellt (dry-run)
 
 Kor lyssnaren i dry-run-lage for att se vad som hander utan att gora andringar:
 
@@ -210,9 +294,9 @@ Avbryt lyssnaren med `Ctrl+C`.
 
 ---
 
-## Steg 6: Testa pa riktigt
+## Steg 8: Testa pa riktigt
 
-Upprepa steg 5, men UTAN `--dry-run`:
+Upprepa steg 7, men UTAN `--dry-run`:
 
 ```cmd
 "C:\Users\admin.tobhol\AppData\Local\Programs\Python\Python314\python.exe" geoserver_listener.py
@@ -232,11 +316,11 @@ DROP SCHEMA sk0_kba_test CASCADE;
 
 ---
 
-## Steg 7: Installera som Windows-tjanst
+## Steg 9: Installera som Windows-tjanst
 
 Nu nar vi vet att allt fungerar, installera det som en riktig tjanst.
 
-### 7a. Installera tjansten
+### 9a. Installera tjansten
 
 Oppna en **Administrativ kommandotolk** och kor:
 
@@ -252,7 +336,7 @@ Installing service HexGeoServerListener
 Service installed
 ```
 
-### 7b. Konfigurera ateranslutning vid krasch
+### 9b. Konfigurera ateranslutning vid krasch
 
 Oppna `services.msc`, hitta **Hex GeoServer Schema Listener**, hogerklicka
 och valj **Properties > Recovery**:
@@ -265,7 +349,7 @@ och valj **Properties > Recovery**:
 | Reset fail count after | 1 dag |
 | Restart service after | 30 sekunder |
 
-### 7c. Starta tjansten
+### 9c. Starta tjansten
 
 ```cmd
 "C:\Users\admin.tobhol\AppData\Local\Programs\Python\Python314\python.exe" geoserver_service.py start
@@ -276,7 +360,7 @@ Eller via `services.msc`, eller:
 net start HexGeoServerListener
 ```
 
-### 7d. Kontrollera status
+### 9d. Kontrollera status
 
 ```cmd
 "C:\Users\admin.tobhol\AppData\Local\Programs\Python\Python314\python.exe" geoserver_service.py status
@@ -294,7 +378,7 @@ powershell Get-Content C:\ProgramData\Hex\geoserver_listener.log -Wait -Tail 20
 
 ---
 
-## Steg 8: Verifiera hela flodet
+## Steg 10: Verifiera hela flodet
 
 Allt ska nu vara online. Testa hela kedjan:
 
@@ -310,7 +394,7 @@ type C:\ProgramData\Hex\geoserver_listener.log
 
 Kontrollera GeoServer:
 - Workspace `sk1_kba_parkering` bor finnas
-- Datastore `sk1_kba_parkering` med JNDI `java:comp/env/jdbc/db-devkarta.geodata_sk1_kommun`
+- Datastore `sk1_kba_parkering` med ratt JNDI-koppling for sk1
 
 ---
 
@@ -346,13 +430,18 @@ Andra loggkatalogen med miljoariabeln `HEX_LOG_DIR`.
 
 ## Framtida anpassningar
 
-### Lagga till nytt prefix (t.ex. sk3)
+### Lagga till en ny databas (t.ex. sk3)
 
-1. Skapa JNDI-resursen i GeoServers `context.xml`
-2. Lagg till miljoariabel: `HEX_JNDI_sk3=java:comp/env/jdbc/server.database`
-3. Starta om tjansten: `python geoserver_service.py restart`
+1. Installera event-triggern `notifiera_geoserver` i den nya databasen
+2. Skapa JNDI-resursen i GeoServers `context.xml`
+3. Lagg till en ny databasgrupp i `.env`:
+   ```env
+   HEX_DB_3_DBNAME=geodata_sk3
+   HEX_DB_3_JNDI_sk3=java:comp/env/jdbc/server.geodata_sk3
+   ```
 4. Uppdatera SQL-funktionen `notifiera_geoserver()` sa att `sk3` inkluderas
    (andrad regex fran `^(sk[01])_` till `^(sk[013])_`)
+5. Starta om tjansten: `python geoserver_service.py restart`
 
 ### Andra JNDI-koppling
 
