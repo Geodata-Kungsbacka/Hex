@@ -29,6 +29,10 @@ GeoServer REST API:
   2. POST /rest/.../datastores      --> JNDI store "sk0_kba_test"
 ```
 
+> **Tips:** Om Hex ligger pa en annan enhet an `C:` (t.ex. `D:`) maste du
+> byta enhet forst innan `cd` fungerar. Anvand `cd /D D:\sokvag\till\Hex`
+> eller skriv `D:` foljt av `cd \sokvag\till\Hex` i tva steg.
+
 ---
 
 ## Steg 1: Installera Python-beroenden
@@ -136,7 +140,7 @@ standardkontot `admin`:
 ### Alternativ A: .env-fil (enklast for testning)
 
 ```cmd
-cd /D C:\sokvag\till\Hex\src\geoserver
+cd C:\sokvag\till\Hex\src\geoserver
 copy .env.example .env
 notepad .env
 ```
@@ -191,7 +195,7 @@ setx /M HEX_JNDI_sk1 "java:comp/env/jdbc/db-devkarta.geodata_sk1_kommun"
 Testa att lyssnaren kan na bade PostgreSQL och GeoServer:
 
 ```cmd
-cd /D C:\sokvag\till\Hex\src\geoserver
+cd C:\sokvag\till\Hex\src\geoserver
 
 "C:\Users\admin.tobhol\AppData\Local\Programs\Python\Python314\python.exe" geoserver_listener.py --test
 ```
@@ -287,7 +291,7 @@ Nu nar vi vet att allt fungerar, installera det som en riktig tjanst.
 Oppna en **Administrativ kommandotolk** och kor:
 
 ```cmd
-cd /D C:\sokvag\till\Hex\src\geoserver
+cd C:\sokvag\till\Hex\src\geoserver
 
 "C:\Users\admin.tobhol\AppData\Local\Programs\Python\Python314\python.exe" geoserver_service.py install
 ```
