@@ -40,12 +40,21 @@ from requests.auth import HTTPBasicAuth
 # LOGGING
 # =============================================================================
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
 log = logging.getLogger("geoserver_listener")
+log.setLevel(logging.INFO)
+
+# Lagg till en konsollhandler bara om ingen handler redan finns
+# (geoserver_service.py lagger till en filhandler innan import)
+if not log.handlers:
+    _console = logging.StreamHandler()
+    _console.setFormatter(logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    ))
+    log.addHandler(_console)
+
+# Forhindra dubbletter via root-loggern
+log.propagate = False
 
 # =============================================================================
 # CONFIGURATION
