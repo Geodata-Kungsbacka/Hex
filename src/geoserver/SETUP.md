@@ -135,7 +135,32 @@ standardkontot `admin`:
 
 ---
 
-## Steg 4: Konfigurera miljovariabler
+## Steg 4: Tillat localhost i GeoServer CSRF-filter
+
+GeoServer blockerar POST/PUT/DELETE-anrop fran origon den inte kanner igen.
+Eftersom lyssnaren anropar GeoServer REST API fran `localhost` maste vi
+vitlista det i GeoServers `web.xml`.
+
+**Hitta filen:**
+```
+<GeoServer-katalog>\webapps\geoserver\WEB-INF\web.xml
+```
+
+**Lagg till `localhost` i CSRF-vitlistan:**
+
+```xml
+<context-param>
+    <param-name>GEOSERVER_CSRF_WHITELIST</param-name>
+    <param-value>karta-dev.kungsbacka.net, localhost</param-value>
+</context-param>
+```
+
+> **OBS:** Om parametern redan finns, lagg bara till `, localhost` i
+> befintligt `<param-value>`. Starta om GeoServer efterat.
+
+---
+
+## Steg 5: Konfigurera miljovariabler
 
 ### Alternativ A: .env-fil (enklast for testning)
 
@@ -190,7 +215,7 @@ setx /M HEX_JNDI_sk1 "java:comp/env/jdbc/db-devkarta.geodata_sk1_kommun"
 
 ---
 
-## Steg 5: Testa anslutningen
+## Steg 6: Testa anslutningen
 
 Testa att lyssnaren kan na bade PostgreSQL och GeoServer:
 
@@ -219,14 +244,14 @@ Forvantad utskrift:
 
 | Felmeddelande | Orsak | Losning |
 |---|---|---|
-| `Saknade miljovariabler: HEX_PG_DBNAME` | .env saknas eller oifylld | Fyll i .env enligt steg 4 |
+| `Saknade miljovariabler: HEX_PG_DBNAME` | .env saknas eller oifylld | Fyll i .env enligt steg 5 |
 | `Kan inte ansluta till GeoServer` | GeoServer ar inte igang | Starta GeoServer forst |
 | `Autentisering misslyckades` | Fel anvandardnamn/losenord | Kontrollera HEX_GS_USER/PASSWORD |
 | `connection refused` (PostgreSQL) | PostgreSQL ar inte igang | Kontrollera pg-tjansten |
 
 ---
 
-## Steg 6: Testa manuellt (dry-run)
+## Steg 7: Testa manuellt (dry-run)
 
 Kor lyssnaren i dry-run-lage for att se vad som hander utan att gora andringar:
 
@@ -260,9 +285,9 @@ Avbryt lyssnaren med `Ctrl+C`.
 
 ---
 
-## Steg 7: Testa pa riktigt
+## Steg 8: Testa pa riktigt
 
-Upprepa steg 6, men UTAN `--dry-run`:
+Upprepa steg 7, men UTAN `--dry-run`:
 
 ```cmd
 "C:\Users\admin.tobhol\AppData\Local\Programs\Python\Python314\python.exe" geoserver_listener.py
@@ -282,11 +307,11 @@ DROP SCHEMA sk0_kba_test CASCADE;
 
 ---
 
-## Steg 8: Installera som Windows-tjanst
+## Steg 9: Installera som Windows-tjanst
 
 Nu nar vi vet att allt fungerar, installera det som en riktig tjanst.
 
-### 8a. Installera tjansten
+### 9a. Installera tjansten
 
 Oppna en **Administrativ kommandotolk** och kor:
 
@@ -302,7 +327,7 @@ Installing service HexGeoServerListener
 Service installed
 ```
 
-### 8b. Konfigurera ateranslutning vid krasch
+### 9b. Konfigurera ateranslutning vid krasch
 
 Oppna `services.msc`, hitta **Hex GeoServer Schema Listener**, hogerklicka
 och valj **Properties > Recovery**:
@@ -315,7 +340,7 @@ och valj **Properties > Recovery**:
 | Reset fail count after | 1 dag |
 | Restart service after | 30 sekunder |
 
-### 8c. Starta tjansten
+### 9c. Starta tjansten
 
 ```cmd
 "C:\Users\admin.tobhol\AppData\Local\Programs\Python\Python314\python.exe" geoserver_service.py start
@@ -326,7 +351,7 @@ Eller via `services.msc`, eller:
 net start HexGeoServerListener
 ```
 
-### 8d. Kontrollera status
+### 9d. Kontrollera status
 
 ```cmd
 "C:\Users\admin.tobhol\AppData\Local\Programs\Python\Python314\python.exe" geoserver_service.py status
@@ -344,7 +369,7 @@ powershell Get-Content C:\ProgramData\Hex\geoserver_listener.log -Wait -Tail 20
 
 ---
 
-## Steg 9: Verifiera hela flodet
+## Steg 10: Verifiera hela flodet
 
 Allt ska nu vara online. Testa hela kedjan:
 
