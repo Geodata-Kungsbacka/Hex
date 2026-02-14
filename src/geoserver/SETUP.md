@@ -85,7 +85,53 @@ WHERE evtname = 'notifiera_geoserver_trigger';
 
 ---
 
-## Steg 3: Konfigurera miljovariabler
+## Steg 3: Skapa dedikerade tjanstekonton
+
+Lyssnaren behover **inte** superuser-rattigheter i PostgreSQL och bor **inte**
+anvanda `postgres`-kontot. Skapa istallet dedikerade konton med minimala
+rattigheter.
+
+### PostgreSQL - Lyssnarroll
+
+Lyssnaren gor bara tva saker mot PostgreSQL:
+
+1. `LISTEN geoserver_schema` - prenumerera pa notify-kanalen
+2. `SELECT 1` - keepalive var 5:e sekund
+
+Detta kraver enbart `CONNECT`-rattighet pa databasen:
+
+```sql
+-- Kor som postgres/superuser
+CREATE ROLE hex_listener WITH LOGIN PASSWORD 'starkt_losenord_har';
+GRANT CONNECT ON DATABASE geodata TO hex_listener;
+```
+
+Ingen ytterligare rattighet behovs - `LISTEN` pa en kanal ar tillganligt for
+alla roller som kan ansluta till databasen.
+
+### GeoServer - REST API-anvandare
+
+Lyssnaren anropar GeoServer REST API for att:
+
+- Kontrollera om workspace/datastore redan finns (`GET`)
+- Skapa workspace och JNDI-datastore (`POST`)
+
+Att skapa workspaces och datastores kraver **administratorsrattigheter** i
+GeoServer. Det gar inte att begransar med finare granularitet i GeoServer REST API.
+
+Skapa ett dedikerat administratorskonto i GeoServer istallet for att anvanda
+standardkontot `admin`:
+
+1. Ga till **Security > Users/Groups** i GeoServer webbgranssnittet
+2. Skapa en ny anvandare, t.ex. `hex_publisher`
+3. Tilldela rollen **ADMIN**
+
+> **OBS:** Andrade aldrig losenordet pa standardkontot `admin` utan att forst
+> verifiera att det nya kontot fungerar.
+
+---
+
+## Steg 4: Konfigurera miljovariabler
 
 ### Alternativ A: .env-fil (enklast for testning)
 
@@ -98,16 +144,16 @@ notepad .env
 Fyll i dina varden i `.env`:
 
 ```env
-# PostgreSQL
+# PostgreSQL (dedikerad lyssnarroll - anvand INTE postgres)
 HEX_PG_HOST=localhost
 HEX_PG_PORT=5432
 HEX_PG_DBNAME=geodata
-HEX_PG_USER=postgres
-HEX_PG_PASSWORD=ditt_postgres_losenord
+HEX_PG_USER=hex_listener
+HEX_PG_PASSWORD=ditt_listener_losenord
 
-# GeoServer
+# GeoServer (dedikerad admin-anvandare - anvand INTE standardkontot admin)
 HEX_GS_URL=http://localhost:8080/geoserver
-HEX_GS_USER=admin
+HEX_GS_USER=hex_publisher
 HEX_GS_PASSWORD=ditt_geoserver_losenord
 
 # JNDI-kopplingar
@@ -140,7 +186,7 @@ setx /M HEX_JNDI_sk1 "java:comp/env/jdbc/db-devkarta.geodata_sk1_kommun"
 
 ---
 
-## Steg 4: Testa anslutningen
+## Steg 5: Testa anslutningen
 
 Testa att lyssnaren kan na bade PostgreSQL och GeoServer:
 
@@ -169,14 +215,14 @@ Forvantad utskrift:
 
 | Felmeddelande | Orsak | Losning |
 |---|---|---|
-| `Saknade miljovariabler: HEX_PG_DBNAME` | .env saknas eller oifylld | Fyll i .env enligt steg 3 |
+| `Saknade miljovariabler: HEX_PG_DBNAME` | .env saknas eller oifylld | Fyll i .env enligt steg 4 |
 | `Kan inte ansluta till GeoServer` | GeoServer ar inte igang | Starta GeoServer forst |
 | `Autentisering misslyckades` | Fel anvandardnamn/losenord | Kontrollera HEX_GS_USER/PASSWORD |
 | `connection refused` (PostgreSQL) | PostgreSQL ar inte igang | Kontrollera pg-tjansten |
 
 ---
 
-## Steg 5: Testa manuellt (dry-run)
+## Steg 6: Testa manuellt (dry-run)
 
 Kor lyssnaren i dry-run-lage for att se vad som hander utan att gora andringar:
 
@@ -210,9 +256,9 @@ Avbryt lyssnaren med `Ctrl+C`.
 
 ---
 
-## Steg 6: Testa pa riktigt
+## Steg 7: Testa pa riktigt
 
-Upprepa steg 5, men UTAN `--dry-run`:
+Upprepa steg 6, men UTAN `--dry-run`:
 
 ```cmd
 "C:\Users\admin.tobhol\AppData\Local\Programs\Python\Python314\python.exe" geoserver_listener.py
@@ -232,11 +278,11 @@ DROP SCHEMA sk0_kba_test CASCADE;
 
 ---
 
-## Steg 7: Installera som Windows-tjanst
+## Steg 8: Installera som Windows-tjanst
 
 Nu nar vi vet att allt fungerar, installera det som en riktig tjanst.
 
-### 7a. Installera tjansten
+### 8a. Installera tjansten
 
 Oppna en **Administrativ kommandotolk** och kor:
 
@@ -252,7 +298,7 @@ Installing service HexGeoServerListener
 Service installed
 ```
 
-### 7b. Konfigurera ateranslutning vid krasch
+### 8b. Konfigurera ateranslutning vid krasch
 
 Oppna `services.msc`, hitta **Hex GeoServer Schema Listener**, hogerklicka
 och valj **Properties > Recovery**:
@@ -265,7 +311,7 @@ och valj **Properties > Recovery**:
 | Reset fail count after | 1 dag |
 | Restart service after | 30 sekunder |
 
-### 7c. Starta tjansten
+### 8c. Starta tjansten
 
 ```cmd
 "C:\Users\admin.tobhol\AppData\Local\Programs\Python\Python314\python.exe" geoserver_service.py start
@@ -276,7 +322,7 @@ Eller via `services.msc`, eller:
 net start HexGeoServerListener
 ```
 
-### 7d. Kontrollera status
+### 8d. Kontrollera status
 
 ```cmd
 "C:\Users\admin.tobhol\AppData\Local\Programs\Python\Python314\python.exe" geoserver_service.py status
@@ -294,7 +340,7 @@ powershell Get-Content C:\ProgramData\Hex\geoserver_listener.log -Wait -Tail 20
 
 ---
 
-## Steg 8: Verifiera hela flodet
+## Steg 9: Verifiera hela flodet
 
 Allt ska nu vara online. Testa hela kedjan:
 
