@@ -7,6 +7,8 @@ sk0- eller sk1-schema skapas, skapar den automatiskt:
   1. En workspace i GeoServer med samma namn som schemat
   2. En JNDI-datastore i den workspace med samma namn som schemat
 
+Stodjer flera databaser - en lyssnartrad per databas.
+
 Konfiguration laddas fran miljovariabler eller .env-fil.
 
 Anvandning:
@@ -25,6 +27,7 @@ import os
 import re
 import select
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -53,6 +56,10 @@ def load_config():
 
     Soker forst efter en .env-fil i samma katalog som skriptet.
     Miljovariabler som redan ar satta har foretrrade framfor .env-filen.
+
+    Stodjer tva format:
+    1. Nytt flerdatabas-format: HEX_DB_1_DBNAME, HEX_DB_1_JNDI_sk0 osv.
+    2. Gammalt enkeldatabas-format: HEX_PG_DBNAME, HEX_JNDI_sk0 osv.
     """
     # Forsok ladda .env fran samma katalog som skriptet
     env_path = Path(__file__).parent / ".env"
@@ -69,42 +76,114 @@ def load_config():
             _load_env_file_fallback(env_path)
 
     config = {
-        # PostgreSQL
-        "pg_host": os.environ.get("HEX_PG_HOST", "localhost"),
-        "pg_port": int(os.environ.get("HEX_PG_PORT", "5432")),
-        "pg_dbname": os.environ.get("HEX_PG_DBNAME", ""),
-        "pg_user": os.environ.get("HEX_PG_USER", "postgres"),
-        "pg_password": os.environ.get("HEX_PG_PASSWORD", ""),
         # GeoServer
         "gs_url": os.environ.get("HEX_GS_URL", "http://localhost:8080/geoserver"),
         "gs_user": os.environ.get("HEX_GS_USER", ""),
         "gs_password": os.environ.get("HEX_GS_PASSWORD", ""),
-        # JNDI-kopplingar per prefix
-        # Format: java:comp/env/jdbc/[server].[database]
-        "jndi_mappings": _parse_jndi_mappings(),
         # Reconnect
         "reconnect_delay": int(os.environ.get("HEX_RECONNECT_DELAY", "5")),
+        # Databaser
+        "databases": _parse_database_configs(),
     }
 
     # Validera att kritiska variabler ar satta
     missing = []
-    if not config["pg_dbname"]:
-        missing.append("HEX_PG_DBNAME")
     if not config["gs_user"]:
         missing.append("HEX_GS_USER")
     if not config["gs_password"]:
         missing.append("HEX_GS_PASSWORD")
+    if not config["databases"]:
+        missing.append("HEX_DB_1_DBNAME (eller HEX_PG_DBNAME)")
 
     if missing:
         log.error("Saknade miljovariabler: %s", ", ".join(missing))
         log.error("Konfigurera dessa i .env eller som miljovariabler.")
         sys.exit(1)
 
+    # Varna om nagon databas saknar JNDI-kopplingar
+    for db in config["databases"]:
+        if not db["jndi_mappings"]:
+            log.warning(
+                "Databas '%s' har inga JNDI-kopplingar konfigurerade. "
+                "Ange t.ex. HEX_DB_N_JNDI_sk0=java:comp/env/jdbc/server.database",
+                db["dbname"],
+            )
+
     return config
 
 
+def _parse_database_configs():
+    """Parsar databaskonfigurationer fran miljovariabler.
+
+    Forsoker forst det nya flerdatabas-formatet (HEX_DB_N_*).
+    Faller tillbaka till det gamla formatet (HEX_PG_* + HEX_JNDI_*).
+    """
+    # Forsoker nytt format: HEX_DB_1_DBNAME, HEX_DB_2_DBNAME osv.
+    db_numbers = set()
+    for key in os.environ:
+        m = re.match(r"^HEX_DB_(\d+)_DBNAME$", key)
+        if m:
+            db_numbers.add(m.group(1))
+
+    if db_numbers:
+        return _parse_multi_database_configs(db_numbers)
+
+    # Fallback: gammalt enkeldatabas-format
+    dbname = os.environ.get("HEX_PG_DBNAME", "")
+    if dbname:
+        return [{
+            "host": os.environ.get("HEX_PG_HOST", "localhost"),
+            "port": int(os.environ.get("HEX_PG_PORT", "5432")),
+            "dbname": dbname,
+            "user": os.environ.get("HEX_PG_USER", "postgres"),
+            "password": os.environ.get("HEX_PG_PASSWORD", ""),
+            "jndi_mappings": _parse_jndi_mappings(),
+        }]
+
+    return []
+
+
+def _parse_multi_database_configs(db_numbers):
+    """Parsar HEX_DB_N_* grupper fran miljovariabler.
+
+    Delade standardvarden hamtas fran HEX_PG_HOST, HEX_PG_PORT osv.
+    Varje databas kan overrida dessa med HEX_DB_N_HOST, HEX_DB_N_PORT osv.
+    """
+    default_host = os.environ.get("HEX_PG_HOST", "localhost")
+    default_port = int(os.environ.get("HEX_PG_PORT", "5432"))
+    default_user = os.environ.get("HEX_PG_USER", "postgres")
+    default_password = os.environ.get("HEX_PG_PASSWORD", "")
+
+    databases = []
+    for n in sorted(db_numbers, key=int):
+        prefix = f"HEX_DB_{n}_"
+
+        # Parsa JNDI-kopplingar for denna databas
+        jndi = {}
+        jndi_prefix = prefix + "JNDI_"
+        for key, value in os.environ.items():
+            if key.startswith(jndi_prefix):
+                sk_prefix = key[len(jndi_prefix):].lower()
+                jndi[sk_prefix] = value
+
+        dbname = os.environ.get(f"{prefix}DBNAME", "")
+        if not dbname:
+            continue
+
+        databases.append({
+            "host": os.environ.get(f"{prefix}HOST", default_host),
+            "port": int(os.environ.get(f"{prefix}PORT", str(default_port))),
+            "dbname": dbname,
+            "user": os.environ.get(f"{prefix}USER", default_user),
+            "password": os.environ.get(f"{prefix}PASSWORD", default_password),
+            "jndi_mappings": jndi,
+        })
+
+    return databases
+
+
 def _parse_jndi_mappings():
-    """Parsar JNDI-kopplingar fran miljovariabler.
+    """Parsar JNDI-kopplingar fran miljovariabler (gammalt format).
 
     Lader HEX_JNDI_sk0, HEX_JNDI_sk1 osv.
     Returnerar dict med prefix -> JNDI-namn.
@@ -114,12 +193,6 @@ def _parse_jndi_mappings():
         if key.startswith("HEX_JNDI_"):
             prefix = key[len("HEX_JNDI_"):].lower()  # t.ex. "sk0"
             mappings[prefix] = value
-
-    if not mappings:
-        log.warning(
-            "Inga JNDI-kopplingar konfigurerade. "
-            "Ange t.ex. HEX_JNDI_sk0=java:comp/env/jdbc/server.database"
-        )
 
     return mappings
 
@@ -304,19 +377,21 @@ class GeoServerClient:
 SCHEMA_PATTERN = re.compile(r"^sk[01]_(ext|kba|sys)_.+$")
 
 
-def handle_schema_notification(schema_name, config, gs_client):
+def handle_schema_notification(schema_name, jndi_mappings, gs_client, db_label=""):
     """Hanterar en notifiering om nytt schema.
 
     Skapar workspace och JNDI-datastore i GeoServer.
     """
-    log.info("Mottog notifiering for schema: %s", schema_name)
+    tag = f"[{db_label}] " if db_label else ""
+    log.info("%sMottog notifiering for schema: %s", tag, schema_name)
 
     # Validera schemanamnet innan vi gor nagot mot GeoServer.
     # SQL-triggern filtrerar redan, men pg_notify-kanalen ar oppen
     # sa vem som helst med NOTIFY-rattighet kan skicka godtycklig payload.
     if not SCHEMA_PATTERN.match(schema_name):
         log.warning(
-            "  Ogiltigt schemanamn '%s' - matchar inte monster '%s'. Ignorerar.",
+            "%sOgiltigt schemanamn '%s' - matchar inte monster '%s'. Ignorerar.",
+            tag,
             schema_name,
             SCHEMA_PATTERN.pattern,
         )
@@ -325,34 +400,31 @@ def handle_schema_notification(schema_name, config, gs_client):
     # Extrahera prefix (sk0 eller sk1)
     prefix = schema_name.split("_")[0]  # t.ex. "sk0"
 
-    if prefix not in config["jndi_mappings"]:
+    if prefix not in jndi_mappings:
         log.warning(
-            "  Ingen JNDI-koppling konfigurerad for prefix '%s' - hoppar over schema '%s'",
+            "%sIngen JNDI-koppling konfigurerad for prefix '%s' - hoppar over schema '%s'",
+            tag,
             prefix,
             schema_name,
         )
-        log.warning(
-            "  Konfigurera HEX_JNDI_%s i miljovariabler eller .env",
-            prefix,
-        )
         return False
 
-    jndi_name = config["jndi_mappings"][prefix]
-    log.info("  Prefix: %s -> JNDI: %s", prefix, jndi_name)
+    jndi_name = jndi_mappings[prefix]
+    log.info("%s  Prefix: %s -> JNDI: %s", tag, prefix, jndi_name)
 
     # 1. Skapa workspace
-    log.info("  Steg 1: Skapar workspace '%s'...", schema_name)
+    log.info("%s  Steg 1: Skapar workspace '%s'...", tag, schema_name)
     if not gs_client.create_workspace(schema_name):
-        log.error("  Avbryter - workspace kunde inte skapas")
+        log.error("%s  Avbryter - workspace kunde inte skapas", tag)
         return False
 
     # 2. Skapa JNDI-datastore
-    log.info("  Steg 2: Skapar JNDI-datastore '%s'...", schema_name)
+    log.info("%s  Steg 2: Skapar JNDI-datastore '%s'...", tag, schema_name)
     if not gs_client.create_jndi_datastore(schema_name, schema_name, jndi_name, schema_name):
-        log.error("  Avbryter - datastore kunde inte skapas")
+        log.error("%s  Avbryter - datastore kunde inte skapas", tag)
         return False
 
-    log.info("  Schema '%s' publicerat till GeoServer", schema_name)
+    log.info("%s  Schema '%s' publicerat till GeoServer", tag, schema_name)
     return True
 
 
@@ -360,35 +432,38 @@ def handle_schema_notification(schema_name, config, gs_client):
 # POSTGRESQL LISTENER
 # =============================================================================
 
-def listen_loop(config, gs_client, stop_event=None):
-    """Huvudloop som lyssnar pa pg_notify och hanterar notifieringar.
+def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None):
+    """Huvudloop som lyssnar pa pg_notify och hanterar notifieringar for en databas.
 
     Args:
-        config: Konfigurationsdict fran load_config()
+        db_config: Databaskonfiguration med host, port, dbname, user, password, jndi_mappings
+        reconnect_delay: Sekunder att vanta innan ateranslutning
         gs_client: GeoServerClient-instans
         stop_event: threading.Event som signalerar att loopen ska avslutas
                     (anvands av Windows-tjansten for graceful shutdown)
     """
+    db_label = db_config["dbname"]
+
     while not (stop_event and stop_event.is_set()):
         conn = None
         try:
-            log.info("Ansluter till PostgreSQL %s@%s:%d/%s...",
-                     config["pg_user"], config["pg_host"],
-                     config["pg_port"], config["pg_dbname"])
+            log.info("[%s] Ansluter till PostgreSQL %s@%s:%d/%s...",
+                     db_label, db_config["user"], db_config["host"],
+                     db_config["port"], db_config["dbname"])
 
             conn = psycopg2.connect(
-                host=config["pg_host"],
-                port=config["pg_port"],
-                dbname=config["pg_dbname"],
-                user=config["pg_user"],
-                password=config["pg_password"],
+                host=db_config["host"],
+                port=db_config["port"],
+                dbname=db_config["dbname"],
+                user=db_config["user"],
+                password=db_config["password"],
             )
             conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
 
             cur = conn.cursor()
             cur.execute("LISTEN geoserver_schema;")
-            log.info("Lyssnar pa kanal 'geoserver_schema'...")
-            log.info("Vantar pa nya scheman...")
+            log.info("[%s] Lyssnar pa kanal 'geoserver_schema'...", db_label)
+            log.info("[%s] Vantar pa nya scheman...", db_label)
 
             while not (stop_event and stop_event.is_set()):
                 # Vanta pa notifiering med 5s timeout
@@ -404,18 +479,24 @@ def listen_loop(config, gs_client, stop_event=None):
                     schema_name = notify.payload
 
                     if not schema_name:
-                        log.warning("Tom notifiering mottagen - ignorerar")
+                        log.warning("[%s] Tom notifiering mottagen - ignorerar", db_label)
                         continue
 
                     try:
-                        handle_schema_notification(schema_name, config, gs_client)
+                        handle_schema_notification(
+                            schema_name,
+                            db_config["jndi_mappings"],
+                            gs_client,
+                            db_label=db_label,
+                        )
                     except Exception as e:
-                        log.error("Fel vid hantering av schema '%s': %s", schema_name, e)
+                        log.error("[%s] Fel vid hantering av schema '%s': %s",
+                                  db_label, schema_name, e)
 
         except psycopg2.OperationalError as e:
-            log.error("PostgreSQL-anslutning forlorad: %s", e)
+            log.error("[%s] PostgreSQL-anslutning forlorad: %s", db_label, e)
         except Exception as e:
-            log.error("Ovantat fel: %s", e)
+            log.error("[%s] Ovantat fel: %s", db_label, e)
         finally:
             if conn and not conn.closed:
                 conn.close()
@@ -423,11 +504,63 @@ def listen_loop(config, gs_client, stop_event=None):
         if stop_event and stop_event.is_set():
             break
 
-        delay = config["reconnect_delay"]
-        log.info("Ateransluter om %d sekunder...", delay)
-        time.sleep(delay)
+        log.info("[%s] Ateransluter om %d sekunder...", db_label, reconnect_delay)
+        time.sleep(reconnect_delay)
 
-    log.info("Lyssnaren avslutad.")
+    log.info("[%s] Lyssnaren avslutad.", db_label)
+
+
+def run_all_listeners(config, dry_run=False, stop_event=None):
+    """Startar lyssnare for alla konfigurerade databaser.
+
+    En databas kors direkt i anropande trad.
+    Flera databaser far varsin trad.
+    """
+    if stop_event is None:
+        stop_event = threading.Event()
+
+    databases = config["databases"]
+
+    if len(databases) == 1:
+        # En databas - kor direkt utan extra trad
+        gs_client = GeoServerClient(
+            base_url=config["gs_url"],
+            user=config["gs_user"],
+            password=config["gs_password"],
+            dry_run=dry_run,
+        )
+        listen_loop(databases[0], config["reconnect_delay"], gs_client, stop_event)
+        return
+
+    # Flera databaser - en trad per databas
+    threads = []
+    for db_config in databases:
+        # Varje trad far sin egen GeoServerClient (requests.Session ar inte tradsaker)
+        gs_client = GeoServerClient(
+            base_url=config["gs_url"],
+            user=config["gs_user"],
+            password=config["gs_password"],
+            dry_run=dry_run,
+        )
+        t = threading.Thread(
+            target=listen_loop,
+            args=(db_config, config["reconnect_delay"], gs_client, stop_event),
+            name=f"listener-{db_config['dbname']}",
+            daemon=True,
+        )
+        t.start()
+        threads.append(t)
+        log.info("Startade lyssnartrad for databas '%s'", db_config["dbname"])
+
+    try:
+        while any(t.is_alive() for t in threads):
+            for t in threads:
+                t.join(timeout=1.0)
+    except KeyboardInterrupt:
+        log.info("Avbruten av anvandaren - avslutar alla lyssnare...")
+        stop_event.set()
+        for t in threads:
+            t.join(timeout=5.0)
 
 
 # =============================================================================
@@ -452,6 +585,22 @@ def main():
 
     config = load_config()
 
+    # Visa konfiguration
+    log.info("=" * 60)
+    log.info("GeoServer Schema Listener")
+    log.info("=" * 60)
+    log.info("GeoServer:  %s", config["gs_url"])
+    log.info("Databaser:  %d st", len(config["databases"]))
+    for db in config["databases"]:
+        log.info("  [%s] %s@%s:%d/%s",
+                 db["dbname"], db["user"], db["host"], db["port"], db["dbname"])
+        for prefix, jndi in sorted(db["jndi_mappings"].items()):
+            log.info("    %s -> %s", prefix, jndi)
+    if args.dry_run:
+        log.info("LAGE: dry-run (inga andringar gors)")
+    log.info("=" * 60)
+
+    # Testa GeoServer-anslutning
     gs_client = GeoServerClient(
         base_url=config["gs_url"],
         user=config["gs_user"],
@@ -459,22 +608,6 @@ def main():
         dry_run=args.dry_run,
     )
 
-    # Visa konfiguration
-    log.info("=" * 60)
-    log.info("GeoServer Schema Listener")
-    log.info("=" * 60)
-    log.info("PostgreSQL: %s@%s:%d/%s",
-             config["pg_user"], config["pg_host"],
-             config["pg_port"], config["pg_dbname"])
-    log.info("GeoServer:  %s", config["gs_url"])
-    log.info("JNDI-kopplingar:")
-    for prefix, jndi in sorted(config["jndi_mappings"].items()):
-        log.info("  %s -> %s", prefix, jndi)
-    if args.dry_run:
-        log.info("LAGE: dry-run (inga andringar gors)")
-    log.info("=" * 60)
-
-    # Testa GeoServer-anslutning
     if not gs_client.test_connection():
         log.error("Kunde inte ansluta till GeoServer - avbryter")
         sys.exit(1)
@@ -483,8 +616,8 @@ def main():
         log.info("Anslutningstest lyckat")
         sys.exit(0)
 
-    # Starta lyssnaren
-    listen_loop(config, gs_client)
+    # Starta lyssnare for alla databaser
+    run_all_listeners(config, dry_run=args.dry_run)
 
 
 if __name__ == "__main__":
