@@ -151,7 +151,7 @@ vitlista det i GeoServers `web.xml`.
 ```xml
 <context-param>
     <param-name>GEOSERVER_CSRF_WHITELIST</param-name>
-    <param-value>karta-dev.kungsbacka.net, localhost</param-value>
+    <param-value>[din-geoserver-doman], localhost</param-value>
 </context-param>
 ```
 
