@@ -72,10 +72,14 @@ automatiskt som en del av installationsordningen. De nya filerna ar:
 - `src/sql/03_functions/05_trigger_functions/notifiera_geoserver.sql`
 - `src/sql/04_triggers/notifiera_geoserver_trigger.sql`
 
+> **VIKTIGT:** Event-triggern maste installeras i **varje** databas som
+> ska overvakas. Kor `install_hex.py` en gang per databas, med ratt
+> `dbname` i `DB_CONFIG`.
+
 Om du redan har Hex installerat och bara vill lagga till triggern manuellt:
 
 ```sql
--- Kor som postgres-anvandaren i din databas
+-- Kor som postgres-anvandaren i VARJE databas som ska overvakas
 -- 1. Skapa funktionen (kopiera innehallet fran notifiera_geoserver.sql)
 -- 2. Skapa triggern (kopiera innehallet fran notifiera_geoserver_trigger.sql)
 ```
@@ -102,12 +106,15 @@ Lyssnaren gor bara tva saker mot PostgreSQL:
 1. `LISTEN geoserver_schema` - prenumerera pa notify-kanalen
 2. `SELECT 1` - keepalive var 5:e sekund
 
-Detta kraver enbart `CONNECT`-rattighet pa databasen:
+Detta kraver enbart `CONNECT`-rattighet pa varje databas som ska overvakas:
 
 ```sql
 -- Kor som postgres/superuser
 CREATE ROLE hex_listener WITH LOGIN PASSWORD 'starkt_losenord_har';
-GRANT CONNECT ON DATABASE geodata TO hex_listener;
+
+-- Ge CONNECT pa varje databas som lyssnaren ska overvaka
+GRANT CONNECT ON DATABASE geodata_sk0 TO hex_listener;
+GRANT CONNECT ON DATABASE geodata_sk1 TO hex_listener;
 ```
 
 Ingen ytterligare rattighet behovs - `LISTEN` pa en kanal ar tillganligt for
@@ -269,20 +276,22 @@ Kor lyssnaren i dry-run-lage for att se vad som hander utan att gora andringar:
 "C:\Users\admin.tobhol\AppData\Local\Programs\Python\Python314\python.exe" geoserver_listener.py --dry-run
 ```
 
-**Terminal 2 - Skapa ett testschema i psql:**
+**Terminal 2 - Skapa ett testschema i psql (anslut till en av databaserna):**
 ```sql
+-- Anslut till databasen som har triggern installerad
+-- t.ex. psql -d geodata_sk0
 CREATE SCHEMA sk0_kba_test;
 ```
 
 **Forvantad utskrift i Terminal 1:**
 ```
-[INFO] Mottog notifiering for schema: sk0_kba_test
-[INFO]   Prefix: sk0 -> JNDI: java:comp/env/jdbc/db-devkarta.geodata_sk0_oppen
-[INFO]   Steg 1: Skapar workspace 'sk0_kba_test'...
+[INFO] [geodata_sk0] Mottog notifiering for schema: sk0_kba_test
+[INFO] [geodata_sk0]   Prefix: sk0 -> JNDI: java:comp/env/jdbc/server.geodata_sk0
+[INFO] [geodata_sk0]   Steg 1: Skapar workspace 'sk0_kba_test'...
 [INFO]   [DRY-RUN] Skulle skapa workspace: sk0_kba_test
-[INFO]   Steg 2: Skapar JNDI-datastore 'sk0_kba_test'...
+[INFO] [geodata_sk0]   Steg 2: Skapar JNDI-datastore 'sk0_kba_test'...
 [INFO]   [DRY-RUN] Skulle skapa JNDI-datastore: sk0_kba_test
-[INFO]   Schema 'sk0_kba_test' publicerat till GeoServer
+[INFO] [geodata_sk0]   Schema 'sk0_kba_test' publicerat till GeoServer
 ```
 
 **Rensa testschemat:**
@@ -383,7 +392,8 @@ powershell Get-Content C:\ProgramData\Hex\geoserver_listener.log -Wait -Tail 20
 Allt ska nu vara online. Testa hela kedjan:
 
 ```sql
--- I psql eller pgAdmin:
+-- I psql eller pgAdmin, anslut till databasen med sk1-triggern
+-- t.ex. psql -d geodata_sk1
 CREATE SCHEMA sk1_kba_parkering;
 ```
 
