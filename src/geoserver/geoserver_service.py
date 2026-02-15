@@ -68,8 +68,7 @@ def setup_file_logging():
         )
     )
 
-    # Lagg till fil-handler pa root och geoserver_listener-loggern
-    logging.getLogger().addHandler(file_handler)
+    # Lagg till fil-handler pa geoserver_listener-loggern
     log.addHandler(file_handler)
 
 
