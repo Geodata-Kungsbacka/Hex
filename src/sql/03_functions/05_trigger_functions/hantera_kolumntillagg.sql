@@ -44,6 +44,7 @@ DECLARE
     sql_sats text;                   -- För att bygga SQL-satser
     
     -- Variabler för statushantering
+    ar_fme boolean := false;           -- Om anroparen är FME
     antal_flyttade integer := 0;      -- Räknare för flyttade kolumner
     antal_fel integer := 0;           -- Räknare för eventuella problem
     op_steg text;                     -- Operationssteg för felsökning
@@ -77,6 +78,17 @@ BEGIN
     PERFORM set_config('temp.reorganization_in_progress', 'true', true);
     RAISE NOTICE '[hantera_kolumntillagg] Rekursionsflagga satt - påbörjar omstrukturering';
 
+    -- Detektera FME-anslutning för utökad felsökningsloggning
+    ar_fme := (lower(coalesce(current_setting('application_name', true), '')) = 'fme');
+    IF ar_fme THEN
+        RAISE NOTICE '[hantera_kolumntillagg] *** FME-ANSLUTNING DETEKTERAD ***';
+        RAISE NOTICE '[hantera_kolumntillagg] Sessionsinformation:';
+        RAISE NOTICE '[hantera_kolumntillagg]   » application_name: %', current_setting('application_name', true);
+        RAISE NOTICE '[hantera_kolumntillagg]   » session_user: %', session_user;
+        RAISE NOTICE '[hantera_kolumntillagg]   » inet_client_addr: %', inet_client_addr();
+        RAISE NOTICE '[hantera_kolumntillagg]   » backend_pid: %', pg_backend_pid();
+    END IF;
+
     -- Steg 2: Identifiera och hantera tabeller
     RAISE NOTICE '[hantera_kolumntillagg] (2/4) Börjar identifiera modifierade tabeller';
     FOR kommando IN SELECT * FROM pg_event_trigger_ddl_commands()
@@ -88,6 +100,23 @@ BEGIN
 
         RAISE NOTICE E'[hantera_kolumntillagg] --------------------------------------------------';
         RAISE NOTICE '[hantera_kolumntillagg] Bearbetar tabell %s.%s', schema_namn, tabell_namn;
+
+        -- FME-debug: Visa aktuella kolumner innan omstrukturering
+        IF ar_fme THEN
+            RAISE NOTICE '[hantera_kolumntillagg] [FME-DEBUG] Kolumner i %.% innan omstrukturering:', schema_namn, tabell_namn;
+            DECLARE
+                fme_kol record;
+            BEGIN
+                FOR fme_kol IN
+                    SELECT column_name, data_type, ordinal_position
+                    FROM information_schema.columns
+                    WHERE table_schema = schema_namn AND table_name = tabell_namn
+                    ORDER BY ordinal_position
+                LOOP
+                    RAISE NOTICE '[hantera_kolumntillagg] [FME-DEBUG]   #% % (%)', fme_kol.ordinal_position, fme_kol.column_name, fme_kol.data_type;
+                END LOOP;
+            END;
+        END IF;
 
         -- Kontrollera om vi ska hantera denna tabell
         -- UPPDATERAT: Tar bort undantaget för historiktabeller (%\_h)
@@ -669,6 +698,23 @@ BEGIN
                     RAISE WARNING '[hantera_kolumntillagg] KRITISKT: Kunde inte återaktivera QA-trigger: %s', SQLERRM;
                     RAISE WARNING '[hantera_kolumntillagg] Du måste manuellt aktivera: ALTER TABLE %I.%I ENABLE TRIGGER trg_%I_qa;', 
                         schema_namn, tabell_namn, tabell_namn;
+            END;
+        END IF;
+
+        -- FME-debug: Visa slutgiltig kolumnordning
+        IF ar_fme THEN
+            RAISE NOTICE '[hantera_kolumntillagg] [FME-DEBUG] Slutgiltig kolumnordning i %.%:', schema_namn, tabell_namn;
+            DECLARE
+                fme_kol record;
+            BEGIN
+                FOR fme_kol IN
+                    SELECT column_name, data_type, ordinal_position
+                    FROM information_schema.columns
+                    WHERE table_schema = schema_namn AND table_name = tabell_namn
+                    ORDER BY ordinal_position
+                LOOP
+                    RAISE NOTICE '[hantera_kolumntillagg] [FME-DEBUG]   #% % (%)', fme_kol.ordinal_position, fme_kol.column_name, fme_kol.data_type;
+                END LOOP;
             END;
         END IF;
 
