@@ -207,6 +207,40 @@ Varje `HEX_DB_N_`-grupp maste ha ett `DBNAME` och minst en `JNDI_`-koppling.
 HOST/PORT/USER/PASSWORD kan anges per databas om de skiljer sig fran
 standardvardena ovan (t.ex. `HEX_DB_2_HOST=annan-server`).
 
+#### E-postnotifieringar (valfritt)
+
+Lyssnaren kan skicka e-post vid fel och aterhamtning. Lagg till foljande
+i `.env` for att aktivera:
+
+```env
+HEX_SMTP_HOST=smtp.office365.com
+HEX_SMTP_PORT=587
+HEX_SMTP_USER=tjanstekonto@kungsbacka.se
+HEX_SMTP_PASSWORD=losenord_har
+HEX_SMTP_FROM=tjanstekonto@kungsbacka.se
+HEX_SMTP_TO=mottagare@kungsbacka.se
+```
+
+| Variabel | Standard | Beskrivning |
+|---|---|---|
+| `HEX_SMTP_HOST` | `smtp.office365.com` | SMTP-server |
+| `HEX_SMTP_PORT` | `587` | Port (STARTTLS) |
+| `HEX_SMTP_USER` | *(kraves)* | Inloggning mot SMTP-servern |
+| `HEX_SMTP_PASSWORD` | *(kraves)* | Losenord for SMTP-kontot |
+| `HEX_SMTP_FROM` | `HEX_SMTP_USER` | Avsandaradress |
+| `HEX_SMTP_TO` | *(satter pa/av)* | Mottagaradress - satt denna for att aktivera |
+
+**Notifieringar skickas vid:**
+- Misslyckad schema-publicering till GeoServer (efter alla retry-forsok)
+- Forlorad PostgreSQL-anslutning
+- Ovantade fel i lyssnaren
+- Lyckad ateranslutning efter avbrott (sa du vet att saker fungerar igen)
+
+Samma amne skickas max var 5:e minut for att undvika spam vid langvariga avbrott.
+
+Om `HEX_SMTP_TO` inte ar satt (eller tom) ar e-post helt avaktiverat och
+lyssnaren fungerar exakt som tidigare.
+
 ### Alternativ B: Systemvida miljovariabler (sakrare for produktion)
 
 Satt variablerna via **System Properties > Advanced > Environment Variables > System variables**.
@@ -460,3 +494,35 @@ Andra loggkatalogen med miljoariabeln `HEX_LOG_DIR`.
 
 Befintliga workspaces/stores i GeoServer paverkas inte - andringar galler
 bara nya scheman som skapas efter omstarten.
+
+---
+
+## Retry-beteende och felhantering
+
+Lyssnaren har inbyggd retry-logik for transienta fel mot GeoServer:
+
+| Parameter | Varde |
+|---|---|
+| Timeout per anrop | 30 sekunder |
+| Max antal forsok | 4 (1 + 3 retries) |
+| Backoff-tider | 2s, 5s, 10s |
+| Total max vantetid | ~2 minuter per anrop |
+
+**Vad som ger retry:**
+- Timeout (GeoServer svarar inte inom 30s)
+- Anslutningsfel (GeoServer ar nere eller onatbart)
+
+**Vad som INTE ger retry:**
+- HTTP-felkoder (400, 401, 404, 500 etc.) - dessa returneras direkt
+- Ogiltiga schemanamn, felaktig JNDI-konfiguration, etc.
+
+Om alla retry-forsok misslyckas loggas felet tydligt och
+schemat hoppas over. For att forsoka igen manuellt:
+
+```sql
+-- Kor som en anvandare med rattighet i den aktuella databasen
+NOTIFY geoserver_schema, 'sk0_ext_scb';
+```
+
+Om e-postnotifieringar ar konfigurerade skickas aven ett mejl med
+instruktioner for manuell atgard.
