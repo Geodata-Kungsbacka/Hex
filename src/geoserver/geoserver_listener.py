@@ -231,6 +231,13 @@ def _load_env_file_fallback(env_path):
 class GeoServerClient:
     """Klient for GeoServer REST API."""
 
+    # Timeout i sekunder for enskilda HTTP-anrop
+    REQUEST_TIMEOUT = 30
+
+    # Retry-konfiguration for transienta fel (timeout, anslutningsfel)
+    MAX_RETRIES = 3
+    RETRY_BACKOFF = [2, 5, 10]  # Sekunder mellan forsok
+
     def __init__(self, base_url, user, password, dry_run=False):
         self.base_url = base_url.rstrip("/")
         self.rest_url = f"{self.base_url}/rest"
@@ -243,10 +250,52 @@ class GeoServerClient:
             "Accept": "application/json",
         })
 
+    def _request_with_retry(self, method, url, **kwargs):
+        """Gor ett HTTP-anrop med retry vid transienta fel.
+
+        Transienta fel (timeout, anslutningsfel) far upp till MAX_RETRIES
+        nya forsok med exponentiell backoff. Lyckade svar och HTTP-felkoder
+        (4xx, 5xx) returneras direkt utan retry.
+
+        Returns:
+            requests.Response
+        Raises:
+            requests.exceptions.ConnectionError: Om alla forsok misslyckats
+            requests.exceptions.Timeout: Om alla forsok timeout:at
+        """
+        kwargs.setdefault("timeout", self.REQUEST_TIMEOUT)
+        last_exc = None
+
+        for attempt in range(1 + self.MAX_RETRIES):
+            try:
+                resp = self.session.request(method, url, **kwargs)
+                return resp
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                last_exc = e
+                if attempt < self.MAX_RETRIES:
+                    delay = self.RETRY_BACKOFF[attempt]
+                    log.warning(
+                        "  GeoServer-anrop misslyckades (forsok %d/%d): %s. "
+                        "Forsoker igen om %ds...",
+                        attempt + 1,
+                        1 + self.MAX_RETRIES,
+                        e,
+                        delay,
+                    )
+                    time.sleep(delay)
+                else:
+                    log.error(
+                        "  GeoServer-anrop misslyckades efter %d forsok: %s",
+                        1 + self.MAX_RETRIES,
+                        e,
+                    )
+
+        raise last_exc
+
     def test_connection(self):
         """Testar anslutning till GeoServer REST API."""
         try:
-            resp = self.session.get(f"{self.rest_url}/about/version.json", timeout=10)
+            resp = self._request_with_retry("GET", f"{self.rest_url}/about/version.json")
             if resp.status_code == 200:
                 data = resp.json()
                 resources = data.get("about", {}).get("resource", [])
@@ -272,8 +321,8 @@ class GeoServerClient:
 
     def workspace_exists(self, name):
         """Kontrollerar om en workspace redan finns."""
-        resp = self.session.get(
-            f"{self.rest_url}/workspaces/{name}.json", timeout=10
+        resp = self._request_with_retry(
+            "GET", f"{self.rest_url}/workspaces/{name}.json"
         )
         return resp.status_code == 200
 
@@ -291,10 +340,8 @@ class GeoServerClient:
             log.info("  [DRY-RUN] Payload: %s", json.dumps(payload))
             return True
 
-        resp = self.session.post(
-            f"{self.rest_url}/workspaces",
-            json=payload,
-            timeout=10,
+        resp = self._request_with_retry(
+            "POST", f"{self.rest_url}/workspaces", json=payload
         )
 
         if resp.status_code == 201:
@@ -311,9 +358,8 @@ class GeoServerClient:
 
     def datastore_exists(self, workspace, name):
         """Kontrollerar om en datastore redan finns."""
-        resp = self.session.get(
-            f"{self.rest_url}/workspaces/{workspace}/datastores/{name}.json",
-            timeout=10,
+        resp = self._request_with_retry(
+            "GET", f"{self.rest_url}/workspaces/{workspace}/datastores/{name}.json"
         )
         return resp.status_code == 200
 
@@ -357,10 +403,8 @@ class GeoServerClient:
             log.info("  [DRY-RUN] Schema: %s", schema_name)
             return True
 
-        resp = self.session.post(
-            f"{self.rest_url}/workspaces/{workspace}/datastores",
-            json=payload,
-            timeout=10,
+        resp = self._request_with_retry(
+            "POST", f"{self.rest_url}/workspaces/{workspace}/datastores", json=payload
         )
 
         if resp.status_code == 201:
@@ -497,6 +541,15 @@ def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None):
                             db_config["jndi_mappings"],
                             gs_client,
                             db_label=db_label,
+                        )
+                    except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                        # Transienta fel - alla retry i _request_with_retry
+                        # ar forbrukade. Logga tydligt sa det syns i loggen.
+                        log.error(
+                            "[%s] Schema '%s' misslyckades efter alla retry-forsok: %s. "
+                            "Schemat ignoreras denna gang - skicka NOTIFY manuellt "
+                            "eller aterskap schemat for att forsoka igen.",
+                            db_label, schema_name, e,
                         )
                     except Exception as e:
                         log.error("[%s] Fel vid hantering av schema '%s': %s",

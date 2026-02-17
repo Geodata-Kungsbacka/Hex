@@ -32,17 +32,25 @@ BEGIN
     IF p_rolltyp = 'read' THEN
         -- Endast läsrättigheter på tabeller och vyer
         EXECUTE format('GRANT SELECT ON ALL TABLES IN SCHEMA %I TO %I', p_schema_namn, p_rollnamn);
-        EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA %I GRANT SELECT ON TABLES TO %I', 
+        -- DEFAULT PRIVILEGES för postgres (kör denna funktion via SECURITY DEFINER)
+        EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA %I GRANT SELECT ON TABLES TO %I',
                       p_schema_namn, p_rollnamn);
-        RAISE NOTICE '[tilldela_rollrattigheter] SELECT-rättigheter beviljade';
-        
+        -- DEFAULT PRIVILEGES för ägarrollen (skapar tabeller via FME, QGIS, etc.)
+        EXECUTE format('ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I GRANT SELECT ON TABLES TO %I',
+                      system_owner(), p_schema_namn, p_rollnamn);
+        RAISE NOTICE '[tilldela_rollrattigheter] SELECT-rättigheter beviljade (inkl. DEFAULT PRIVILEGES för %)', system_owner();
+
     ELSIF p_rolltyp = 'write' THEN
         -- Skrivrättigheter: SELECT, INSERT, UPDATE, DELETE
-        EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA %I TO %I', 
+        EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA %I TO %I',
                       p_schema_namn, p_rollnamn);
-        EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA %I GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO %I', 
+        -- DEFAULT PRIVILEGES för postgres
+        EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA %I GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO %I',
                       p_schema_namn, p_rollnamn);
-        RAISE NOTICE '[tilldela_rollrattigheter] Skrivrättigheter (SELECT, INSERT, UPDATE, DELETE) beviljade';
+        -- DEFAULT PRIVILEGES för ägarrollen
+        EXECUTE format('ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO %I',
+                      system_owner(), p_schema_namn, p_rollnamn);
+        RAISE NOTICE '[tilldela_rollrattigheter] Skrivrättigheter beviljade (inkl. DEFAULT PRIVILEGES för %)', system_owner();
     END IF;
     
     RAISE NOTICE '[tilldela_rollrattigheter] Rättighetstilldelning slutförd för %', p_rollnamn;
@@ -53,5 +61,7 @@ ALTER FUNCTION public.tilldela_rollrattigheter(text, text, text)
     OWNER TO postgres;
 
 COMMENT ON FUNCTION public.tilldela_rollrattigheter(text, text, text)
-    IS 'Tilldelar rättigheter till roller baserat på rolltyp. Hanterar både read (SELECT) 
-    och write (SELECT, INSERT, UPDATE, DELETE) med DEFAULT PRIVILEGES för framtida objekt.';
+    IS 'Tilldelar rättigheter till roller baserat på rolltyp. Hanterar både read (SELECT)
+    och write (SELECT, INSERT, UPDATE, DELETE) med DEFAULT PRIVILEGES för framtida objekt.
+    Sätter DEFAULT PRIVILEGES både för postgres och system_owner() (ägarrollen) så att
+    tabeller skapade av t.ex. FME automatiskt får korrekta rättigheter.';

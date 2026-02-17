@@ -37,6 +37,7 @@ DECLARE
     
     -- För felhantering och loggning
     op_steg text;                      -- Operationssteg för felsökning
+    ar_fme boolean := false;           -- Om anroparen är FME
 BEGIN
     RAISE NOTICE E'\n======== hantera_ny_tabell START ========';
     
@@ -45,6 +46,18 @@ BEGIN
         RETURN;
     END IF;
     PERFORM set_config('temp.tabellstrukturering_pagar', 'true', true);
+
+    -- Detektera FME-anslutning för utökad felsökningsloggning
+    ar_fme := (lower(coalesce(current_setting('application_name', true), '')) = 'fme');
+    IF ar_fme THEN
+        RAISE NOTICE E'\n[hantera_ny_tabell] *** FME-ANSLUTNING DETEKTERAD ***';
+        RAISE NOTICE '[hantera_ny_tabell] Sessionsinformation:';
+        RAISE NOTICE '[hantera_ny_tabell]   » application_name: %', current_setting('application_name', true);
+        RAISE NOTICE '[hantera_ny_tabell]   » session_user: %', session_user;
+        RAISE NOTICE '[hantera_ny_tabell]   » current_user: %', current_user;
+        RAISE NOTICE '[hantera_ny_tabell]   » inet_client_addr: %', inet_client_addr();
+        RAISE NOTICE '[hantera_ny_tabell]   » backend_pid: %', pg_backend_pid();
+    END IF;
 
     -- Bearbeta tabeller
     FOR kommando IN SELECT * FROM pg_event_trigger_ddl_commands()
@@ -92,7 +105,24 @@ BEGIN
             op_steg := 'validering';
             RAISE NOTICE 'Steg 1/10: Validerar tabell';
             geometriinfo := validera_tabell(schema_namn, tabell_namn);
-            
+
+            -- FME-debug: Visa kolumner FME skickade innan omstrukturering
+            IF ar_fme THEN
+                RAISE NOTICE '[hantera_ny_tabell] [FME-DEBUG] Originalkolumner (från FME) i %.%:', schema_namn, tabell_namn;
+                DECLARE
+                    fme_kol record;
+                BEGIN
+                    FOR fme_kol IN
+                        SELECT column_name, data_type, ordinal_position
+                        FROM information_schema.columns
+                        WHERE table_schema = schema_namn AND table_name = tabell_namn
+                        ORDER BY ordinal_position
+                    LOOP
+                        RAISE NOTICE '[hantera_ny_tabell] [FME-DEBUG]   #% % (%)', fme_kol.ordinal_position, fme_kol.column_name, fme_kol.data_type;
+                    END LOOP;
+                END;
+            END IF;
+
             -- Steg 2: Spara tabellregler och kolumnegenskaper
             op_steg := 'spara regler';
             RAISE NOTICE 'Steg 2/10: Sparar tabellregler och kolumnegenskaper';
@@ -103,7 +133,21 @@ BEGIN
             op_steg := 'kolumnstruktur';
             RAISE NOTICE 'Steg 3/10: Bestämmer kolumnstruktur';
             standardkolumner := hamta_kolumnstandard(schema_namn, tabell_namn, geometriinfo);
-            
+
+            -- FME-debug: Visa bestämd kolumnstruktur
+            IF ar_fme THEN
+                RAISE NOTICE '[hantera_ny_tabell] [FME-DEBUG] Bestämd kolumnstruktur (% kolumner):', array_length(standardkolumner, 1);
+                DECLARE
+                    fme_sk kolumnkonfig;
+                    fme_idx integer := 0;
+                BEGIN
+                    FOREACH fme_sk IN ARRAY standardkolumner LOOP
+                        fme_idx := fme_idx + 1;
+                        RAISE NOTICE '[hantera_ny_tabell] [FME-DEBUG]   #% % (%)', fme_idx, fme_sk.kolumnnamn, fme_sk.datatyp;
+                    END LOOP;
+                END;
+            END IF;
+
             -- Steg 4: Skapa temporär tabell
             op_steg := 'skapa temporär tabell';
             RAISE NOTICE 'Steg 4/10: Skapar temporär tabell';
@@ -129,7 +173,24 @@ BEGIN
             op_steg := 'byt tabeller';
             RAISE NOTICE 'Steg 5/10: Byter ut tabeller';
             PERFORM byt_ut_tabell(schema_namn, tabell_namn, temp_tabellnamn);
-            
+
+            -- FME-debug: Visa slutgiltig tabellstruktur efter byte
+            IF ar_fme THEN
+                RAISE NOTICE '[hantera_ny_tabell] [FME-DEBUG] Tabellstruktur efter byte för %.%:', schema_namn, tabell_namn;
+                DECLARE
+                    fme_kol record;
+                BEGIN
+                    FOR fme_kol IN
+                        SELECT column_name, data_type, ordinal_position
+                        FROM information_schema.columns
+                        WHERE table_schema = schema_namn AND table_name = tabell_namn
+                        ORDER BY ordinal_position
+                    LOOP
+                        RAISE NOTICE '[hantera_ny_tabell] [FME-DEBUG]   #% % (%)', fme_kol.ordinal_position, fme_kol.column_name, fme_kol.data_type;
+                    END LOOP;
+                END;
+            END IF;
+
             -- Hantera sekvenser
             DECLARE
                 antal_sekvenser integer;
