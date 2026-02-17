@@ -47,6 +47,11 @@ Lyssnaren skapar automatiskt:
 
 Schemaprefix mappas till JNDI-anslutningar via konfigurerbara miljövariabler (t.ex. `sk0` → `java:comp/env/jdbc/db-devkarta.geodata_sk0_oppen`). sk2-scheman exkluderas — de kräver manuell konfiguration.
 
+**Felhantering:**
+- Automatisk retry med backoff vid timeout eller anslutningsfel mot GeoServer (upp till 4 försök)
+- Valfria e-postnotifieringar vid misslyckad publicering, PostgreSQL-anslutningsavbrott och återhämtning
+- Konfigureras via `HEX_SMTP_*`-miljövariabler (Office 365/Exchange som standard)
+
 Lyssnaren körs som en Windows-tjänst (`HexGeoServerListener`) via `services.msc`.
 Se `src/geoserver/SETUP.md` för fullständig installationsguide.
 
