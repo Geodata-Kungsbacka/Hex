@@ -26,9 +26,11 @@ import logging
 import os
 import re
 import select
+import smtplib
 import sys
 import threading
 import time
+from email.mime.text import MIMEText
 from pathlib import Path
 
 import psycopg2
@@ -93,6 +95,16 @@ def load_config():
         "reconnect_delay": int(os.environ.get("HEX_RECONNECT_DELAY", "5")),
         # Databaser
         "databases": _parse_database_configs(),
+        # E-post (valfritt - inaktivt om HEX_SMTP_TO inte ar satt)
+        "smtp": {
+            "enabled": bool(os.environ.get("HEX_SMTP_TO", "")),
+            "host": os.environ.get("HEX_SMTP_HOST", "smtp.office365.com"),
+            "port": int(os.environ.get("HEX_SMTP_PORT", "587")),
+            "user": os.environ.get("HEX_SMTP_USER", ""),
+            "password": os.environ.get("HEX_SMTP_PASSWORD", ""),
+            "from_addr": os.environ.get("HEX_SMTP_FROM", os.environ.get("HEX_SMTP_USER", "")),
+            "to_addr": os.environ.get("HEX_SMTP_TO", ""),
+        },
     }
 
     # Validera att kritiska variabler ar satta
@@ -222,6 +234,119 @@ def _load_env_file_fallback(env_path):
                         os.environ[key] = value
     except Exception as e:
         log.warning("Kunde inte ladda %s: %s", env_path, e)
+
+
+# =============================================================================
+# E-POSTNOTIFIERINGAR
+# =============================================================================
+
+class EmailNotifier:
+    """Skickar e-postnotifieringar vid fel och aterhamtning.
+
+    Aktiveras genom att satta HEX_SMTP_TO i miljovariabler.
+    Anvander STARTTLS (port 587) mot Exchange/Office 365 som standard.
+
+    Har en enkel spam-sparre: samma amne skickas inte oftare an var 5:e minut.
+    """
+
+    # Minsta tid (sekunder) mellan identiska notifieringar
+    COOLDOWN = 300
+
+    def __init__(self, smtp_config):
+        self.enabled = smtp_config.get("enabled", False)
+        self.host = smtp_config.get("host", "")
+        self.port = smtp_config.get("port", 587)
+        self.user = smtp_config.get("user", "")
+        self.password = smtp_config.get("password", "")
+        self.from_addr = smtp_config.get("from_addr", "")
+        self.to_addr = smtp_config.get("to_addr", "")
+        self._last_sent = {}  # amne -> tidpunkt
+        self._lock = threading.Lock()
+
+        if self.enabled:
+            if not self.user or not self.password:
+                log.warning(
+                    "E-post aktiverad (HEX_SMTP_TO satt) men HEX_SMTP_USER/HEX_SMTP_PASSWORD "
+                    "saknas - e-postnotifieringar avaktiverade"
+                )
+                self.enabled = False
+            else:
+                log.info("E-postnotifieringar aktiverade -> %s", self.to_addr)
+
+    def _should_send(self, subject):
+        """Kontrollerar spam-sparren. Returnerar True om meddelandet far skickas."""
+        with self._lock:
+            last = self._last_sent.get(subject, 0)
+            now = time.time()
+            if now - last < self.COOLDOWN:
+                return False
+            self._last_sent[subject] = now
+            return True
+
+    def send(self, subject, body):
+        """Skickar ett e-postmeddelande. Loggar fel men kastar aldrig undantag."""
+        if not self.enabled:
+            return
+
+        if not self._should_send(subject):
+            log.debug("E-post undertryckt (cooldown): %s", subject)
+            return
+
+        msg = MIMEText(body, "plain", "utf-8")
+        msg["Subject"] = subject
+        msg["From"] = self.from_addr
+        msg["To"] = self.to_addr
+
+        try:
+            with smtplib.SMTP(self.host, self.port, timeout=30) as server:
+                server.starttls()
+                server.login(self.user, self.password)
+                server.send_message(msg)
+            log.info("E-postnotifiering skickad: %s", subject)
+        except Exception as e:
+            log.error("Kunde inte skicka e-post ('%s'): %s", subject, e)
+
+    # -- Bekvama metoder for vanliga handelser ---------------------------------
+
+    def notify_schema_failure(self, schema_name, db_label, error):
+        """Notifierar om misslyckad schema-publicering till GeoServer."""
+        self.send(
+            f"[Hex] Schema-publicering misslyckades: {schema_name}",
+            f"Schema '{schema_name}' kunde inte publiceras till GeoServer.\n\n"
+            f"Databas: {db_label}\n"
+            f"Fel: {error}\n\n"
+            f"Atgard: Kontrollera att GeoServer ar tillgangligt och skicka sedan "
+            f"NOTIFY manuellt:\n"
+            f"  NOTIFY geoserver_schema, '{schema_name}';\n",
+        )
+
+    def notify_pg_connection_lost(self, db_label, error):
+        """Notifierar om forlorad PostgreSQL-anslutning."""
+        self.send(
+            f"[Hex] PostgreSQL-anslutning forlorad: {db_label}",
+            f"Lyssnaren tappade anslutningen till databas '{db_label}'.\n\n"
+            f"Fel: {error}\n\n"
+            f"Lyssnaren forsoker ateransluta automatiskt.\n"
+            f"Under avbrottet kan schema-notifieringar ga forlorade.\n",
+        )
+
+    def notify_pg_reconnected(self, db_label):
+        """Notifierar om lyckad ateranslutning till PostgreSQL."""
+        self.send(
+            f"[Hex] PostgreSQL ateransluten: {db_label}",
+            f"Lyssnaren har ateranslutit till databas '{db_label}'.\n\n"
+            f"Schema-notifieringar hanteras nu som vanligt.\n"
+            f"OBS: Notifieringar som skickades under avbrottet kan ha gatt forlorade.\n",
+        )
+
+    def notify_unexpected_error(self, db_label, error):
+        """Notifierar om ovantat fel."""
+        self.send(
+            f"[Hex] Ovantat fel i lyssnaren: {db_label}",
+            f"Ett ovantat fel uppstod i lyssnaren for databas '{db_label}'.\n\n"
+            f"Fel: {error}\n\n"
+            f"Lyssnaren forsoker ateransluta automatiskt.\n",
+        )
 
 
 # =============================================================================
@@ -485,7 +610,7 @@ def handle_schema_notification(schema_name, jndi_mappings, gs_client, db_label="
 # POSTGRESQL LISTENER
 # =============================================================================
 
-def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None):
+def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None, notifier=None):
     """Huvudloop som lyssnar pa pg_notify och hanterar notifieringar for en databas.
 
     Args:
@@ -494,8 +619,10 @@ def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None):
         gs_client: GeoServerClient-instans
         stop_event: threading.Event som signalerar att loopen ska avslutas
                     (anvands av Windows-tjansten for graceful shutdown)
+        notifier: EmailNotifier-instans (eller None om e-post ej konfigurerats)
     """
     db_label = db_config["dbname"]
+    was_disconnected = False  # Sparar om vi tappat anslutning for aterhamtningsnotifiering
 
     while not (stop_event and stop_event.is_set()):
         conn = None
@@ -517,6 +644,11 @@ def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None):
             cur.execute("LISTEN geoserver_schema;")
             log.info("[%s] Lyssnar pa kanal 'geoserver_schema'...", db_label)
             log.info("[%s] Vantar pa nya scheman...", db_label)
+
+            # Skicka aterhamtningsnotifiering om vi tappat anslutning tidigare
+            if was_disconnected and notifier:
+                notifier.notify_pg_reconnected(db_label)
+                was_disconnected = False
 
             while not (stop_event and stop_event.is_set()):
                 # Vanta pa notifiering med 5s timeout
@@ -551,14 +683,24 @@ def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None):
                             "eller aterskap schemat for att forsoka igen.",
                             db_label, schema_name, e,
                         )
+                        if notifier:
+                            notifier.notify_schema_failure(schema_name, db_label, e)
                     except Exception as e:
                         log.error("[%s] Fel vid hantering av schema '%s': %s",
                                   db_label, schema_name, e)
+                        if notifier:
+                            notifier.notify_schema_failure(schema_name, db_label, e)
 
         except psycopg2.OperationalError as e:
             log.error("[%s] PostgreSQL-anslutning forlorad: %s", db_label, e)
+            was_disconnected = True
+            if notifier:
+                notifier.notify_pg_connection_lost(db_label, e)
         except Exception as e:
             log.error("[%s] Ovantat fel: %s", db_label, e)
+            was_disconnected = True
+            if notifier:
+                notifier.notify_unexpected_error(db_label, e)
         finally:
             if conn and not conn.closed:
                 conn.close()
@@ -582,6 +724,7 @@ def run_all_listeners(config, dry_run=False, stop_event=None):
         stop_event = threading.Event()
 
     databases = config["databases"]
+    notifier = EmailNotifier(config["smtp"])
 
     if len(databases) == 1:
         # En databas - kor direkt utan extra trad
@@ -591,7 +734,7 @@ def run_all_listeners(config, dry_run=False, stop_event=None):
             password=config["gs_password"],
             dry_run=dry_run,
         )
-        listen_loop(databases[0], config["reconnect_delay"], gs_client, stop_event)
+        listen_loop(databases[0], config["reconnect_delay"], gs_client, stop_event, notifier)
         return
 
     # Flera databaser - en trad per databas
@@ -606,7 +749,7 @@ def run_all_listeners(config, dry_run=False, stop_event=None):
         )
         t = threading.Thread(
             target=listen_loop,
-            args=(db_config, config["reconnect_delay"], gs_client, stop_event),
+            args=(db_config, config["reconnect_delay"], gs_client, stop_event, notifier),
             name=f"listener-{db_config['dbname']}",
             daemon=True,
         )
@@ -658,6 +801,10 @@ def main():
                  db["dbname"], db["user"], db["host"], db["port"], db["dbname"])
         for prefix, jndi in sorted(db["jndi_mappings"].items()):
             log.info("    %s -> %s", prefix, jndi)
+    if config["smtp"]["enabled"]:
+        log.info("E-post:     %s -> %s", config["smtp"]["host"], config["smtp"]["to_addr"])
+    else:
+        log.info("E-post:     avaktiverad (satt HEX_SMTP_TO for att aktivera)")
     if args.dry_run:
         log.info("LAGE: dry-run (inga andringar gors)")
     log.info("=" * 60)
