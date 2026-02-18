@@ -54,8 +54,25 @@ BEGIN
             CONTINUE;
         END IF;
 
-        historik_tabell := tabell_namn || '_h';
-        trigger_funktion := 'trg_fn_' || tabell_namn || '_qa';
+        -- Slå upp faktiska namn via OID (stabilt genom RENAME TO).
+        -- Faller tillbaka på namnkonvention om posten saknas i metadata
+        -- (t.ex. tabeller skapade innan hex_metadata introducerades).
+        DECLARE
+            meta_rad record;
+        BEGIN
+            SELECT * INTO meta_rad
+            FROM hex_metadata
+            WHERE parent_oid = kommando.objid;
+
+            IF FOUND THEN
+                historik_tabell  := meta_rad.history_table;
+                trigger_funktion := COALESCE(meta_rad.trigger_funktion,
+                                             'trg_fn_' || tabell_namn || '_qa');
+            ELSE
+                historik_tabell  := tabell_namn || '_h';
+                trigger_funktion := 'trg_fn_' || tabell_namn || '_qa';
+            END IF;
+        END;
 
         -- Ta bort historiktabell om den finns
         IF EXISTS (
@@ -79,6 +96,9 @@ BEGIN
             RAISE NOTICE '[hantera_borttagen_tabell] ✓ Triggerfunktion borttagen: %.%()',
                 schema_namn, trigger_funktion;
         END IF;
+
+        -- Rensa metadatarad (OID är inte längre giltig efter DROP)
+        DELETE FROM hex_metadata WHERE parent_oid = kommando.objid;
     END LOOP;
 
     PERFORM set_config('temp.historikborttagning_pagar', 'false', true);

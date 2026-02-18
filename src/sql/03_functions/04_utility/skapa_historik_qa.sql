@@ -233,6 +233,38 @@ BEGIN
     );
     RAISE NOTICE '[skapa_historik_qa]   ✓ Triggerfunktion skapad';
     
+    -- Steg 7.5: Registrera OID → historiktabell-mappning i hex_metadata
+    -- Gör det möjligt att spåra historiktabellen även efter RENAME TO,
+    -- eftersom OID är stabilt medan namnkonventionen (tabell_h) bryts vid rename.
+    op_steg := 'registrera i hex_metadata';
+    DECLARE
+        parent_oid_val oid;
+        actual_history_name text;
+    BEGIN
+        SELECT c.oid INTO parent_oid_val
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = p_schema_namn AND c.relname = p_tabell_namn;
+
+        -- Actual stored name may be truncated to 63 bytes by PostgreSQL
+        actual_history_name := left(p_tabell_namn || '_h', 63);
+
+        IF parent_oid_val IS NOT NULL THEN
+            INSERT INTO hex_metadata
+                (parent_oid, parent_schema, parent_table,
+                 history_schema, history_table, trigger_funktion)
+            VALUES
+                (parent_oid_val, p_schema_namn, p_tabell_namn,
+                 p_schema_namn, actual_history_name, trigger_funktionsnamn)
+            ON CONFLICT (parent_oid) DO UPDATE SET
+                parent_schema    = EXCLUDED.parent_schema,
+                parent_table     = EXCLUDED.parent_table,
+                history_table    = EXCLUDED.history_table,
+                trigger_funktion = EXCLUDED.trigger_funktion;
+            RAISE NOTICE '[skapa_historik_qa]   ✓ Registrerad i hex_metadata (OID: %)', parent_oid_val;
+        END IF;
+    END;
+
     -- Steg 8: Skapa trigger
     op_steg := 'skapa trigger';
     RAISE NOTICE '[skapa_historik_qa] Steg 8: Skapar trigger på modertabell';
