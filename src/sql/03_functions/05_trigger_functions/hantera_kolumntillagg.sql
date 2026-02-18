@@ -78,6 +78,52 @@ BEGIN
     PERFORM set_config('temp.reorganization_in_progress', 'true', true);
     RAISE NOTICE '[hantera_kolumntillagg] Rekursionsflagga satt - påbörjar omstrukturering';
 
+    -- ----------------------------------------------------------------
+    -- Specialfall: ALTER TABLE ... RENAME TO
+    -- Använd OID (stabilt genom rename) för att hitta och döpa om
+    -- tillhörande historiktabell via hex_metadata.
+    -- ----------------------------------------------------------------
+    IF current_query() ~* '\mRENAME\s+TO\M' THEN
+        FOR kommando IN SELECT * FROM pg_event_trigger_ddl_commands()
+            WHERE command_tag = 'ALTER TABLE'
+        LOOP
+            schema_namn := replace(split_part(kommando.object_identity, '.', 1), '"', '');
+            tabell_namn := replace(split_part(kommando.object_identity, '.', 2), '"', '');
+
+            DECLARE
+                meta_rad       record;
+                ny_historik    text;
+            BEGIN
+                SELECT * INTO meta_rad
+                FROM hex_metadata
+                WHERE parent_oid = kommando.objid;
+
+                IF FOUND THEN
+                    -- Cap at 63 bytes (PostgreSQL identifier limit)
+                    ny_historik := left(tabell_namn || '_h', 63);
+
+                    EXECUTE format('ALTER TABLE %I.%I RENAME TO %I',
+                        meta_rad.history_schema,
+                        meta_rad.history_table,
+                        ny_historik);
+
+                    UPDATE hex_metadata
+                    SET parent_table  = tabell_namn,
+                        history_table = ny_historik
+                    WHERE parent_oid = kommando.objid;
+
+                    RAISE NOTICE '[hantera_kolumntillagg] ✓ Historiktabell omdöpt: % → % (tabell omdöpt: % → %)',
+                        meta_rad.history_table, ny_historik,
+                        meta_rad.parent_table, tabell_namn;
+                ELSE
+                    RAISE NOTICE '[hantera_kolumntillagg] Ingen historiktabell registrerad för OID % (tabell %, har troligen ingen historik)',
+                        kommando.objid, tabell_namn;
+                END IF;
+            END;
+        END LOOP;
+        RETURN;  -- Inget kolumnarbete behövs vid rename
+    END IF;
+
     -- Detektera FME-anslutning för utökad felsökningsloggning
     ar_fme := (lower(coalesce(current_setting('application_name', true), '')) = 'fme');
     IF ar_fme THEN

@@ -577,18 +577,25 @@ BEGIN
     END IF;
 END $$;
 
--- Verify DROP TABLE on renamed table does NOT clean up old history table (consequence of D5b)
+-- After fix: DROP TABLE on renamed table should clean up rename_dst_y_h via OID lookup
 DROP TABLE IF EXISTS sk2_kba_test.rename_dst_y;
 
 DO $$
+DECLARE
+    old_h_gone boolean;
+    new_h_gone boolean;
 BEGIN
-    IF EXISTS (
-        SELECT 1 FROM information_schema.tables
-        WHERE table_schema = 'sk2_kba_test' AND table_name = 'rename_src_y_h'
-    ) THEN
-        RAISE WARNING 'TEST D5c BUG CONFIRMED: rename_src_y_h is permanently orphaned after DROP TABLE rename_dst_y. hantera_borttagen_tabell looked for rename_dst_y_h (not found), so rename_src_y_h was never cleaned up.';
-    ELSE
-        RAISE NOTICE 'TEST D5c PASSED: No orphaned history table after drop (rename_src_y_h cleaned up)';
+    SELECT NOT EXISTS (SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'sk2_kba_test' AND table_name = 'rename_src_y_h') INTO old_h_gone;
+    SELECT NOT EXISTS (SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'sk2_kba_test' AND table_name = 'rename_dst_y_h') INTO new_h_gone;
+
+    IF old_h_gone AND new_h_gone THEN
+        RAISE NOTICE 'TEST D5c PASSED: Both history table names cleaned up after DROP TABLE rename_dst_y (hex_metadata OID lookup worked)';
+    ELSIF NOT old_h_gone THEN
+        RAISE WARNING 'TEST D5c BUG: rename_src_y_h still exists (was never renamed - RENAME handling did not fire)';
+    ELSIF NOT new_h_gone THEN
+        RAISE WARNING 'TEST D5c BUG: rename_dst_y_h was NOT cleaned up on DROP TABLE (OID lookup in hantera_borttagen_tabell failed)';
     END IF;
 END $$;
 

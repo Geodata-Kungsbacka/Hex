@@ -43,6 +43,7 @@ INSTALL_ORDER = [
     # Tables
     "src/sql/02_tables/standardiserade_kolumner.sql",
     "src/sql/02_tables/standardiserade_roller.sql",
+    "src/sql/02_tables/hex_metadata.sql",
     # Functions - Structure
     "src/sql/03_functions/01_structure/hamta_geometri_definition.sql",
     "src/sql/03_functions/01_structure/hamta_kolumnstandard.sql",
@@ -130,6 +131,7 @@ DROP FUNCTION IF EXISTS public.hamta_geometri_definition(text, text);
 DROP FUNCTION IF EXISTS public.system_();
 
 -- Tables
+DROP TABLE IF EXISTS public.hex_metadata;
 DROP TABLE IF EXISTS public.standardiserade_roller;
 DROP TABLE IF EXISTS public.standardiserade_kolumner;
 
