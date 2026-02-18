@@ -45,7 +45,7 @@ Lyssnaren skapar automatiskt:
 - En workspace i GeoServer med samma namn som schemat
 - En JNDI PostGIS-datastore i den workspace med samma namn som schemat
 
-Schemaprefix mappas till JNDI-anslutningar via konfigurerbara miljövariabler (t.ex. `sk0` → `java:comp/env/jdbc/db-devkarta.geodata_sk0_oppen`). sk2-scheman exkluderas — de kräver manuell konfiguration.
+Schemaprefix mappas till JNDI-anslutningar via konfigurerbara miljövariabler (t.ex. `sk0` → `java:comp/env/jdbc/[server].[sk0-databas]`). sk2-scheman exkluderas — de kräver manuell konfiguration.
 
 **Felhantering:**
 - Automatisk retry med backoff vid timeout eller anslutningsfel mot GeoServer (upp till 4 försök)
