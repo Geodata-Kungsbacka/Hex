@@ -99,7 +99,7 @@ BEGIN
         tabell_namn := replace(split_part(kommando.object_identity, '.', 2), '"', '');
 
         RAISE NOTICE E'[hantera_kolumntillagg] --------------------------------------------------';
-        RAISE NOTICE '[hantera_kolumntillagg] Bearbetar tabell %s.%s', schema_namn, tabell_namn;
+        RAISE NOTICE '[hantera_kolumntillagg] Bearbetar tabell %.%', schema_namn, tabell_namn;
 
         -- FME-debug: Visa aktuella kolumner innan omstrukturering
         IF ar_fme THEN
@@ -137,27 +137,45 @@ BEGIN
             CONTINUE;
         END IF;
 
-        -- Steg 3: Hämta standardkolumner som ska flyttas
+        -- Steg 3: Hämta standardkolumner som ska flyttas (filtrerade per schema_uttryck)
+        -- Speglar hamta_kolumnstandard: evaluera schema_uttryck dynamiskt per kolumn
+        -- så att t.ex. skapad_av (LIKE '%_kba_%') inte försöks flyttas på _ext_-tabeller.
         RAISE NOTICE '[hantera_kolumntillagg] (3/4) Identifierar kolumner som ska flyttas';
-        SELECT array_agg(
-            ROW(
-                kolumnnamn, 
-                ordinal_position, 
-                CASE 
-                    WHEN default_varde IS NOT NULL AND historik_qa = false THEN
-                        datatyp || ' DEFAULT ' || default_varde
-                    ELSE
-                        datatyp
-                END
-            )::kolumnkonfig 
-            ORDER BY ordinal_position
-        )
-        INTO flyttkolumner
-        FROM standardiserade_kolumner 
-        WHERE ordinal_position < 0;
+        DECLARE
+            stdkol       record;
+            kol_matchar  boolean;
+        BEGIN
+            flyttkolumner := ARRAY[]::kolumnkonfig[];
+            FOR stdkol IN
+                SELECT kolumnnamn, ordinal_position, datatyp, default_varde,
+                       historik_qa, schema_uttryck
+                FROM standardiserade_kolumner
+                WHERE ordinal_position < 0
+                ORDER BY ordinal_position
+            LOOP
+                EXECUTE format('SELECT %L %s', schema_namn, stdkol.schema_uttryck)
+                    INTO kol_matchar;
+                IF kol_matchar THEN
+                    flyttkolumner := array_append(
+                        flyttkolumner,
+                        ROW(
+                            stdkol.kolumnnamn,
+                            stdkol.ordinal_position,
+                            CASE
+                                WHEN stdkol.default_varde IS NOT NULL
+                                     AND stdkol.historik_qa = false THEN
+                                    stdkol.datatyp || ' DEFAULT ' || stdkol.default_varde
+                                ELSE
+                                    stdkol.datatyp
+                            END
+                        )::kolumnkonfig
+                    );
+                END IF;
+            END LOOP;
+        END;
 
         IF array_length(flyttkolumner, 1) > 0 THEN
-            RAISE NOTICE '[hantera_kolumntillagg] Hittade %s standardkolumner att flytta', array_length(flyttkolumner, 1);
+            RAISE NOTICE '[hantera_kolumntillagg] Hittade % standardkolumner att flytta', array_length(flyttkolumner, 1);
             -- Lista kolumnerna som ska flyttas
             FOR i IN 1..array_length(flyttkolumner, 1) LOOP
                 RAISE NOTICE '[hantera_kolumntillagg]   #%: % (position: %)', 
@@ -218,17 +236,17 @@ BEGIN
                     );
                     RAISE NOTICE '[hantera_kolumntillagg]   SQL [4/4]: %', sql_sats;
                     EXECUTE sql_sats;
-                    RAISE NOTICE '[hantera_kolumntillagg]   Kolumn omdöpt till %s', kolumn.kolumnnamn;
+                    RAISE NOTICE '[hantera_kolumntillagg]   Kolumn omdöpt till %', kolumn.kolumnnamn;
 
                     antal_flyttade := antal_flyttade + 1;
                     RAISE NOTICE '[hantera_kolumntillagg]   Kolumnflytt slutförd';
                 EXCEPTION
                     WHEN OTHERS THEN
                         antal_fel := antal_fel + 1;
-                        RAISE WARNING '[hantera_kolumntillagg] FEL vid flyttning av standardkolumn "%s"', kolumn.kolumnnamn;
-                        RAISE WARNING '[hantera_kolumntillagg] Operation: %s', op_steg;
-                        RAISE WARNING '[hantera_kolumntillagg] SQL: %s', sql_sats;
-                        RAISE WARNING '[hantera_kolumntillagg] Felmeddelande: %s', SQLERRM;
+                        RAISE WARNING '[hantera_kolumntillagg] FEL vid flyttning av standardkolumn "%"', kolumn.kolumnnamn;
+                        RAISE WARNING '[hantera_kolumntillagg] Operation: %', op_steg;
+                        RAISE WARNING '[hantera_kolumntillagg] SQL: %', sql_sats;
+                        RAISE WARNING '[hantera_kolumntillagg] Felmeddelande: %', SQLERRM;
                 END;
             END IF;
         END LOOP;
@@ -299,11 +317,11 @@ BEGIN
                     WHEN OTHERS THEN
                         antal_fel := antal_fel + 1;
                         RAISE WARNING '[hantera_kolumntillagg] FEL vid flyttning av geometrikolumn';
-                        RAISE WARNING '[hantera_kolumntillagg] Operation: %s', op_steg;
-                        RAISE WARNING '[hantera_kolumntillagg] SQL: %s', sql_sats;
-                        RAISE WARNING '[hantera_kolumntillagg] Geometriinfo: %s', 
+                        RAISE WARNING '[hantera_kolumntillagg] Operation: %', op_steg;
+                        RAISE WARNING '[hantera_kolumntillagg] SQL: %', sql_sats;
+                        RAISE WARNING '[hantera_kolumntillagg] Geometriinfo: %',
                             coalesce(geometriinfo.definition, 'NULL');
-                        RAISE WARNING '[hantera_kolumntillagg] Felmeddelande: %s', SQLERRM;
+                        RAISE WARNING '[hantera_kolumntillagg] Felmeddelande: %', SQLERRM;
                 END;
             ELSE
                 RAISE WARNING '[hantera_kolumntillagg] ⚠ Geometrikolumn hittad men ingen giltig definition returnerades';
@@ -330,7 +348,7 @@ BEGIN
             ) INTO har_historiktabell;
             
             IF har_historiktabell THEN
-                RAISE NOTICE '[hantera_kolumntillagg] Hittade historiktabell %s.%s - analyserar och synkroniserar', 
+                RAISE NOTICE '[hantera_kolumntillagg] Hittade historiktabell %.% - analyserar och synkroniserar',
                     schema_namn, historik_tabell_namn;
                 
                 -- Analysera strukturskillnader mellan moder- och historiktabell
@@ -401,14 +419,14 @@ BEGIN
                             RAISE NOTICE '[hantera_kolumntillagg] QA-trigger tillfälligt inaktiverad för säker strukturändring';
                         EXCEPTION
                             WHEN OTHERS THEN
-                                RAISE NOTICE '[hantera_kolumntillagg] Kunde inte inaktivera QA-trigger: %s', SQLERRM;
+                                RAISE NOTICE '[hantera_kolumntillagg] Kunde inte inaktivera QA-trigger: %', SQLERRM;
                                 -- Fortsätt ändå, men varna användaren extra
                         END;
                     END IF;
                     
                     -- NYTT: Lägg automatiskt till saknade kolumner i historiktabellen
                     IF array_length(saknade_i_historik, 1) > 0 THEN
-                        RAISE NOTICE '[hantera_kolumntillagg] Lägger till %s saknade kolumner i historiktabell:', 
+                        RAISE NOTICE '[hantera_kolumntillagg] Lägger till % saknade kolumner i historiktabell:',
                             array_length(saknade_i_historik, 1);
                         
                         FOR kolumn_info IN 
@@ -660,19 +678,19 @@ BEGIN
                     
                     -- Visa kolumner som finns extra i historik (bara info, ingen åtgärd)
                     IF array_length(extra_i_historik, 1) > 0 THEN
-                        RAISE NOTICE '[hantera_kolumntillagg] Extra kolumner i historik (behålls): %s', 
+                        RAISE NOTICE '[hantera_kolumntillagg] Extra kolumner i historik (behålls): %',
                             array_to_string(extra_i_historik, ', ');
                     END IF;
                     
                     -- Visa kolumner med olika datatyper (kräver manuell åtgärd)
                     IF array_length(typ_skillnader, 1) > 0 THEN
-                        RAISE WARNING '[hantera_kolumntillagg] Olika datatyper (kräver manuell åtgärd): %s', 
+                        RAISE WARNING '[hantera_kolumntillagg] Olika datatyper (kräver manuell åtgärd): %',
                             array_to_string(typ_skillnader, ', ');
                     END IF;
                     
                     IF antal_skillnader = 0 THEN
                         -- Inga skillnader - tabellerna är synkroniserade
-                        RAISE NOTICE '[hantera_kolumntillagg] Historiktabell %s.%s är redan synkroniserad', 
+                        RAISE NOTICE '[hantera_kolumntillagg] Historiktabell %.% är redan synkroniserad',
                             schema_namn, historik_tabell_namn;
                     END IF;
                 END;
@@ -695,7 +713,7 @@ BEGIN
                 
             EXCEPTION
                 WHEN OTHERS THEN
-                    RAISE WARNING '[hantera_kolumntillagg] KRITISKT: Kunde inte återaktivera QA-trigger: %s', SQLERRM;
+                    RAISE WARNING '[hantera_kolumntillagg] KRITISKT: Kunde inte återaktivera QA-trigger: %', SQLERRM;
                     RAISE WARNING '[hantera_kolumntillagg] Du måste manuellt aktivera: ALTER TABLE %I.%I ENABLE TRIGGER trg_%I_qa;', 
                         schema_namn, tabell_namn, tabell_namn;
             END;
@@ -720,19 +738,19 @@ BEGIN
 
         -- Sammanfattning för denna tabell
         RAISE NOTICE E'[hantera_kolumntillagg] ----------';
-        RAISE NOTICE '[hantera_kolumntillagg] Sammanfattning för tabell %s.%s:', schema_namn, tabell_namn;
-        RAISE NOTICE '[hantera_kolumntillagg]   » Flyttade kolumner: %s', antal_flyttade;
-        RAISE NOTICE '[hantera_kolumntillagg]   » Problem uppstod: %s', antal_fel;
-        RAISE NOTICE '[hantera_kolumntillagg]   » Historiktabell: %s', 
+        RAISE NOTICE '[hantera_kolumntillagg] Sammanfattning för tabell %.%:', schema_namn, tabell_namn;
+        RAISE NOTICE '[hantera_kolumntillagg]   » Flyttade kolumner: %', antal_flyttade;
+        RAISE NOTICE '[hantera_kolumntillagg]   » Problem uppstod: %', antal_fel;
+        RAISE NOTICE '[hantera_kolumntillagg]   » Historiktabell: %',
             CASE WHEN NOT tabell_namn ~ '_h$' AND har_historiktabell
                  THEN 'Synkroniserad'
                  WHEN NOT tabell_namn ~ '_h$' AND NOT har_historiktabell
                  THEN 'Ingen historik'
                  ELSE 'Historiktabell'
             END;
-        RAISE NOTICE '[hantera_kolumntillagg]   » Status: %s', 
-            CASE WHEN antal_fel = 0 THEN 'Slutförd utan fel' 
-                 ELSE format('Slutförd med %s fel', antal_fel) 
+        RAISE NOTICE '[hantera_kolumntillagg]   » Status: %',
+            CASE WHEN antal_fel = 0 THEN 'Slutförd utan fel'
+                 ELSE format('Slutförd med %s fel', antal_fel)
             END;
         
         -- Återställ räknare för nästa tabell
@@ -755,15 +773,15 @@ EXCEPTION
         
         RAISE NOTICE E'[hantera_kolumntillagg] !!!!! KRITISKT FEL !!!!!';
         RAISE NOTICE '[hantera_kolumntillagg] Senaste kontext:';
-        RAISE NOTICE '[hantera_kolumntillagg]   - Schema: %s', schema_namn;
-        RAISE NOTICE '[hantera_kolumntillagg]   - Tabell: %s', tabell_namn;
-        RAISE NOTICE '[hantera_kolumntillagg]   - Operation: %s', op_steg;
-        RAISE NOTICE '[hantera_kolumntillagg]   - SQL: %s', coalesce(sql_sats, 'Ingen SQL');
-        RAISE NOTICE '[hantera_kolumntillagg]   - Status: %s kolumner flyttade, %s fel innan kraschen', 
+        RAISE NOTICE '[hantera_kolumntillagg]   - Schema: %', schema_namn;
+        RAISE NOTICE '[hantera_kolumntillagg]   - Tabell: %', tabell_namn;
+        RAISE NOTICE '[hantera_kolumntillagg]   - Operation: %', op_steg;
+        RAISE NOTICE '[hantera_kolumntillagg]   - SQL: %', coalesce(sql_sats, 'Ingen SQL');
+        RAISE NOTICE '[hantera_kolumntillagg]   - Status: % kolumner flyttade, % fel innan kraschen',
             antal_flyttade, antal_fel;
         RAISE NOTICE '[hantera_kolumntillagg] Tekniska feldetaljer:';
-        RAISE NOTICE '[hantera_kolumntillagg]   - Felkod: %s', SQLSTATE;
-        RAISE NOTICE '[hantera_kolumntillagg]   - Felmeddelande: %s', SQLERRM;
+        RAISE NOTICE '[hantera_kolumntillagg]   - Felkod: %', SQLSTATE;
+        RAISE NOTICE '[hantera_kolumntillagg]   - Felmeddelande: %', SQLERRM;
         RAISE;
 END;
 $BODY$;
