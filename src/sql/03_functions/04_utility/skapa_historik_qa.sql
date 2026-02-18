@@ -37,7 +37,7 @@ DECLARE
     geometriinfo geom_info;
 BEGIN
     RAISE NOTICE E'[skapa_historik_qa] === START ===';
-    RAISE NOTICE '[skapa_historik_qa] Skapar historik/QA för %s.%s', p_schema_namn, p_tabell_namn;
+    RAISE NOTICE '[skapa_historik_qa] Skapar historik/QA för %.%', p_schema_namn, p_tabell_namn;
     
     -- Steg 1: Kontrollera QA-kolumner
     op_steg := 'kontrollera qa-kolumner';
@@ -65,9 +65,9 @@ BEGIN
         RETURN false;
     END IF;
     
-    RAISE NOTICE '[skapa_historik_qa]   » Hittade %s QA-kolumner:', antal_qa_kolumner;
+    RAISE NOTICE '[skapa_historik_qa]   » Hittade % QA-kolumner:', antal_qa_kolumner;
     FOR i IN 1..antal_qa_kolumner LOOP
-        RAISE NOTICE '[skapa_historik_qa]     #%s: %s (uttryck: %s)', 
+        RAISE NOTICE '[skapa_historik_qa]     #%: % (uttryck: %)',
             i, qa_kolumner[i], qa_uttryck[i];
     END LOOP;
     
@@ -167,12 +167,14 @@ BEGIN
     op_steg := 'skapa index';
     RAISE NOTICE '[skapa_historik_qa] Steg 5: Skapar index för prestanda';
     
+    -- Index name capped at 56 chars to avoid colliding with the 63-char history
+    -- table name when p_tabell_namn is 61+ characters long.
     EXECUTE format(
         'CREATE INDEX %I ON %I.%I (gid, h_tidpunkt DESC)',
-        p_tabell_namn || '_h_gid_tid_idx',
+        left(p_tabell_namn, 50) || '_h_idx',
         p_schema_namn, p_tabell_namn || '_h'
     );
-    RAISE NOTICE '[skapa_historik_qa]   ✓ Index skapat: %s', p_tabell_namn || '_h_gid_tid_idx';
+    RAISE NOTICE '[skapa_historik_qa]   ✓ Index skapat: %', left(p_tabell_namn, 50) || '_h_idx';
     
     -- Steg 6: Bygg trigger-satser
     op_steg := 'bygg trigger-satser';
@@ -274,13 +276,13 @@ EXCEPTION
     WHEN OTHERS THEN
         RAISE NOTICE '[skapa_historik_qa] !!! FEL UPPSTOD !!!';
         RAISE NOTICE '[skapa_historik_qa] Senaste kontext:';
-        RAISE NOTICE '[skapa_historik_qa]   - Schema: %s', p_schema_namn;
-        RAISE NOTICE '[skapa_historik_qa]   - Tabell: %s', p_tabell_namn;
-        RAISE NOTICE '[skapa_historik_qa]   - Operation: %s', op_steg;
-        RAISE NOTICE '[skapa_historik_qa]   - QA-kolumner: %s', COALESCE(array_to_string(qa_kolumner, ', '), 'inga');
+        RAISE NOTICE '[skapa_historik_qa]   - Schema: %', p_schema_namn;
+        RAISE NOTICE '[skapa_historik_qa]   - Tabell: %', p_tabell_namn;
+        RAISE NOTICE '[skapa_historik_qa]   - Operation: %', op_steg;
+        RAISE NOTICE '[skapa_historik_qa]   - QA-kolumner: %', COALESCE(array_to_string(qa_kolumner, ', '), 'inga');
         RAISE NOTICE '[skapa_historik_qa] Tekniska feldetaljer:';
-        RAISE NOTICE '[skapa_historik_qa]   - Felkod: %s', SQLSTATE;
-        RAISE NOTICE '[skapa_historik_qa]   - Felmeddelande: %s', SQLERRM;
+        RAISE NOTICE '[skapa_historik_qa]   - Felkod: %', SQLSTATE;
+        RAISE NOTICE '[skapa_historik_qa]   - Felmeddelande: %', SQLERRM;
         RAISE;
 END;
 $BODY$;
