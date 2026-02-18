@@ -217,7 +217,9 @@ BEGIN
             RAISE NOTICE '  Debug: geometriinfo.kolumnnamn = %', geometriinfo.kolumnnamn;
             IF geometriinfo IS NOT NULL AND geometriinfo.kolumnnamn IS NOT NULL THEN
                 DECLARE
-                    index_namn text := tabell_namn || '_geom_gidx';
+                    -- Cap at 60 chars to prevent collision with history table name
+                    -- (history table = left(tabell_namn,61)+'_h' = 63 chars after PG truncation)
+                    index_namn text := left(tabell_namn, 50) || '_geom_gidx';
                 BEGIN
                     EXECUTE format(
                         'CREATE INDEX %I ON %I.%I USING GIST (%I)',

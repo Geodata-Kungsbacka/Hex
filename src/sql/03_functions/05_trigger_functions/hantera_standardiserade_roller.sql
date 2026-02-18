@@ -62,7 +62,7 @@ BEGIN
             -- Testa om schema_uttryck matchar detta schema
             BEGIN
                 EXECUTE format('SELECT %L %s', schema_namn, rollkonfiguration.schema_uttryck) INTO matchar;
-                RAISE NOTICE '[hantera_standardiserade_roller]   Schema_uttryck "%s" matchar: %', 
+                RAISE NOTICE '[hantera_standardiserade_roller]   Schema_uttryck "%" matchar: %',
                     rollkonfiguration.schema_uttryck, matchar;
                 
                 IF matchar THEN
