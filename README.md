@@ -624,31 +624,75 @@ ORDER BY proname;
 
 ## Avinstallation
 
-Om du behöver ta bort systemet:
+### Rekommenderad metod — installationsskriptet
+
+Det enklaste sättet att ta bort systemet är via installationsskriptet:
+
+```bash
+python install_hex.py --uninstall
+```
+
+Skriptet kör alla DROP-satser i rätt ordning och rullar tillbaka om något misslyckas.
+
+### Manuell avinstallation
+
+Om du föredrar att köra SQL direkt, kör följande block som superanvändare (t.ex. `postgres`). Ordningen är viktig — event triggers måste tas bort innan funktioner, typer sist.
 
 ```sql
--- 1. Ta bort triggers
-DROP EVENT TRIGGER IF EXISTS notifiera_geoserver_trigger CASCADE;
-DROP EVENT TRIGGER IF EXISTS validera_schemanamn_trigger CASCADE;
-DROP EVENT TRIGGER IF EXISTS hantera_borttagen_tabell_trigger CASCADE;
-DROP EVENT TRIGGER IF EXISTS hantera_standardiserade_roller_trigger CASCADE;
-DROP EVENT TRIGGER IF EXISTS ta_bort_schemaroller_trigger CASCADE;
-DROP EVENT TRIGGER IF EXISTS hantera_ny_vy_trigger CASCADE;
-DROP EVENT TRIGGER IF EXISTS hantera_kolumntillagg_trigger CASCADE;
-DROP EVENT TRIGGER IF EXISTS hantera_ny_tabell_trigger CASCADE;
+-- 1. Ta bort event triggers (måste tas bort innan funktioner)
+DROP EVENT TRIGGER IF EXISTS notifiera_geoserver_trigger;
+DROP EVENT TRIGGER IF EXISTS validera_schemanamn_trigger;
+DROP EVENT TRIGGER IF EXISTS hantera_standardiserade_roller_trigger;
+DROP EVENT TRIGGER IF EXISTS ta_bort_schemaroller_trigger;
+DROP EVENT TRIGGER IF EXISTS hantera_ny_vy_trigger;
+DROP EVENT TRIGGER IF EXISTS hantera_kolumntillagg_trigger;
+DROP EVENT TRIGGER IF EXISTS hantera_ny_tabell_trigger;
+DROP EVENT TRIGGER IF EXISTS hantera_borttagen_tabell_trigger;
 
--- 2. Ta bort funktioner (i omvänd beroendeordning)
--- [Lista alla DROP FUNCTION-satser här]
+-- 2. Ta bort triggerfunktioner
+DROP FUNCTION IF EXISTS public.notifiera_geoserver();
+DROP FUNCTION IF EXISTS public.hantera_standardiserade_roller();
+DROP FUNCTION IF EXISTS public.ta_bort_schemaroller();
+DROP FUNCTION IF EXISTS public.hantera_ny_vy();
+DROP FUNCTION IF EXISTS public.hantera_kolumntillagg();
+DROP FUNCTION IF EXISTS public.hantera_ny_tabell();
+DROP FUNCTION IF EXISTS public.hantera_borttagen_tabell();
 
--- 3. Ta bort konfigurationstabell
-DROP TABLE IF EXISTS standardiserade_kolumner CASCADE;
-DROP TABLE IF EXISTS standardiserade_roller CASCADE;
+-- 3. Ta bort hjälpfunktioner
+DROP FUNCTION IF EXISTS public.tilldela_rollrattigheter(text, text, text);
+DROP FUNCTION IF EXISTS public.skapa_historik_qa(text, text);
+DROP FUNCTION IF EXISTS public.uppdatera_sekvensnamn(text, text, text);
+DROP FUNCTION IF EXISTS public.byt_ut_tabell(text, text, text);
 
--- 4. Ta bort anpassade typer
-DROP TYPE IF EXISTS tabellregler CASCADE;
-DROP TYPE IF EXISTS kolumnkonfig CASCADE;
-DROP TYPE IF EXISTS kolumnegenskaper CASCADE;
-DROP TYPE IF EXISTS geom_info CASCADE;
+-- 4. Ta bort regelfunktioner
+DROP FUNCTION IF EXISTS public.aterskapa_kolumnegenskaper(text, text, kolumnegenskaper);
+DROP FUNCTION IF EXISTS public.aterskapa_tabellregler(text, text, tabellregler);
+DROP FUNCTION IF EXISTS public.spara_kolumnegenskaper(text, text);
+DROP FUNCTION IF EXISTS public.spara_tabellregler(text, text);
+
+-- 5. Ta bort valideringsfunktioner
+DROP FUNCTION IF EXISTS public.validera_geometri(geometry, float) CASCADE;
+DROP FUNCTION IF EXISTS public.validera_schemanamn();
+DROP FUNCTION IF EXISTS public.validera_vynamn(text, text);
+DROP FUNCTION IF EXISTS public.validera_tabell(text, text);
+
+-- 6. Ta bort strukturfunktioner
+DROP FUNCTION IF EXISTS public.hamta_kolumnstandard(text, text, geom_info);
+DROP FUNCTION IF EXISTS public.hamta_geometri_definition(text, text);
+
+-- 7. Ta bort konfigurationsfunktion
+DROP FUNCTION IF EXISTS public.system_owner();
+
+-- 8. Ta bort konfigurationstabeller
+DROP TABLE IF EXISTS public.hex_metadata;
+DROP TABLE IF EXISTS public.standardiserade_roller;
+DROP TABLE IF EXISTS public.standardiserade_kolumner;
+
+-- 9. Ta bort anpassade typer (måste tas bort efter funktioner som använder dem)
+DROP TYPE IF EXISTS public.tabellregler;
+DROP TYPE IF EXISTS public.kolumnegenskaper;
+DROP TYPE IF EXISTS public.kolumnkonfig;
+DROP TYPE IF EXISTS public.geom_info;
 ```
 
 ## Licens
