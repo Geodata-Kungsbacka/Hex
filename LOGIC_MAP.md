@@ -126,10 +126,10 @@ flowchart TD
 
     HSR["hantera_standardiserade_roller<br/>trigger 2 — SECURITY DEFINER"]
     HSR --> LOOP["Evaluera schema_uttryck<br/>för varje rad i standardiserade_roller"]
-    LOOP --> |matchar| GRP["CREATE ROLE grupprolle NOLOGIN"]
+    LOOP --> |matchar| GRP["CREATE ROLE grupproll NOLOGIN"]
     GRP --> TRR["tilldela_rollrattigheter<br/>GRANT USAGE + SELECT / DML"]
     TRR --> LGN["CREATE ROLE loginroll LOGIN<br/>en per post i login_roller"]
-    LGN --> LGRANT["GRANT grupprolle TO loginroll<br/>→ ärver behörigheter"]
+    LGN --> LGRANT["GRANT grupproll TO loginroll<br/>→ ärver behörigheter"]
 
     LGRANT --> NG["notifiera_geoserver<br/>trigger 3"]
     NG --> |"prefix = sk0 / sk1"| NOTIFY["pg_notify<br/>geoserver_schema<br/>sk0_kba_bygg"]
