@@ -409,6 +409,31 @@ hantera_ny_tabell()
 
 ## 4. ALTER TABLE — ADD COLUMN
 
+```mermaid
+flowchart TD
+    START(["ALTER TABLE schema.tabell ADD COLUMN ..."])
+    START --> G1{"temp.reorganization\n_in_progress?"}
+    G1 --> |ja| STOP(["hoppar över"])
+    G1 --> |nej| G2{"temp.tabellstrukturering\n_pagar?"}
+    G2 --> |ja| STOP2(["hoppar över"])
+    G2 --> |nej| REN{"RENAME TO\ni frågesträngen?"}
+    REN --> |ja| RS(["→ se diagram ALTER RENAME"])
+    REN --> |nej| IDENT["Identifiera standardkolumner\nmed ordinal_position < 0"]
+
+    IDENT --> MOVE["Flytta varje kolumn till sist:\nADD temp-kolumn\nUPDATE\nDROP original\nRENAME temp → original"]
+    MOVE --> GEOM["hamta_geometri_definition\nFlytta geom till absolut sist\n(samma 4-stegs teknik)"]
+
+    GEOM --> HSYNC{"Historiktabell\nexisterar?"}
+    HSYNC --> |nej| DONE(["klar ✓"])
+    HSYNC --> |ja| DIFF["Jämför kolumner:\nparent vs historik"]
+    DIFF --> ADD["Saknas i historik → ADD COLUMN\nSaknas i parent → logga, behåll\nTypavvikelse → logga varning"]
+    ADD --> DISABLE["Inaktivera QA-trigger tillfälligt"]
+    DISABLE --> REGEN["Regenerera trg_fn_tabell_qa\nmed ny kolumnlista"]
+    REGEN --> HMOVE["Flytta standardkolumner + geom\ntill sist i historiktabellen"]
+    HMOVE --> ENABLE["Återaktivera QA-trigger"]
+    ENABLE --> DONE2(["klar ✓"])
+```
+
 ```sql
 ALTER TABLE sk0_kba_bygg.byggnader_y ADD COLUMN antal_bostad integer;
 ```
@@ -455,6 +480,17 @@ hantera_kolumntillagg()
 ---
 
 ## 5. ALTER TABLE — RENAME TO
+
+```mermaid
+flowchart TD
+    START(["ALTER TABLE schema.byggnader_y RENAME TO fastigheter_y"])
+    START --> DET["Detekterar RENAME TO\ni frågesträngen"]
+    DET --> OID["Slår upp i hex_metadata via OID\nstabilt genom rename\nHittar: history_table = byggnader_y_h"]
+    OID --> CALC["Beräknar nytt historiktabellnamn:\nfastigheter_y_h\ntrunkeras om > 63 byte"]
+    CALC --> REN["ALTER TABLE byggnader_y_h\nRENAME TO fastigheter_y_h"]
+    REN --> UPD["UPDATE hex_metadata\nparent_table = fastigheter_y\nhistory_table = fastigheter_y_h"]
+    UPD --> DONE(["klar – ingen kolumnomordning"])
+```
 
 ```sql
 ALTER TABLE sk0_kba_bygg.byggnader_y RENAME TO fastigheter_y;
