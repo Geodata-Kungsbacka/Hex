@@ -521,6 +521,24 @@ hantera_kolumntillagg()
 
 ## 6. CREATE VIEW
 
+```mermaid
+flowchart TD
+    START(["CREATE VIEW schema.v_byggnader_aktiva_y"])
+    START --> PUB{"public-schema?"}
+    PUB --> |ja| SKIP(["hoppar över"])
+    PUB --> |nej| PRE{"Börjar med v_ ?"}
+    PRE --> |nej| ERR1(["EXCEPTION: saknar v_-prefix"])
+    PRE --> |ja| COUNT["Räkna geometrier\ni geometry_columns"]
+    COUNT --> |"0 geom"| NOSUF["Inget suffix\nt.ex. v_statistik"]
+    COUNT --> |"1 geom"| ONESUF["Suffix baserat på typ:\n_p POINT  _l LINE\n_y POLYGON  _g övrigt"]
+    COUNT --> |"2+ geom"| GSUF["Suffix: _g"]
+    NOSUF & ONESUF & GSUF --> SUFCHECK{"Vynamnet slutar\npå rätt suffix?"}
+    SUFCHECK --> |nej| ERR2(["EXCEPTION: fel suffix"])
+    SUFCHECK --> |ja| STCHECK{"Vydefinition innehåller ST_*\nOCH returnerar generisk GEOMETRY?"}
+    STCHECK --> |ja| ERR3(["EXCEPTION:\nTypcasta resultatet explicit\nt.ex. ST_Buffer(geom,100)::geometry(Polygon,3007)"])
+    STCHECK --> |nej| DONE(["klar ✓"])
+```
+
 ```sql
 CREATE VIEW sk0_kba_bygg.v_byggnader_aktiva_y AS
   SELECT * FROM sk0_kba_bygg.byggnader_y WHERE status = 'aktiv';
@@ -558,6 +576,26 @@ hantera_ny_vy()
 ---
 
 ## 7. DROP TABLE
+
+```mermaid
+flowchart TD
+    START(["DROP TABLE schema.tabell"])
+    START --> G1{"temp.historikborttagning\n_pagar?"}
+    G1 --> |ja| STOP(["hoppar över"])
+    G1 --> |nej| G2{"temp.tabellstrukturering\n_pagar?"}
+    G2 --> |ja| STOP2(["hoppar över – intern DROP"])
+    G2 --> |nej| SET["Sätt:\ntemp.historikborttagning_pagar = true"]
+    SET --> LOOP["pg_event_trigger_dropped_objects()"]
+    LOOP --> SKIP{"Slutar på _h,\npublic eller pg_*?"}
+    SKIP --> |ja| CONT(["hoppar över denna rad"])
+    SKIP --> |nej| META{"Hittad i\nhex_metadata via OID?"}
+    META --> |ja| FOUND["Använder lagrade namn:\nhistory_table\ntrigger_funktion"]
+    META --> |nej| FALL["Fallback namnkonvention:\ntabell || '_h'"]
+    FOUND & FALL --> DT["DROP TABLE IF EXISTS _h-tabell\nrekursivt DROP-event stoppas av guard"]
+    DT --> DF["DROP FUNCTION IF EXISTS\ntrg_fn_tabell_qa()"]
+    DF --> DEL["DELETE FROM hex_metadata\nWHERE parent_oid = oid"]
+    DEL --> DONE(["klar ✓"])
+```
 
 ```sql
 DROP TABLE sk0_kba_bygg.byggnader_y;
