@@ -42,7 +42,7 @@ flowchart LR
     CV --> HNV["hantera_ny_vy"]
     DT --> HBT["hantera_borttagen_tabell"]
     DS --> TBS["ta_bort_schemaroller"]
-    NG -.->|pg_notify| GS["GeoServer-lyssnaren\n(Python)"]
+    NG -.->|pg_notify| GS["GeoServer-lyssnaren<br/>(Python)"]
 ```
 
 ---
@@ -120,21 +120,21 @@ Kopplar tabell-OID till historiktabell och QA-triggerfunktion.
 ```mermaid
 flowchart TD
     START(["CREATE SCHEMA sk0_kba_bygg"])
-    START --> VS["validera_schemanamn\ntrigger 1"]
+    START --> VS["validera_schemanamn<br/>trigger 1"]
     VS --> |"ogiltigt namn"| ERRV(["EXCEPTION + rollback"])
     VS --> |"giltigt: ^sk012_ext/kba/sys_"| HSR
 
-    HSR["hantera_standardiserade_roller\ntrigger 2 — SECURITY DEFINER"]
-    HSR --> LOOP["Evaluera schema_uttryck\nför varje rad i standardiserade_roller"]
+    HSR["hantera_standardiserade_roller<br/>trigger 2 — SECURITY DEFINER"]
+    HSR --> LOOP["Evaluera schema_uttryck<br/>för varje rad i standardiserade_roller"]
     LOOP --> |matchar| GRP["CREATE ROLE grupprolle NOLOGIN"]
-    GRP --> TRR["tilldela_rollrattigheter\nGRANT USAGE + SELECT / DML"]
-    TRR --> LGN["CREATE ROLE loginroll LOGIN\nen per post i login_roller"]
-    LGN --> LGRANT["GRANT grupprolle TO loginroll\n→ ärver behörigheter"]
+    GRP --> TRR["tilldela_rollrattigheter<br/>GRANT USAGE + SELECT / DML"]
+    TRR --> LGN["CREATE ROLE loginroll LOGIN<br/>en per post i login_roller"]
+    LGN --> LGRANT["GRANT grupprolle TO loginroll<br/>→ ärver behörigheter"]
 
-    LGRANT --> NG["notifiera_geoserver\ntrigger 3"]
-    NG --> |"prefix = sk0 / sk1"| NOTIFY["pg_notify\ngeoserver_schema\nsk0_kba_bygg"]
+    LGRANT --> NG["notifiera_geoserver<br/>trigger 3"]
+    NG --> |"prefix = sk0 / sk1"| NOTIFY["pg_notify<br/>geoserver_schema<br/>sk0_kba_bygg"]
     NG --> |"sk2 / systemschema"| SKIP(["hoppar över"])
-    NOTIFY -.-> GS(["GeoServer-lyssnaren\nse avsnitt 9"])
+    NOTIFY -.-> GS(["GeoServer-lyssnaren<br/>se avsnitt 9"])
 ```
 
 ```
@@ -224,43 +224,43 @@ notifiera_geoserver()
 ```mermaid
 flowchart TD
     START(["CREATE TABLE schema.tabell"])
-    START --> G1{"temp.tabellstrukturering\n_pagar = true?"}
+    START --> G1{"temp.tabellstrukturering<br/>_pagar = true?"}
     G1 --> |ja| STOP(["hoppar över"])
-    G1 --> |nej| G2{"public-schema\neller slutar på _h?"}
+    G1 --> |nej| G2{"public-schema<br/>eller slutar på _h?"}
     G2 --> |ja| ERR(["EXCEPTION"])
     G2 --> |nej| VT
 
     subgraph PREP["Fas 1 – Förberedelse"]
         direction TB
-        VT["validera_tabell\nnamnkonvention + geomstruktur"]
-        VT --> HGD["hamta_geometri_definition\ntyp · SRID · dimensioner · suffix Z/M/ZM\n→ geom_info"]
+        VT["validera_tabell<br/>namnkonvention + geomstruktur"]
+        VT --> HGD["hamta_geometri_definition<br/>typ · SRID · dimensioner · suffix Z/M/ZM<br/>→ geom_info"]
         HGD --> |fel| ERR2(["EXCEPTION / rollback"])
-        HGD --> |ok| STR["spara_tabellregler\nindex · FK · PK/UNIQUE/multi-CHECK"]
-        STR --> SKE["spara_kolumnegenskaper\nDEFAULT · NOT NULL · CHECK · IDENTITY"]
-        SKE --> HKS["hamta_kolumnstandard\nutvärderar schema_uttryck per rad\nmergar standard + user + geom i slutlig ordning"]
+        HGD --> |ok| STR["spara_tabellregler<br/>index · FK · PK/UNIQUE/multi-CHECK"]
+        STR --> SKE["spara_kolumnegenskaper<br/>DEFAULT · NOT NULL · CHECK · IDENTITY"]
+        SKE --> HKS["hamta_kolumnstandard<br/>utvärderar schema_uttryck per rad<br/>mergar standard + user + geom i slutlig ordning"]
     end
 
     subgraph REBUILD["Fas 2 – Omstrukturering"]
         direction TB
-        BU["byt_ut_tabell\nDROP TABLE original CASCADE\nRENAME temp → original"]
-        BU --> US["uppdatera_sekvensnamn\ntar bort _temp_0001_ ur sekvensnamn"]
-        US --> ATR["aterskapa_tabellregler\n1. INDEX  2. PK/UNIQUE/CHECK  3. FOREIGN KEY"]
-        ATR --> AKE["aterskapa_kolumnegenskaper\n1. NOT NULL  2. CHECK  3. DEFAULT  4. IDENTITY"]
+        BU["byt_ut_tabell<br/>DROP TABLE original CASCADE<br/>RENAME temp → original"]
+        BU --> US["uppdatera_sekvensnamn<br/>tar bort _temp_0001_ ur sekvensnamn"]
+        US --> ATR["aterskapa_tabellregler<br/>1. INDEX  2. PK/UNIQUE/CHECK  3. FOREIGN KEY"]
+        ATR --> AKE["aterskapa_kolumnegenskaper<br/>1. NOT NULL  2. CHECK  3. DEFAULT  4. IDENTITY"]
     end
 
     subgraph POST["Fas 3 – Efterbehandling"]
         direction TB
-        GIST["Skapa GiST-index på geom\nalla scheman med geometri"]
-        GIST --> GC{"schema matchar\n^sk0-2_kba_ ?"}
-        GC --> |ja| VC["ADD CHECK validera_geometri\nOGC · ej tom · ej dubbletter\nmin area / längd"]
+        GIST["Skapa GiST-index på geom<br/>alla scheman med geometri"]
+        GIST --> GC{"schema matchar<br/>^sk0-2_kba_ ?"}
+        GC --> |ja| VC["ADD CHECK validera_geometri<br/>OGC · ej tom · ej dubbletter<br/>min area / längd"]
         GC --> |nej| HQA
         VC --> HQA["skapa_historik_qa"]
-        HQA --> HQC{"historik_qa=true\nstandardkolumn?"}
+        HQA --> HQC{"historik_qa=true<br/>standardkolumn?"}
         HQC --> |nej| DONE(["klar ✓"])
-        HQC --> |ja| HTAB["Skapa _h-tabell\nh_typ · h_tidpunkt · h_av + alla föräldrakolumner"]
-        HTAB --> QTRIG["Skapa trg_fn_tabell_qa\nUPDATE → historik + andrad_*\nDELETE → historik"]
+        HQC --> |ja| HTAB["Skapa _h-tabell<br/>h_typ · h_tidpunkt · h_av + alla föräldrakolumner"]
+        HTAB --> QTRIG["Skapa trg_fn_tabell_qa<br/>UPDATE → historik + andrad_*<br/>DELETE → historik"]
         QTRIG --> TRG["BEFORE UPDATE OR DELETE trigger"]
-        TRG --> META["Registrera i hex_metadata\nparent_oid → history_table"]
+        TRG --> META["Registrera i hex_metadata<br/>parent_oid → history_table"]
         META --> DONE2(["klar ✓"])
     end
 
@@ -412,24 +412,24 @@ hantera_ny_tabell()
 ```mermaid
 flowchart TD
     START(["ALTER TABLE schema.tabell ADD COLUMN ..."])
-    START --> G1{"temp.reorganization\n_in_progress?"}
+    START --> G1{"temp.reorganization<br/>_in_progress?"}
     G1 --> |ja| STOP(["hoppar över"])
-    G1 --> |nej| G2{"temp.tabellstrukturering\n_pagar?"}
+    G1 --> |nej| G2{"temp.tabellstrukturering<br/>_pagar?"}
     G2 --> |ja| STOP2(["hoppar över"])
-    G2 --> |nej| REN{"RENAME TO\ni frågesträngen?"}
+    G2 --> |nej| REN{"RENAME TO<br/>i frågesträngen?"}
     REN --> |ja| RS(["→ se diagram ALTER RENAME"])
-    REN --> |nej| IDENT["Identifiera standardkolumner\nmed ordinal_position < 0"]
+    REN --> |nej| IDENT["Identifiera standardkolumner<br/>med ordinal_position < 0"]
 
-    IDENT --> MOVE["Flytta varje kolumn till sist:\nADD temp-kolumn\nUPDATE\nDROP original\nRENAME temp → original"]
-    MOVE --> GEOM["hamta_geometri_definition\nFlytta geom till absolut sist\n(samma 4-stegs teknik)"]
+    IDENT --> MOVE["Flytta varje kolumn till sist:<br/>ADD temp-kolumn<br/>UPDATE<br/>DROP original<br/>RENAME temp → original"]
+    MOVE --> GEOM["hamta_geometri_definition<br/>Flytta geom till absolut sist<br/>(samma 4-stegs teknik)"]
 
-    GEOM --> HSYNC{"Historiktabell\nexisterar?"}
+    GEOM --> HSYNC{"Historiktabell<br/>existerar?"}
     HSYNC --> |nej| DONE(["klar ✓"])
-    HSYNC --> |ja| DIFF["Jämför kolumner:\nparent vs historik"]
-    DIFF --> ADD["Saknas i historik → ADD COLUMN\nSaknas i parent → logga, behåll\nTypavvikelse → logga varning"]
+    HSYNC --> |ja| DIFF["Jämför kolumner:<br/>parent vs historik"]
+    DIFF --> ADD["Saknas i historik → ADD COLUMN<br/>Saknas i parent → logga, behåll<br/>Typavvikelse → logga varning"]
     ADD --> DISABLE["Inaktivera QA-trigger tillfälligt"]
-    DISABLE --> REGEN["Regenerera trg_fn_tabell_qa\nmed ny kolumnlista"]
-    REGEN --> HMOVE["Flytta standardkolumner + geom\ntill sist i historiktabellen"]
+    DISABLE --> REGEN["Regenerera trg_fn_tabell_qa<br/>med ny kolumnlista"]
+    REGEN --> HMOVE["Flytta standardkolumner + geom<br/>till sist i historiktabellen"]
     HMOVE --> ENABLE["Återaktivera QA-trigger"]
     ENABLE --> DONE2(["klar ✓"])
 ```
@@ -484,11 +484,11 @@ hantera_kolumntillagg()
 ```mermaid
 flowchart TD
     START(["ALTER TABLE schema.byggnader_y RENAME TO fastigheter_y"])
-    START --> DET["Detekterar RENAME TO\ni frågesträngen"]
-    DET --> OID["Slår upp i hex_metadata via OID\nstabilt genom rename\nHittar: history_table = byggnader_y_h"]
-    OID --> CALC["Beräknar nytt historiktabellnamn:\nfastigheter_y_h\ntrunkeras om > 63 byte"]
-    CALC --> REN["ALTER TABLE byggnader_y_h\nRENAME TO fastigheter_y_h"]
-    REN --> UPD["UPDATE hex_metadata\nparent_table = fastigheter_y\nhistory_table = fastigheter_y_h"]
+    START --> DET["Detekterar RENAME TO<br/>i frågesträngen"]
+    DET --> OID["Slår upp i hex_metadata via OID<br/>stabilt genom rename<br/>Hittar: history_table = byggnader_y_h"]
+    OID --> CALC["Beräknar nytt historiktabellnamn:<br/>fastigheter_y_h<br/>trunkeras om > 63 byte"]
+    CALC --> REN["ALTER TABLE byggnader_y_h<br/>RENAME TO fastigheter_y_h"]
+    REN --> UPD["UPDATE hex_metadata<br/>parent_table = fastigheter_y<br/>history_table = fastigheter_y_h"]
     UPD --> DONE(["klar – ingen kolumnomordning"])
 ```
 
@@ -528,14 +528,14 @@ flowchart TD
     PUB --> |ja| SKIP(["hoppar över"])
     PUB --> |nej| PRE{"Börjar med v_ ?"}
     PRE --> |nej| ERR1(["EXCEPTION: saknar v_-prefix"])
-    PRE --> |ja| COUNT["Räkna geometrier\ni geometry_columns"]
-    COUNT --> |"0 geom"| NOSUF["Inget suffix\nt.ex. v_statistik"]
-    COUNT --> |"1 geom"| ONESUF["Suffix baserat på typ:\n_p POINT  _l LINE\n_y POLYGON  _g övrigt"]
+    PRE --> |ja| COUNT["Räkna geometrier<br/>i geometry_columns"]
+    COUNT --> |"0 geom"| NOSUF["Inget suffix<br/>t.ex. v_statistik"]
+    COUNT --> |"1 geom"| ONESUF["Suffix baserat på typ:<br/>_p POINT  _l LINE<br/>_y POLYGON  _g övrigt"]
     COUNT --> |"2+ geom"| GSUF["Suffix: _g"]
-    NOSUF & ONESUF & GSUF --> SUFCHECK{"Vynamnet slutar\npå rätt suffix?"}
+    NOSUF & ONESUF & GSUF --> SUFCHECK{"Vynamnet slutar<br/>på rätt suffix?"}
     SUFCHECK --> |nej| ERR2(["EXCEPTION: fel suffix"])
-    SUFCHECK --> |ja| STCHECK{"Vydefinition innehåller ST_*\nOCH returnerar generisk GEOMETRY?"}
-    STCHECK --> |ja| ERR3(["EXCEPTION:\nTypcasta resultatet explicit\nt.ex. ST_Buffer(geom,100)::geometry(Polygon,3007)"])
+    SUFCHECK --> |ja| STCHECK{"Vydefinition innehåller ST_*<br/>OCH returnerar generisk GEOMETRY?"}
+    STCHECK --> |ja| ERR3(["EXCEPTION:<br/>Typcasta resultatet explicit<br/>t.ex. ST_Buffer(geom,100)::geometry(Polygon,3007)"])
     STCHECK --> |nej| DONE(["klar ✓"])
 ```
 
@@ -580,20 +580,20 @@ hantera_ny_vy()
 ```mermaid
 flowchart TD
     START(["DROP TABLE schema.tabell"])
-    START --> G1{"temp.historikborttagning\n_pagar?"}
+    START --> G1{"temp.historikborttagning<br/>_pagar?"}
     G1 --> |ja| STOP(["hoppar över"])
-    G1 --> |nej| G2{"temp.tabellstrukturering\n_pagar?"}
+    G1 --> |nej| G2{"temp.tabellstrukturering<br/>_pagar?"}
     G2 --> |ja| STOP2(["hoppar över – intern DROP"])
-    G2 --> |nej| SET["Sätt:\ntemp.historikborttagning_pagar = true"]
+    G2 --> |nej| SET["Sätt:<br/>temp.historikborttagning_pagar = true"]
     SET --> LOOP["pg_event_trigger_dropped_objects()"]
-    LOOP --> SKIP{"Slutar på _h,\npublic eller pg_*?"}
+    LOOP --> SKIP{"Slutar på _h,<br/>public eller pg_*?"}
     SKIP --> |ja| CONT(["hoppar över denna rad"])
-    SKIP --> |nej| META{"Hittad i\nhex_metadata via OID?"}
-    META --> |ja| FOUND["Använder lagrade namn:\nhistory_table\ntrigger_funktion"]
-    META --> |nej| FALL["Fallback namnkonvention:\ntabell || '_h'"]
-    FOUND & FALL --> DT["DROP TABLE IF EXISTS _h-tabell\nrekursivt DROP-event stoppas av guard"]
-    DT --> DF["DROP FUNCTION IF EXISTS\ntrg_fn_tabell_qa()"]
-    DF --> DEL["DELETE FROM hex_metadata\nWHERE parent_oid = oid"]
+    SKIP --> |nej| META{"Hittad i<br/>hex_metadata via OID?"}
+    META --> |ja| FOUND["Använder lagrade namn:<br/>history_table<br/>trigger_funktion"]
+    META --> |nej| FALL["Fallback namnkonvention:<br/>tabell || '_h'"]
+    FOUND & FALL --> DT["DROP TABLE IF EXISTS _h-tabell<br/>rekursivt DROP-event stoppas av guard"]
+    DT --> DF["DROP FUNCTION IF EXISTS<br/>trg_fn_tabell_qa()"]
+    DF --> DEL["DELETE FROM hex_metadata<br/>WHERE parent_oid = oid"]
     DEL --> DONE(["klar ✓"])
 ```
 
@@ -636,12 +636,12 @@ flowchart TD
     START(["DROP SCHEMA sk0_kba_bygg CASCADE"])
     START --> SYS{"Systemschema?"}
     SYS --> |ja| SKIP(["hoppar över"])
-    SYS --> |nej| LOOP["För varje rad i standardiserade_roller\ndär ta_bort_med_schema = true"]
+    SYS --> |nej| LOOP["För varje rad i standardiserade_roller<br/>där ta_bort_med_schema = true"]
     LOOP --> GLOBAL{"global_roll = true?"}
-    GLOBAL --> |ja| KEEP(["Roll bevaras\nt.ex. r_sk0_global"])
-    GLOBAL --> |nej| LOGIN["För varje loginroll i login_roller:\nREASSIGN OWNED TO postgres\nDROP OWNED\nDROP ROLE loginroll"]
-    LOGIN --> GROUP["REASSIGN OWNED TO postgres\nDROP OWNED\nDROP ROLE grupprolle"]
-    GROUP --> DONE(["Roller borttagna ✓\nPostgreSQL hanterar schema\noch objekt via CASCADE"])
+    GLOBAL --> |ja| KEEP(["Roll bevaras<br/>t.ex. r_sk0_global"])
+    GLOBAL --> |nej| LOGIN["För varje loginroll i login_roller:<br/>REASSIGN OWNED TO postgres<br/>DROP OWNED<br/>DROP ROLE loginroll"]
+    LOGIN --> GROUP["REASSIGN OWNED TO postgres<br/>DROP OWNED<br/>DROP ROLE grupprolle"]
+    GROUP --> DONE(["Roller borttagna ✓<br/>PostgreSQL hanterar schema<br/>och objekt via CASCADE"])
 ```
 
 ```sql
@@ -689,15 +689,15 @@ mot PostgreSQL och väntar på `pg_notify`-meddelanden.
 
 ```mermaid
 flowchart TD
-    PG(["PostgreSQL\nnotifiera_geoserver()"])
-    PG --> |"pg_notify\ngeoserver_schema\nsk0_kba_bygg"| LL
+    PG(["PostgreSQL<br/>notifiera_geoserver()"])
+    PG --> |"pg_notify<br/>geoserver_schema<br/>sk0_kba_bygg"| LL
 
     subgraph PY["Python-lyssnaren (geoserver_listener.py)"]
         direction TB
-        LL["listen_loop\nautocommit · LISTEN · 5 s select-timeout"]
-        LL --> |notifiering| HSN["handle_schema_notification\nvaliderar ^sk01_ext/kba/sys_\nextraherar prefix sk0\nslår upp JNDI-mapping"]
-        LL --> |"anslutning tappas"| REC["Väntar reconnect_delay\nåteransluter"]
-        REC --> EMAIL1["EmailNotifier\nskickar varning\n300 s cooldown"]
+        LL["listen_loop<br/>autocommit · LISTEN · 5 s select-timeout"]
+        LL --> |notifiering| HSN["handle_schema_notification<br/>validerar ^sk01_ext/kba/sys_<br/>extraherar prefix sk0<br/>slår upp JNDI-mapping"]
+        LL --> |"anslutning tappas"| REC["Väntar reconnect_delay<br/>återansluter"]
+        REC --> EMAIL1["EmailNotifier<br/>skickar varning<br/>300 s cooldown"]
         EMAIL1 --> LL
         REC --> LL
     end
@@ -706,16 +706,16 @@ flowchart TD
 
     subgraph REST["GeoServerClient (HTTP Basic Auth)"]
         direction TB
-        GS1["GET /rest/workspaces/sk0_kba_bygg\n200 = finns · 404 = skapa"]
-        GS1 --> GS2["POST /rest/workspaces\nskapa workspace sk0_kba_bygg"]
-        GS2 --> GS3["GET .../datastores/sk0_kba_bygg\n200 = finns · 404 = skapa"]
-        GS3 --> GS4["POST .../datastores\nJNDI PostGIS\nschema=sk0_kba_bygg · fetch 1000 · loose bbox"]
+        GS1["GET /rest/workspaces/sk0_kba_bygg<br/>200 = finns · 404 = skapa"]
+        GS1 --> GS2["POST /rest/workspaces<br/>skapa workspace sk0_kba_bygg"]
+        GS2 --> GS3["GET .../datastores/sk0_kba_bygg<br/>200 = finns · 404 = skapa"]
+        GS3 --> GS4["POST .../datastores<br/>JNDI PostGIS<br/>schema=sk0_kba_bygg · fetch 1000 · loose bbox"]
         GS4 --> OK(["201 Created ✓"])
     end
 
-    GS4 --> |"nätverksfel"| RETRY["Retry 3 ggr\n2 s · 5 s · 10 s"]
+    GS4 --> |"nätverksfel"| RETRY["Retry 3 ggr<br/>2 s · 5 s · 10 s"]
     RETRY --> GS1
-    GS4 --> |"4xx / 5xx"| FAIL["Misslyckas direkt\nEmailNotifier"]
+    GS4 --> |"4xx / 5xx"| FAIL["Misslyckas direkt<br/>EmailNotifier"]
 ```
 
 ```
