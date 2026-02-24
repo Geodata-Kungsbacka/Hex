@@ -221,6 +221,53 @@ notifiera_geoserver()
 
 ## 3. CREATE TABLE
 
+```mermaid
+flowchart TD
+    START(["CREATE TABLE schema.tabell"])
+    START --> G1{"temp.tabellstrukturering\n_pagar = true?"}
+    G1 --> |ja| STOP(["hoppar över"])
+    G1 --> |nej| G2{"public-schema\neller slutar på _h?"}
+    G2 --> |ja| ERR(["EXCEPTION"])
+    G2 --> |nej| VT
+
+    subgraph PREP["Fas 1 – Förberedelse"]
+        direction TB
+        VT["validera_tabell\nnamnkonvention + geomstruktur"]
+        VT --> HGD["hamta_geometri_definition\ntyp · SRID · dimensioner · suffix Z/M/ZM\n→ geom_info"]
+        HGD --> |fel| ERR2(["EXCEPTION / rollback"])
+        HGD --> |ok| STR["spara_tabellregler\nindex · FK · PK/UNIQUE/multi-CHECK"]
+        STR --> SKE["spara_kolumnegenskaper\nDEFAULT · NOT NULL · CHECK · IDENTITY"]
+        SKE --> HKS["hamta_kolumnstandard\nutvärderar schema_uttryck per rad\nmergar standard + user + geom i slutlig ordning"]
+    end
+
+    subgraph REBUILD["Fas 2 – Omstrukturering"]
+        direction TB
+        BU["byt_ut_tabell\nDROP TABLE original CASCADE\nRENAME temp → original"]
+        BU --> US["uppdatera_sekvensnamn\ntar bort _temp_0001_ ur sekvensnamn"]
+        US --> ATR["aterskapa_tabellregler\n1. INDEX  2. PK/UNIQUE/CHECK  3. FOREIGN KEY"]
+        ATR --> AKE["aterskapa_kolumnegenskaper\n1. NOT NULL  2. CHECK  3. DEFAULT  4. IDENTITY"]
+    end
+
+    subgraph POST["Fas 3 – Efterbehandling"]
+        direction TB
+        GIST["Skapa GiST-index på geom\nalla scheman med geometri"]
+        GIST --> GC{"schema matchar\n^sk0-2_kba_ ?"}
+        GC --> |ja| VC["ADD CHECK validera_geometri\nOGC · ej tom · ej dubbletter\nmin area / längd"]
+        GC --> |nej| HQA
+        VC --> HQA["skapa_historik_qa"]
+        HQA --> HQC{"historik_qa=true\nstandardkolumn?"}
+        HQC --> |nej| DONE(["klar ✓"])
+        HQC --> |ja| HTAB["Skapa _h-tabell\nh_typ · h_tidpunkt · h_av + alla föräldrakolumner"]
+        HTAB --> QTRIG["Skapa trg_fn_tabell_qa\nUPDATE → historik + andrad_*\nDELETE → historik"]
+        QTRIG --> TRG["BEFORE UPDATE OR DELETE trigger"]
+        TRG --> META["Registrera i hex_metadata\nparent_oid → history_table"]
+        META --> DONE2(["klar ✓"])
+    end
+
+    HKS --> BU
+    AKE --> GIST
+```
+
 ```sql
 CREATE TABLE sk0_kba_bygg.byggnader_y (
     beteckning text,
