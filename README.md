@@ -325,10 +325,12 @@ src/sql/04_triggers/notifiera_geoserver_trigger.sql
 
 **Användning**: Kritisk del av omstruktureringsprocessen för att byta ut gamla tabeller mot nya.
 
-#### `uppdatera_sekvensnamn(schema, tabell)`
+#### `uppdatera_sekvensnamn(schema, tabell, temp_suffix)`
 **Syfte**: Korrigerar IDENTITY-sekvensnamn efter tabellbyte.
 
 **Problem som löses**: När IDENTITY-kolumner skapas i temporära tabeller får sekvenserna temporära namn som måste korrigeras.
+
+**Parameter**: `temp_suffix` – Suffixet att söka efter i sekvensnamnen (default `_temp_0001`).
 
 **Returvärde**: Antal omdöpta sekvenser.
 
@@ -336,7 +338,7 @@ src/sql/04_triggers/notifiera_geoserver_trigger.sql
 **Syfte**: Skapar komplett historikhantering för kvalitetssäkring.
 
 **Skapar**:
-1. Historiktabell med prefix `h_` och alla originalkolumner
+1. Historiktabell med suffix `_h` och alla originalkolumner
 2. Triggerfunktion som loggar UPDATE och DELETE
 3. Trigger som automatiskt uppdaterar QA-kolumner
 4. Index för snabb sökning på gid och tidpunkt
@@ -350,7 +352,7 @@ src/sql/04_triggers/notifiera_geoserver_trigger.sql
 #### `hantera_ny_tabell()`
 **Syfte**: Huvudfunktion som omstrukturerar nyskapade tabeller.
 
-**Process (8 steg)**:
+**Process (10 steg)**:
 1. Validerar tabellnamn och geometri
 2. Sparar befintliga regler och egenskaper
 3. Bestämmer ny kolumnstruktur
@@ -358,7 +360,9 @@ src/sql/04_triggers/notifiera_geoserver_trigger.sql
 5. Byter ut tabellerna
 6. Återskapar alla regler
 7. Återskapar alla egenskaper
-8. Skapar historik/QA om konfigurerat
+8. Skapar GiST-index för geometrikolumn
+9. Lägger till geometrivalidering för _kba_-scheman
+10. Skapar historik/QA om konfigurerat
 
 **Trigger**: Körs automatiskt vid CREATE TABLE.
 
@@ -409,7 +413,7 @@ src/sql/04_triggers/notifiera_geoserver_trigger.sql
 #### `ta_bort_schemaroller()`
 **Syfte**: Städar upp oanvända roller när scheman tas bort.
 
-**Process**: Identifierar borttagna scheman och tar bort motsvarande r_ och w_ roller.
+**Process**: Identifierar borttagna scheman och tar bort roller konfigurerade i `standardiserade_roller` där `ta_bort_med_schema = true`. Hanterar både grupproller och LOGIN-roller.
 
 **Trigger**: Körs vid DROP SCHEMA.
 
