@@ -631,6 +631,19 @@ hantera_borttagen_tabell()
 
 ## 8. DROP SCHEMA
 
+```mermaid
+flowchart TD
+    START(["DROP SCHEMA sk0_kba_bygg CASCADE"])
+    START --> SYS{"Systemschema?"}
+    SYS --> |ja| SKIP(["hoppar över"])
+    SYS --> |nej| LOOP["För varje rad i standardiserade_roller\ndär ta_bort_med_schema = true"]
+    LOOP --> GLOBAL{"global_roll = true?"}
+    GLOBAL --> |ja| KEEP(["Roll bevaras\nt.ex. r_sk0_global"])
+    GLOBAL --> |nej| LOGIN["För varje loginroll i login_roller:\nREASSIGN OWNED TO postgres\nDROP OWNED\nDROP ROLE loginroll"]
+    LOGIN --> GROUP["REASSIGN OWNED TO postgres\nDROP OWNED\nDROP ROLE grupprolle"]
+    GROUP --> DONE(["Roller borttagna ✓\nPostgreSQL hanterar schema\noch objekt via CASCADE"])
+```
+
 ```sql
 DROP SCHEMA sk0_kba_bygg CASCADE;
 ```
@@ -673,6 +686,37 @@ ta_bort_schemaroller()
 
 Lyssnaren är ett fristående program (eller Windows-tjänst) som kopplar upp
 mot PostgreSQL och väntar på `pg_notify`-meddelanden.
+
+```mermaid
+flowchart TD
+    PG(["PostgreSQL\nnotifiera_geoserver()"])
+    PG --> |"pg_notify\ngeoserver_schema\nsk0_kba_bygg"| LL
+
+    subgraph PY["Python-lyssnaren (geoserver_listener.py)"]
+        direction TB
+        LL["listen_loop\nautocommit · LISTEN · 5 s select-timeout"]
+        LL --> |notifiering| HSN["handle_schema_notification\nvaliderar ^sk01_ext/kba/sys_\nextraherar prefix sk0\nslår upp JNDI-mapping"]
+        LL --> |"anslutning tappas"| REC["Väntar reconnect_delay\nåteransluter"]
+        REC --> EMAIL1["EmailNotifier\nskickar varning\n300 s cooldown"]
+        EMAIL1 --> LL
+        REC --> LL
+    end
+
+    HSN --> GS1
+
+    subgraph REST["GeoServerClient (HTTP Basic Auth)"]
+        direction TB
+        GS1["GET /rest/workspaces/sk0_kba_bygg\n200 = finns · 404 = skapa"]
+        GS1 --> GS2["POST /rest/workspaces\nskapa workspace sk0_kba_bygg"]
+        GS2 --> GS3["GET .../datastores/sk0_kba_bygg\n200 = finns · 404 = skapa"]
+        GS3 --> GS4["POST .../datastores\nJNDI PostGIS\nschema=sk0_kba_bygg · fetch 1000 · loose bbox"]
+        GS4 --> OK(["201 Created ✓"])
+    end
+
+    GS4 --> |"nätverksfel"| RETRY["Retry 3 ggr\n2 s · 5 s · 10 s"]
+    RETRY --> GS1
+    GS4 --> |"4xx / 5xx"| FAIL["Misslyckas direkt\nEmailNotifier"]
+```
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
