@@ -21,6 +21,32 @@
 
 ---
 
+## Översikt — alla DDL-händelser
+
+```mermaid
+flowchart LR
+    subgraph DDL["DDL-händelser"]
+        CS["CREATE SCHEMA"]
+        CT["CREATE TABLE"]
+        AT["ALTER TABLE"]
+        CV["CREATE VIEW"]
+        DT["DROP TABLE"]
+        DS["DROP SCHEMA"]
+    end
+
+    CS --> VS["validera_schemanamn"]
+    CS --> HSR["hantera_standardiserade_roller"]
+    CS --> NG["notifiera_geoserver"]
+    CT --> HNT["hantera_ny_tabell"]
+    AT --> HK["hantera_kolumntillagg"]
+    CV --> HNV["hantera_ny_vy"]
+    DT --> HBT["hantera_borttagen_tabell"]
+    DS --> TBS["ta_bort_schemaroller"]
+    NG -.->|pg_notify| GS["GeoServer-lyssnaren\n(Python)"]
+```
+
+---
+
 ## 1. Konfigurationstabeller
 
 Systemets beteende styrs av data, inte hårdkodad logik.
@@ -90,6 +116,26 @@ Kopplar tabell-OID till historiktabell och QA-triggerfunktion.
 ---
 
 ## 2. CREATE SCHEMA
+
+```mermaid
+flowchart TD
+    START(["CREATE SCHEMA sk0_kba_bygg"])
+    START --> VS["validera_schemanamn\ntrigger 1"]
+    VS --> |"ogiltigt namn"| ERRV(["EXCEPTION + rollback"])
+    VS --> |"giltigt: ^sk012_ext/kba/sys_"| HSR
+
+    HSR["hantera_standardiserade_roller\ntrigger 2 — SECURITY DEFINER"]
+    HSR --> LOOP["Evaluera schema_uttryck\nför varje rad i standardiserade_roller"]
+    LOOP --> |matchar| GRP["CREATE ROLE grupprolle NOLOGIN"]
+    GRP --> TRR["tilldela_rollrattigheter\nGRANT USAGE + SELECT / DML"]
+    TRR --> LGN["CREATE ROLE loginroll LOGIN\nen per post i login_roller"]
+    LGN --> LGRANT["GRANT grupprolle TO loginroll\n→ ärver behörigheter"]
+
+    LGRANT --> NG["notifiera_geoserver\ntrigger 3"]
+    NG --> |"prefix = sk0 / sk1"| NOTIFY["pg_notify\ngeoserver_schema\nsk0_kba_bygg"]
+    NG --> |"sk2 / systemschema"| SKIP(["hoppar över"])
+    NOTIFY -.-> GS(["GeoServer-lyssnaren\nse avsnitt 9"])
+```
 
 ```
 CREATE SCHEMA sk0_kba_bygg
