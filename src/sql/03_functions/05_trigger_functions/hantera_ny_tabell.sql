@@ -37,26 +37,44 @@ DECLARE
     
     -- För felhantering och loggning
     op_steg text;                      -- Operationssteg för felsökning
-    ar_fme boolean := false;           -- Om anroparen är FME
+    ar_fme boolean := false;           -- Om anroparen är FME (bakåtkompatibel flagga)
+    ar_systemanvandare boolean := false; -- Om anroparen är en känd systemanvändare
 BEGIN
     RAISE NOTICE E'\n======== hantera_ny_tabell START ========';
-    
+
     -- Kontrollera rekursion
     IF current_setting('temp.tabellstrukturering_pagar', true) = 'true' THEN
         RETURN;
     END IF;
     PERFORM set_config('temp.tabellstrukturering_pagar', 'true', true);
 
-    -- Detektera FME-anslutning för utökad felsökningsloggning
-    ar_fme := (lower(coalesce(current_setting('application_name', true), '')) = 'fme');
-    IF ar_fme THEN
-        RAISE NOTICE E'\n[hantera_ny_tabell] *** FME-ANSLUTNING DETEKTERAD ***';
+    -- Detektera känd systemanvändare (t.ex. FME) via hex_systemanvandare-tabellen.
+    -- Matchning sker mot session_user, current_user och application_name.
+    SELECT EXISTS (
+        SELECT 1 FROM public.hex_systemanvandare
+        WHERE anvandare IN (
+            lower(session_user),
+            lower(current_user),
+            lower(coalesce(current_setting('application_name', true), ''))
+        )
+    ) INTO ar_systemanvandare;
+
+    -- Bakåtkompatibel flagga (används fortfarande för FME-specifik debugloggning)
+    ar_fme := ar_systemanvandare OR
+              (lower(coalesce(current_setting('application_name', true), '')) = 'fme');
+
+    IF ar_systemanvandare THEN
+        RAISE NOTICE E'\n[hantera_ny_tabell] *** SYSTEMANVÄNDARE DETEKTERAD ***';
         RAISE NOTICE '[hantera_ny_tabell] Sessionsinformation:';
         RAISE NOTICE '[hantera_ny_tabell]   » application_name: %', current_setting('application_name', true);
         RAISE NOTICE '[hantera_ny_tabell]   » session_user: %', session_user;
         RAISE NOTICE '[hantera_ny_tabell]   » current_user: %', current_user;
         RAISE NOTICE '[hantera_ny_tabell]   » inet_client_addr: %', inet_client_addr();
         RAISE NOTICE '[hantera_ny_tabell]   » backend_pid: %', pg_backend_pid();
+        RAISE NOTICE '[hantera_ny_tabell]   » Tvåstegshantering aktiv (geometri kan komma via ALTER TABLE)';
+    ELSIF ar_fme THEN
+        RAISE NOTICE E'\n[hantera_ny_tabell] *** FME-ANSLUTNING DETEKTERAD (ej i hex_systemanvandare) ***';
+        RAISE NOTICE '[hantera_ny_tabell]   » application_name: %', current_setting('application_name', true);
     END IF;
 
     -- Bearbeta tabeller
@@ -102,9 +120,37 @@ BEGIN
 
         BEGIN
             -- Steg 1: Validera
+            -- Systemanvändare (t.ex. FME) skapar ibland tabeller i två steg:
+            --   steg A) CREATE TABLE utan geometrikolumn
+            --   steg B) ALTER TABLE ADD COLUMN geom geometry(...)
+            -- I det fallet tillåter vi tabellen att passera validering och
+            -- registrerar den i hex_afvaktande_geometri. Geometrispecifik
+            -- efterbearbetning (GiST-index, geometrivalidering) sker i
+            -- hantera_kolumntillagg() när geom-kolumnen dyker upp.
             op_steg := 'validering';
             RAISE NOTICE 'Steg 1/10: Validerar tabell';
-            geometriinfo := validera_tabell(schema_namn, tabell_namn);
+
+            IF ar_systemanvandare
+               AND tabell_namn ~ '_[plyg]$'
+               AND NOT EXISTS (
+                   SELECT 1 FROM geometry_columns
+                   WHERE f_table_schema = schema_namn
+                   AND f_table_name = tabell_namn
+               )
+            THEN
+                RAISE WARNING
+                    '[hantera_ny_tabell] Tabell %.% har geometrisuffix men saknar geometrikolumn. '
+                    'Registreras som afvaktande – geometri förväntas via ALTER TABLE.',
+                    schema_namn, tabell_namn;
+
+                INSERT INTO public.hex_afvaktande_geometri (schema_namn, tabell_namn)
+                VALUES (schema_namn, tabell_namn)
+                ON CONFLICT DO NOTHING;
+
+                geometriinfo := NULL;  -- Geometrispecifika steg (8+9) hoppas över nedan
+            ELSE
+                geometriinfo := validera_tabell(schema_namn, tabell_namn);
+            END IF;
 
             -- FME-debug: Visa kolumner FME skickade innan omstrukturering
             IF ar_fme THEN
