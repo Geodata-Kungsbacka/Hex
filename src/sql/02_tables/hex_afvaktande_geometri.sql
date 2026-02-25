@@ -1,18 +1,20 @@
--- TABLE: public.hex_afvaktande_geometri
+-- TABELL: public.hex_afvaktande_geometri
 --
--- Tracks tables that were created by a known system user (see hex_systemanvandare)
--- with a geometry-reserved suffix (_p, _l, _y, _g) but without a geometry column.
--- These tables are awaiting an ALTER TABLE ... ADD COLUMN geom ... from the tool.
+-- Håller reda på tabeller som skapats av en känd systemanvändare
+-- (se hex_systemanvandare) med ett geometrireserverat suffix (_p, _l, _y, _g)
+-- men utan någon geometrikolumn. Dessa tabeller väntar på att verktyget ska
+-- lägga till geometrin via ALTER TABLE ... ADD COLUMN geom ...
 --
--- Lifecycle:
---   INSERT: hantera_ny_tabell()      — when system user creates a suffixed table without geom
---   DELETE: hantera_kolumntillagg()  — when geom column is successfully added
+-- Livscykel:
+--   INSERT: hantera_ny_tabell()        — systemanvändare skapar tabell med suffix men utan geom
+--   DELETE: hantera_kolumntillagg()    — geometrikolumnen har lagts till, posten städas bort
+--   DELETE: hantera_borttagen_tabell() — tabellen droppades innan geometrin hann läggas till
 --
--- A row lingering here beyond a few hours indicates the tool never completed
--- its second step. Such tables should be reviewed and dropped manually.
+-- En rad som dröjer kvar längre tid indikerar att verktyget aldrig slutförde
+-- sitt andra steg. Sådana tabeller bör granskas och vid behov droppas manuellt.
 --
--- Written by:  hantera_ny_tabell()
--- Deleted by:  hantera_kolumntillagg()
+-- Skapas av:   hantera_ny_tabell()
+-- Raderas av:  hantera_kolumntillagg(), hantera_borttagen_tabell()
 
 CREATE TABLE IF NOT EXISTS public.hex_afvaktande_geometri (
     schema_namn     text         NOT NULL,
@@ -24,15 +26,16 @@ CREATE TABLE IF NOT EXISTS public.hex_afvaktande_geometri (
 
 ALTER TABLE public.hex_afvaktande_geometri OWNER TO gis_admin;
 
--- Event trigger functions run in the calling user's security context.
--- Both read and write access are required from any authenticated user.
+-- Händelsetriggerfunktioner körs i den anropande användarens säkerhetskontext.
+-- Både läs- och skrivrättigheter krävs från alla autentiserade användare.
 GRANT SELECT, INSERT, DELETE ON public.hex_afvaktande_geometri TO PUBLIC;
 
 COMMENT ON TABLE public.hex_afvaktande_geometri IS
     'Tabeller skapade av systemanvändare med geometrisuffix men utan geometrikolumn.
      Registreras av hantera_ny_tabell() och tas bort av hantera_kolumntillagg()
-     när geometrikolumnen läggs till. Kvarliggande rader indikerar att verktyget
-     aldrig slutförde sitt andra steg.';
+     när geometrikolumnen läggs till, eller av hantera_borttagen_tabell() om
+     tabellen droppas innan geometrin hunnit läggas till. Kvarliggande rader
+     indikerar att verktyget aldrig slutförde sitt andra steg.';
 
 COMMENT ON COLUMN public.hex_afvaktande_geometri.schema_namn IS
     'Schema för den afvaktande tabellen.';

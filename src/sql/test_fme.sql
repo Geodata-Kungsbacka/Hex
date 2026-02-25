@@ -23,7 +23,7 @@
  *   F8  Multiple pending tables simultaneously
  *   F9  FME non-geometry table without suffix (no deferral expected)
  *   F10 Partial application_name does not trigger deferred path
- *   F11 DROP TABLE on pending table – known gap documented
+ *   F11 DROP TABLE on pending table cleans hex_afvaktande_geometri
  *
  * Convention: NOTICE = PASSED/INFO,  WARNING = FAILED/BUG CONFIRMED
  *
@@ -817,10 +817,10 @@ BEGIN
 END $$;
 
 ------------------------------------------------------------------------
--- F11: DROP TABLE ON PENDING TABLE – KNOWN GAP
+-- F11: DROP TABLE ON PENDING TABLE
 ------------------------------------------------------------------------
 \echo ''
-\echo '--- GROUP F11: DROP TABLE on pending table (known gap) ---'
+\echo '--- GROUP F11: DROP TABLE on pending table ---'
 
 SET application_name = 'fme';
 CREATE TABLE sk0_ext_fmetest.abandoned_l (data text);
@@ -840,8 +840,7 @@ END $$;
 
 DROP TABLE sk0_ext_fmetest.abandoned_l;
 
--- After DROP TABLE the pending entry should ideally be cleaned up.
--- hantera_borttagen_tabell currently does NOT know about hex_afvaktande_geometri.
+-- After DROP TABLE the pending entry should be cleaned up by hantera_borttagen_tabell.
 DO $$
 BEGIN
     IF EXISTS (

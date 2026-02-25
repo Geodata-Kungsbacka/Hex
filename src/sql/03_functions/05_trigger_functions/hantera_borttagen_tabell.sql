@@ -5,12 +5,16 @@ CREATE OR REPLACE FUNCTION public.hantera_borttagen_tabell()
     VOLATILE NOT LEAKPROOF
 AS $BODY$
 /******************************************************************************
- * Rensar upp historiktabeller och triggerfunktioner när en tabell tas bort.
+ * Rensar upp historiktabeller, triggerfunktioner och afvaktande geometriposter
+ * när en tabell tas bort.
  *
  * När en tabell med historik (t.ex. "byggnader_y") tas bort, tar denna
  * funktion automatiskt bort:
  *   1. Historiktabellen (t.ex. "byggnader_y_h")
  *   2. QA-triggerfunktionen (t.ex. "trg_fn_byggnader_y_qa")
+ *   3. Eventuell afvaktande geometripost i hex_afvaktande_geometri
+ *      (uppstår om en systemanvändare, t.ex. FME, droppade tabellen innan
+ *      geometrikolumnen hann läggas till via ALTER TABLE)
  *
  * REKURSIONSSKYDD:
  * - Hoppar över om tabellstrukturering pågår (byt_ut_tabell droppar
@@ -99,6 +103,17 @@ BEGIN
 
         -- Rensa metadatarad (OID är inte längre giltig efter DROP)
         DELETE FROM hex_metadata WHERE parent_oid = kommando.objid;
+
+        -- Rensa eventuell afvaktande geometripost (FME-tvåstegsmönster)
+        -- Uppstår om systemanvändaren droppade tabellen innan geometrin hann läggas till.
+        -- EXECUTE USING krävs: schema_namn/tabell_namn är kolumnnamn i hex_afvaktande_geometri
+        -- OCH lokala variabelnamn – statisk SQL ger tvetydighetsfel.
+        EXECUTE 'DELETE FROM public.hex_afvaktande_geometri WHERE schema_namn = $1 AND tabell_namn = $2'
+            USING schema_namn, tabell_namn;
+        IF FOUND THEN
+            RAISE NOTICE '[hantera_borttagen_tabell] ✓ Afvaktande geometripost borttagen: %.%',
+                schema_namn, tabell_namn;
+        END IF;
     END LOOP;
 
     PERFORM set_config('temp.historikborttagning_pagar', 'false', true);
@@ -118,7 +133,9 @@ ALTER FUNCTION public.hantera_borttagen_tabell()
     OWNER TO postgres;
 
 COMMENT ON FUNCTION public.hantera_borttagen_tabell()
-    IS 'Event trigger-funktion som körs vid DROP TABLE för att automatiskt ta bort
-tillhörande historiktabell (_h) och QA-triggerfunktion (trg_fn_*_qa). Hoppar
-över under tabellomstrukturering (byt_ut_tabell) och förhindrar rekursion vid
-borttagning av historiktabeller.';
+    IS 'Händelsetriggerfunktion som körs vid DROP TABLE och automatiskt tar bort
+tillhörande historiktabell (_h), QA-triggerfunktion (trg_fn_*_qa) samt eventuell
+afvaktande geometripost i hex_afvaktande_geometri (uppstår vid FME-tvåstegsmönster
+om tabellen droppas innan geometrikolumnen hunnit läggas till). Hoppar över under
+tabellomstrukturering (byt_ut_tabell) och förhindrar rekursion vid borttagning
+av historiktabeller.';
