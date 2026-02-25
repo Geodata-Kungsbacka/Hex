@@ -31,6 +31,44 @@ GeoServer REST API:
 
 ---
 
+## Forutsattning: Installera Python (forsta gangen pa servern)
+
+> **OBS:** Om detta ar en farberedelse server dar Python inte tidigare installerats,
+> maste du gora detta steg forst. Hoppa over om Python redan ar installerat
+> och verifiera installationen nedan.
+
+### Installera Python
+
+1. Hamta Python fran [python.org/downloads](https://www.python.org/downloads/)
+2. Kor installationsprogrammet som **Administrator**
+3. **VIKTIGT:** Kryssa i **"Install for all users"** innan du klickar Install
+
+   Utan detta hamnar Python under `C:\Users\<ditt-namn>\AppData\...` vilket
+   skapar problem nar Windows-tjansten kors under ett systemkonto.
+
+### Verifiera installationen
+
+Oppna en **Administrativ kommandotolk** och kor:
+
+```cmd
+py -c "import sys; print(sys.executable)"
+```
+
+Utskriften ska vara en stig under `C:\Program Files\` eller liknande -
+**utan ett anvandardnamn i stiGen**:
+
+```
+C:\Program Files\Python314\python.exe   <- RATT (system-bred installation)
+C:\Users\admin.tobhol\AppData\...       <- FEL (per-anvandare, installera om)
+```
+
+Om utskriften innehaller ett anvandardnamn: avinstallera Python och installera
+om med **"Install for all users"** ikryssad, annars kommer Windows-tjansten
+att registreras under en anvandardesignad stig som kan sluta fungera om
+kontot byter namn eller tas bort.
+
+---
+
 ## Steg 1: Installera Python-beroenden
 
 Oppna en **Administrativ kommandotolk** (Command Prompt som admin).
