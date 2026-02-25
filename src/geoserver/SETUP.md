@@ -29,23 +29,33 @@ GeoServer REST API:
   2. POST /rest/.../datastores      --> JNDI store "sk0_kba_test"
 ```
 
-> **Tips:** Om Hex ligger pa en annan enhet an `C:` (t.ex. `D:`) maste du
-> byta enhet forst innan `cd` fungerar. Anvand `cd /D D:\sokvag\till\Hex`
-> eller skriv `D:` foljt av `cd \sokvag\till\Hex` i tva steg.
-
 ---
 
 ## Steg 1: Installera Python-beroenden
 
 Oppna en **Administrativ kommandotolk** (Command Prompt som admin).
 
+Installationens filer ligger under `D:\Hex\src\geoserver`.
+
+Kommandona har nedan anvander `py` - Python Launcher for Windows, som
+foljer med varje Python-installation och alltid finns pa `C:\Windows\py.exe`
+oavsett var Python itself ar installerat. Verifiera att den finns:
+
 ```cmd
-"C:\Users\admin.tobhol\AppData\Local\Programs\Python\Python314\python.exe" -m pip install psycopg2 requests python-dotenv pywin32
+py --version
+```
+
+Om `py` inte hittas, anvand `where python` for att hitta din Python-installation
+och ersatt `py` med den fulla sokVagen i kommandona nedan.
+
+Installera beroenden:
+```cmd
+py -m pip install psycopg2 requests python-dotenv pywin32
 ```
 
 Kontrollera att allt installerades:
 ```cmd
-"C:\Users\admin.tobhol\AppData\Local\Programs\Python\Python314\python.exe" -m pip list | findstr /i "psycopg2 requests dotenv pywin32"
+py -m pip list | findstr /i "psycopg2 requests dotenv pywin32"
 ```
 
 Du bor se nagot i stil med:
@@ -59,7 +69,7 @@ requests          2.3x.x
 > **OBS:** Om `psycopg2` inte gar att installera (krav pa C-kompilator),
 > anvand `psycopg2-binary` istallet:
 > ```cmd
-> pip install psycopg2-binary
+> py -m pip install psycopg2-binary
 > ```
 
 ---
@@ -172,7 +182,7 @@ vitlista det i GeoServers `web.xml`.
 ### Alternativ A: .env-fil (enklast for testning)
 
 ```cmd
-cd C:\sokvag\till\Hex\src\geoserver
+cd D:\Hex\src\geoserver
 copy .env.example .env
 notepad .env
 ```
@@ -269,9 +279,8 @@ setx /M HEX_DB_2_JNDI_sk1 "java:comp/env/jdbc/server.geodata_sk1"
 Testa att lyssnaren kan na bade PostgreSQL och GeoServer:
 
 ```cmd
-cd C:\sokvag\till\Hex\src\geoserver
-
-"C:\Users\admin.tobhol\AppData\Local\Programs\Python\Python314\python.exe" geoserver_listener.py --test
+cd D:\Hex\src\geoserver
+py geoserver_listener.py --test
 ```
 
 Forvantad utskrift:
@@ -305,9 +314,9 @@ Forvantad utskrift:
 
 Kor lyssnaren i dry-run-lage for att se vad som hander utan att gora andringar:
 
-**Terminal 1 - Starta lyssnaren:**
+**Terminal 1 - Starta lyssnaren** (fran `D:\Hex\src\geoserver`):
 ```cmd
-"C:\Users\admin.tobhol\AppData\Local\Programs\Python\Python314\python.exe" geoserver_listener.py --dry-run
+py geoserver_listener.py --dry-run
 ```
 
 **Terminal 2 - Skapa ett testschema i psql (anslut till en av databaserna):**
@@ -342,7 +351,7 @@ Avbryt lyssnaren med `Ctrl+C`.
 Upprepa steg 7, men UTAN `--dry-run`:
 
 ```cmd
-"C:\Users\admin.tobhol\AppData\Local\Programs\Python\Python314\python.exe" geoserver_listener.py
+py geoserver_listener.py
 ```
 
 Skapa schemat igen och verifiera i GeoServer:
@@ -368,9 +377,8 @@ Nu nar vi vet att allt fungerar, installera det som en riktig tjanst.
 Oppna en **Administrativ kommandotolk** och kor:
 
 ```cmd
-cd C:\sokvag\till\Hex\src\geoserver
-
-"C:\Users\admin.tobhol\AppData\Local\Programs\Python\Python314\python.exe" geoserver_service.py install
+cd D:\Hex\src\geoserver
+py geoserver_service.py install
 ```
 
 Forvantad utskrift:
@@ -395,7 +403,7 @@ och valj **Properties > Recovery**:
 ### 9c. Starta tjansten
 
 ```cmd
-"C:\Users\admin.tobhol\AppData\Local\Programs\Python\Python314\python.exe" geoserver_service.py start
+py geoserver_service.py start
 ```
 
 Eller via `services.msc`, eller:
@@ -406,7 +414,7 @@ net start HexGeoServerListener
 ### 9d. Kontrollera status
 
 ```cmd
-"C:\Users\admin.tobhol\AppData\Local\Programs\Python\Python314\python.exe" geoserver_service.py status
+py geoserver_service.py status
 ```
 
 Kontrollera loggfilen:
