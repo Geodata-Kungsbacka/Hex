@@ -44,12 +44,12 @@
 \echo ''
 \echo '--- Initial cleanup ---'
 
-DROP SCHEMA IF EXISTS sk0_fme_test     CASCADE;
-DROP SCHEMA IF EXISTS sk1_fme_kba_test CASCADE;
+DROP SCHEMA IF EXISTS sk0_ext_fmetest     CASCADE;
+DROP SCHEMA IF EXISTS sk1_kba_fmetest CASCADE;
 
 -- Clean any stale pending entries left by previous test runs
 DELETE FROM public.hex_afvaktande_geometri AS ag
-WHERE ag.schema_namn IN ('sk0_fme_test', 'sk1_fme_kba_test');
+WHERE ag.schema_namn IN ('sk0_ext_fmetest', 'sk1_kba_fmetest');
 
 ------------------------------------------------------------------------
 -- SETUP
@@ -57,8 +57,8 @@ WHERE ag.schema_namn IN ('sk0_fme_test', 'sk1_fme_kba_test');
 \echo ''
 \echo '--- Creating test schemas ---'
 
-CREATE SCHEMA sk0_fme_test;
-CREATE SCHEMA sk1_fme_kba_test;
+CREATE SCHEMA sk0_ext_fmetest;
+CREATE SCHEMA sk1_kba_fmetest;
 
 RESET application_name;
 
@@ -111,7 +111,7 @@ DO $$
 DECLARE cnt integer;
 BEGIN
     SELECT COUNT(*) INTO cnt FROM public.hex_afvaktande_geometri AS ag
-    WHERE ag.schema_namn IN ('sk0_fme_test', 'sk1_fme_kba_test');
+    WHERE ag.schema_namn IN ('sk0_ext_fmetest', 'sk1_kba_fmetest');
     IF cnt = 0 THEN
         RAISE NOTICE 'TEST F1d PASSED: No stale pending entries for test schemas';
     ELSE
@@ -132,7 +132,7 @@ SET application_name = 'fme';
 
 DO $$
 BEGIN
-    CREATE TABLE sk0_fme_test.trafikdata_l (
+    CREATE TABLE sk0_ext_fmetest.trafikdata_l (
         objectid   integer,
         vagnamn    text,
         hastighet  integer
@@ -150,7 +150,7 @@ DO $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM public.hex_afvaktande_geometri AS ag
-        WHERE ag.schema_namn = 'sk0_fme_test' AND ag.tabell_namn = 'trafikdata_l'
+        WHERE ag.schema_namn = 'sk0_ext_fmetest' AND ag.tabell_namn = 'trafikdata_l'
     ) THEN
         RAISE NOTICE 'TEST F2b PASSED: Table registered in hex_afvaktande_geometri after step A';
     ELSE
@@ -163,7 +163,7 @@ DO $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM information_schema.columns
-        WHERE table_schema = 'sk0_fme_test' AND table_name = 'trafikdata_l'
+        WHERE table_schema = 'sk0_ext_fmetest' AND table_name = 'trafikdata_l'
         AND column_name = 'gid'
     ) THEN
         RAISE NOTICE 'TEST F2c PASSED: Standard column gid added during step A (non-geometry columns not deferred)';
@@ -177,7 +177,7 @@ DO $$
 DECLARE idx_count integer;
 BEGIN
     SELECT COUNT(*) INTO idx_count FROM pg_indexes
-    WHERE schemaname = 'sk0_fme_test' AND tablename = 'trafikdata_l'
+    WHERE schemaname = 'sk0_ext_fmetest' AND tablename = 'trafikdata_l'
     AND indexdef LIKE '%USING gist%';
     IF idx_count = 0 THEN
         RAISE NOTICE 'TEST F2d PASSED: No GiST index yet after step A (correctly deferred)';
@@ -191,7 +191,7 @@ DO $$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM geometry_columns
-        WHERE f_table_schema = 'sk0_fme_test' AND f_table_name = 'trafikdata_l'
+        WHERE f_table_schema = 'sk0_ext_fmetest' AND f_table_name = 'trafikdata_l'
     ) THEN
         RAISE NOTICE 'TEST F2e PASSED: No geometry column on table after step A (as expected)';
     ELSE
@@ -200,14 +200,14 @@ BEGIN
 END $$;
 
 -- Step B: FME issues ALTER TABLE ADD COLUMN geom
-ALTER TABLE sk0_fme_test.trafikdata_l ADD COLUMN geom geometry(LineString, 3007);
+ALTER TABLE sk0_ext_fmetest.trafikdata_l ADD COLUMN geom geometry(LineString, 3007);
 
 -- F2f: Pending entry removed
 DO $$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM public.hex_afvaktande_geometri AS ag
-        WHERE ag.schema_namn = 'sk0_fme_test' AND ag.tabell_namn = 'trafikdata_l'
+        WHERE ag.schema_namn = 'sk0_ext_fmetest' AND ag.tabell_namn = 'trafikdata_l'
     ) THEN
         RAISE NOTICE 'TEST F2f PASSED: Pending entry removed from hex_afvaktande_geometri after step B';
     ELSE
@@ -220,7 +220,7 @@ DO $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM pg_indexes
-        WHERE schemaname = 'sk0_fme_test' AND tablename = 'trafikdata_l'
+        WHERE schemaname = 'sk0_ext_fmetest' AND tablename = 'trafikdata_l'
         AND indexname = 'trafikdata_l_geom_gidx'
     ) THEN
         RAISE NOTICE 'TEST F2g PASSED: GiST index trafikdata_l_geom_gidx created during step B';
@@ -237,12 +237,12 @@ DECLARE
 BEGIN
     SELECT ordinal_position INTO geom_pos
     FROM information_schema.columns
-    WHERE table_schema = 'sk0_fme_test' AND table_name = 'trafikdata_l'
+    WHERE table_schema = 'sk0_ext_fmetest' AND table_name = 'trafikdata_l'
     AND column_name = 'geom';
 
     SELECT MAX(ordinal_position) INTO max_pos
     FROM information_schema.columns
-    WHERE table_schema = 'sk0_fme_test' AND table_name = 'trafikdata_l';
+    WHERE table_schema = 'sk0_ext_fmetest' AND table_name = 'trafikdata_l';
 
     IF geom_pos IS NOT NULL AND geom_pos = max_pos THEN
         RAISE NOTICE 'TEST F2h PASSED: geom column exists and is last (position %/%)', geom_pos, max_pos;
@@ -258,7 +258,7 @@ DO $$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM pg_constraint
-        WHERE conrelid = 'sk0_fme_test.trafikdata_l'::regclass
+        WHERE conrelid = 'sk0_ext_fmetest.trafikdata_l'::regclass
         AND contype = 'c'
         AND pg_get_constraintdef(oid) LIKE '%validera_geometri%'
     ) THEN
@@ -268,7 +268,7 @@ BEGIN
     END IF;
 END $$;
 
-DROP TABLE IF EXISTS sk0_fme_test.trafikdata_l;
+DROP TABLE IF EXISTS sk0_ext_fmetest.trafikdata_l;
 
 ------------------------------------------------------------------------
 -- F3: HAPPY PATH – _kba_ SCHEMA TWO-STEP
@@ -281,7 +281,7 @@ SET application_name = 'fme';
 
 DO $$
 BEGIN
-    CREATE TABLE sk1_fme_kba_test.fastigheter_y (
+    CREATE TABLE sk1_kba_fmetest.fastigheter_y (
         fastighetsid  text,
         areal         numeric
     );
@@ -298,7 +298,7 @@ DO $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM public.hex_afvaktande_geometri AS ag
-        WHERE ag.schema_namn = 'sk1_fme_kba_test' AND ag.tabell_namn = 'fastigheter_y'
+        WHERE ag.schema_namn = 'sk1_kba_fmetest' AND ag.tabell_namn = 'fastigheter_y'
     ) THEN
         RAISE NOTICE 'TEST F3b PASSED: kba table registered as pending';
     ELSE
@@ -307,14 +307,14 @@ BEGIN
 END $$;
 
 -- Step B
-ALTER TABLE sk1_fme_kba_test.fastigheter_y ADD COLUMN geom geometry(Polygon, 3007);
+ALTER TABLE sk1_kba_fmetest.fastigheter_y ADD COLUMN geom geometry(Polygon, 3007);
 
 -- F3c: Geometry validation constraint added for _kba_ (deferred step 5b.3)
 DO $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM pg_constraint
-        WHERE conrelid = 'sk1_fme_kba_test.fastigheter_y'::regclass
+        WHERE conrelid = 'sk1_kba_fmetest.fastigheter_y'::regclass
         AND contype = 'c'
         AND pg_get_constraintdef(oid) LIKE '%validera_geometri%'
     ) THEN
@@ -329,7 +329,7 @@ DO $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM pg_indexes
-        WHERE schemaname = 'sk1_fme_kba_test' AND tablename = 'fastigheter_y'
+        WHERE schemaname = 'sk1_kba_fmetest' AND tablename = 'fastigheter_y'
         AND indexname = 'fastigheter_y_geom_gidx'
     ) THEN
         RAISE NOTICE 'TEST F3d PASSED: GiST index created on kba table during step B';
@@ -343,7 +343,7 @@ DO $$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM public.hex_afvaktande_geometri AS ag
-        WHERE ag.schema_namn = 'sk1_fme_kba_test' AND ag.tabell_namn = 'fastigheter_y'
+        WHERE ag.schema_namn = 'sk1_kba_fmetest' AND ag.tabell_namn = 'fastigheter_y'
     ) THEN
         RAISE NOTICE 'TEST F3e PASSED: kba pending entry correctly removed after step B';
     ELSE
@@ -354,7 +354,7 @@ END $$;
 -- F3f: Geometry validation blocks invalid geometry (constraint is active)
 DO $$
 BEGIN
-    INSERT INTO sk1_fme_kba_test.fastigheter_y (fastighetsid, geom)
+    INSERT INTO sk1_kba_fmetest.fastigheter_y (fastighetsid, geom)
     VALUES ('test', ST_GeomFromText('POLYGON EMPTY', 3007));
     RAISE WARNING 'TEST F3f FAILED: Empty geometry accepted – constraint not enforced';
 EXCEPTION
@@ -369,7 +369,7 @@ DO $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM information_schema.tables
-        WHERE table_schema = 'sk1_fme_kba_test' AND table_name = 'fastigheter_y_h'
+        WHERE table_schema = 'sk1_kba_fmetest' AND table_name = 'fastigheter_y_h'
     ) THEN
         RAISE NOTICE 'TEST F3g INFO: History table WAS created for kba deferred table (skapa_historik_qa runs schema-based, not geometry-based)';
     ELSE
@@ -377,7 +377,7 @@ BEGIN
     END IF;
 END $$;
 
-DROP TABLE IF EXISTS sk1_fme_kba_test.fastigheter_y;
+DROP TABLE IF EXISTS sk1_kba_fmetest.fastigheter_y;
 
 ------------------------------------------------------------------------
 -- F4: SUFFIX MISMATCH CAUGHT AT ALTER TABLE
@@ -390,7 +390,7 @@ SET application_name = 'fme';
 
 DO $$
 BEGIN
-    CREATE TABLE sk0_fme_test.bantyp_l (
+    CREATE TABLE sk0_ext_fmetest.bantyp_l (
         typkod  varchar(10),
         beskr   text
     );
@@ -405,7 +405,7 @@ RESET application_name;
 -- F4b: Attempt to add POLYGON geometry to a table named _l → exception
 DO $$
 BEGIN
-    ALTER TABLE sk0_fme_test.bantyp_l ADD COLUMN geom geometry(Polygon, 3007);
+    ALTER TABLE sk0_ext_fmetest.bantyp_l ADD COLUMN geom geometry(Polygon, 3007);
     RAISE WARNING 'TEST F4b FAILED: Suffix mismatch (Polygon on _l table) was NOT caught';
 EXCEPTION
     WHEN OTHERS THEN
@@ -422,7 +422,7 @@ DO $$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM geometry_columns
-        WHERE f_table_schema = 'sk0_fme_test' AND f_table_name = 'bantyp_l'
+        WHERE f_table_schema = 'sk0_ext_fmetest' AND f_table_name = 'bantyp_l'
     ) THEN
         RAISE NOTICE 'TEST F4c PASSED: geom column not present after rolled-back ALTER TABLE';
     ELSE
@@ -435,7 +435,7 @@ DO $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM public.hex_afvaktande_geometri AS ag
-        WHERE ag.schema_namn = 'sk0_fme_test' AND ag.tabell_namn = 'bantyp_l'
+        WHERE ag.schema_namn = 'sk0_ext_fmetest' AND ag.tabell_namn = 'bantyp_l'
     ) THEN
         RAISE NOTICE 'TEST F4d PASSED: bantyp_l still pending after suffix mismatch exception (correctly rolled back)';
     ELSE
@@ -446,7 +446,7 @@ END $$;
 -- F4e: Now add the CORRECT geometry type (LineString for _l) → should succeed
 DO $$
 BEGIN
-    ALTER TABLE sk0_fme_test.bantyp_l ADD COLUMN geom geometry(LineString, 3007);
+    ALTER TABLE sk0_ext_fmetest.bantyp_l ADD COLUMN geom geometry(LineString, 3007);
     RAISE NOTICE 'TEST F4e PASSED: Correct geometry type (LineString for _l) accepted after previous failure';
 EXCEPTION
     WHEN OTHERS THEN
@@ -458,7 +458,7 @@ DO $$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM public.hex_afvaktande_geometri AS ag
-        WHERE ag.schema_namn = 'sk0_fme_test' AND ag.tabell_namn = 'bantyp_l'
+        WHERE ag.schema_namn = 'sk0_ext_fmetest' AND ag.tabell_namn = 'bantyp_l'
     ) THEN
         RAISE NOTICE 'TEST F4f PASSED: bantyp_l removed from pending after correct step B';
     ELSE
@@ -471,7 +471,7 @@ DO $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM pg_indexes
-        WHERE schemaname = 'sk0_fme_test' AND tablename = 'bantyp_l'
+        WHERE schemaname = 'sk0_ext_fmetest' AND tablename = 'bantyp_l'
         AND indexname = 'bantyp_l_geom_gidx'
     ) THEN
         RAISE NOTICE 'TEST F4g PASSED: GiST index created after correct step B';
@@ -480,7 +480,7 @@ BEGIN
     END IF;
 END $$;
 
-DROP TABLE IF EXISTS sk0_fme_test.bantyp_l;
+DROP TABLE IF EXISTS sk0_ext_fmetest.bantyp_l;
 
 ------------------------------------------------------------------------
 -- F5: NON-SYSTEM USER STILL BLOCKED (REGRESSION GUARD)
@@ -495,7 +495,7 @@ RESET application_name;
 
 DO $$
 BEGIN
-    CREATE TABLE sk0_fme_test.trick_l (
+    CREATE TABLE sk0_ext_fmetest.trick_l (
         data text
     );
     RAISE WARNING 'TEST F5a FAILED: Non-system user created a geometry-suffix table without geometry (bypass!)';
@@ -513,7 +513,7 @@ DO $$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM information_schema.tables
-        WHERE table_schema = 'sk0_fme_test' AND table_name = 'trick_l'
+        WHERE table_schema = 'sk0_ext_fmetest' AND table_name = 'trick_l'
     ) THEN
         RAISE NOTICE 'TEST F5b PASSED: trick_l table does not exist (creation was rolled back)';
     ELSE
@@ -526,7 +526,7 @@ DO $$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM public.hex_afvaktande_geometri AS ag
-        WHERE ag.schema_namn = 'sk0_fme_test' AND ag.tabell_namn = 'trick_l'
+        WHERE ag.schema_namn = 'sk0_ext_fmetest' AND ag.tabell_namn = 'trick_l'
     ) THEN
         RAISE NOTICE 'TEST F5c PASSED: No pending entry for blocked table';
     ELSE
@@ -546,7 +546,7 @@ SET application_name = 'fme';
 
 DO $$
 BEGIN
-    CREATE TABLE sk0_fme_test.komplett_import_p (
+    CREATE TABLE sk0_ext_fmetest.komplett_import_p (
         objektid integer,
         namn     text,
         geom     geometry(Point, 3007)
@@ -564,7 +564,7 @@ DO $$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM public.hex_afvaktande_geometri AS ag
-        WHERE ag.schema_namn = 'sk0_fme_test' AND ag.tabell_namn = 'komplett_import_p'
+        WHERE ag.schema_namn = 'sk0_ext_fmetest' AND ag.tabell_namn = 'komplett_import_p'
     ) THEN
         RAISE NOTICE 'TEST F6b PASSED: Table with geometry not registered as pending (correct)';
     ELSE
@@ -577,7 +577,7 @@ DO $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM pg_indexes
-        WHERE schemaname = 'sk0_fme_test' AND tablename = 'komplett_import_p'
+        WHERE schemaname = 'sk0_ext_fmetest' AND tablename = 'komplett_import_p'
         AND indexname = 'komplett_import_p_geom_gidx'
     ) THEN
         RAISE NOTICE 'TEST F6c PASSED: GiST index created immediately (normal path)';
@@ -591,7 +591,7 @@ DO $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM information_schema.columns
-        WHERE table_schema = 'sk0_fme_test' AND table_name = 'komplett_import_p'
+        WHERE table_schema = 'sk0_ext_fmetest' AND table_name = 'komplett_import_p'
         AND column_name = 'gid'
     ) THEN
         RAISE NOTICE 'TEST F6d PASSED: gid column present on FME normal-path table';
@@ -600,7 +600,7 @@ BEGIN
     END IF;
 END $$;
 
-DROP TABLE IF EXISTS sk0_fme_test.komplett_import_p;
+DROP TABLE IF EXISTS sk0_ext_fmetest.komplett_import_p;
 
 ------------------------------------------------------------------------
 -- F7: CUSTOM SYSTEM USER IN hex_systemanvandare
@@ -617,7 +617,7 @@ SET application_name = 'test_etl_tool';
 
 DO $$
 BEGIN
-    CREATE TABLE sk0_fme_test.etl_import_l (
+    CREATE TABLE sk0_ext_fmetest.etl_import_l (
         rad_id integer,
         kalla  text
     );
@@ -633,7 +633,7 @@ DO $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM public.hex_afvaktande_geometri AS ag
-        WHERE ag.schema_namn = 'sk0_fme_test' AND ag.tabell_namn = 'etl_import_l'
+        WHERE ag.schema_namn = 'sk0_ext_fmetest' AND ag.tabell_namn = 'etl_import_l'
     ) THEN
         RAISE NOTICE 'TEST F7b PASSED: Custom system user table registered as pending';
     ELSE
@@ -642,7 +642,7 @@ BEGIN
 END $$;
 
 -- Cleanup: complete the pending table, then remove the custom user
-ALTER TABLE sk0_fme_test.etl_import_l ADD COLUMN geom geometry(LineString, 3007);
+ALTER TABLE sk0_ext_fmetest.etl_import_l ADD COLUMN geom geometry(LineString, 3007);
 
 DELETE FROM public.hex_systemanvandare WHERE anvandare = 'test_etl_tool';
 
@@ -655,7 +655,7 @@ BEGIN
     END IF;
 END $$;
 
-DROP TABLE IF EXISTS sk0_fme_test.etl_import_l;
+DROP TABLE IF EXISTS sk0_ext_fmetest.etl_import_l;
 
 ------------------------------------------------------------------------
 -- F8: MULTIPLE PENDING TABLES SIMULTANEOUSLY
@@ -665,9 +665,9 @@ DROP TABLE IF EXISTS sk0_fme_test.etl_import_l;
 
 SET application_name = 'fme';
 
-CREATE TABLE sk0_fme_test.batch_a_p (id integer, naam text);
-CREATE TABLE sk0_fme_test.batch_b_y (id integer, info text);
-CREATE TABLE sk0_fme_test.batch_c_l (id integer, data text);
+CREATE TABLE sk0_ext_fmetest.batch_a_p (id integer, naam text);
+CREATE TABLE sk0_ext_fmetest.batch_b_y (id integer, info text);
+CREATE TABLE sk0_ext_fmetest.batch_c_l (id integer, data text);
 
 RESET application_name;
 
@@ -676,7 +676,7 @@ DO $$
 DECLARE cnt integer;
 BEGIN
     SELECT COUNT(*) INTO cnt FROM public.hex_afvaktande_geometri AS ag
-    WHERE ag.schema_namn = 'sk0_fme_test'
+    WHERE ag.schema_namn = 'sk0_ext_fmetest'
     AND ag.tabell_namn IN ('batch_a_p', 'batch_b_y', 'batch_c_l');
     IF cnt = 3 THEN
         RAISE NOTICE 'TEST F8a PASSED: All 3 batch tables registered as pending simultaneously';
@@ -686,7 +686,7 @@ BEGIN
 END $$;
 
 -- F8b: Complete batch_a_p only → only batch_a_p removed from pending
-ALTER TABLE sk0_fme_test.batch_a_p ADD COLUMN geom geometry(Point, 3007);
+ALTER TABLE sk0_ext_fmetest.batch_a_p ADD COLUMN geom geometry(Point, 3007);
 
 DO $$
 DECLARE
@@ -694,9 +694,9 @@ DECLARE
     b_pending boolean;
     c_pending boolean;
 BEGIN
-    SELECT EXISTS (SELECT 1 FROM public.hex_afvaktande_geometri AS ag WHERE ag.schema_namn = 'sk0_fme_test' AND ag.tabell_namn = 'batch_a_p') INTO a_pending;
-    SELECT EXISTS (SELECT 1 FROM public.hex_afvaktande_geometri AS ag WHERE ag.schema_namn = 'sk0_fme_test' AND ag.tabell_namn = 'batch_b_y') INTO b_pending;
-    SELECT EXISTS (SELECT 1 FROM public.hex_afvaktande_geometri AS ag WHERE ag.schema_namn = 'sk0_fme_test' AND ag.tabell_namn = 'batch_c_l') INTO c_pending;
+    SELECT EXISTS (SELECT 1 FROM public.hex_afvaktande_geometri AS ag WHERE ag.schema_namn = 'sk0_ext_fmetest' AND ag.tabell_namn = 'batch_a_p') INTO a_pending;
+    SELECT EXISTS (SELECT 1 FROM public.hex_afvaktande_geometri AS ag WHERE ag.schema_namn = 'sk0_ext_fmetest' AND ag.tabell_namn = 'batch_b_y') INTO b_pending;
+    SELECT EXISTS (SELECT 1 FROM public.hex_afvaktande_geometri AS ag WHERE ag.schema_namn = 'sk0_ext_fmetest' AND ag.tabell_namn = 'batch_c_l') INTO c_pending;
 
     IF NOT a_pending AND b_pending AND c_pending THEN
         RAISE NOTICE 'TEST F8b PASSED: Only batch_a_p removed from pending; batch_b_y and batch_c_l still pending';
@@ -707,14 +707,14 @@ BEGIN
 END $$;
 
 -- F8c: Complete batch_b_y and batch_c_l
-ALTER TABLE sk0_fme_test.batch_b_y ADD COLUMN geom geometry(Polygon, 3007);
-ALTER TABLE sk0_fme_test.batch_c_l ADD COLUMN geom geometry(LineString, 3007);
+ALTER TABLE sk0_ext_fmetest.batch_b_y ADD COLUMN geom geometry(Polygon, 3007);
+ALTER TABLE sk0_ext_fmetest.batch_c_l ADD COLUMN geom geometry(LineString, 3007);
 
 DO $$
 DECLARE cnt integer;
 BEGIN
     SELECT COUNT(*) INTO cnt FROM public.hex_afvaktande_geometri AS ag
-    WHERE ag.schema_namn = 'sk0_fme_test'
+    WHERE ag.schema_namn = 'sk0_ext_fmetest'
     AND ag.tabell_namn IN ('batch_a_p', 'batch_b_y', 'batch_c_l');
     IF cnt = 0 THEN
         RAISE NOTICE 'TEST F8c PASSED: All 3 batch tables removed from pending after step B';
@@ -723,9 +723,9 @@ BEGIN
     END IF;
 END $$;
 
-DROP TABLE IF EXISTS sk0_fme_test.batch_a_p;
-DROP TABLE IF EXISTS sk0_fme_test.batch_b_y;
-DROP TABLE IF EXISTS sk0_fme_test.batch_c_l;
+DROP TABLE IF EXISTS sk0_ext_fmetest.batch_a_p;
+DROP TABLE IF EXISTS sk0_ext_fmetest.batch_b_y;
+DROP TABLE IF EXISTS sk0_ext_fmetest.batch_c_l;
 
 ------------------------------------------------------------------------
 -- F9: FME NON-GEOMETRY TABLE WITHOUT GEOMETRY SUFFIX
@@ -739,7 +739,7 @@ SET application_name = 'fme';
 
 DO $$
 BEGIN
-    CREATE TABLE sk0_fme_test.referensdata (
+    CREATE TABLE sk0_ext_fmetest.referensdata (
         kod  text,
         namn text,
         typ  integer
@@ -757,7 +757,7 @@ DO $$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM public.hex_afvaktande_geometri AS ag
-        WHERE ag.schema_namn = 'sk0_fme_test' AND ag.tabell_namn = 'referensdata'
+        WHERE ag.schema_namn = 'sk0_ext_fmetest' AND ag.tabell_namn = 'referensdata'
     ) THEN
         RAISE NOTICE 'TEST F9b PASSED: Non-geometry FME table not registered as pending (correct)';
     ELSE
@@ -770,7 +770,7 @@ DO $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM information_schema.columns
-        WHERE table_schema = 'sk0_fme_test' AND table_name = 'referensdata'
+        WHERE table_schema = 'sk0_ext_fmetest' AND table_name = 'referensdata'
         AND column_name = 'gid'
     ) THEN
         RAISE NOTICE 'TEST F9c PASSED: FME non-geometry table restructured normally (gid present)';
@@ -779,7 +779,7 @@ BEGIN
     END IF;
 END $$;
 
-DROP TABLE IF EXISTS sk0_fme_test.referensdata;
+DROP TABLE IF EXISTS sk0_ext_fmetest.referensdata;
 
 ------------------------------------------------------------------------
 -- F10: PARTIAL application_name DOES NOT TRIGGER DEFERRED PATH
@@ -794,7 +794,7 @@ SET application_name = 'FME Desktop 2024.0.0.0';
 
 DO $$
 BEGIN
-    CREATE TABLE sk0_fme_test.partial_match_l (data text);
+    CREATE TABLE sk0_ext_fmetest.partial_match_l (data text);
     RAISE WARNING 'TEST F10a FAILED: Partial application_name triggered deferred bypass (unexpected)';
 EXCEPTION
     WHEN OTHERS THEN
@@ -808,7 +808,7 @@ DO $$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM public.hex_afvaktande_geometri AS ag
-        WHERE ag.schema_namn = 'sk0_fme_test' AND ag.tabell_namn = 'partial_match_l'
+        WHERE ag.schema_namn = 'sk0_ext_fmetest' AND ag.tabell_namn = 'partial_match_l'
     ) THEN
         RAISE NOTICE 'TEST F10b PASSED: No pending entry for partial-match connection (table blocked, not deferred)';
     ELSE
@@ -823,14 +823,14 @@ END $$;
 \echo '--- GROUP F11: DROP TABLE on pending table (known gap) ---'
 
 SET application_name = 'fme';
-CREATE TABLE sk0_fme_test.abandoned_l (data text);
+CREATE TABLE sk0_ext_fmetest.abandoned_l (data text);
 RESET application_name;
 
 DO $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM public.hex_afvaktande_geometri AS ag
-        WHERE ag.schema_namn = 'sk0_fme_test' AND ag.tabell_namn = 'abandoned_l'
+        WHERE ag.schema_namn = 'sk0_ext_fmetest' AND ag.tabell_namn = 'abandoned_l'
     ) THEN
         RAISE NOTICE 'TEST F11 setup: abandoned_l registered as pending';
     ELSE
@@ -838,7 +838,7 @@ BEGIN
     END IF;
 END $$;
 
-DROP TABLE sk0_fme_test.abandoned_l;
+DROP TABLE sk0_ext_fmetest.abandoned_l;
 
 -- After DROP TABLE the pending entry should ideally be cleaned up.
 -- hantera_borttagen_tabell currently does NOT know about hex_afvaktande_geometri.
@@ -846,12 +846,12 @@ DO $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM public.hex_afvaktande_geometri AS ag
-        WHERE ag.schema_namn = 'sk0_fme_test' AND ag.tabell_namn = 'abandoned_l'
+        WHERE ag.schema_namn = 'sk0_ext_fmetest' AND ag.tabell_namn = 'abandoned_l'
     ) THEN
         RAISE WARNING 'TEST F11 GAP CONFIRMED: Pending entry for abandoned_l survives DROP TABLE. '
             'hantera_borttagen_tabell does not clean hex_afvaktande_geometri. '
             'Stale entries must be removed manually: '
-            'DELETE FROM public.hex_afvaktande_geometri WHERE schema_namn = ''sk0_fme_test'' AND tabell_namn = ''abandoned_l'';';
+            'DELETE FROM public.hex_afvaktande_geometri WHERE schema_namn = ''sk0_ext_fmetest'' AND tabell_namn = ''abandoned_l'';';
     ELSE
         RAISE NOTICE 'TEST F11 PASSED: Pending entry removed on DROP TABLE '
             '(hantera_borttagen_tabell cleans hex_afvaktande_geometri – gap resolved)';
@@ -860,7 +860,7 @@ END $$;
 
 -- Manual cleanup for the gap case
 DELETE FROM public.hex_afvaktande_geometri AS ag
-WHERE ag.schema_namn = 'sk0_fme_test' AND ag.tabell_namn = 'abandoned_l';
+WHERE ag.schema_namn = 'sk0_ext_fmetest' AND ag.tabell_namn = 'abandoned_l';
 
 ------------------------------------------------------------------------
 -- FINAL CLEANUP
@@ -870,12 +870,12 @@ WHERE ag.schema_namn = 'sk0_fme_test' AND ag.tabell_namn = 'abandoned_l';
 
 RESET application_name;
 
-DROP SCHEMA IF EXISTS sk0_fme_test     CASCADE;
-DROP SCHEMA IF EXISTS sk1_fme_kba_test CASCADE;
+DROP SCHEMA IF EXISTS sk0_ext_fmetest     CASCADE;
+DROP SCHEMA IF EXISTS sk1_kba_fmetest CASCADE;
 
 -- Defensive: remove any test pending entries that survived cleanup
 DELETE FROM public.hex_afvaktande_geometri AS ag
-WHERE ag.schema_namn IN ('sk0_fme_test', 'sk1_fme_kba_test');
+WHERE ag.schema_namn IN ('sk0_ext_fmetest', 'sk1_kba_fmetest');
 
 \echo ''
 \echo '============================================================'

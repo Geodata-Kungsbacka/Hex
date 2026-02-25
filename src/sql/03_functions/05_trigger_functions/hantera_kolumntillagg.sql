@@ -54,6 +54,7 @@ DECLARE
     har_historiktabell boolean;       -- Om historiktabell existerar
     antal_skillnader integer := 0;    -- Antal strukturskillnader mellan moder- och historiktabell
     qa_trigger_inaktiverad boolean := false;  -- Flagga för QA-trigger status
+    afvaktande_tabell boolean := false;       -- Om nuvarande tabell väntar på geometri (FME-tvåstegsmönster)
 BEGIN
     RAISE NOTICE E'[hantera_kolumntillagg] ======== START ========';
     
@@ -385,15 +386,12 @@ BEGIN
         -- hoppades över då: suffixvalidering, GiST-index och geometrivalidering.
         RAISE NOTICE E'[hantera_kolumntillagg] ----------';
         RAISE NOTICE '[hantera_kolumntillagg] Kontrollerar hex_afvaktande_geometri...';
-        -- Alias krävs: kolumnnamnen i hex_afvaktande_geometri (schema_namn, tabell_namn)
-        -- är identiska med de lokala variabelnamnen. Utan alias skulle PostgreSQL
-        -- (use_variable-läge) tolka BÅDA sidor av WHERE-uttrycket som variabler,
-        -- vilket alltid ger sant. ag. på vänster sida tvingar kolumnläsning.
-        IF EXISTS (
-            SELECT 1 FROM public.hex_afvaktande_geometri AS ag
-            WHERE ag.schema_namn = schema_namn
-            AND ag.tabell_namn = tabell_namn
-        ) THEN
+        -- EXECUTE USING krävs: kolumnnamnen i hex_afvaktande_geometri (schema_namn, tabell_namn)
+        -- är identiska med de lokala variabelnamnen. PostgreSQL tolkar annars $1/$2 (USING)
+        -- som PL/pgSQL-variabler oförväxlingsbart – ingen kolumnambiguitet möjlig.
+        EXECUTE 'SELECT EXISTS (SELECT 1 FROM public.hex_afvaktande_geometri WHERE schema_namn = $1 AND tabell_namn = $2)'
+            INTO afvaktande_tabell USING schema_namn, tabell_namn;
+        IF afvaktande_tabell THEN
             RAISE NOTICE '[hantera_kolumntillagg] Tabell %.% är afvaktande – slutför geometrihantering',
                 schema_namn, tabell_namn;
 
@@ -461,10 +459,9 @@ BEGIN
             END IF;
 
             -- Steg 5b.4: Ta bort från afvaktande-registret
-            -- (alias av samma skäl som EXISTS-kontrollen ovan)
-            DELETE FROM public.hex_afvaktande_geometri AS ag
-            WHERE ag.schema_namn = schema_namn
-            AND ag.tabell_namn = tabell_namn;
+            -- (EXECUTE USING av samma skäl som EXISTS-kontrollen ovan)
+            EXECUTE 'DELETE FROM public.hex_afvaktande_geometri WHERE schema_namn = $1 AND tabell_namn = $2'
+                USING schema_namn, tabell_namn;
             RAISE NOTICE '[hantera_kolumntillagg]   ✓ Tabell %.% borttagen ur hex_afvaktande_geometri',
                 schema_namn, tabell_namn;
         ELSE
