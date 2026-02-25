@@ -41,6 +41,17 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from geoserver_listener import load_config, GeoServerClient, run_all_listeners, log
 
+# Ladda .env tidigt sa att HEX_LOG_DIR finns tillganglig nar LOG_DIR beraknas nedan.
+# load_config() lader .env igen senare men override=False innebar att variabler som
+# redan satts har (fran .env) inte skrivs over av systemets miljovariabler.
+_env_path = SCRIPT_DIR / ".env"
+if _env_path.exists():
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(_env_path, override=False)
+    except ImportError:
+        pass  # Faller tillbaka pa load_config():s egen laddare senare
+
 
 # =============================================================================
 # LOGGING TILL FIL
