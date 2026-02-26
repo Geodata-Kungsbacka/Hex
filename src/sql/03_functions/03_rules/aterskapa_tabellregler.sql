@@ -19,7 +19,10 @@ AS $BODY$
  *
  * Regler återskapas i följande ordning:
  * 1. Index (skapas först eftersom de kan behövas av constraints)
- * 2. Tabellövergripande Constraints (PRIMARY KEY, UNIQUE, multikolumn-CHECK)
+ * 2. Tabellövergripande Constraints (UNIQUE, multikolumn-CHECK)
+ *    OBS: PRIMARY KEY undantas alltid – Hex tillhandahåller sin egen
+ *    primärnyckel via gid-kolumnen. En extern PK skulle orsaka
+ *    "multiple primary keys"-fel vid omstrukturering.
  * 3. Foreign Keys (skapas sist för att undvika cirkelreferenser)
  *
  * Loggningsstrategi:
@@ -143,5 +146,6 @@ ALTER FUNCTION public.aterskapa_tabellregler(text, text, tabellregler)
 
 COMMENT ON FUNCTION public.aterskapa_tabellregler(text, text, tabellregler)
     IS 'Återskapar tabellövergripande regler (index, constraints, foreign keys) i korrekt ordning.
-Funktionen har anpassats för att endast hantera äkta tabellregler, medan kolumnegenskaper 
-hanteras separat av aterskapa_kolumnegenskaper() för ett tydligare struktureringssystem.';
+PRIMARY KEY-constraints undantas alltid: Hex tillhandahåller sin egen primärnyckel via
+gid-kolumnen, och en extern PRIMARY KEY (t.ex. från FME) skulle orsaka konflikt.
+Kolumnegenskaper hanteras separat av aterskapa_kolumnegenskaper().';

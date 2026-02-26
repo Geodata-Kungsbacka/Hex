@@ -6,13 +6,16 @@ CREATE OR REPLACE FUNCTION public.hantera_ny_tabell()
 AS $BODY$
 /******************************************************************************
  * Denna funktion hanterar omstrukturering av tabeller när de skapas. Den:
- * 1. Validerar att tabellen följer namngivningsstandarden
- * 2. Validerar geometrikolumnen
- * 3. Sparar både tabellregler och kolumnegenskaper
+ * 1. Validerar tabellen (namngivning + geometri). Kända systemanvändare
+ *    (hex_systemanvandare, t.ex. FME) kan skapa tabeller med geometrisuffix
+ *    utan geometrikolumn – dessa registreras i hex_afvaktande_geometri och
+ *    stegen 8–9 slutförs av hantera_kolumntillagg när geom-kolumnen anländer.
+ * 2. Sparar tabellregler och kolumnegenskaper
+ * 3. Bestämmer kolumnstruktur (standardkolumner för aktuellt schema)
  * 4. Skapar en temporär tabell med standardkolumner
- * 5. Ersätter originaltabellen med den temporära
- * 6. Döper om tillhörande sekvenser för IDENTITY-kolumner
- * 7. Återskapar alla tabellregler och kolumnegenskaper
+ * 5. Ersätter originaltabellen med den temporära och döper om sekvenser
+ * 6. Återskapar tabellregler (PRIMARY KEY undantas – hanteras av gid)
+ * 7. Återskapar kolumnegenskaper
  * 8. Skapar GiST-index för geometrikolumn (alla scheman)
  * 9. Lägger till geometrivalidering för _kba_-scheman
  * 10. Skapar historiktabell och QA-triggers om behövs
@@ -340,10 +343,10 @@ ALTER FUNCTION public.hantera_ny_tabell()
     OWNER TO postgres;
 
 COMMENT ON FUNCTION public.hantera_ny_tabell()
-    IS 'Event trigger-funktion som körs vid CREATE TABLE för att validera och 
-omstrukturera tabeller enligt standardiserade kolumner. Funktionen validerar
-namngivning, sparar tabellregler och kolumnegenskaper separat, skapar en 
-standardiserad tabellstruktur, hanterar sekvenser för IDENTITY-kolumner,
-återskapar regler och egenskaper, skapar GiST-index för geometrikolumner,
-lägger till geometrivalidering för _kba_-scheman, samt skapar historiktabeller 
-och QA-triggers för scheman som konfigurerats för detta.';
+    IS 'Event trigger-funktion som körs vid CREATE TABLE för att validera och
+omstrukturera tabeller enligt standardiserade kolumner. Kända systemanvändare
+(hex_systemanvandare, t.ex. FME) stödjer ett tvåstegsmönster: tabell skapas
+utan geometrikolumn och registreras i hex_afvaktande_geometri; GiST-index och
+geometrivalidering slutförs av hantera_kolumntillagg när geom-kolumnen läggs
+till via ALTER TABLE. PRIMARY KEY-constraints från den ursprungliga tabellen
+återställs inte – Hex tillhandahåller alltid sin egen PK via gid-kolumnen.';
