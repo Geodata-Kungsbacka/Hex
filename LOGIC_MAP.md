@@ -115,6 +115,39 @@ Kopplar tabell-OID till historiktabell och QA-triggerfunktion.
 
 ---
 
+### `hex_systemanvandare`
+Register över kända systemanvändare och verktyg som skapar tabeller i två steg.
+
+| Kolumn | Syfte |
+|---|---|
+| `anvandare` | Matchas mot `session_user`, `current_user` och `application_name` |
+| `beskrivning` | Fritext om verktyget/systemet |
+
+Matchning sker i `hantera_ny_tabell` vid CREATE TABLE. Om träff — och tabellnamnet har geometrisuffix men saknar geometrikolumn — registreras tabellen som afvaktande i stället för att ett fel kastas.
+
+**Förval**: `fme` (FME Desktop/Server) är förregistrerat.
+
+---
+
+### `hex_afvaktande_geometri`
+Tillfällig registreringstabell för tabeller som väntar på sin geometrikolumn.
+
+| Kolumn | Syfte |
+|---|---|
+| `schema_namn` | Schema för den afvaktande tabellen |
+| `tabell_namn` | Tabellnamn inkl. geometrisuffix |
+| `registrerad` | Tidpunkt för registreringen |
+| `registrerad_av` | `current_user` vid registreringen |
+
+**Livscykel**:
+- *INSERT*: `hantera_ny_tabell()` — systemanvändare skapar tabell med suffix men utan geom
+- *DELETE*: `hantera_kolumntillagg()` — geometrikolumnen har lagts till och GiST-index skapats
+- *DELETE*: `hantera_borttagen_tabell()` — tabellen droppades innan geometrin hann läggas till
+
+En kvarliggande rad indikerar att verktyget aldrig slutförde sitt andra steg.
+
+---
+
 ## 2. CREATE SCHEMA
 
 ```mermaid
@@ -228,7 +261,12 @@ flowchart TD
     G1 --> |ja| STOP(["hoppar över"])
     G1 --> |nej| G2{"public-schema<br/>eller slutar på _h?"}
     G2 --> |ja| ERR(["EXCEPTION"])
-    G2 --> |nej| VT
+    G2 --> |nej| SYS{"session_user / current_user /<br/>application_name matchar<br/>hex_systemanvandare?"}
+    SYS --> |ja| SUFCHECK{"Geometrisuffix men<br/>ingen geom-kolumn?"}
+    SUFCHECK --> |ja| AFV["Registrera i hex_afvaktande_geometri<br/>WARNING till klient"]
+    AFV --> AFVDONE(["klar – geometriefterbehandling\nuppskjuten till ALTER TABLE"])
+    SUFCHECK --> |nej| VT
+    SYS --> |nej| VT
 
     subgraph PREP["Fas 1 – Förberedelse"]
         direction TB
@@ -242,9 +280,8 @@ flowchart TD
 
     subgraph REBUILD["Fas 2 – Omstrukturering"]
         direction TB
-        BU["byt_ut_tabell<br/>DROP TABLE original CASCADE<br/>RENAME temp → original"]
-        BU --> US["uppdatera_sekvensnamn<br/>tar bort _temp_0001_ ur sekvensnamn"]
-        US --> ATR["aterskapa_tabellregler<br/>1. INDEX  2. PK/UNIQUE/CHECK  3. FOREIGN KEY"]
+        BU["byt_ut_tabell<br/>DROP TABLE original CASCADE<br/>RENAME temp → original<br/>uppdatera_sekvensnamn"]
+        BU --> ATR["aterskapa_tabellregler<br/>1. INDEX  2. PK/UNIQUE/CHECK  3. FOREIGN KEY"]
         ATR --> AKE["aterskapa_kolumnegenskaper<br/>1. NOT NULL  2. CHECK  3. DEFAULT  4. IDENTITY"]
     end
 
@@ -284,6 +321,15 @@ hantera_ny_tabell()
   ├── Rekursionsskydd: avbryt om temp.tabellstrukturering_pagar = true
   ├── Hoppar över: public-schema, tabeller som slutar på _h
   │     (om en tabell slutar på _h utan förälder → EXCEPTION)
+  │
+  ├── [SYSTEMANVÄNDARE] Kontrollerar om sessionen matchar hex_systemanvandare
+  │     Matchning mot: session_user, current_user, application_name
+  │     Om träff OCH tabellnamnet har geometrisuffix men saknar geometrikolumn:
+  │       ├── INSERT INTO hex_afvaktande_geometri (schema, tabell)
+  │       ├── Fortsätter med normal omstrukturering (gid, standardkolumner m.m.)
+  │       └── Steg 8 (GiST-index) och steg 9 (geometrivalidering) hoppas över —
+  │             dessa slutförs av hantera_kolumntillagg när geom-kolonnen anländer
+  │     Om ingen träff och geometrisuffix saknar geom → EXCEPTION (normal väg)
   │
   ├── [1] VALIDERA TABELL
   │     → validera_tabell(schema, tabell)
@@ -339,32 +385,30 @@ hantera_ny_tabell()
   │           ├── DROP TABLE original CASCADE
   │           │     (tar bort beroenden: index, constraints, triggers)
   │           └── ALTER TABLE temp_tabell RENAME TO original
-  │
-  ├── [6] UPPDATERA SEKVENSNAMN
   │     → uppdatera_sekvensnamn(schema, tabell)
   │           ├── Letar sekvenser som ägs av tabellen och innehåller '_temp_0001_'
   │           └── Döper om: tar bort '_temp_0001_'-delen från sekvensnamnet
   │
-  ├── [7] ÅTERSKAPA TABELLREGLER
+  ├── [6] ÅTERSKAPA TABELLREGLER
   │     → aterskapa_tabellregler(schema, tabell, regler)
   │           ├── 1. CREATE INDEX (index)
   │           ├── 2. ADD CONSTRAINT (PK, UNIQUE, multi-kolumn-CHECK)
   │           └── 3. ADD CONSTRAINT (FOREIGN KEY) — sist, kan referera andra tabeller
   │
-  ├── [8] ÅTERSKAPA KOLUMNEGENSKAPER
+  ├── [7] ÅTERSKAPA KOLUMNEGENSKAPER
   │     → aterskapa_kolumnegenskaper(schema, tabell, egenskaper)
   │           ├── 1. SET NOT NULL
   │           ├── 2. ADD CONSTRAINT (enkla CHECK-villkor)
   │           ├── 3. SET DEFAULT (hoppar över standardkolumner med historik_qa=true)
   │           └── 4. ADD GENERATED ALWAYS AS IDENTITY
   │
-  ├── [9] SKAPA GiST-INDEX
+  ├── [8] SKAPA GiST-INDEX (hoppas över för afvaktande tabeller)
   │     ├── Gäller alla scheman som har geometrikolumn
   │     └── CREATE INDEX … USING gist(geom)
   │           (indexnamnet trunkeras till 50 tecken för att undvika
   │            namnkollision med historiktabellens index på _h-versionen)
   │
-  ├── [10] GEOMETRIVALIDERING (villkorligt)
+  ├── [9] GEOMETRIVALIDERING (villkorligt, hoppas över för afvaktande tabeller)
   │     ├── Gäller BARA scheman som matchar ^sk[0-2]_kba_
   │     │     (externt laddade _ext_-scheman valideras i FME, inte här)
   │     └── ADD CONSTRAINT … CHECK (validera_geometri(geom))
@@ -375,7 +419,7 @@ hantera_ny_tabell()
   │                       ├── Polygon: area > 1 mm²   — tolerans²
   │                       └── Linje: längd > 1 mm     — tolerans
   │
-  └── [11] SKAPA HISTORIK OCH QA (villkorligt)
+  └── [10] SKAPA HISTORIK OCH QA (villkorligt)
         → skapa_historik_qa(schema, tabell)
               ├── Kontrollerar om någon standardkolumn har historik_qa=true
               │     Ja: andrad_tidpunkt, andrad_av → fortsätter
@@ -423,7 +467,11 @@ flowchart TD
     IDENT --> MOVE["Flytta varje kolumn till sist:<br/>ADD temp-kolumn<br/>UPDATE<br/>DROP original<br/>RENAME temp → original"]
     MOVE --> GEOM["hamta_geometri_definition<br/>Flytta geom till absolut sist<br/>(samma 4-stegs teknik)"]
 
-    GEOM --> HSYNC{"Historiktabell<br/>existerar?"}
+    GEOM --> AFV{"Tabell i<br/>hex_afvaktande_geometri?"}
+    AFV --> |ja| AFVOK["Verifiera suffix mot geomtyp<br/>Skapa GiST-index<br/>DELETE från hex_afvaktande_geometri"]
+    AFVOK --> HSYNC
+    AFV --> |nej| HSYNC
+    HSYNC{"Historiktabell<br/>existerar?"}
     HSYNC --> |nej| DONE(["klar ✓"])
     HSYNC --> |ja| DIFF["Jämför kolumner:<br/>parent vs historik"]
     DIFF --> ADD["Saknas i historik → ADD COLUMN<br/>Saknas i parent → logga, behåll<br/>Typavvikelse → logga varning"]
@@ -464,7 +512,16 @@ hantera_kolumntillagg()
   │     ├── → hamta_geometri_definition(schema, tabell)  (hämtar aktuell definition)
   │     └── Samma 4-stegs temp-kolumnteknik som ovan
   │
-  └── [4] SYNKRONISERA HISTORIKTABELL (om den finns)
+  ├── [4] SLUTFÖR AFVAKTANDE GEOMETRIHANTERING (om tabellen var afvaktande)
+  │     Kontrollerar om tabellen finns i hex_afvaktande_geometri:
+  │       Ja:
+  │         ├── Verifierar att tabellsuffixet stämmer med faktisk geometrityp
+  │         │     (_l och MULTILINESTRING → ok, annars EXCEPTION)
+  │         ├── CREATE INDEX … USING gist(geom)  (GiST-index skapas här, inte i hantera_ny_tabell)
+  │         └── DELETE FROM hex_afvaktande_geometri WHERE schema = … AND tabell = …
+  │       Nej: hoppar över
+  │
+  └── [5] SYNKRONISERA HISTORIKTABELL (om den finns)
         ├── Jämför kolumner i modertabell mot historiktabell
         │     Kolumn finns i parent men saknas i historik → ADD COLUMN till historiktabellen
         │     Kolumn finns i historik men saknas i parent → logga (behålls, ingen borttagning)
@@ -594,7 +651,8 @@ flowchart TD
     FOUND & FALL --> DT["DROP TABLE IF EXISTS _h-tabell<br/>rekursivt DROP-event stoppas av guard"]
     DT --> DF["DROP FUNCTION IF EXISTS<br/>trg_fn_tabell_qa()"]
     DF --> DEL["DELETE FROM hex_metadata<br/>WHERE parent_oid = oid"]
-    DEL --> DONE(["klar ✓"])
+    DEL --> DELAFV["DELETE FROM hex_afvaktande_geometri<br/>(om tabellen droppades innan geom lades till)"]
+    DELAFV --> DONE(["klar ✓"])
 ```
 
 ```sql
@@ -624,7 +682,10 @@ hantera_borttagen_tabell()
         │
         ├── DROP FUNCTION IF EXISTS trg_fn_<tabell>_qa()
         │
-        └── DELETE FROM hex_metadata WHERE parent_oid = <oid>
+        ├── DELETE FROM hex_metadata WHERE parent_oid = <oid>
+        │
+        └── DELETE FROM hex_afvaktande_geometri WHERE schema = … AND tabell = …
+              (städar upp om tabellen droppades innan geometrikolumnen hann läggas till)
 ```
 
 ---

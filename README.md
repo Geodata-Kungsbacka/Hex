@@ -55,7 +55,23 @@ Schemaprefix mappas till JNDI-anslutningar via konfigurerbara miljövariabler (t
 Lyssnaren körs som en Windows-tjänst (`HexGeoServerListener`) via `services.msc`.
 Se `src/geoserver/SETUP.md` för fullständig installationsguide.
 
-### 5. **Historik och kvalitetssäkring**
+### 5. **Stöd för verktyg som skapar tabeller i två steg (t.ex. FME)**
+
+Vissa ETL-verktyg (FME, GDAL m.fl.) skapar tabeller i två separata DDL-steg:
+
+1. `CREATE TABLE ... (datakolumner)` — utan geometrikolumn
+2. `ALTER TABLE ... ADD COLUMN geom geometry(...)` — geometrin läggs till efteråt
+
+Systemet hanterar detta via tabellen `hex_systemanvandare`. När en session matchar en registrerad systemanvändare (`session_user`, `current_user` eller `application_name`):
+
+- `hantera_ny_tabell` tillåter att tabellen skapas utan geometrikolumn, trots att tabellnamnet har geometrisuffix
+- Tabellen registreras i `hex_afvaktande_geometri` som "väntande"
+- Geometrispecifik efterbehandling (GiST-index, geometrivalidering) skjuts upp
+- När `ALTER TABLE ADD COLUMN geom` senare körs slutför `hantera_kolumntillagg` den uppskjutna hanteringen: verifierar att suffixet stämmer med geometritypen, skapar GiST-index och tar bort raden från `hex_afvaktande_geometri`
+
+**Konfiguration**: Lägg till verktygets databasanvändare i `hex_systemanvandare`. FME (`fme`) är förregistrerat som standard.
+
+### 6. **Historik och kvalitetssäkring**
 För scheman konfigurerade med QA-kolumner skapas:
 - Historiktabeller (`tabellnamn_h`) som loggar alla ändringar
 - Triggers som automatiskt uppdaterar `andrad_tidpunkt` och `andrad_av`
@@ -112,9 +128,12 @@ src/sql/01_types/kolumnegenskaper.sql
 src/sql/01_types/kolumnkonfig.sql
 src/sql/01_types/tabellregler.sql
 
--- 2. Skapa konfigurationstabell
+-- 2. Skapa konfigurationstabeller
 src/sql/02_tables/standardiserade_kolumner.sql
 src/sql/02_tables/standardiserade_roller.sql
+src/sql/02_tables/hex_metadata.sql
+src/sql/02_tables/hex_systemanvandare.sql
+src/sql/02_tables/hex_afvaktande_geometri.sql
 
 -- 3. Skapa funktioner (i beroendeordning)
 -- 3.1 Strukturhantering
@@ -176,6 +195,23 @@ src/sql/04_triggers/notifiera_geoserver_trigger.sql
 **Användning**: När en tabell ska omstruktureras sparas först alla DEFAULT-värden, NOT NULL-begränsningar, CHECK-begränsningar och IDENTITY-definitioner i denna typ så de kan återskapas efteråt.
 
 **Praktisk nytta**: Säkerställer att inga kolumnegenskaper förloras när tabeller omstruktureras automatiskt.
+
+#### `hex_systemanvandare`
+**Syfte**: Register över kända systemanvändare och verktyg som skapar tabeller i två steg (t.ex. FME).
+
+**Användning**: När `session_user`, `current_user` eller `application_name` matchar en post här tillåter `hantera_ny_tabell` att en tabell med geometrisuffix skapas utan geometrikolumn. Tabellen registreras istället i `hex_afvaktande_geometri` och geometrispecifik efterbehandling (GiST-index, valideringsbegränsning) slutförs av `hantera_kolumntillagg` när geometrikolumnen läggs till via `ALTER TABLE`.
+
+**Underhålls av**: DBA/systemadministratör. Innehåller som standard en rad för `fme`.
+
+#### `hex_afvaktande_geometri`
+**Syfte**: Tillfällig registreringstabell för tabeller skapade av en systemanvändare med geometrisuffix men utan geometrikolumn.
+
+**Livscykel**:
+- *Registreras* av `hantera_ny_tabell()` när en systemanvändare skapar en tabell med geometrisuffix men utan `geom`-kolumn
+- *Raderas* av `hantera_kolumntillagg()` när geometrikolumnen väl har lagts till och GiST-index skapats
+- *Raderas* av `hantera_borttagen_tabell()` om tabellen droppas innan geometrin hinner läggas till
+
+**Praktisk nytta**: En kvarliggande rad längre tid indikerar att verktyget (t.ex. FME) aldrig slutförde sitt andra steg — tabellen bör då granskas och eventuellt droppas manuellt.
 
 #### `kolumnkonfig`
 **Syfte**: Definierar en kolumns struktur med namn, position och datatyp.
@@ -420,13 +456,16 @@ src/sql/04_triggers/notifiera_geoserver_trigger.sql
 **Nytta**: Håller databasen ren från oanvända säkerhetsobjekt.
 
 #### `hantera_borttagen_tabell()`
-**Syfte**: Städar upp historiktabeller och QA-triggerfunktioner när bastabeller tas bort.
+**Syfte**: Städar upp när bastabeller tas bort.
 
-**Process**: Identifierar borttagna tabeller och tar bort motsvarande historiktabell (`_h`) och triggerfunktion.
+**Process**: Identifierar borttagna tabeller och tar bort:
+- Motsvarande historiktabell (`_h`) och QA-triggerfunktion (om tabellen hade historik)
+- Raden i `hex_afvaktande_geometri` (om tabellen droppades innan geometrin hann läggas till)
+- Raden i `hex_metadata` (om tabellen var registrerad där)
 
 **Trigger**: Körs vid DROP TABLE (SQL_DROP-event).
 
-**Nytta**: Förhindrar att övergivna historiktabeller och funktioner ackumuleras i databasen.
+**Nytta**: Förhindrar att övergivna historiktabeller, funktioner och afvaktande-rader ackumuleras i databasen.
 
 #### `notifiera_geoserver()`
 **Syfte**: Skickar `pg_notify` till GeoServer-lyssnaren när nya sk0/sk1-scheman skapas.
@@ -688,6 +727,8 @@ DROP FUNCTION IF EXISTS public.hamta_geometri_definition(text, text);
 DROP FUNCTION IF EXISTS public.system_owner();
 
 -- 8. Ta bort konfigurationstabeller
+DROP TABLE IF EXISTS public.hex_afvaktande_geometri;
+DROP TABLE IF EXISTS public.hex_systemanvandare;
 DROP TABLE IF EXISTS public.hex_metadata;
 DROP TABLE IF EXISTS public.standardiserade_roller;
 DROP TABLE IF EXISTS public.standardiserade_kolumner;
