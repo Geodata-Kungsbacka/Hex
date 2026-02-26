@@ -66,6 +66,14 @@ BEGIN
                 constraint_namn text := split_part(p_regler.constraint_defs[i], ';', 1);
                 constraint_def text := split_part(p_regler.constraint_defs[i], ';', 2);
             BEGIN
+                -- Skippa PRIMARY KEY: Hex tillhandahåller alltid sin egen primärnyckel
+                -- via gid-kolumnen. En extern PRIMARY KEY (t.ex. från FME) skulle
+                -- orsaka "multiple primary keys" fel.
+                IF constraint_def LIKE 'PRIMARY KEY%' THEN
+                    RAISE NOTICE '[aterskapa_tabellregler]   → Hoppar över PRIMARY KEY-constraint "%" (hanteras av gid-kolumnen)', constraint_namn;
+                    CONTINUE;
+                END IF;
+
                 sql_sats := format(
                     'ALTER TABLE %I.%I ADD CONSTRAINT %I %s',
                     p_schema_namn, p_tabell_namn,
@@ -76,7 +84,7 @@ BEGIN
                 EXECUTE sql_sats;
             END;
         END LOOP;
-        RAISE NOTICE '[aterskapa_tabellregler]   ✓ % tabellövergripande constraints återskapade', antal_constr;
+        RAISE NOTICE '[aterskapa_tabellregler]   ✓ Tabellövergripande constraints återskapade (PRIMARY KEY undantagen)';
     ELSE
         RAISE NOTICE '[aterskapa_tabellregler] Steg 2: Inga tabellövergripande constraints att återskapa';
     END IF;
