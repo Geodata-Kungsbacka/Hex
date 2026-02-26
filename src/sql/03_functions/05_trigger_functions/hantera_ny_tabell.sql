@@ -268,13 +268,13 @@ BEGIN
                     index_namn text := left(tabell_namn, 50) || '_geom_gidx';
                 BEGIN
                     EXECUTE format(
-                        'CREATE INDEX %I ON %I.%I USING GIST (%I)',
+                        'CREATE INDEX IF NOT EXISTS %I ON %I.%I USING GIST (%I)',
                         index_namn,
                         schema_namn,
                         tabell_namn,
                         geometriinfo.kolumnnamn
                     );
-                    RAISE NOTICE '  ✓ GiST-index skapat: %', index_namn;
+                    RAISE NOTICE '  ✓ GiST-index skapat (eller fanns redan): %', index_namn;
                 END;
             ELSE
                 RAISE NOTICE '  - Ingen geometri, GiST-index ej relevant';
