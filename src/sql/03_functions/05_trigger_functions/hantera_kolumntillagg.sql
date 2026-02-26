@@ -54,6 +54,7 @@ DECLARE
     har_historiktabell boolean;       -- Om historiktabell existerar
     antal_skillnader integer := 0;    -- Antal strukturskillnader mellan moder- och historiktabell
     qa_trigger_inaktiverad boolean := false;  -- Flagga för QA-trigger status
+    afvaktande_tabell boolean := false;       -- Om nuvarande tabell väntar på geometri (FME-tvåstegsmönster)
 BEGIN
     RAISE NOTICE E'[hantera_kolumntillagg] ======== START ========';
     
@@ -143,6 +144,7 @@ BEGIN
         -- Identifiera vilken tabell som modifieras
         schema_namn := replace(split_part(kommando.object_identity, '.', 1), '"', '');
         tabell_namn := replace(split_part(kommando.object_identity, '.', 2), '"', '');
+        geometriinfo := NULL;  -- Återställ per iteration (förhindrar spill från föregående tabell)
 
         RAISE NOTICE E'[hantera_kolumntillagg] --------------------------------------------------';
         RAISE NOTICE '[hantera_kolumntillagg] Bearbetar tabell %.%', schema_namn, tabell_namn;
@@ -376,6 +378,94 @@ BEGIN
             END IF;
         ELSE
             RAISE NOTICE '[hantera_kolumntillagg] Ingen geometrikolumn att hantera';
+        END IF;
+
+        -- Steg 5b: Slutför afvaktande tabell om geometrikolumn precis anlände
+        -- Om tabellen registrerades i hex_afvaktande_geometri av hantera_ny_tabell()
+        -- (dvs. systemanvändare skapade tabellen utan geom), kör vi nu de steg som
+        -- hoppades över då: suffixvalidering, GiST-index och geometrivalidering.
+        RAISE NOTICE E'[hantera_kolumntillagg] ----------';
+        RAISE NOTICE '[hantera_kolumntillagg] Kontrollerar hex_afvaktande_geometri...';
+        -- EXECUTE USING krävs: kolumnnamnen i hex_afvaktande_geometri (schema_namn, tabell_namn)
+        -- är identiska med de lokala variabelnamnen. PostgreSQL tolkar annars $1/$2 (USING)
+        -- som PL/pgSQL-variabler oförväxlingsbart – ingen kolumnambiguitet möjlig.
+        EXECUTE 'SELECT EXISTS (SELECT 1 FROM public.hex_afvaktande_geometri WHERE schema_namn = $1 AND tabell_namn = $2)'
+            INTO afvaktande_tabell USING schema_namn, tabell_namn;
+        IF afvaktande_tabell THEN
+            RAISE NOTICE '[hantera_kolumntillagg] Tabell %.% är afvaktande – slutför geometrihantering',
+                schema_namn, tabell_namn;
+
+            -- Steg 5b.1: Validera att suffixet stämmer med faktisk geometrityp
+            -- (geometriinfo är redan hämtad ovan om geom-kolumnen finns)
+            IF geometriinfo IS NOT NULL AND geometriinfo.typ_basal IS NOT NULL THEN
+                DECLARE
+                    forvantat_suffix text;
+                    faktiskt_suffix   text;
+                BEGIN
+                    forvantat_suffix := CASE
+                        WHEN geometriinfo.typ_basal IN ('POINT', 'MULTIPOINT')           THEN '_p'
+                        WHEN geometriinfo.typ_basal IN ('LINESTRING', 'MULTILINESTRING') THEN '_l'
+                        WHEN geometriinfo.typ_basal IN ('POLYGON', 'MULTIPOLYGON')       THEN '_y'
+                        ELSE '_g'
+                    END;
+                    faktiskt_suffix := CASE
+                        WHEN tabell_namn ~ '_p$' THEN '_p'
+                        WHEN tabell_namn ~ '_l$' THEN '_l'
+                        WHEN tabell_namn ~ '_y$' THEN '_y'
+                        WHEN tabell_namn ~ '_g$' THEN '_g'
+                        ELSE NULL
+                    END;
+
+                    IF faktiskt_suffix IS NOT NULL AND faktiskt_suffix <> forvantat_suffix THEN
+                        RAISE EXCEPTION
+                            '[hantera_kolumntillagg] Suffixkollision för afvaktande tabell %.%: '
+                            'tabellnamnet antyder % men geometritypen är % (förväntar %).',
+                            schema_namn, tabell_namn,
+                            faktiskt_suffix, geometriinfo.typ_basal, forvantat_suffix;
+                    END IF;
+                    RAISE NOTICE '[hantera_kolumntillagg]   ✓ Suffix % stämmer med geometrityp %',
+                        coalesce(faktiskt_suffix, '(inget suffix)'), geometriinfo.typ_basal;
+                END;
+            END IF;
+
+            -- Steg 5b.2: Skapa GiST-index för geometrikolumnen
+            IF geometriinfo IS NOT NULL AND geometriinfo.kolumnnamn IS NOT NULL THEN
+                DECLARE
+                    index_namn text := left(tabell_namn, 50) || '_geom_gidx';
+                BEGIN
+                    op_steg := 'skapar GiST-index (afvaktande tabell)';
+                    EXECUTE format(
+                        'CREATE INDEX IF NOT EXISTS %I ON %I.%I USING GIST (%I)',
+                        index_namn, schema_namn, tabell_namn, geometriinfo.kolumnnamn
+                    );
+                    RAISE NOTICE '[hantera_kolumntillagg]   ✓ GiST-index skapat: %', index_namn;
+                END;
+            END IF;
+
+            -- Steg 5b.3: Lägg till geometrivalidering för _kba_-scheman
+            IF geometriinfo IS NOT NULL AND geometriinfo.kolumnnamn IS NOT NULL
+               AND schema_namn ~ '^sk[0-2]_kba_'
+            THEN
+                DECLARE
+                    constraint_namn text := 'validera_geom_' || tabell_namn;
+                BEGIN
+                    op_steg := 'lägger till geometrivalidering (afvaktande tabell)';
+                    EXECUTE format(
+                        'ALTER TABLE %I.%I ADD CONSTRAINT %I CHECK (public.validera_geometri(geom))',
+                        schema_namn, tabell_namn, constraint_namn
+                    );
+                    RAISE NOTICE '[hantera_kolumntillagg]   ✓ Geometrivalidering tillagd: %', constraint_namn;
+                END;
+            END IF;
+
+            -- Steg 5b.4: Ta bort från afvaktande-registret
+            -- (EXECUTE USING av samma skäl som EXISTS-kontrollen ovan)
+            EXECUTE 'DELETE FROM public.hex_afvaktande_geometri WHERE schema_namn = $1 AND tabell_namn = $2'
+                USING schema_namn, tabell_namn;
+            RAISE NOTICE '[hantera_kolumntillagg]   ✓ Tabell %.% borttagen ur hex_afvaktande_geometri',
+                schema_namn, tabell_namn;
+        ELSE
+            RAISE NOTICE '[hantera_kolumntillagg] Tabell ej afvaktande, inget extra steg behövs';
         END IF;
 
         -- Steg 6: Kontrollera historiktabell och synkronisera automatiskt

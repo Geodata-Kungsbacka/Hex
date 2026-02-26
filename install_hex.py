@@ -44,6 +44,8 @@ INSTALL_ORDER = [
     "src/sql/02_tables/standardiserade_kolumner.sql",
     "src/sql/02_tables/standardiserade_roller.sql",
     "src/sql/02_tables/hex_metadata.sql",
+    "src/sql/02_tables/hex_systemanvandare.sql",
+    "src/sql/02_tables/hex_afvaktande_geometri.sql",
     # Functions - Structure
     "src/sql/03_functions/01_structure/hamta_geometri_definition.sql",
     "src/sql/03_functions/01_structure/hamta_kolumnstandard.sql",
