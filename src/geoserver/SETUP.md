@@ -425,18 +425,20 @@ Installing service HexGeoServerListener
 Service installed
 ```
 
-### 9b. Konfigurera återanslutning vid krasch
+### 9b. Konfigurera återställning vid krasch
 
 Öppna `services.msc`, hitta **Hex GeoServer Schema Listener**, högerklicka
 och välj **Properties > Recovery**:
 
 | Inställning | Värde |
 |---|---|
-| First failure | Restart the Service |
-| Second failure | Restart the Service |
-| Subsequent failures | Restart the Service |
-| Reset fail count after | 1 dag |
-| Restart service after | 30 sekunder |
+| First failure | Take No Action |
+| Second failure | Take No Action |
+| Subsequent failures | Take No Action |
+
+Tjänsten startas **inte** om automatiskt vid krasch — återstart sker manuellt
+efter felsökning. Starttypen ska vara **Automatic** (sätts under fliken
+**General > Startup type**) så att tjänsten startar vid serveromstart.
 
 ### 9c. Starta tjänsten
 
