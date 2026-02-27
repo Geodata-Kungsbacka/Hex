@@ -60,7 +60,8 @@ WHERE rolname LIKE '%_parkering%'
 ORDER BY rolname;
 ```
 
-Du bör se bland andra `r_sk1_kba_parkering` och `w_sk1_kba_parkering`.
+Du bör se `w_sk1_kba_parkering` (skrivrollen per schema) och de globala rollerna
+`r_sk1_global`, `r_sk1_global_geoserver` m.fl. (läsroller skapas globalt för sk1, inte per schema).
 
 ### 3. Ge användare åtkomst
 
@@ -78,6 +79,10 @@ CREATE SCHEMA sk0_foo_bygg;    -- FEL: "foo" är inte ext/kba/sys
 ```
 
 Felmeddelandet berättar exakt vilket mönster som krävs.
+
+> **Tips – versaler:** PostgreSQL omvandlar automatiskt onoterade identifierare till
+> gemener, så `CREATE SCHEMA SK1_kba_bygg` skapar i praktiken `sk1_kba_bygg` och godkänns.
+> Använd alltid gemener för att undvika förvirring.
 
 ---
 
