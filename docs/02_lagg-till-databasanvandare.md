@@ -27,56 +27,67 @@ i relevant grupproll.
 
 ---
 
-## Steg
+## Två typer av användare
 
-### 1. Skapa inloggningsrollen
+### Personers AD-konton
 
-```sql
-CREATE ROLE anna_andersson WITH LOGIN PASSWORD 'valj_ett_starkt_losenord';
-```
-
-Byt ut `anna_andersson` och lösenordet efter behov. Använd alltid ett starkt lösenord.
-
-### 2. Ge CONNECT-rättighet på databasen
+Vanliga användare autentiseras via Active Directory (AD). PostgreSQL-rollen
+skapas **utan lösenord** – AD hanterar inloggningen. Rollnamnet ska matcha
+AD-kontots korta inloggningsnamn (UPN-prefix), t.ex. `annand` för Anna Andersson.
 
 ```sql
-GRANT CONNECT ON DATABASE <databasnamn> TO anna_andersson;
+CREATE ROLE annand WITH LOGIN;
+GRANT CONNECT ON DATABASE <databasnamn> TO annand;
 ```
 
-### 3. Tilldela lämplig grupproll
+### Systemkonton (tjänster utan AD)
+
+Tjänster och verktyg som ansluter utan AD (t.ex. FME, GeoServer-lyssnaren)
+behöver ett lösenord. Använd alltid ett starkt, unikt lösenord per tjänst.
+
+```sql
+CREATE ROLE fme WITH LOGIN PASSWORD 'valj_ett_starkt_losenord';
+GRANT CONNECT ON DATABASE <databasnamn> TO fme;
+```
+
+---
+
+## Tilldela åtkomst till schema
 
 **Läsrättigheter på ett specifikt schema:**
 ```sql
-GRANT r_sk1_kba_bygg TO anna_andersson;
+GRANT r_sk1_kba_bygg TO annand;
 ```
 
 **Skrivrättigheter på ett specifikt schema:**
 ```sql
-GRANT w_sk1_kba_bygg TO anna_andersson;
+GRANT w_sk1_kba_bygg TO annand;
 ```
 
 **Läsrättigheter på alla öppna (sk0) scheman:**
 ```sql
-GRANT r_sk0_global TO anna_andersson;
+GRANT r_sk0_global TO annand;
 ```
 
 **Läsrättigheter på alla kommunala (sk1) scheman:**
 ```sql
-GRANT r_sk1_global TO anna_andersson;
+GRANT r_sk1_global TO annand;
 ```
 
 Flera roller kan tilldelas i en sats:
 ```sql
-GRANT r_sk1_global, w_sk1_kba_bygg TO anna_andersson;
+GRANT r_sk1_global, w_sk1_kba_bygg TO annand;
 ```
 
-### 4. Verifiera
+---
+
+## Verifiera
 
 ```sql
--- Kontrollera rollmedlemskap
+-- Kontrollera rollmedlemskap för en användare
 SELECT rolname
 FROM pg_roles
-WHERE pg_has_role('anna_andersson', oid, 'member')
+WHERE pg_has_role('annand', oid, 'member')
   AND rolname NOT LIKE 'pg_%'
 ORDER BY rolname;
 ```
@@ -86,15 +97,12 @@ ORDER BY rolname;
 ## Ta bort en användare
 
 ```sql
--- Ta bort rollmedlemskap
-REVOKE ALL ON DATABASE <databasnamn> FROM anna_andersson;
-
--- Ta bort inloggningsrollen
-DROP ROLE anna_andersson;
+REVOKE ALL ON DATABASE <databasnamn> FROM annand;
+DROP ROLE annand;
 ```
 
-> Om användaren äger objekt i databasen måste dessa först överlåtas eller tas bort
-> innan rollen kan droppas.
+> Om användaren äger objekt i databasen måste dessa först överlåtas eller
+> tas bort innan rollen kan droppas.
 
 ---
 
@@ -103,7 +111,7 @@ DROP ROLE anna_andersson;
 För att tillfälligt blockera en användares inloggning utan att ta bort rollen:
 
 ```sql
-ALTER ROLE anna_andersson NOLOGIN;
+ALTER ROLE annand NOLOGIN;
 -- Återaktivera:
-ALTER ROLE anna_andersson LOGIN;
+ALTER ROLE annand LOGIN;
 ```
