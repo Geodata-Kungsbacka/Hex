@@ -225,7 +225,7 @@ hantera_standardiserade_roller()
   │                 ├── Suffix (_geoserver) → r_sk0_global_geoserver
   │                 ├── Prefix (geoserver_) → geoserver_r_sk0_global
   │                 ├── CREATE ROLE <loginrollnamn> WITH LOGIN
-  │                 └── GRANT <grupprolle> TO <loginroll>  (ärver behörigheter)
+  │                 └── GRANT <grupproll> TO <loginroll>  (ärver behörigheter)
   │
   └── Resultat för sk0_kba_bygg:
         NOLOGIN: r_sk0_global, w_sk0_kba_bygg
@@ -701,7 +701,7 @@ flowchart TD
     LOOP --> GLOBAL{"global_roll = true?"}
     GLOBAL --> |ja| KEEP(["Roll bevaras<br/>t.ex. r_sk0_global"])
     GLOBAL --> |nej| LOGIN["För varje loginroll i login_roller:<br/>REASSIGN OWNED TO postgres<br/>DROP OWNED<br/>DROP ROLE loginroll"]
-    LOGIN --> GROUP["REASSIGN OWNED TO postgres<br/>DROP OWNED<br/>DROP ROLE grupprolle"]
+    LOGIN --> GROUP["REASSIGN OWNED TO postgres<br/>DROP OWNED<br/>DROP ROLE grupproll"]
     GROUP --> DONE(["Roller borttagna ✓<br/>PostgreSQL hanterar schema<br/>och objekt via CASCADE"])
 ```
 
@@ -728,9 +728,9 @@ ta_bort_schemaroller()
         │       └── DROP ROLE <loginroll>
         │
         ├── Tar bort NOLOGIN-grupprollen:
-        │     ├── REASSIGN OWNED BY <grupprolle> TO postgres
-        │     ├── DROP OWNED BY <grupprolle>
-        │     └── DROP ROLE <grupprolle>
+        │     ├── REASSIGN OWNED BY <grupproll> TO postgres
+        │     ├── DROP OWNED BY <grupproll>
+        │     └── DROP ROLE <grupproll>
         │
         └── Globala roller (global_roll = true) berörs INTE
               r_sk0_global och r_sk1_global överlever DROP SCHEMA
