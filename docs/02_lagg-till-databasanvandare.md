@@ -6,14 +6,18 @@
 
 ## Bakgrund
 
-Hex skapar automatiskt roller för varje schema när det skapas:
+Hex skapar automatiskt roller för varje schema när det skapas. Vilka roller
+som skapas beror på schemats säkerhetsnivå:
 
-| Roll | Rättigheter |
-|------|-------------|
-| `r_<schema>` | Läsrättigheter (SELECT) |
-| `w_<schema>` | Läs- och skrivrättigheter (SELECT, INSERT, UPDATE, DELETE) |
-| `r_sk0_global` | Läsrättigheter på alla `sk0`-scheman |
-| `r_sk1_global` | Läsrättigheter på alla `sk1`-scheman |
+| Roll | Skapas för | Rättigheter |
+|------|-----------|-------------|
+| `r_sk0_global` | Alla `sk0`-scheman | Läsrättigheter på hela sk0 (global roll) |
+| `r_sk1_global` | Alla `sk1`-scheman | Läsrättigheter på hela sk1 (global roll) |
+| `r_<schema>` | `sk2`-scheman | Läsrättigheter på detta specifika schema |
+| `w_<schema>` | Alla scheman | Läs- och skrivrättigheter på detta schema |
+
+> För sk0 och sk1 finns **inga separata läsroller per schema** – alla med
+> `r_sk0_global`/`r_sk1_global` kan läsa samtliga scheman på den nivån.
 
 En ny användare skapas som en PostgreSQL-inloggningsroll och placeras sedan
 i relevant grupproll.
@@ -54,16 +58,6 @@ GRANT CONNECT ON DATABASE <databasnamn> TO fme;
 
 ## Tilldela åtkomst till schema
 
-**Läsrättigheter på ett specifikt schema:**
-```sql
-GRANT r_sk1_kba_bygg TO annand;
-```
-
-**Skrivrättigheter på ett specifikt schema:**
-```sql
-GRANT w_sk1_kba_bygg TO annand;
-```
-
 **Läsrättigheter på alla öppna (sk0) scheman:**
 ```sql
 GRANT r_sk0_global TO annand;
@@ -72,6 +66,16 @@ GRANT r_sk0_global TO annand;
 **Läsrättigheter på alla kommunala (sk1) scheman:**
 ```sql
 GRANT r_sk1_global TO annand;
+```
+
+**Skrivrättigheter på ett specifikt schema (alla säkerhetsnivåer):**
+```sql
+GRANT w_sk1_kba_bygg TO annand;
+```
+
+**Läsrättigheter på ett specifikt sk2-schema:**
+```sql
+GRANT r_sk2_sys_admin TO annand;
 ```
 
 Flera roller kan tilldelas i en sats:

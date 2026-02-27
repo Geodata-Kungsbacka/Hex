@@ -44,3 +44,8 @@ VALUES
 	('skapad_av', -3, 'character varying', 'session_user', 'Användare som skapade raden', 'LIKE ''%_kba_%''', false),
 	('andrad_tidpunkt', -2, 'timestamptz', 'NOW()', 'Senaste ändringstidpunkt', 'LIKE ''%_kba_%''', true),
 	('andrad_av', -1, 'character varying', 'session_user', 'Användare som senast ändrade', 'LIKE ''%_kba_%''', true);
+
+-- Any database user who creates tables needs to read these configuration tables,
+-- since the trigger functions (hantera_ny_tabell, hantera_kolumntillagg) run
+-- as SECURITY INVOKER (the calling user's privileges).
+GRANT SELECT ON public.standardiserade_kolumner TO PUBLIC;

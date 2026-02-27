@@ -39,3 +39,8 @@ INSERT INTO standardiserade_roller (
 INSERT INTO standardiserade_roller (rollnamn, rolltyp, schema_uttryck, login_roller, beskrivning) VALUES 
     ('r_{schema}', 'read', 'LIKE ''sk2_%''', ARRAY['_geoserver', '_cesium','_qgis'], 'Schemaspecifik läsroll'),
     ('w_{schema}', 'write', 'IS NOT NULL', ARRAY['_geoserver', '_cesium','_qgis'], 'Schemaspecifik skrivroll');
+
+-- Any database user who creates tables needs to read these configuration tables,
+-- since the trigger functions (hantera_ny_tabell, hantera_kolumntillagg) run
+-- as SECURITY INVOKER (the calling user's privileges).
+GRANT SELECT ON public.standardiserade_roller TO PUBLIC;

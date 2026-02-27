@@ -9,15 +9,18 @@
 Tabellen `standardiserade_kolumner` definierar vilka kolumner Hex lägger till
 automatiskt när en tabell skapas med `CREATE TABLE`. Standarduppsättningen är:
 
-| Kolumn | Position | Typ | Uppdateras av |
-|--------|----------|-----|---------------|
-| `gid` | 1 (först) | `integer GENERATED ALWAYS AS IDENTITY` | – |
-| `skapad_tidpunkt` | 2 | `timestamptz DEFAULT now()` | DEFAULT |
-| `skapad_av` | 3 | `text DEFAULT current_user` | DEFAULT |
-| `andrad_tidpunkt` | −3 (näst sist) | `timestamptz` | Trigger |
-| `andrad_av` | −2 (näst sist) | `text` | Trigger |
+| Kolumn | Position | Typ | Schema | Uppdateras av |
+|--------|----------|-----|--------|---------------|
+| `gid` | 1 (först) | `integer GENERATED ALWAYS AS IDENTITY` | Alla | – |
+| `skapad_tidpunkt` | −4 (sist) | `timestamptz DEFAULT now()` | Alla | DEFAULT |
+| `skapad_av` | −3 (sist) | `character varying DEFAULT current_user` | `_kba_` | DEFAULT |
+| `andrad_tidpunkt` | −2 (sist) | `timestamptz` | `_kba_` | Trigger |
+| `andrad_av` | −1 (sist) | `character varying` | `_kba_` | Trigger |
 
-Negativa positioner (`-1`, `-2`, `-3`...) placeras sist i tabellen, före geometrikolumnen.
+> `skapad_av`, `andrad_tidpunkt` och `andrad_av` läggs bara till i `_kba_`-scheman
+> (manuellt redigerad kommunal data). Externa och systemscheman får bara `gid` och `skapad_tidpunkt`.
+
+Negativa positioner placeras sist i tabellen, i stigande ordning, direkt före geometrikolumnen.
 
 ---
 

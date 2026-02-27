@@ -67,18 +67,25 @@ ORDER BY tablename;
 
 ## Uppdatera Hex till en ny version
 
-En uppdatering görs genom att köra `install_hex.py` igen. Skriptet kör
-`CREATE OR REPLACE` på funktioner och triggers, och hanterar
-strukturändringar i tabellerna.
+Eftersom installationsskriptet inte kan uppdatera befintliga datatyper
+(`CREATE TYPE` stöder inte `IF NOT EXISTS`) måste en uppdatering göras
+som avinstallation följt av ominstallation:
 
 ```bash
-git pull          # Hämta senaste versionen
-python install_hex.py
+git pull                           # Hämta senaste versionen
+python install_hex.py --uninstall  # Ta bort befintlig installation
+python install_hex.py              # Installera om med ny version
 ```
 
-> **OBS:** Konfigurationstabellerna (`standardiserade_kolumner`,
-> `standardiserade_roller`, `hex_systemanvandare`) berörs normalt inte
-> vid uppdatering – befintliga rader bevaras.
+> **OBS:** Avinstallationen tar bort konfigurationstabellerna
+> (`standardiserade_kolumner`, `standardiserade_roller`, `hex_systemanvandare`).
+> Säkerhetskopiera eventuella anpassningar **innan** du kör `--uninstall`:
+> ```sql
+> -- Exportera anpassningar innan avinstallation
+> SELECT * FROM standardiserade_kolumner ORDER BY ordinal_position;
+> SELECT * FROM standardiserade_roller ORDER BY rollnamn;
+> SELECT * FROM hex_systemanvandare;
+> ```
 
 ---
 
