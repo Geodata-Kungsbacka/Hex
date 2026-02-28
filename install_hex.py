@@ -130,9 +130,11 @@ DROP FUNCTION IF EXISTS public.hamta_kolumnstandard(text, text, geom_info);
 DROP FUNCTION IF EXISTS public.hamta_geometri_definition(text, text);
 
 -- Config Functions
-DROP FUNCTION IF EXISTS public.system_();
+DROP FUNCTION IF EXISTS public.system_owner();
 
 -- Tables
+DROP TABLE IF EXISTS public.hex_afvaktande_geometri;
+DROP TABLE IF EXISTS public.hex_systemanvandare;
 DROP TABLE IF EXISTS public.hex_metadata;
 DROP TABLE IF EXISTS public.standardiserade_roller;
 DROP TABLE IF EXISTS public.standardiserade_kolumner;

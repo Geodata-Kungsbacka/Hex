@@ -88,6 +88,11 @@ och ersätt `py` med den fullständiga sökvägen i kommandona nedan.
 
 Installera beroenden:
 ```cmd
+py -m pip install -r requirements.txt
+```
+
+Eller manuellt:
+```cmd
 py -m pip install psycopg2 requests python-dotenv pywin32
 ```
 
