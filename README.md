@@ -4,6 +4,10 @@
 
 Detta system automatiserar databasstrukturering i PostgreSQL med PostGIS-stöd. När du skapar en ny tabell läggs automatiskt standardkolumner till (som primärnyckel, tidsstämplar och användarspårning), geometrikolumner placeras alltid sist, och tabellnamn valideras enligt en strikt namngivningsstandard. Systemet skapar även automatiskt säkerhetsroller för varje schema och kan generera historiktabeller för ändringsloggning. Huvudsyftet är att säkerställa konsekvent databasstruktur utan manuellt arbete, vilket minskar fel och ökar produktiviteten i geodatabashantering.
 
+> **Mer dokumentation:**
+> - **[LOGIC_MAP.md](LOGIC_MAP.md)** — detaljerade funktionsflöden och Mermaid-diagram för alla DDL-händelser
+> - **[src/geoserver/SETUP.md](src/geoserver/SETUP.md)** — installationsguide för GeoServer-lyssnaren (Windows-tjänst)
+
 ## Huvudfunktionalitet
 
 ### 1. **Automatisk tabellstrukturering**
@@ -607,6 +611,45 @@ schema_uttryck = 'IN (''sk0_ext_sgu'', ''sk1_ext_lantmateriet'')'
 -- Kombinerade villkor
 schema_uttryck = 'LIKE ''sk%'' AND NOT LIKE ''%_sys_%'''
 ```
+
+### Anpassa roller per schema
+
+Vilka roller som skapas när ett schema skapas styrs av tabellen `standardiserade_roller`:
+
+```sql
+-- Visa aktuell rollkonfiguration
+SELECT rollnamn, rolltyp, schema_uttryck, global_roll, ta_bort_med_schema
+FROM standardiserade_roller
+ORDER BY rollnamn;
+
+-- Lägg till en schemaspecifik skriv-roll för sk2-scheman
+INSERT INTO standardiserade_roller (
+    rollnamn,
+    rolltyp,
+    schema_uttryck,
+    global_roll,
+    ta_bort_med_schema,
+    login_roller
+) VALUES (
+    'w_{schema}',           -- {schema} ersätts med det faktiska schemanamnet
+    'write',
+    'LIKE ''sk2_%''',       -- Matchar alla sk2-scheman
+    false,                  -- Schemaspecifik roll, inte global
+    true,                   -- Tas bort med schemat
+    ARRAY['_geoserver', '_qgis']  -- Skapar login-varianter för dessa suffix
+);
+```
+
+Fördefinierade roller (installeras med Hex):
+
+| Roll | Typ | Matchar | Raderas med schema |
+|---|---|---|---|
+| `r_sk0_global` | read | `LIKE 'sk0_%'` | Nej (global) |
+| `r_sk1_global` | read | `LIKE 'sk1_%'` | Nej (global) |
+| `r_{schema}` | read | `LIKE 'sk2_%'` | Ja |
+| `w_{schema}` | write | Alla scheman | Ja |
+
+> Se LOGIC_MAP.md avsnitt 2 (CREATE SCHEMA) för detaljerat flöde.
 
 ## Felsökning
 
