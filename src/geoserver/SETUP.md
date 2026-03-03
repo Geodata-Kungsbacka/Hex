@@ -173,6 +173,16 @@ GRANT CONNECT ON DATABASE geodata_sk1 TO hex_listener;
 Ingen ytterligare rättighet behövs - `LISTEN` på en kanal är tillgängligt för
 alla roller som kan ansluta till databasen.
 
+> **IPv6:** Windows Server 2022 kan föredra IPv6 för `localhost`-uppslag (`::1`).
+> Kontrollera att `pg_hba.conf` har poster för **båda** protokollen:
+> ```
+> host  all  hex_listener  127.0.0.1/32  scram-sha-256
+> host  all  hex_listener  ::1/128       scram-sha-256
+> ```
+> Om du ser `connection refused` trots att PostgreSQL är igång, kontrollera detta.
+> Du kan också sätta `HEX_PG_HOST=127.0.0.1` (IPv4) eller `HEX_PG_HOST=::1` (IPv6)
+> i `.env` för att tvinga ett specifikt protokoll.
+
 ### GeoServer - REST API-användare
 
 Lyssnaren anropar GeoServer REST API för att:
