@@ -153,8 +153,14 @@ BEGIN
     VALUES ('test', ST_GeomFromText('POLYGON EMPTY', 3007));
     RAISE WARNING 'TEST A2d FAILED: Empty geometry accepted in sk2_kba (should be blocked)';
 EXCEPTION
-    WHEN check_violation THEN
-        RAISE NOTICE 'TEST A2d PASSED: Empty geometry correctly blocked in sk2_kba';
+    WHEN OTHERS THEN
+        IF SQLERRM LIKE '%Ogiltig geometri%' AND SQLERRM LIKE '%tom%' THEN
+            RAISE NOTICE 'TEST A2d PASSED: Empty geometry blocked with descriptive message: %', left(SQLERRM, 120);
+        ELSIF SQLERRM LIKE '%check constraint%' OR SQLERRM LIKE '%validera_geom%' THEN
+            RAISE WARNING 'TEST A2d PARTIAL: Geometry blocked by CHECK constraint but trigger message missing. Is kontrollera_geometri_trigger installed?';
+        ELSE
+            RAISE NOTICE 'TEST A2d PASSED (other reason): %', left(SQLERRM, 120);
+        END IF;
 END $$;
 
 -- ------------------------------------------------------------

@@ -455,6 +455,14 @@ BEGIN
                         schema_namn, tabell_namn, constraint_namn
                     );
                     RAISE NOTICE '[hantera_kolumntillagg]   ✓ Geometrivalidering tillagd: %', constraint_namn;
+                    op_steg := 'lägger till geometritrigger (afvaktande tabell)';
+                    EXECUTE format(
+                        'CREATE TRIGGER hex_kontrollera_geom'
+                        ' BEFORE INSERT OR UPDATE ON %I.%I'
+                        ' FOR EACH ROW EXECUTE FUNCTION public.kontrollera_geometri_trigger()',
+                        schema_namn, tabell_namn
+                    );
+                    RAISE NOTICE '[hantera_kolumntillagg]   ✓ Geometritrigger tillagd: hex_kontrollera_geom';
                 END;
             END IF;
 

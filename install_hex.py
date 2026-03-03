@@ -54,6 +54,7 @@ INSTALL_ORDER = [
     "src/sql/03_functions/02_validation/validera_vynamn.sql",
     "src/sql/03_functions/02_validation/validera_schemanamn.sql",
     "src/sql/03_functions/02_validation/validera_geometri.sql",
+    "src/sql/03_functions/02_validation/forklara_geometrifel.sql",
     # Functions - Rules
     "src/sql/03_functions/03_rules/spara_tabellregler.sql",
     "src/sql/03_functions/03_rules/spara_kolumnegenskaper.sql",
@@ -65,6 +66,7 @@ INSTALL_ORDER = [
     "src/sql/03_functions/04_utility/skapa_historik_qa.sql",
     "src/sql/03_functions/04_utility/tilldela_rollrattigheter.sql",
     # Functions - Trigger functions
+    "src/sql/03_functions/05_trigger_functions/kontrollera_geometri_trigger.sql",
     "src/sql/03_functions/05_trigger_functions/hantera_ny_tabell.sql",
     "src/sql/03_functions/05_trigger_functions/hantera_kolumntillagg.sql",
     "src/sql/03_functions/05_trigger_functions/hantera_ny_vy.sql",
@@ -106,6 +108,7 @@ DROP FUNCTION IF EXISTS public.hantera_ny_vy();
 DROP FUNCTION IF EXISTS public.hantera_kolumntillagg();
 DROP FUNCTION IF EXISTS public.hantera_ny_tabell();
 DROP FUNCTION IF EXISTS public.hantera_borttagen_tabell();
+DROP FUNCTION IF EXISTS public.kontrollera_geometri_trigger();
 
 -- Utility Functions
 DROP FUNCTION IF EXISTS public.tilldela_rollrattigheter(text, text, text);
@@ -120,6 +123,7 @@ DROP FUNCTION IF EXISTS public.spara_kolumnegenskaper(text, text);
 DROP FUNCTION IF EXISTS public.spara_tabellregler(text, text);
 
 -- Validation Functions
+DROP FUNCTION IF EXISTS public.forklara_geometrifel(geometry, float);
 DROP FUNCTION IF EXISTS public.validera_geometri(geometry, float) CASCADE;
 DROP FUNCTION IF EXISTS public.validera_schemanamn();
 DROP FUNCTION IF EXISTS public.validera_vynamn(text, text);
