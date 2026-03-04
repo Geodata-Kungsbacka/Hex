@@ -41,6 +41,8 @@ INSTALL_ORDER = [
     "src/sql/01_types/kolumnegenskaper.sql",
     "src/sql/01_types/tabellregler.sql",
     # Tables
+    "src/sql/02_tables/standardiserade_skyddsnivaer.sql",
+    "src/sql/02_tables/standardiserade_datakategorier.sql",
     "src/sql/02_tables/standardiserade_kolumner.sql",
     "src/sql/02_tables/standardiserade_roller.sql",
     "src/sql/02_tables/hex_metadata.sql",
@@ -142,6 +144,8 @@ DROP TABLE IF EXISTS public.hex_systemanvandare;
 DROP TABLE IF EXISTS public.hex_metadata;
 DROP TABLE IF EXISTS public.standardiserade_roller;
 DROP TABLE IF EXISTS public.standardiserade_kolumner;
+DROP TABLE IF EXISTS public.standardiserade_skyddsnivaer;
+DROP TABLE IF EXISTS public.standardiserade_datakategorier;
 
 -- Types (must be dropped after functions that use them)
 DROP TYPE IF EXISTS public.tabellregler;
