@@ -153,6 +153,7 @@ src/sql/03_functions/01_structure/hamta_kolumnstandard.sql
 
 -- 3.2 Validering
 src/sql/03_functions/02_validation/validera_geometri.sql
+src/sql/03_functions/02_validation/forklara_geometrifel.sql
 src/sql/03_functions/02_validation/validera_tabell.sql
 src/sql/03_functions/02_validation/validera_vynamn.sql
 src/sql/03_functions/02_validation/validera_schemanamn.sql
@@ -170,6 +171,7 @@ src/sql/03_functions/04_utility/skapa_historik_qa.sql
 src/sql/03_functions/04_utility/tilldela_rollrattigheter.sql
 
 -- 3.5 Triggerfunktioner
+src/sql/03_functions/05_trigger_functions/kontrollera_geometri.sql
 src/sql/03_functions/05_trigger_functions/hantera_ny_tabell.sql
 src/sql/03_functions/05_trigger_functions/hantera_kolumntillagg.sql
 src/sql/03_functions/05_trigger_functions/hantera_ny_vy.sql
