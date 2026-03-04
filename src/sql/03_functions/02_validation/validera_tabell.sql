@@ -42,9 +42,21 @@ BEGIN
     RAISE NOTICE E'[validera_tabell] === START ===';
     RAISE NOTICE '[validera_tabell] Validerar tabell %.%', p_schema_namn, p_tabell_namn;
 
-    -- Steg 1: Kontrollera om tabellen har geometri
+    -- Steg 1: Kontrollera namnlängd
+    valideringssteg := 'namnlängdskontroll';
+    RAISE NOTICE '[validera_tabell] Steg 1: Kontrollerar namnlängd';
+
+    IF length(p_tabell_namn) > 54 THEN
+        RAISE EXCEPTION
+            E'[validera_tabell] Tabellnamnet "%" är för långt (%s tecken, max 54).\n'
+            'Historiktabellen (%_h) måste rymmas inom PostgreSQL-gränsen på 63 tecken.',
+            p_tabell_namn, length(p_tabell_namn), p_tabell_namn;
+    END IF;
+    RAISE NOTICE '[validera_tabell]   ✓ Namnlängd OK: % tecken', length(p_tabell_namn);
+
+    -- Steg 2: Kontrollera om tabellen har geometri
     valideringssteg := 'geometri-kontroll';
-    RAISE NOTICE '[validera_tabell] Steg 1: Kontrollerar geometrikolumner';
+    RAISE NOTICE '[validera_tabell] Steg 2: Kontrollerar geometrikolumner';
     SELECT COUNT(*) INTO antal_geom
     FROM geometry_columns
     WHERE f_table_schema = p_schema_namn 
@@ -52,10 +64,10 @@ BEGIN
     
     RAISE NOTICE '[validera_tabell]   » Antal geometrikolumner: %', antal_geom;
 
-    -- Steg 2: Hantera tabeller utan geometri
+    -- Steg 3: Hantera tabeller utan geometri
     IF antal_geom = 0 THEN
         valideringssteg := 'validering av tabell utan geometri';
-        RAISE NOTICE '[validera_tabell] Steg 2a: Validerar tabell utan geometri';
+        RAISE NOTICE '[validera_tabell] Steg 3a: Validerar tabell utan geometri';
 
         -- Kontrollera att inget geometrisuffix används
         -- FIX: Ändrat från RAISE NOTICE till RAISE EXCEPTION
@@ -75,9 +87,9 @@ BEGIN
         RETURN;
     END IF;
 
-    -- Steg 2b: Validera tabeller med geometri
+    -- Steg 3b: Validera tabeller med geometri
     valideringssteg := 'validering av antal geometrikolumner';
-    RAISE NOTICE '[validera_tabell] Steg 2b: Validerar tabell med geometri';
+    RAISE NOTICE '[validera_tabell] Steg 3b: Validerar tabell med geometri';
     
     IF antal_geom > 1 THEN
         RAISE EXCEPTION E'[validera_tabell] Tabellen %.% har % geometrikolumner.\n'
@@ -87,9 +99,9 @@ BEGIN
     END IF;
     RAISE NOTICE '[validera_tabell]   ✓ Korrekt antal geometrikolumner: 1';
 
-    -- Steg 3: Validera geometrikolumnens namn
+    -- Steg 4: Validera geometrikolumnens namn
     valideringssteg := 'validering av geometrikolumnnamn';
-    RAISE NOTICE '[validera_tabell] Steg 3: Validerar geometrikolumnens namn';
+    RAISE NOTICE '[validera_tabell] Steg 4: Validerar geometrikolumnens namn';
     
     IF EXISTS (
         SELECT 1 FROM geometry_columns
@@ -109,17 +121,17 @@ BEGIN
     END IF;
     RAISE NOTICE '[validera_tabell]   ✓ Geometrikolumn har korrekt namn: geom';
 
-    -- Steg 4: Hämta geometriinfo för validering och returnering
+    -- Steg 5: Hämta geometriinfo för validering och returnering
     valideringssteg := 'hämtning av geometriinformation';
-    RAISE NOTICE '[validera_tabell] Steg 4: Hämtar geometriinformation';
+    RAISE NOTICE '[validera_tabell] Steg 5: Hämtar geometriinformation';
     
     p_geometriinfo := hamta_geometri_definition(p_schema_namn, p_tabell_namn);
     RAISE NOTICE '[validera_tabell]   » Geometry-typ: %', p_geometriinfo.typ_basal;
     RAISE NOTICE '[validera_tabell]   » SRID: %', p_geometriinfo.srid;
 
-    -- Steg 5: Validera tabellnamn med korrekt geometrisuffix
+    -- Steg 6: Validera tabellnamn med korrekt geometrisuffix
     valideringssteg := 'validering av tabellnamnsuffix';
-    RAISE NOTICE '[validera_tabell] Steg 5: Validerar tabellnamnets suffix';
+    RAISE NOTICE '[validera_tabell] Steg 6: Validerar tabellnamnets suffix';
     
     forvantat_suffix := CASE 
         WHEN p_geometriinfo.typ_basal IN ('POINT', 'MULTIPOINT') THEN '_p'
