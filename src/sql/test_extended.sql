@@ -224,13 +224,13 @@ BEGIN
     END IF;
 END $$;
 
--- Login roles for sk2 (suffixed _geoserver, _cesium, _qgis)
+-- Login role for sk2 (suffixed _pub)
 DO $$
 BEGIN
-    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'r_sk2_ext_test_geoserver') THEN
-        RAISE NOTICE 'TEST A4d PASSED: Login role r_sk2_ext_test_geoserver created';
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'r_sk2_ext_test_pub') THEN
+        RAISE NOTICE 'TEST A4d PASSED: Login role r_sk2_ext_test_pub created';
     ELSE
-        RAISE WARNING 'TEST A4d FAILED: Missing login role r_sk2_ext_test_geoserver';
+        RAISE WARNING 'TEST A4d FAILED: Missing login role r_sk2_ext_test_pub';
     END IF;
 END $$;
 

@@ -25,20 +25,22 @@ COMMENT ON TABLE public.standardiserade_roller
 
 COMMENT ON COLUMN public.standardiserade_roller.login_roller
     IS 'Array med suffix/prefix för LOGIN-roller. Värden som börjar med _ blir suffix, 
-    värden som slutar med _ blir prefix. Ex: ["_geoserver", "_qgis"] skapar 
-    r_schema_geoserver och r_schema_qgis som LOGIN-roller.';
+    värden som slutar med _ blir prefix. Ex: ["_pub"] skapar
+    r_schema_pub som LOGIN-roll.';
 
 -- Globala roller för sk0 och sk1
 INSERT INTO standardiserade_roller (
     rollnamn, rolltyp, schema_uttryck, global_roll, ta_bort_med_schema, login_roller, beskrivning
 ) VALUES 
-    ('r_sk0_global', 'read', 'LIKE ''sk0_%''', true, false, ARRAY['_geoserver', '_cesium', '_qgis'], 'Global läsroll för sk0'),
-    ('r_sk1_global', 'read', 'LIKE ''sk1_%''', true, false, ARRAY['_geoserver', '_cesium', '_qgis'], 'Global läsroll för sk1');
+    ('r_sk0_global', 'read', 'LIKE ''sk0_%''', true, false, ARRAY['_pub'], 'Global läsroll för sk0'),
+    ('r_sk1_global', 'read', 'LIKE ''sk1_%''', true, false, ARRAY['_pub'], 'Global läsroll för sk1');
 
 -- Schemaspecifika roller
-INSERT INTO standardiserade_roller (rollnamn, rolltyp, schema_uttryck, login_roller, beskrivning) VALUES 
-    ('r_{schema}', 'read', 'LIKE ''sk2_%''', ARRAY['_geoserver', '_cesium','_qgis'], 'Schemaspecifik läsroll'),
-    ('w_{schema}', 'write', 'IS NOT NULL', ARRAY['_geoserver', '_cesium','_qgis'], 'Schemaspecifik skrivroll');
+INSERT INTO standardiserade_roller (rollnamn, rolltyp, schema_uttryck, login_roller, beskrivning) VALUES
+    ('r_{schema}', 'read', 'LIKE ''sk2_%''', ARRAY['_pub'], 'Schemaspecifik läsroll'),
+    -- skx: oklassificerad data, inga applikationsroller – åtkomst hanteras manuellt av GIS-administratörer
+    ('r_{schema}', 'read', 'LIKE ''skx_%''', ARRAY[]::text[], 'Schemaspecifik läsroll för oklassificerad skyddsnivå (skx)'),
+    ('w_{schema}', 'write', 'IS NOT NULL', ARRAY['_pub'], 'Schemaspecifik skrivroll');
 
 -- Any database user who creates tables needs to read these configuration tables,
 -- since the trigger functions (hantera_ny_tabell, hantera_kolumntillagg) run
