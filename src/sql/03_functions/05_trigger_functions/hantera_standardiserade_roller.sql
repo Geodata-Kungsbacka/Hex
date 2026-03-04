@@ -21,7 +21,7 @@ AS $BODY$
  *
  * ROLLSTRUKTUR:
  * - Grupproll (NOLOGIN): t.ex. r_sk0_global, w_sk1_kba_bygg
- * - LOGIN-roller: t.ex. r_sk0_global_geoserver, w_sk1_kba_bygg_admin_app
+ * - LOGIN-roller: t.ex. r_sk0_global_pub, w_sk1_kba_bygg_pub
  *
  * TRIGGER: Körs automatiskt vid CREATE SCHEMA
  ******************************************************************************/
@@ -95,10 +95,10 @@ BEGIN
                         BEGIN
                             -- Kontrollera om det är suffix (börjar med _) eller prefix (slutar med _)
                             IF login_definition ~ '^_' THEN
-                                -- Suffix: r_sk0_global + _geoserver = r_sk0_global_geoserver
+                                -- Suffix: r_sk0_global + _pub = r_sk0_global_pub
                                 login_rollnamn := slutligt_rollnamn || login_definition;
                             ELSIF login_definition ~ '_$' THEN
-                                -- Prefix: geoserver_ + r_sk0_global = geoserver_r_sk0_global
+                                -- Prefix: pub_ + r_sk0_global = pub_r_sk0_global
                                 login_rollnamn := login_definition || slutligt_rollnamn;
                             ELSE
                                 RAISE WARNING '[hantera_standardiserade_roller] LOGIN-roll "%" måste börja eller sluta med understreck', 
