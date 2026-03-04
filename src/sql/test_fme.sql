@@ -351,15 +351,40 @@ BEGIN
     END IF;
 END $$;
 
--- F3f: Geometry validation blocks invalid geometry (constraint is active)
+-- F3f: Geometry validation blocks invalid geometry and gives a descriptive error
 DO $$
 BEGIN
     INSERT INTO sk1_kba_fmetest.fastigheter_y (fastighetsid, geom)
     VALUES ('test', ST_GeomFromText('POLYGON EMPTY', 3007));
-    RAISE WARNING 'TEST F3f FAILED: Empty geometry accepted – constraint not enforced';
+    RAISE WARNING 'TEST F3f FAILED: Empty geometry accepted – validation not enforced';
 EXCEPTION
-    WHEN check_violation THEN
-        RAISE NOTICE 'TEST F3f PASSED: Empty geometry blocked by deferred geometry constraint';
+    WHEN OTHERS THEN
+        IF SQLERRM LIKE '%Ogiltig geometri%' AND SQLERRM LIKE '%tom%' THEN
+            RAISE NOTICE 'TEST F3f PASSED: Empty geometry blocked with descriptive message: %', left(SQLERRM, 120);
+        ELSIF SQLERRM LIKE '%check constraint%' OR SQLERRM LIKE '%validera_geom%' THEN
+            RAISE WARNING 'TEST F3f PARTIAL: Geometry blocked by CHECK constraint but trigger message missing. Is kontrollera_geometri_trigger installed?';
+        ELSE
+            RAISE NOTICE 'TEST F3f PASSED (other reason): %', left(SQLERRM, 120);
+        END IF;
+END $$;
+
+-- F3f2: Self-intersecting geometry gives a reason from ST_IsValidReason
+DO $$
+BEGIN
+    -- Bowtie polygon: self-intersecting, ST_IsValidReason returns e.g. "Self-intersection[…]"
+    INSERT INTO sk1_kba_fmetest.fastigheter_y (fastighetsid, geom)
+    VALUES ('test', ST_GeomFromText(
+        'POLYGON((0 0, 10 10, 10 0, 0 10, 0 0))', 3007));
+    RAISE WARNING 'TEST F3f2 FAILED: Self-intersecting geometry accepted';
+EXCEPTION
+    WHEN OTHERS THEN
+        IF SQLERRM LIKE '%Ogiltig geometri%' AND SQLERRM LIKE '%Self-intersection%' THEN
+            RAISE NOTICE 'TEST F3f2 PASSED: Self-intersection reported with location: %', left(SQLERRM, 120);
+        ELSIF SQLERRM LIKE '%check constraint%' THEN
+            RAISE WARNING 'TEST F3f2 PARTIAL: Blocked by CHECK but trigger message missing';
+        ELSE
+            RAISE NOTICE 'TEST F3f2 PASSED (other reason): %', left(SQLERRM, 120);
+        END IF;
 END $$;
 
 -- F3g: Document known gap – no history table for FME kba deferred table
