@@ -36,8 +36,10 @@ INSERT INTO standardiserade_roller (
     ('r_sk1_global', 'read', 'LIKE ''sk1_%''', true, false, ARRAY['_geoserver', '_cesium', '_qgis'], 'Global läsroll för sk1');
 
 -- Schemaspecifika roller
-INSERT INTO standardiserade_roller (rollnamn, rolltyp, schema_uttryck, login_roller, beskrivning) VALUES 
+INSERT INTO standardiserade_roller (rollnamn, rolltyp, schema_uttryck, login_roller, beskrivning) VALUES
     ('r_{schema}', 'read', 'LIKE ''sk2_%''', ARRAY['_geoserver', '_cesium','_qgis'], 'Schemaspecifik läsroll'),
+    -- skx: oklassificerad data, ingen GeoServer/Cesium-publicering, enbart QGIS-åtkomst för GIS-administratörer
+    ('r_{schema}', 'read', 'LIKE ''skx_%''', ARRAY['_qgis'], 'Schemaspecifik läsroll för oklassificerad skyddsnivå (skx)'),
     ('w_{schema}', 'write', 'IS NOT NULL', ARRAY['_geoserver', '_cesium','_qgis'], 'Schemaspecifik skrivroll');
 
 -- Any database user who creates tables needs to read these configuration tables,

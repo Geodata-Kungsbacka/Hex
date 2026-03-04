@@ -7,11 +7,14 @@ AS $BODY$
 
 /******************************************************************************
  * Event trigger-funktion som skickar pg_notify till GeoServer-lyssnaren
- * när nya scheman skapas med prefix sk0 eller sk1.
+ * när nya scheman skapas med en skyddsnivå där publiceras_geoserver = true.
+ *
+ * Vilka skyddsnivåer som publiceras styrs av tabellen standardiserade_skyddsnivaer.
+ * Standardkonfiguration: sk0 och sk1 publiceras, sk2 och skx publiceras inte.
  *
  * FUNKTIONALITET:
  * 1. Identifierar nya scheman från DDL-händelsen
- * 2. Filtrerar bort systemscheman och sk2-scheman
+ * 2. Filtrerar bort systemscheman och scheman vars skyddsnivå inte publiceras
  * 3. Skickar pg_notify med schemanamnet som payload
  *
  * KANAL: 'geoserver_schema'
@@ -46,11 +49,14 @@ BEGIN
             CONTINUE;
         END IF;
 
-        -- Extrahera prefix (sk0 eller sk1)
-        schema_prefix := substring(schema_namn from '^(sk[01])_');
+        -- Kontrollera om skyddsnivån för detta schema ska publiceras till GeoServer
+        SELECT prefix INTO schema_prefix
+        FROM public.standardiserade_skyddsnivaer
+        WHERE publiceras_geoserver = true
+          AND schema_namn LIKE prefix || '_%';
 
         IF schema_prefix IS NULL THEN
-            RAISE NOTICE '[notifiera_geoserver]   Schema "%" har inte prefix sk0/sk1 - hoppar over', schema_namn;
+            RAISE NOTICE '[notifiera_geoserver]   Schema "%" har ingen GeoServer-publicerad skyddsnivå - hoppar over', schema_namn;
             CONTINUE;
         END IF;
 
@@ -82,5 +88,6 @@ ALTER FUNCTION public.notifiera_geoserver()
 
 COMMENT ON FUNCTION public.notifiera_geoserver()
     IS 'Event trigger-funktion som skickar pg_notify till GeoServer-lyssnaren vid CREATE SCHEMA.
-Filtrerar till enbart sk0 och sk1 scheman. Notifieringen anvands av en extern Python-process
-for att skapa workspace och datastore i GeoServer via REST API.';
+Publicerar scheman vars skyddsnivå har publiceras_geoserver = true i standardiserade_skyddsnivaer
+(standardkonfiguration: sk0 och sk1). Notifieringen används av en extern Python-process
+för att skapa workspace och datastore i GeoServer via REST API.';
