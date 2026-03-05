@@ -185,6 +185,22 @@ BEGIN
             CONTINUE;
         END IF;
 
+        -- Inaktivera QA-trigger innan omstrukturering påbörjas.
+        -- Steg 4 och 5 utför UPDATE-satser som annars triggar QA-funktionen, vilken
+        -- försöker INSERT INTO historiktabell SELECT OLD.* — men historiktabellen har
+        -- inte de temporära _temp0001-kolumnerna, vilket ger felet
+        -- "INSERT has more expressions than target columns" och lämnar föräldralösa
+        -- _temp0001-kolumner kvar.
+        BEGIN
+            EXECUTE format('ALTER TABLE %I.%I DISABLE TRIGGER trg_%s_qa',
+                schema_namn, tabell_namn, tabell_namn);
+            qa_trigger_inaktiverad := true;
+            RAISE NOTICE '[hantera_kolumntillagg] QA-trigger inaktiverad inför omstrukturering';
+        EXCEPTION
+            WHEN OTHERS THEN
+                RAISE NOTICE '[hantera_kolumntillagg] Ingen QA-trigger att inaktivera (eller fel): %', SQLERRM;
+        END;
+
         -- Steg 3: Hämta standardkolumner som ska flyttas (filtrerade per schema_uttryck)
         -- Speglar hamta_kolumnstandard: evaluera schema_uttryck dynamiskt per kolumn
         -- så att t.ex. skapad_av (LIKE '%_kba_%') inte försöks flyttas på _ext_-tabeller.
@@ -238,9 +254,22 @@ BEGIN
             IF i <= array_length(flyttkolumner, 1) THEN
                 kolumn := flyttkolumner[i];
                 RAISE NOTICE E'[hantera_kolumntillagg] ----------';
-                RAISE NOTICE '[hantera_kolumntillagg] Flyttar kolumn %/% - %', 
+                RAISE NOTICE '[hantera_kolumntillagg] Flyttar kolumn %/% - %',
                     i, array_length(flyttkolumner, 1), kolumn.kolumnnamn;
-                
+
+                -- Kontrollera att originalkolumnen faktiskt finns innan vi försöker flytta den.
+                -- Om den saknas (t.ex. efter DROP COLUMN av en standardkolumn) hoppar vi över
+                -- steget för att undvika att lämna kvar en föräldralös _temp0001-kolumn.
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = schema_namn
+                      AND table_name   = tabell_namn
+                      AND column_name  = kolumn.kolumnnamn
+                ) THEN
+                    RAISE NOTICE '[hantera_kolumntillagg]   Kolumn "%" saknas i tabellen – hoppar över flytt', kolumn.kolumnnamn;
+                    CONTINUE;
+                END IF;
+
                 BEGIN
                     -- Steg 4.1: Skapa temporär kolumn
                     op_steg := 'skapar temporär kolumn';
