@@ -68,7 +68,7 @@ INSTALL_ORDER = [
     "src/sql/03_functions/04_utility/skapa_historik_qa.sql",
     "src/sql/03_functions/04_utility/tilldela_rollrattigheter.sql",
     # Functions - Trigger functions
-    "src/sql/03_functions/05_trigger_functions/kontrollera_geometri_trigger.sql",
+    "src/sql/03_functions/05_trigger_functions/kontrollera_geometri.sql",
     "src/sql/03_functions/05_trigger_functions/hantera_ny_tabell.sql",
     "src/sql/03_functions/05_trigger_functions/hantera_kolumntillagg.sql",
     "src/sql/03_functions/05_trigger_functions/hantera_ny_vy.sql",
