@@ -185,6 +185,22 @@ BEGIN
             CONTINUE;
         END IF;
 
+        -- Inaktivera QA-trigger innan omstrukturering påbörjas.
+        -- Steg 4 och 5 utför UPDATE-satser som annars triggar QA-funktionen, vilken
+        -- försöker INSERT INTO historiktabell SELECT OLD.* — men historiktabellen har
+        -- inte de temporära _temp0001-kolumnerna, vilket ger felet
+        -- "INSERT has more expressions than target columns" och lämnar föräldralösa
+        -- _temp0001-kolumner kvar.
+        BEGIN
+            EXECUTE format('ALTER TABLE %I.%I DISABLE TRIGGER trg_%s_qa',
+                schema_namn, tabell_namn, tabell_namn);
+            qa_trigger_inaktiverad := true;
+            RAISE NOTICE '[hantera_kolumntillagg] QA-trigger inaktiverad inför omstrukturering';
+        EXCEPTION
+            WHEN OTHERS THEN
+                RAISE NOTICE '[hantera_kolumntillagg] Ingen QA-trigger att inaktivera (eller fel): %', SQLERRM;
+        END;
+
         -- Steg 3: Hämta standardkolumner som ska flyttas (filtrerade per schema_uttryck)
         -- Speglar hamta_kolumnstandard: evaluera schema_uttryck dynamiskt per kolumn
         -- så att t.ex. skapad_av (LIKE '%_kba_%') inte försöks flyttas på _ext_-tabeller.
