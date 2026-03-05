@@ -238,9 +238,22 @@ BEGIN
             IF i <= array_length(flyttkolumner, 1) THEN
                 kolumn := flyttkolumner[i];
                 RAISE NOTICE E'[hantera_kolumntillagg] ----------';
-                RAISE NOTICE '[hantera_kolumntillagg] Flyttar kolumn %/% - %', 
+                RAISE NOTICE '[hantera_kolumntillagg] Flyttar kolumn %/% - %',
                     i, array_length(flyttkolumner, 1), kolumn.kolumnnamn;
-                
+
+                -- Kontrollera att originalkolumnen faktiskt finns innan vi försöker flytta den.
+                -- Om den saknas (t.ex. efter DROP COLUMN av en standardkolumn) hoppar vi över
+                -- steget för att undvika att lämna kvar en föräldralös _temp0001-kolumn.
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = schema_namn
+                      AND table_name   = tabell_namn
+                      AND column_name  = kolumn.kolumnnamn
+                ) THEN
+                    RAISE NOTICE '[hantera_kolumntillagg]   Kolumn "%" saknas i tabellen – hoppar över flytt', kolumn.kolumnnamn;
+                    CONTINUE;
+                END IF;
+
                 BEGIN
                     -- Steg 4.1: Skapa temporär kolumn
                     op_steg := 'skapar temporär kolumn';
