@@ -41,6 +41,8 @@ INSTALL_ORDER = [
     "src/sql/01_types/kolumnegenskaper.sql",
     "src/sql/01_types/tabellregler.sql",
     # Tables
+    "src/sql/02_tables/standardiserade_skyddsnivaer.sql",
+    "src/sql/02_tables/standardiserade_datakategorier.sql",
     "src/sql/02_tables/standardiserade_kolumner.sql",
     "src/sql/02_tables/standardiserade_roller.sql",
     "src/sql/02_tables/hex_metadata.sql",
@@ -54,6 +56,7 @@ INSTALL_ORDER = [
     "src/sql/03_functions/02_validation/validera_vynamn.sql",
     "src/sql/03_functions/02_validation/validera_schemanamn.sql",
     "src/sql/03_functions/02_validation/validera_geometri.sql",
+    "src/sql/03_functions/02_validation/forklara_geometrifel.sql",
     # Functions - Rules
     "src/sql/03_functions/03_rules/spara_tabellregler.sql",
     "src/sql/03_functions/03_rules/spara_kolumnegenskaper.sql",
@@ -65,6 +68,7 @@ INSTALL_ORDER = [
     "src/sql/03_functions/04_utility/skapa_historik_qa.sql",
     "src/sql/03_functions/04_utility/tilldela_rollrattigheter.sql",
     # Functions - Trigger functions
+    "src/sql/03_functions/05_trigger_functions/kontrollera_geometri.sql",
     "src/sql/03_functions/05_trigger_functions/hantera_ny_tabell.sql",
     "src/sql/03_functions/05_trigger_functions/hantera_kolumntillagg.sql",
     "src/sql/03_functions/05_trigger_functions/hantera_ny_vy.sql",
@@ -106,6 +110,7 @@ DROP FUNCTION IF EXISTS public.hantera_ny_vy();
 DROP FUNCTION IF EXISTS public.hantera_kolumntillagg();
 DROP FUNCTION IF EXISTS public.hantera_ny_tabell();
 DROP FUNCTION IF EXISTS public.hantera_borttagen_tabell();
+DROP FUNCTION IF EXISTS public.kontrollera_geometri_trigger();
 
 -- Utility Functions
 DROP FUNCTION IF EXISTS public.tilldela_rollrattigheter(text, text, text);
@@ -120,6 +125,7 @@ DROP FUNCTION IF EXISTS public.spara_kolumnegenskaper(text, text);
 DROP FUNCTION IF EXISTS public.spara_tabellregler(text, text);
 
 -- Validation Functions
+DROP FUNCTION IF EXISTS public.forklara_geometrifel(geometry, float);
 DROP FUNCTION IF EXISTS public.validera_geometri(geometry, float) CASCADE;
 DROP FUNCTION IF EXISTS public.validera_schemanamn();
 DROP FUNCTION IF EXISTS public.validera_vynamn(text, text);
@@ -138,6 +144,8 @@ DROP TABLE IF EXISTS public.hex_systemanvandare;
 DROP TABLE IF EXISTS public.hex_metadata;
 DROP TABLE IF EXISTS public.standardiserade_roller;
 DROP TABLE IF EXISTS public.standardiserade_kolumner;
+DROP TABLE IF EXISTS public.standardiserade_skyddsnivaer;
+DROP TABLE IF EXISTS public.standardiserade_datakategorier;
 
 -- Types (must be dropped after functions that use them)
 DROP TYPE IF EXISTS public.tabellregler;

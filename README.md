@@ -19,16 +19,21 @@ När du skapar en tabell med `CREATE TABLE` omstruktureras den automatiskt med:
 ### 2. **Namngivningsvalidering**
 
 #### Schemanamn
-Schemanamn måste följa mönstret `sk[0-2]_(ext|kba|sys)_*`:
-- `sk0`, `sk1`, `sk2` = Säkerhetsnivå (0=öppen, 1=kommun, 2=begränsad)
+Schemanamn måste följa mönstret `<skyddsnivå>_<datakategori>_<namn>` där giltiga värden hämtas dynamiskt från konfigurationstabellerna `standardiserade_skyddsnivaer` och `standardiserade_datakategorier`.
+
+Standardkonfiguration:
+- `sk0`, `sk1`, `sk2`, `skx` = Säkerhetsnivå (0=öppen, 1=kommun, 2=begränsad, x=oklassificerad)
 - `ext` = Externa datakällor
 - `kba` = Interna kommunala datakällor
 - `sys` = Systemdata
 
-Exempel på giltiga schemanamn:
+Lägg till rader i `standardiserade_skyddsnivaer` eller `standardiserade_datakategorier` för att utöka tillåtna kombinationer utan att ändra kod.
+
+Exempel på giltiga schemanamn (standardkonfiguration):
 - `sk0_ext_sgu`
 - `sk1_kba_bygg`
 - `sk2_sys_admin`
+- `skx_kba_testprojekt`
 
 #### Tabellnamn
 Systemet kräver specifika suffix baserat på geometrityp:
@@ -133,6 +138,8 @@ src/sql/01_types/kolumnkonfig.sql
 src/sql/01_types/tabellregler.sql
 
 -- 2. Skapa konfigurationstabeller
+src/sql/02_tables/standardiserade_skyddsnivaer.sql
+src/sql/02_tables/standardiserade_datakategorier.sql
 src/sql/02_tables/standardiserade_kolumner.sql
 src/sql/02_tables/standardiserade_roller.sql
 src/sql/02_tables/hex_metadata.sql
@@ -146,6 +153,7 @@ src/sql/03_functions/01_structure/hamta_kolumnstandard.sql
 
 -- 3.2 Validering
 src/sql/03_functions/02_validation/validera_geometri.sql
+src/sql/03_functions/02_validation/forklara_geometrifel.sql
 src/sql/03_functions/02_validation/validera_tabell.sql
 src/sql/03_functions/02_validation/validera_vynamn.sql
 src/sql/03_functions/02_validation/validera_schemanamn.sql
@@ -163,6 +171,7 @@ src/sql/03_functions/04_utility/skapa_historik_qa.sql
 src/sql/03_functions/04_utility/tilldela_rollrattigheter.sql
 
 -- 3.5 Triggerfunktioner
+src/sql/03_functions/05_trigger_functions/kontrollera_geometri.sql
 src/sql/03_functions/05_trigger_functions/hantera_ny_tabell.sql
 src/sql/03_functions/05_trigger_functions/hantera_kolumntillagg.sql
 src/sql/03_functions/05_trigger_functions/hantera_ny_vy.sql
@@ -472,10 +481,10 @@ src/sql/04_triggers/notifiera_geoserver_trigger.sql
 **Nytta**: Förhindrar att övergivna historiktabeller, funktioner och afvaktande-rader ackumuleras i databasen.
 
 #### `notifiera_geoserver()`
-**Syfte**: Skickar `pg_notify` till GeoServer-lyssnaren när nya sk0/sk1-scheman skapas.
+**Syfte**: Skickar `pg_notify` till GeoServer-lyssnaren när nya scheman med `publiceras_geoserver = true` skapas (standardkonfiguration: sk0 och sk1).
 
 **Funktionalitet**:
-- Filtrerar till enbart scheman med prefix `sk0` eller `sk1`
+- Filtrerar scheman vars skyddsnivå har `publiceras_geoserver = true` i `standardiserade_skyddsnivaer`
 - Skickar schemanamnet som payload på kanalen `geoserver_schema`
 - Fel i notifieringen blockerar **inte** schemaskapandet
 
@@ -495,8 +504,8 @@ CREATE SCHEMA sk2_sys_admin;    -- Begränsad systemdata
 
 -- Felaktig namngivning - blockeras av validering
 CREATE SCHEMA min_data;         -- FEL: Följer inte mönstret
-CREATE SCHEMA sk3_ext_test;     -- FEL: sk3 finns inte
-CREATE SCHEMA sk0_foo_bar;      -- FEL: "foo" är inte ext/kba/sys
+CREATE SCHEMA sk3_ext_test;     -- FEL: sk3 finns inte i standardiserade_skyddsnivaer
+CREATE SCHEMA sk0_foo_bar;      -- FEL: "foo" finns inte i standardiserade_datakategorier
 ```
 
 ### Grundläggande tabellskapande
@@ -636,7 +645,7 @@ INSERT INTO standardiserade_roller (
     'LIKE ''sk2_%''',       -- Matchar alla sk2-scheman
     false,                  -- Schemaspecifik roll, inte global
     true,                   -- Tas bort med schemat
-    ARRAY['_geoserver', '_qgis']  -- Skapar login-varianter för dessa suffix
+    ARRAY['_pub']               -- Skapar en login-roll med suffix _pub
 );
 ```
 
@@ -647,6 +656,7 @@ Fördefinierade roller (installeras med Hex):
 | `r_sk0_global` | read | `LIKE 'sk0_%'` | Nej (global) |
 | `r_sk1_global` | read | `LIKE 'sk1_%'` | Nej (global) |
 | `r_{schema}` | read | `LIKE 'sk2_%'` | Ja |
+| `r_{schema}` | read | `LIKE 'skx_%'` | Ja (inga login-roller) |
 | `w_{schema}` | write | Alla scheman | Ja |
 
 > Se LOGIC_MAP.md avsnitt 2 (CREATE SCHEMA) för detaljerat flöde.
@@ -775,6 +785,8 @@ DROP TABLE IF EXISTS public.hex_systemanvandare;
 DROP TABLE IF EXISTS public.hex_metadata;
 DROP TABLE IF EXISTS public.standardiserade_roller;
 DROP TABLE IF EXISTS public.standardiserade_kolumner;
+DROP TABLE IF EXISTS public.standardiserade_skyddsnivaer;
+DROP TABLE IF EXISTS public.standardiserade_datakategorier;
 
 -- 9. Ta bort anpassade typer (måste tas bort efter funktioner som använder dem)
 DROP TYPE IF EXISTS public.tabellregler;

@@ -299,6 +299,14 @@ BEGIN
                         constraint_namn
                     );
                     RAISE NOTICE '  ✓ Geometrivalidering tillagd: %', constraint_namn;
+                    EXECUTE format(
+                        'CREATE TRIGGER hex_kontrollera_geom'
+                        ' BEFORE INSERT OR UPDATE ON %I.%I'
+                        ' FOR EACH ROW EXECUTE FUNCTION public.kontrollera_geometri_trigger()',
+                        schema_namn,
+                        tabell_namn
+                    );
+                    RAISE NOTICE '  ✓ Geometritrigger tillagd: hex_kontrollera_geom';
                 END;
             ELSE
                 IF geometriinfo IS NULL OR geometriinfo.kolumnnamn IS NULL THEN
