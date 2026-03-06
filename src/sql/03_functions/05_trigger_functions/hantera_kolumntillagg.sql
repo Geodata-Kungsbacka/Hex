@@ -654,8 +654,8 @@ BEGIN
                                 trigger_satser text := '';
                                 j integer;
                             BEGIN
-                                -- Hämta uppdaterad kolumnlista från modertabellen
-                                SELECT string_agg(c.column_name, ', ' ORDER BY c.ordinal_position)
+                                -- Hämta uppdaterad kolumnlista från modertabellen (citerade med %I för att hantera reserverade ord)
+                                SELECT string_agg(format('%I', c.column_name), ', ' ORDER BY c.ordinal_position)
                                 INTO ny_kolumn_lista
                                 FROM information_schema.columns c
                                 WHERE c.table_schema = schema_namn
