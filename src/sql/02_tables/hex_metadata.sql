@@ -33,6 +33,12 @@ COMMENT ON TABLE public.hex_metadata IS
 
 COMMENT ON COLUMN public.hex_metadata.parent_oid IS
     'pg_class.oid för föräldertabellen. Stabil vid omdöpning.';
+COMMENT ON COLUMN public.hex_metadata.parent_schema IS
+    'Schemanamnet för föräldertabellen. Uppdateras vid ALTER TABLE RENAME TO.';
+COMMENT ON COLUMN public.hex_metadata.parent_table IS
+    'Tabellnamnet för föräldertabellen. Uppdateras vid ALTER TABLE RENAME TO.';
+COMMENT ON COLUMN public.hex_metadata.history_schema IS
+    'Schemanamnet för historiktabellen – alltid samma som föräldertabellens schema.';
 COMMENT ON COLUMN public.hex_metadata.history_table IS
     'Faktiskt namn på historiktabellen som lagrat i pg_class (kan skilja sig från
      parent_table||''_h'' när föräldertabellens namn är 62+ tecken och PostgreSQL
@@ -40,3 +46,5 @@ COMMENT ON COLUMN public.hex_metadata.history_table IS
 COMMENT ON COLUMN public.hex_metadata.trigger_funktion IS
     'Namn på QA-triggerfunktionen (trg_fn_<originalnamn>_qa).
      Ändras INTE när föräldertabellen döps om.';
+COMMENT ON COLUMN public.hex_metadata.created_at IS
+    'Tidpunkt då posten registrerades i hex_metadata.';

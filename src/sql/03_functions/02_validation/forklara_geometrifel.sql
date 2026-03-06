@@ -15,6 +15,8 @@ AS $BODY$
  * 3. Duplicerade pts  - Inga upprepade punkter inom toleransen
  * 4. Area > tolerans^2 - Polygoner har rimlig area (ej degenererade)
  * 5. Längd > tolerans - Linjer har rimlig längd (ej degenererade)
+ * 6. ST_IsSimple      - Linjer saknar självskärningar (figur-8, korsande segment)
+ * 7. ST_HasArc        - Geometrin innehåller inga kurvsegment (stöds ej i systemet)
  *
  * PARAMETRAR:
  *   geom     - Geometri att diagnostisera
@@ -62,6 +64,17 @@ BEGIN
         );
     END IF;
 
+    IF ST_Dimension(geom) = 1 AND NOT ST_IsSimple(geom) THEN
+        RETURN 'Linjen skär sig själv – geometrin är inte enkel (self-intersection)';
+    END IF;
+
+    IF ST_HasArc(geom) THEN
+        RETURN format(
+            'Geometrin innehåller kurvsegment (%s) vilket inte stöds av systemet – konvertera till linjesegment',
+            ST_GeometryType(geom)
+        );
+    END IF;
+
     RETURN NULL;
 END;
 $BODY$;
@@ -73,4 +86,6 @@ COMMENT ON FUNCTION public.forklara_geometrifel(geometry, float)
     IS 'Diagnostiserar geometriproblem och returnerar en läsbar förklaring på svenska.
 Returnerar NULL om geometrin är giltig, annars en text som beskriver det första problemet.
 Speglar kontrollerna i validera_geometri() men ger specifika felmeddelanden istället för
-en boolean. Används av kontrollera_geometri_trigger() för meningsfulla QGIS-felmeddelanden.';
+en boolean. Används av kontrollera_geometri_trigger() för meningsfulla QGIS-felmeddelanden.
+Kontrollerar: OGC-validitet, tomhet, duplicerade punkter, area/längd, självskärning (linjer),
+samt kurvsegment (CIRCULARSTRING m.m.).';

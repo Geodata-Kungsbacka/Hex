@@ -7,7 +7,9 @@ GeoServer workspace/store-skaparen på Windows Server 2022.
 
 ## Översikt
 
-När du kör `CREATE SCHEMA sk0_kba_test` i PostgreSQL händer följande:
+Lyssnaren hanterar två riktningar automatiskt via var sin pg_notify-kanal.
+
+**Skapande** — när du kör `CREATE SCHEMA sk0_kba_test`:
 
 ```
 CREATE SCHEMA sk0_kba_test
@@ -28,6 +30,31 @@ GeoServer REST API:
   1. POST /rest/workspaces          --> workspace "sk0_kba_test"
   2. POST /rest/.../datastores      --> JNDI store "sk0_kba_test"
 ```
+
+**Borttagning** — när du kör `DROP SCHEMA sk0_kba_test CASCADE`:
+
+```
+DROP SCHEMA sk0_kba_test CASCADE
+        |
+        v
+[PostgreSQL Event Trigger]
+notifiera_geoserver_borttagning()
+        |
+        v
+pg_notify('geoserver_schema_drop', 'sk0_kba_test')
+        |
+        v
+[Python Listener - Windows Service]
+geoserver_listener.py
+        |
+        v
+GeoServer REST API:
+  DELETE /rest/workspaces/sk0_kba_test?recurse=true
+    --> tar bort workspace + datastores + publicerade lager
+```
+
+Det säkerställer att GeoServer inte gör upprepade anrop mot ett schema
+som inte längre existerar i databasen.
 
 ---
 
@@ -119,29 +146,38 @@ requests          2.3x.x
 
 ## Steg 2: Installera SQL-komponenten via Hex
 
-Om du kör Hex-installern (`install_hex.py`) installeras triggern
-automatiskt som en del av installationsordningen. De nya filerna är:
+Om du kör Hex-installern (`install_hex.py`) installeras alla triggers
+automatiskt som en del av installationsordningen. De relevanta filerna är:
 
-- `src/sql/03_functions/05_trigger_functions/notifiera_geoserver.sql`
-- `src/sql/04_triggers/notifiera_geoserver_trigger.sql`
+| Fil | Syfte |
+|---|---|
+| `src/sql/03_functions/05_trigger_functions/notifiera_geoserver.sql` | Skickar pg_notify vid CREATE SCHEMA |
+| `src/sql/04_triggers/notifiera_geoserver_trigger.sql` | Registrerar ovanstående trigger |
+| `src/sql/03_functions/05_trigger_functions/notifiera_geoserver_borttagning.sql` | Skickar pg_notify vid DROP SCHEMA |
+| `src/sql/04_triggers/notifiera_geoserver_borttagning_trigger.sql` | Registrerar ovanstående trigger |
 
-> **VIKTIGT:** Event-triggern måste installeras i **varje** databas som
+> **VIKTIGT:** Samtliga triggers måste installeras i **varje** databas som
 > ska övervakas. Kör `install_hex.py` en gång per databas, med rätt
 > `dbname` i `DB_CONFIG`.
 
-Om du redan har Hex installerat och bara vill lägga till triggern manuellt:
+Om du redan har Hex installerat och bara vill lägga till dessa triggers manuellt:
 
 ```sql
 -- Kör som postgres-användaren i VARJE databas som ska övervakas
--- 1. Skapa funktionen (kopiera innehållet från notifiera_geoserver.sql)
--- 2. Skapa triggern (kopiera innehållet från notifiera_geoserver_trigger.sql)
+-- 1. notifiera_geoserver.sql         (CREATE SCHEMA-funktion)
+-- 2. notifiera_geoserver_trigger.sql (CREATE SCHEMA-trigger)
+-- 3. notifiera_geoserver_borttagning.sql         (DROP SCHEMA-funktion)
+-- 4. notifiera_geoserver_borttagning_trigger.sql (DROP SCHEMA-trigger)
 ```
 
-**Verifiera att triggern finns:**
+**Verifiera att triggerna finns:**
 ```sql
 SELECT evtname, evtevent, evttags
 FROM pg_event_trigger
-WHERE evtname = 'notifiera_geoserver_trigger';
+WHERE evtname IN (
+    'notifiera_geoserver_trigger',
+    'notifiera_geoserver_borttagning_trigger'
+);
 ```
 
 ---
@@ -154,10 +190,11 @@ rättigheter.
 
 ### PostgreSQL - Lyssnarroll
 
-Lyssnaren gör bara två saker mot PostgreSQL:
+Lyssnaren gör bara tre saker mot PostgreSQL:
 
-1. `LISTEN geoserver_schema` - prenumerera på notify-kanalen
-2. `SELECT 1` - keepalive var 5:e sekund
+1. `LISTEN geoserver_schema` - prenumerera på kanalen för CREATE SCHEMA
+2. `LISTEN geoserver_schema_drop` - prenumerera på kanalen för DROP SCHEMA
+3. `SELECT 1` - keepalive var 5:e sekund
 
 Detta kräver enbart `CONNECT`-rättighet på varje databas som ska övervakas:
 
@@ -189,6 +226,7 @@ Lyssnaren anropar GeoServer REST API för att:
 
 - Kontrollera om workspace/datastore redan finns (`GET`)
 - Skapa workspace och JNDI-datastore (`POST`)
+- Ta bort workspace med allt innehåll vid DROP SCHEMA (`DELETE ?recurse=true`)
 
 Att skapa workspaces och datastores kräver **administratörsrättigheter** i
 GeoServer. Det går inte att begränsa med finare granularitet i GeoServer REST API.
@@ -295,6 +333,7 @@ HEX_SMTP_TO=mottagare@kungsbacka.se
 
 **Notifieringar skickas vid:**
 - Misslyckad schema-publicering till GeoServer (efter alla retry-försök)
+- Misslyckad workspace-borttagning i GeoServer (efter alla retry-försök)
 - Förlorad PostgreSQL-anslutning
 - Oväntade fel i lyssnaren
 - Lyckad återanslutning efter avbrott (så du vet att saker fungerar igen)
@@ -379,7 +418,7 @@ py geoserver_listener.py --dry-run
 CREATE SCHEMA sk0_kba_test;
 ```
 
-**Förväntad utskrift i Terminal 1:**
+**Förväntad utskrift i Terminal 1 (skapande):**
 ```
 [INFO] [geodata_sk0] Mottog notifiering for schema: sk0_kba_test
 [INFO] [geodata_sk0]   Prefix: sk0 -> JNDI: java:comp/env/jdbc/server.geodata_sk0
@@ -390,9 +429,18 @@ CREATE SCHEMA sk0_kba_test;
 [INFO] [geodata_sk0]   Schema 'sk0_kba_test' publicerat till GeoServer
 ```
 
-**Rensa testschemat:**
+**Testa även borttagning — Terminal 2:**
 ```sql
 DROP SCHEMA sk0_kba_test CASCADE;
+```
+
+**Förväntad utskrift i Terminal 1 (borttagning):**
+```
+[INFO] [geodata_sk0] Mottog borttagningsnotifiering for schema: sk0_kba_test
+[INFO] [geodata_sk0]   Tar bort workspace 'sk0_kba_test' fran GeoServer...
+[INFO]   [DRY-RUN] Skulle ta bort workspace (inkl. datastores/lager): sk0_kba_test
+[INFO]   [DRY-RUN] DELETE .../workspaces/sk0_kba_test?recurse=true
+[INFO] [geodata_sk0]   Schema 'sk0_kba_test' avpublicerat fran GeoServer
 ```
 
 Avbryt lyssnaren med `Ctrl+C`.
@@ -407,17 +455,19 @@ Upprepa steg 7, men UTAN `--dry-run`:
 py geoserver_listener.py
 ```
 
-Skapa schemat igen och verifiera i GeoServer:
+Skapa schemat och verifiera i GeoServer:
 1. Gå till http://localhost:8080/geoserver/web/
 2. Klicka på **Workspaces** i vänstermenyn
 3. Du bör se `sk0_kba_test` i listan
-4. Klicka på den, sedan **Stores** - du bör se en JNDI-store med samma namn
+4. Klicka på den, sedan **Stores** — du bör se en JNDI-store med samma namn
 
-Rensa efteråt:
+Testa sedan borttagning:
 ```sql
 DROP SCHEMA sk0_kba_test CASCADE;
 ```
-> Workspace i GeoServer tas inte bort automatiskt - det är avsiktligt.
+
+Kontrollera i GeoServer att workspace `sk0_kba_test` är borta.
+Loggen ska visa att DELETE-anropet lyckades.
 
 ---
 
@@ -579,13 +629,18 @@ Lyssnaren har inbyggd retry-logik för transienta fel mot GeoServer:
 - HTTP-felkoder (400, 401, 404, 500 etc.) - dessa returneras direkt
 - Ogiltiga schemanamn, felaktig JNDI-konfiguration, etc.
 
-Om alla retry-försök misslyckas loggas felet tydligt och
-schemat hoppas över. För att försöka igen manuellt:
+Om alla retry-försök misslyckas loggas felet tydligt. Lyssnaren hoppar
+sedan över notifieringen. För att försöka igen manuellt:
 
 ```sql
--- Kör som en användare med rättighet i den aktuella databasen
+-- Kör som en användare med NOTIFY-rättighet i den aktuella databasen
+
+-- Om ett schema skapades men workspace saknas i GeoServer:
 NOTIFY geoserver_schema, 'sk0_ext_scb';
+
+-- Om ett schema togs bort men workspace fortfarande finns i GeoServer:
+NOTIFY geoserver_schema_drop, 'sk0_ext_scb';
 ```
 
 Om e-postnotifieringar är konfigurerade skickas även ett mejl med
-instruktioner för manuell åtgärd.
+instruktioner för manuell åtgärd och den exakta NOTIFY-satsen att köra.

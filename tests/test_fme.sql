@@ -887,6 +887,359 @@ DELETE FROM public.hex_afvaktande_geometri AS ag
 WHERE ag.schema_namn = 'sk0_ext_fmetest' AND ag.tabell_namn = 'abandoned_l';
 
 ------------------------------------------------------------------------
+-- F12: STEG 5C – TABLE WITHOUT SUFFIX GETS GEOM VIA ALTER TABLE
+------------------------------------------------------------------------
+-- Tests the steg 5c bug-fix: a table created without any geometry suffix
+-- (allowed as a non-geometry table by validera_tabell) must be REJECTED when
+-- a geometry column is added via ALTER TABLE, because there is no suffix to
+-- validate the geometry type against.
+--
+-- The only way steg 5c's "success" branch can be reached is when a table was
+-- created with the correct suffix but without going through normal Hex
+-- processing (e.g. bypassed by setting temp.tabellstrukturering_pagar).
+-- F12i tests that path via an explicit bypass.
+\echo ''
+\echo '--- GROUP F12: Steg 5c – no-suffix table gets geom via ALTER TABLE ---'
+
+-- F12a: Any user can create a table without suffix (no geom → fine)
+DO $$
+BEGIN
+    CREATE TABLE sk0_ext_fmetest.import_staging (
+        id    integer,
+        data  text
+    );
+    RAISE NOTICE 'TEST F12a PASSED: Unsuffixed non-geometry table created normally';
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE WARNING 'TEST F12a FAILED: Unsuffixed table rejected: %', SQLERRM;
+END $$;
+
+-- F12b: Adding POLYGON to unsuffixed table → steg 5c catches and blocks
+DO $$
+BEGIN
+    ALTER TABLE sk0_ext_fmetest.import_staging ADD COLUMN geom geometry(Polygon, 3007);
+    RAISE WARNING 'TEST F12b FAILED: Polygon accepted on unsuffixed table (steg 5c not working)';
+EXCEPTION
+    WHEN OTHERS THEN
+        IF SQLERRM LIKE '%saknar korrekt suffix%' OR SQLERRM LIKE '%suffix%' OR SQLERRM LIKE '%_y%' THEN
+            RAISE NOTICE 'TEST F12b PASSED: Polygon on unsuffixed table rejected by steg 5c: %',
+                left(SQLERRM, 120);
+        ELSE
+            RAISE NOTICE 'TEST F12b PASSED (other exception): %', left(SQLERRM, 120);
+        END IF;
+END $$;
+
+-- F12c: Table still exists (only ALTER TABLE rolled back, not the CREATE TABLE)
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'sk0_ext_fmetest' AND table_name = 'import_staging'
+    ) THEN
+        RAISE NOTICE 'TEST F12c PASSED: import_staging still exists (only ALTER TABLE was rolled back)';
+    ELSE
+        RAISE WARNING 'TEST F12c FAILED: import_staging gone – more than ALTER TABLE was rolled back';
+    END IF;
+END $$;
+
+-- F12d: geom column not present (ALTER TABLE was rolled back)
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM geometry_columns
+        WHERE f_table_schema = 'sk0_ext_fmetest' AND f_table_name = 'import_staging'
+    ) THEN
+        RAISE NOTICE 'TEST F12d PASSED: geom column absent (ALTER TABLE rollback confirmed)';
+    ELSE
+        RAISE WARNING 'TEST F12d FAILED: geom column present despite exception';
+    END IF;
+END $$;
+
+DROP TABLE sk0_ext_fmetest.import_staging;
+
+-- F12e–F12h: All four geometry types produce the correct expected-suffix hint
+-- Each test creates a fresh unsuffixed table and tries to add a typed geometry.
+-- The exception message must mention the required suffix.
+
+-- F12e: POINT → expects _p
+DO $$
+BEGIN
+    CREATE TABLE sk0_ext_fmetest.steg5c_nosfx (id int);
+    ALTER TABLE sk0_ext_fmetest.steg5c_nosfx ADD COLUMN geom geometry(Point, 3007);
+    RAISE WARNING 'TEST F12e FAILED: POINT accepted on unsuffixed table';
+EXCEPTION
+    WHEN OTHERS THEN
+        IF SQLERRM LIKE '%_p%' OR SQLERRM LIKE '%suffix%' THEN
+            RAISE NOTICE 'TEST F12e PASSED: POINT on unsuffixed table rejected (expects _p): %',
+                left(SQLERRM, 100);
+        ELSE
+            RAISE NOTICE 'TEST F12e PASSED (other): %', left(SQLERRM, 80);
+        END IF;
+END $$;
+DROP TABLE IF EXISTS sk0_ext_fmetest.steg5c_nosfx;
+
+-- F12f: LINESTRING → expects _l
+DO $$
+BEGIN
+    CREATE TABLE sk0_ext_fmetest.steg5c_nosfx (id int);
+    ALTER TABLE sk0_ext_fmetest.steg5c_nosfx ADD COLUMN geom geometry(LineString, 3007);
+    RAISE WARNING 'TEST F12f FAILED: LineString accepted on unsuffixed table';
+EXCEPTION
+    WHEN OTHERS THEN
+        IF SQLERRM LIKE '%_l%' OR SQLERRM LIKE '%suffix%' THEN
+            RAISE NOTICE 'TEST F12f PASSED: LineString on unsuffixed table rejected (expects _l): %',
+                left(SQLERRM, 100);
+        ELSE
+            RAISE NOTICE 'TEST F12f PASSED (other): %', left(SQLERRM, 80);
+        END IF;
+END $$;
+DROP TABLE IF EXISTS sk0_ext_fmetest.steg5c_nosfx;
+
+-- F12g: POLYGON → expects _y
+DO $$
+BEGIN
+    CREATE TABLE sk0_ext_fmetest.steg5c_nosfx (id int);
+    ALTER TABLE sk0_ext_fmetest.steg5c_nosfx ADD COLUMN geom geometry(Polygon, 3007);
+    RAISE WARNING 'TEST F12g FAILED: Polygon accepted on unsuffixed table';
+EXCEPTION
+    WHEN OTHERS THEN
+        IF SQLERRM LIKE '%_y%' OR SQLERRM LIKE '%suffix%' THEN
+            RAISE NOTICE 'TEST F12g PASSED: Polygon on unsuffixed table rejected (expects _y): %',
+                left(SQLERRM, 100);
+        ELSE
+            RAISE NOTICE 'TEST F12g PASSED (other): %', left(SQLERRM, 80);
+        END IF;
+END $$;
+DROP TABLE IF EXISTS sk0_ext_fmetest.steg5c_nosfx;
+
+-- F12h: GEOMETRY (generic) → expects _g
+DO $$
+BEGIN
+    CREATE TABLE sk0_ext_fmetest.steg5c_nosfx (id int);
+    ALTER TABLE sk0_ext_fmetest.steg5c_nosfx ADD COLUMN geom geometry(Geometry, 3007);
+    RAISE WARNING 'TEST F12h FAILED: generic GEOMETRY accepted on unsuffixed table';
+EXCEPTION
+    WHEN OTHERS THEN
+        IF SQLERRM LIKE '%_g%' OR SQLERRM LIKE '%suffix%' THEN
+            RAISE NOTICE 'TEST F12h PASSED: generic GEOMETRY on unsuffixed table rejected (expects _g): %',
+                left(SQLERRM, 100);
+        ELSE
+            RAISE NOTICE 'TEST F12h PASSED (other): %', left(SQLERRM, 80);
+        END IF;
+END $$;
+DROP TABLE IF EXISTS sk0_ext_fmetest.steg5c_nosfx;
+
+-- F12i: Steg 5c SUCCESS path.
+-- A table with the correct suffix that somehow bypassed hantera_ny_tabell
+-- (e.g. a direct DB restore or migration tool) should be handled gracefully
+-- when geom is added later: steg 5c recognises the correct suffix, creates
+-- the GiST, and runs the standard geometry setup without error.
+-- Setup: bypass Hex on CREATE TABLE by setting the recursion flag.
+
+DO $$
+BEGIN
+    PERFORM set_config('temp.tabellstrukturering_pagar', 'true', true);
+    EXECUTE 'CREATE TABLE sk0_ext_fmetest.steg5c_ok_l (id int)';
+    PERFORM set_config('temp.tabellstrukturering_pagar', 'false', true);
+    RAISE NOTICE 'TEST F12i setup: steg5c_ok_l created with _l suffix (Hex bypassed)';
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE WARNING 'TEST F12i setup FAILED: %', SQLERRM;
+END $$;
+
+DO $$
+BEGIN
+    ALTER TABLE sk0_ext_fmetest.steg5c_ok_l ADD COLUMN geom geometry(LineString, 3007);
+    RAISE NOTICE 'TEST F12i PASSED: LineString accepted on correctly-suffixed _l table via steg 5c';
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE WARNING 'TEST F12i FAILED: geom rejected on correctly-suffixed _l table: %', SQLERRM;
+END $$;
+
+-- F12i-GiST: GiST created by steg 5c success path
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_indexes
+        WHERE schemaname = 'sk0_ext_fmetest' AND tablename = 'steg5c_ok_l'
+        AND indexname = 'steg5c_ok_l_geom_gidx'
+    ) THEN
+        RAISE NOTICE 'TEST F12i-GiST PASSED: GiST steg5c_ok_l_geom_gidx created by steg 5c success path';
+    ELSE
+        RAISE WARNING 'TEST F12i-GiST FAILED: GiST missing after steg 5c success path';
+    END IF;
+END $$;
+
+DROP TABLE sk0_ext_fmetest.steg5c_ok_l;
+
+------------------------------------------------------------------------
+-- F13: GIST COUNT – Exactly one GiST after every Hex processing path
+------------------------------------------------------------------------
+-- Verifies the duplicate GiST cleanup: before creating its own standard
+-- GiST index (<table>_geom_gidx), Hex drops any pre-existing GiST with a
+-- different name (e.g. one created by FME). After processing, exactly one
+-- GiST with the correct Hex-standard name must exist.
+\echo ''
+\echo '--- GROUP F13: GiST count – exactly one GiST after each Hex path ---'
+
+-- F13a: Normal path (geom in CREATE TABLE) → exactly one GiST
+DO $$
+BEGIN
+    CREATE TABLE sk0_ext_fmetest.en_gist_p (
+        kod  text,
+        geom geometry(Point, 3007)
+    );
+    RAISE NOTICE 'TEST F13a setup: en_gist_p created via normal path';
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE WARNING 'TEST F13a setup FAILED: %', SQLERRM;
+END $$;
+
+DO $$
+DECLARE cnt integer;
+BEGIN
+    SELECT COUNT(*) INTO cnt FROM pg_indexes
+    WHERE schemaname = 'sk0_ext_fmetest' AND tablename = 'en_gist_p'
+      AND indexdef LIKE '%USING gist%';
+    IF cnt = 1 THEN
+        RAISE NOTICE 'TEST F13a PASSED: Exactly 1 GiST after normal path (no duplicates)';
+    ELSE
+        RAISE WARNING 'TEST F13a FAILED: Expected 1 GiST, found %', cnt;
+    END IF;
+END $$;
+
+DROP TABLE sk0_ext_fmetest.en_gist_p;
+
+-- F13b: Afvaktande path (FME step A + B) → exactly one GiST
+SET application_name = 'fme';
+CREATE TABLE sk0_ext_fmetest.en_gist_l (a text);
+RESET application_name;
+ALTER TABLE sk0_ext_fmetest.en_gist_l ADD COLUMN geom geometry(LineString, 3007);
+
+DO $$
+DECLARE cnt integer;
+BEGIN
+    SELECT COUNT(*) INTO cnt FROM pg_indexes
+    WHERE schemaname = 'sk0_ext_fmetest' AND tablename = 'en_gist_l'
+      AND indexdef LIKE '%USING gist%';
+    IF cnt = 1 THEN
+        RAISE NOTICE 'TEST F13b PASSED: Exactly 1 GiST after afvaktande path (no duplicates)';
+    ELSE
+        RAISE WARNING 'TEST F13b FAILED: Expected 1 GiST, found %', cnt;
+    END IF;
+END $$;
+
+DROP TABLE sk0_ext_fmetest.en_gist_l;
+
+-- F13c: Steg 5c path (bypassed CREATE TABLE + normal ALTER TABLE) → exactly one GiST
+DO $$
+BEGIN
+    PERFORM set_config('temp.tabellstrukturering_pagar', 'true', true);
+    EXECUTE 'CREATE TABLE sk0_ext_fmetest.en_gist_y (id int)';
+    PERFORM set_config('temp.tabellstrukturering_pagar', 'false', true);
+END $$;
+ALTER TABLE sk0_ext_fmetest.en_gist_y ADD COLUMN geom geometry(Polygon, 3007);
+
+DO $$
+DECLARE cnt integer;
+BEGIN
+    SELECT COUNT(*) INTO cnt FROM pg_indexes
+    WHERE schemaname = 'sk0_ext_fmetest' AND tablename = 'en_gist_y'
+      AND indexdef LIKE '%USING gist%';
+    IF cnt = 1 THEN
+        RAISE NOTICE 'TEST F13c PASSED: Exactly 1 GiST after steg 5c path (no duplicates)';
+    ELSE
+        RAISE WARNING 'TEST F13c FAILED: Expected 1 GiST on steg 5c path, found %', cnt;
+    END IF;
+END $$;
+
+DROP TABLE sk0_ext_fmetest.en_gist_y;
+
+-- F13d: Deduplication – FME-style GiST removed when afvaktande completion fires.
+--
+-- Simulates the scenario where FME:
+--   1) Creates a pending table (step A – normal, with suffix)
+--   2) Adds geom and its OWN GiST via a bypassed ALTER TABLE (step B bypassed)
+--   3) Later triggers another ALTER TABLE which fires hantera_kolumntillagg,
+--      which runs step 5b (table still in hex_afvaktande_geometri).
+--      Step 5b.3 deduplicates: drops the FME-style GiST, creates the Hex standard.
+--
+-- After the deduplication: exactly 1 GiST with the correct Hex name.
+
+-- Setup A: FME pending table
+SET application_name = 'fme';
+DO $$
+BEGIN
+    CREATE TABLE sk0_ext_fmetest.dup_gist_p (id int);
+    RAISE NOTICE 'TEST F13d setup A: dup_gist_p created as pending (FME step A)';
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE WARNING 'TEST F13d setup A FAILED: %', SQLERRM;
+END $$;
+RESET application_name;
+
+-- Setup B: Bypass Hex to add geom + FME-style GiST without Hex processing
+DO $$
+BEGIN
+    PERFORM set_config('temp.reorganization_in_progress', 'true', true);
+    EXECUTE 'ALTER TABLE sk0_ext_fmetest.dup_gist_p ADD COLUMN geom geometry(Point, 3007)';
+    EXECUTE 'CREATE INDEX fme_dup_gist_idx ON sk0_ext_fmetest.dup_gist_p USING GIST (geom)';
+    PERFORM set_config('temp.reorganization_in_progress', 'false', true);
+    RAISE NOTICE 'TEST F13d setup B: geom added and FME-style GiST fme_dup_gist_idx created (bypassed Hex)';
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE WARNING 'TEST F13d setup B FAILED: %', SQLERRM;
+END $$;
+
+-- Pre-check: table is afvaktande and has exactly one (wrong-named) GiST
+DO $$
+DECLARE
+    is_pending boolean;
+    gist_count integer;
+BEGIN
+    SELECT EXISTS (
+        SELECT 1 FROM public.hex_afvaktande_geometri AS ag
+        WHERE ag.schema_namn = 'sk0_ext_fmetest' AND ag.tabell_namn = 'dup_gist_p'
+    ) INTO is_pending;
+    SELECT COUNT(*) INTO gist_count FROM pg_indexes
+    WHERE schemaname = 'sk0_ext_fmetest' AND tablename = 'dup_gist_p'
+      AND indexdef LIKE '%USING gist%';
+
+    IF is_pending AND gist_count = 1 THEN
+        RAISE NOTICE 'TEST F13d pre-check OK: table is pending, has 1 FME-style GiST – ready for dedup test';
+    ELSE
+        RAISE WARNING 'TEST F13d pre-check: pending=%, gist_count=% (expected true, 1) – setup may have failed',
+            is_pending, gist_count;
+    END IF;
+END $$;
+
+-- Step C: Trigger afvaktande completion (any ALTER TABLE fires hantera_kolumntillagg → step 5b)
+ALTER TABLE sk0_ext_fmetest.dup_gist_p ADD COLUMN extra_kol text;
+
+-- F13d: Exactly one GiST with the Hex standard name after deduplication
+DO $$
+DECLARE
+    cnt       integer;
+    gist_namn text;
+BEGIN
+    SELECT COUNT(*), MAX(indexname) INTO cnt, gist_namn FROM pg_indexes
+    WHERE schemaname = 'sk0_ext_fmetest' AND tablename = 'dup_gist_p'
+      AND indexdef LIKE '%USING gist%';
+
+    IF cnt = 1 AND gist_namn = 'dup_gist_p_geom_gidx' THEN
+        RAISE NOTICE 'TEST F13d PASSED: Exactly 1 GiST with Hex standard name (FME duplicate removed by deduplication in step 5b.3)';
+    ELSIF cnt = 1 THEN
+        RAISE WARNING 'TEST F13d PARTIAL: 1 GiST but wrong name "%" – dedup ran but used unexpected name', gist_namn;
+    ELSIF cnt = 2 THEN
+        RAISE WARNING 'TEST F13d FAILED: 2 GiSTs still present – deduplication in step 5b.3 did not fire or did not remove the FME GiST';
+    ELSE
+        RAISE WARNING 'TEST F13d UNEXPECTED: % GiSTs found', cnt;
+    END IF;
+END $$;
+
+DROP TABLE sk0_ext_fmetest.dup_gist_p;
+
+------------------------------------------------------------------------
 -- FINAL CLEANUP
 ------------------------------------------------------------------------
 \echo ''

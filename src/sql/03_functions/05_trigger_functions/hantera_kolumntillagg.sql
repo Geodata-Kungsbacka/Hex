@@ -22,6 +22,13 @@ AS $BODY$
  * 4. UPPDATERAD: Lägger automatiskt till saknade kolumner i historiktabeller
  * 5. Ger användaren instruktioner för manuell synkronisering vid typskillnader
  *
+ * Steg 5b/5c: FME-tvåstegsmönster och liknande omvägar
+ * - 5b: tabell var afvaktande (skapades utan geom, geom anländer via ALTER TABLE)
+ *       → suffix+SRID valideras, GiST/validering/dummy slutförs
+ * - 5c: tabell är INTE afvaktande men har ny geom utan GiST-index
+ *       → suffix valideras strikt (RAISE EXCEPTION om fel → ALTER TABLE rullas tillbaka),
+ *          sedan GiST/validering/dummy om suffix är korrekt
+ *
  * Loggningsstrategi:
  * - Alla meddelanden prefixas med funktionsnamnet för tydlig källhänvisning
  * - Huvudsteg och tabelloperationer loggas på övergripande nivå
@@ -457,12 +464,42 @@ BEGIN
                 END;
             END IF;
 
-            -- Steg 5b.2: Skapa GiST-index för geometrikolumnen
+            -- Steg 5b.2: Kontrollera SRID (EPSG 3007 krävs)
+            IF geometriinfo IS NOT NULL AND geometriinfo.srid IS NOT NULL
+               AND geometriinfo.srid <> 3007
+            THEN
+                RAISE WARNING
+                    '[hantera_kolumntillagg] Tabell %.% har SRID % – förväntar 3007 (SWEREF99 12 00). '
+                    'Data i fel koordinatsystem måste transformeras innan produktionsbruk. '
+                    'Tabellen registreras i hex_avvikande_srid för granskning.',
+                    schema_namn, tabell_namn, geometriinfo.srid;
+
+                INSERT INTO public.hex_avvikande_srid (schema_namn, tabell_namn, srid)
+                VALUES (schema_namn, tabell_namn, geometriinfo.srid)
+                ON CONFLICT (schema_namn, tabell_namn)
+                    DO UPDATE SET srid           = EXCLUDED.srid,
+                                  registrerad    = now(),
+                                  registrerad_av = current_user;
+            END IF;
+
+            -- Steg 5b.3: Skapa GiST-index för geometrikolumnen
             IF geometriinfo IS NOT NULL AND geometriinfo.kolumnnamn IS NOT NULL THEN
                 DECLARE
                     index_namn text := left(tabell_namn, 50) || '_geom_gidx';
+                    r          record;
                 BEGIN
                     op_steg := 'skapar GiST-index (afvaktande tabell)';
+                    -- Ta bort GiST-index med annat namn (t.ex. FME-skapade) för att undvika dubbletter
+                    FOR r IN
+                        SELECT indexname FROM pg_indexes
+                        WHERE schemaname = schema_namn
+                          AND tablename  = tabell_namn
+                          AND indexdef   LIKE '%USING gist%'
+                          AND indexname  <> index_namn
+                    LOOP
+                        EXECUTE format('DROP INDEX %I.%I', schema_namn, r.indexname);
+                        RAISE NOTICE '[hantera_kolumntillagg]   ✓ Dubblerat GiST-index borttaget: %', r.indexname;
+                    END LOOP;
                     EXECUTE format(
                         'CREATE INDEX IF NOT EXISTS %I ON %I.%I USING GIST (%I)',
                         index_namn, schema_namn, tabell_namn, geometriinfo.kolumnnamn
@@ -471,7 +508,7 @@ BEGIN
                 END;
             END IF;
 
-            -- Steg 5b.3: Lägg till geometrivalidering för _kba_-scheman
+            -- Steg 5b.4: Lägg till geometrivalidering för _kba_-scheman
             IF geometriinfo IS NOT NULL AND geometriinfo.kolumnnamn IS NOT NULL
                AND schema_namn ~ '^sk[0-2]_kba_'
             THEN
@@ -495,12 +532,136 @@ BEGIN
                 END;
             END IF;
 
-            -- Steg 5b.4: Ta bort från afvaktande-registret
+            -- Steg 5b.5: Ta bort från afvaktande-registret
             -- (EXECUTE USING av samma skäl som EXISTS-kontrollen ovan)
             EXECUTE 'DELETE FROM public.hex_afvaktande_geometri WHERE schema_namn = $1 AND tabell_namn = $2'
                 USING schema_namn, tabell_namn;
             RAISE NOTICE '[hantera_kolumntillagg]   ✓ Tabell %.% borttagen ur hex_afvaktande_geometri',
                 schema_namn, tabell_namn;
+
+            -- Steg 5b.6: Lägg till dummy-geometrirad för QGIS-kompatibilitet
+            IF geometriinfo IS NOT NULL AND geometriinfo.kolumnnamn IS NOT NULL THEN
+                op_steg := 'dummy-geometri för QGIS (afvaktande tabell)';
+                PERFORM lagg_till_dummy_geometri(schema_namn, tabell_namn, geometriinfo);
+                RAISE NOTICE '[hantera_kolumntillagg]   ✓ Dummy-geometrirad tillagd';
+            END IF;
+        ELSIF geometriinfo IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM pg_indexes
+                  WHERE schemaname = schema_namn
+                    AND tablename  = tabell_namn
+                    AND indexdef   LIKE '%USING gist%'
+              )
+        THEN
+            -- Steg 5c: Geom-kolumn har precis lagts till i en tabell som INTE är
+            -- afvaktande och som INTE har GiST-index – dvs. tabellen har inte
+            -- gått genom normal Hex-hantering med korrekt suffix + CREATE TABLE.
+            --
+            -- Typiskt scenario: FME skapar tabell utan suffix (tillåtet för
+            -- icke-geometritabeller) och lägger sedan till geom via ALTER TABLE.
+            -- Det innebär att suffixvalidering, GiST-index, geometrivalidering och
+            -- dummy alla hoppades över.
+            --
+            -- Åtgärd:
+            --   a) Validera att tabellnamnet har korrekt suffix för geometritypen.
+            --      Om suffixet är fel: RAISE EXCEPTION → ALTER TABLE rullas tillbaka,
+            --      tabellen finns kvar utan geom-kolumnen.
+            --   b) Om suffix är korrekt: kör geometrisetup (GiST, validering, dummy).
+            RAISE NOTICE '[hantera_kolumntillagg] ⚠ Tabell %.% har ny geom utan föregående Hex-hantering – validerar suffix och kör geometrisetup',
+                schema_namn, tabell_namn;
+            DECLARE
+                forvantat_suffix text;
+            BEGIN
+                forvantat_suffix := CASE
+                    WHEN geometriinfo.typ_basal IN ('POINT', 'MULTIPOINT')           THEN '_p'
+                    WHEN geometriinfo.typ_basal IN ('LINESTRING', 'MULTILINESTRING') THEN '_l'
+                    WHEN geometriinfo.typ_basal IN ('POLYGON', 'MULTIPOLYGON')       THEN '_y'
+                    ELSE '_g'
+                END;
+
+                IF NOT tabell_namn LIKE '%' || forvantat_suffix THEN
+                    RAISE EXCEPTION
+                        E'[hantera_kolumntillagg] Tabellen %.% innehåller geometri (%) men saknar korrekt suffix.\n'
+                        '[hantera_kolumntillagg] Kräver suffix: %\n'
+                        '[hantera_kolumntillagg] Föreslaget namn: "%"\n'
+                        '[hantera_kolumntillagg]\n'
+                        '[hantera_kolumntillagg] Geometrikolumnen har INTE lagts till (ändringen är återställd).\n'
+                        '[hantera_kolumntillagg] Åtgärd: döp om tabellen med rätt suffix och försök igen,\n'
+                        '[hantera_kolumntillagg]         eller radera tabellen och skapa om den med rätt namn.',
+                        schema_namn, tabell_namn,
+                        geometriinfo.typ_basal,
+                        forvantat_suffix,
+                        regexp_replace(tabell_namn, '_[plyg]$', '') || forvantat_suffix;
+                END IF;
+
+                RAISE NOTICE '[hantera_kolumntillagg]   ✓ Suffix % stämmer med geometrityp %',
+                    forvantat_suffix, geometriinfo.typ_basal;
+
+                -- SRID-kontroll
+                IF geometriinfo.srid IS NOT NULL AND geometriinfo.srid <> 3007 THEN
+                    RAISE WARNING
+                        '[hantera_kolumntillagg] Tabell %.% har SRID % – förväntar 3007 (SWEREF99 12 00). '
+                        'Tabellen registreras i hex_avvikande_srid.',
+                        schema_namn, tabell_namn, geometriinfo.srid;
+                    INSERT INTO public.hex_avvikande_srid (schema_namn, tabell_namn, srid)
+                    VALUES (schema_namn, tabell_namn, geometriinfo.srid)
+                    ON CONFLICT (schema_namn, tabell_namn)
+                        DO UPDATE SET srid           = EXCLUDED.srid,
+                                      registrerad    = now(),
+                                      registrerad_av = current_user;
+                END IF;
+
+                -- GiST-index
+                DECLARE
+                    index_namn text := left(tabell_namn, 50) || '_geom_gidx';
+                    r          record;
+                BEGIN
+                    op_steg := 'skapar GiST-index (ny geom utan afvaktande)';
+                    -- Ta bort GiST-index med annat namn (t.ex. FME-skapade) för att undvika dubbletter
+                    FOR r IN
+                        SELECT indexname FROM pg_indexes
+                        WHERE schemaname = schema_namn
+                          AND tablename  = tabell_namn
+                          AND indexdef   LIKE '%USING gist%'
+                          AND indexname  <> index_namn
+                    LOOP
+                        EXECUTE format('DROP INDEX %I.%I', schema_namn, r.indexname);
+                        RAISE NOTICE '[hantera_kolumntillagg]   ✓ Dubblerat GiST-index borttaget: %', r.indexname;
+                    END LOOP;
+                    EXECUTE format(
+                        'CREATE INDEX IF NOT EXISTS %I ON %I.%I USING GIST (%I)',
+                        index_namn, schema_namn, tabell_namn, geometriinfo.kolumnnamn
+                    );
+                    RAISE NOTICE '[hantera_kolumntillagg]   ✓ GiST-index skapat: %', index_namn;
+                END;
+
+                -- Geometrivalidering (_kba_-scheman)
+                IF schema_namn ~ '^sk[0-2]_kba_' THEN
+                    DECLARE
+                        constraint_namn text := 'validera_geom_' || tabell_namn;
+                    BEGIN
+                        op_steg := 'lägger till geometrivalidering (ny geom utan afvaktande)';
+                        EXECUTE format(
+                            'ALTER TABLE %I.%I ADD CONSTRAINT %I CHECK (public.validera_geometri(geom))',
+                            schema_namn, tabell_namn, constraint_namn
+                        );
+                        RAISE NOTICE '[hantera_kolumntillagg]   ✓ Geometrivalidering tillagd: %', constraint_namn;
+                        op_steg := 'lägger till geometritrigger (ny geom utan afvaktande)';
+                        EXECUTE format(
+                            'CREATE TRIGGER hex_kontrollera_geom'
+                            ' BEFORE INSERT OR UPDATE ON %I.%I'
+                            ' FOR EACH ROW EXECUTE FUNCTION public.kontrollera_geometri_trigger()',
+                            schema_namn, tabell_namn
+                        );
+                        RAISE NOTICE '[hantera_kolumntillagg]   ✓ Geometritrigger tillagd: hex_kontrollera_geom';
+                    END;
+                END IF;
+
+                -- Dummy-geometri för QGIS
+                op_steg := 'dummy-geometri för QGIS (ny geom utan afvaktande)';
+                PERFORM lagg_till_dummy_geometri(schema_namn, tabell_namn, geometriinfo);
+                RAISE NOTICE '[hantera_kolumntillagg]   ✓ Dummy-geometrirad tillagd';
+            END;
         ELSE
             RAISE NOTICE '[hantera_kolumntillagg] Tabell ej afvaktande, inget extra steg behövs';
         END IF;

@@ -15,6 +15,8 @@ AS $BODY$
  * 3. Inga duplicerade - Inga upprepade punkter inom toleransen
  * 4. Area > tolerans^2 - Polygoner har rimlig area (ej degenererade)
  * 5. Längd > tolerans - Linjer har rimlig längd (ej degenererade)
+ * 6. ST_IsSimple      - Linjer saknar självskärningar (figur-8, korsande segment)
+ * 7. NOT ST_HasArc    - Geometrin innehåller inga kurvsegment (stöds ej i systemet)
  *
  * PARAMETRAR:
  *   geom     - Geometri att validera
@@ -49,7 +51,11 @@ BEGIN
         -- 4. Polygoner måste ha rimlig area (> 1mm^2 med default-tolerans)
         AND (ST_Dimension(geom) != 2 OR ST_Area(geom) > tolerans * tolerans)
         -- 5. Linjer måste ha rimlig längd (> 1mm med default-tolerans)
-        AND (ST_Dimension(geom) != 1 OR ST_Length(geom) > tolerans);
+        AND (ST_Dimension(geom) != 1 OR ST_Length(geom) > tolerans)
+        -- 6. Linjer får inte skära sig själva (gäller ej polygoner – täcks av ST_IsValid)
+        AND (ST_Dimension(geom) != 1 OR ST_IsSimple(geom))
+        -- 7. Inga kurvsegment – CIRCULARSTRING m.m. stöds inte av systemet
+        AND NOT ST_HasArc(geom);
 END;
 $BODY$;
 
@@ -57,7 +63,8 @@ ALTER FUNCTION public.validera_geometri(geometry, float)
     OWNER TO postgres;
 
 COMMENT ON FUNCTION public.validera_geometri(geometry, float)
-    IS 'Validerar geometrikvalitet för _kba_-scheman. Kontrollerar OGC-validitet, 
-icke-tomhet, inga duplicerade punkter, och rimlig storlek (area/längd > tolerans).
-Tolerans i meter (default 0.001 = 1mm för SWEREF99 TM). Används som CHECK-constraint 
-på tabeller med manuellt redigerade data för att förhindra geometriproblem i FME-flöden.';
+    IS 'Validerar geometrikvalitet för _kba_-scheman. Kontrollerar OGC-validitet,
+icke-tomhet, inga duplicerade punkter, rimlig storlek (area/längd > tolerans),
+att linjer inte skär sig själva (ST_IsSimple), samt att geometrin inte innehåller
+kurvsegment (ST_HasArc). Tolerans i meter (default 0.001 = 1mm för SWEREF99 TM).
+Används som CHECK-constraint på tabeller med manuellt redigerade data.';
