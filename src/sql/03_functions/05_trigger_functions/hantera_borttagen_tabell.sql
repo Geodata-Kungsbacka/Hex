@@ -114,6 +114,14 @@ BEGIN
             RAISE NOTICE '[hantera_borttagen_tabell] ✓ Afvaktande geometripost borttagen: %.%',
                 schema_namn, tabell_namn;
         END IF;
+
+        -- Rensa eventuell SRID-avvikelsepost
+        EXECUTE 'DELETE FROM public.hex_avvikande_srid WHERE schema_namn = $1 AND tabell_namn = $2'
+            USING schema_namn, tabell_namn;
+        IF FOUND THEN
+            RAISE NOTICE '[hantera_borttagen_tabell] ✓ SRID-avvikelsepost borttagen: %.%',
+                schema_namn, tabell_namn;
+        END IF;
     END LOOP;
 
     PERFORM set_config('temp.historikborttagning_pagar', 'false', true);

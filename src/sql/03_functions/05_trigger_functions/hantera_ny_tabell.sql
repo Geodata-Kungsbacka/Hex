@@ -153,6 +153,24 @@ BEGIN
                 geometriinfo := NULL;  -- Geometrispecifika steg (8+9) hoppas över nedan
             ELSE
                 geometriinfo := validera_tabell(schema_namn, tabell_namn);
+
+                -- Kontrollera SRID: alla geometritabeller ska använda EPSG 3007 (SWEREF99 12 00)
+                IF geometriinfo IS NOT NULL AND geometriinfo.srid IS NOT NULL
+                   AND geometriinfo.srid <> 3007
+                THEN
+                    RAISE WARNING
+                        '[hantera_ny_tabell] Tabell %.% har SRID % – förväntar 3007 (SWEREF99 12 00). '
+                        'Data i fel koordinatsystem måste transformeras innan produktionsbruk. '
+                        'Tabellen registreras i hex_avvikande_srid för granskning.',
+                        schema_namn, tabell_namn, geometriinfo.srid;
+
+                    INSERT INTO public.hex_avvikande_srid (schema_namn, tabell_namn, srid)
+                    VALUES (schema_namn, tabell_namn, geometriinfo.srid)
+                    ON CONFLICT (schema_namn, tabell_namn)
+                        DO UPDATE SET srid           = EXCLUDED.srid,
+                                      registrerad    = now(),
+                                      registrerad_av = current_user;
+                END IF;
             END IF;
 
             -- FME-debug: Visa kolumner FME skickade innan omstrukturering

@@ -457,7 +457,25 @@ BEGIN
                 END;
             END IF;
 
-            -- Steg 5b.2: Skapa GiST-index för geometrikolumnen
+            -- Steg 5b.2: Kontrollera SRID (EPSG 3007 krävs)
+            IF geometriinfo IS NOT NULL AND geometriinfo.srid IS NOT NULL
+               AND geometriinfo.srid <> 3007
+            THEN
+                RAISE WARNING
+                    '[hantera_kolumntillagg] Tabell %.% har SRID % – förväntar 3007 (SWEREF99 12 00). '
+                    'Data i fel koordinatsystem måste transformeras innan produktionsbruk. '
+                    'Tabellen registreras i hex_avvikande_srid för granskning.',
+                    schema_namn, tabell_namn, geometriinfo.srid;
+
+                INSERT INTO public.hex_avvikande_srid (schema_namn, tabell_namn, srid)
+                VALUES (schema_namn, tabell_namn, geometriinfo.srid)
+                ON CONFLICT (schema_namn, tabell_namn)
+                    DO UPDATE SET srid           = EXCLUDED.srid,
+                                  registrerad    = now(),
+                                  registrerad_av = current_user;
+            END IF;
+
+            -- Steg 5b.3: Skapa GiST-index för geometrikolumnen
             IF geometriinfo IS NOT NULL AND geometriinfo.kolumnnamn IS NOT NULL THEN
                 DECLARE
                     index_namn text := left(tabell_namn, 50) || '_geom_gidx';
@@ -471,7 +489,7 @@ BEGIN
                 END;
             END IF;
 
-            -- Steg 5b.3: Lägg till geometrivalidering för _kba_-scheman
+            -- Steg 5b.4: Lägg till geometrivalidering för _kba_-scheman
             IF geometriinfo IS NOT NULL AND geometriinfo.kolumnnamn IS NOT NULL
                AND schema_namn ~ '^sk[0-2]_kba_'
             THEN
@@ -495,7 +513,7 @@ BEGIN
                 END;
             END IF;
 
-            -- Steg 5b.4: Ta bort från afvaktande-registret
+            -- Steg 5b.5: Ta bort från afvaktande-registret
             -- (EXECUTE USING av samma skäl som EXISTS-kontrollen ovan)
             EXECUTE 'DELETE FROM public.hex_afvaktande_geometri WHERE schema_namn = $1 AND tabell_namn = $2'
                 USING schema_namn, tabell_namn;
