@@ -339,6 +339,19 @@ class EmailNotifier:
             f"OBS: Notifieringar som skickades under avbrottet kan ha gatt forlorade.\n",
         )
 
+    def notify_schema_removal_failure(self, schema_name, db_label, error):
+        """Notifierar om misslyckad workspace-borttagning i GeoServer."""
+        self.send(
+            f"[Hex] Workspace-borttagning misslyckades: {schema_name}",
+            f"Schema '{schema_name}' togs bort från databasen men workspace/datastore "
+            f"kunde inte tas bort från GeoServer.\n\n"
+            f"Databas: {db_label}\n"
+            f"Fel: {error}\n\n"
+            f"Atgard: Kontrollera att GeoServer ar tillgangligt och ta sedan bort "
+            f"workspace manuellt i GeoServer, eller skicka NOTIFY manuellt:\n"
+            f"  NOTIFY geoserver_schema_drop, '{schema_name}';\n",
+        )
+
     def notify_unexpected_error(self, db_label, error):
         """Notifierar om ovantat fel."""
         self.send(
@@ -481,6 +494,40 @@ class GeoServerClient:
             )
             return False
 
+    def delete_workspace(self, name):
+        """Tar bort en workspace i GeoServer, inklusive alla datastores och lager.
+
+        Anvander recurse=true for att kaskadradera allt som tillhor workspace.
+        Returnerar True om borttagningen lyckades eller om workspace inte hittades.
+        """
+        if not self.workspace_exists(name):
+            log.info("  Workspace '%s' finns inte i GeoServer - inget att ta bort", name)
+            return True
+
+        if self.dry_run:
+            log.info("  [DRY-RUN] Skulle ta bort workspace (inkl. datastores/lager): %s", name)
+            log.info("  [DRY-RUN] DELETE %s/workspaces/%s?recurse=true", self.rest_url, name)
+            return True
+
+        resp = self._request_with_retry(
+            "DELETE", f"{self.rest_url}/workspaces/{name}?recurse=true"
+        )
+
+        if resp.status_code == 200:
+            log.info("  Workspace '%s' borttagen (inkl. datastores och lager)", name)
+            return True
+        elif resp.status_code == 404:
+            log.info("  Workspace '%s' hittades inte - inget att ta bort", name)
+            return True
+        else:
+            log.error(
+                "  Misslyckades att ta bort workspace '%s': %d %s",
+                name,
+                resp.status_code,
+                resp.text,
+            )
+            return False
+
     def datastore_exists(self, workspace, name):
         """Kontrollerar om en datastore redan finns."""
         resp = self._request_with_retry(
@@ -606,6 +653,33 @@ def handle_schema_notification(schema_name, jndi_mappings, gs_client, db_label="
     return True
 
 
+def handle_schema_removal_notification(schema_name, gs_client, db_label=""):
+    """Hanterar en notifiering om borttaget schema.
+
+    Tar bort workspace (inkl. datastores och publicerade lager) i GeoServer.
+    """
+    tag = f"[{db_label}] " if db_label else ""
+    log.info("%sMottog borttagningsnotifiering for schema: %s", tag, schema_name)
+
+    # Samma validering som vid skapande - skyddar kanalen mot skräpdata.
+    if not SCHEMA_PATTERN.match(schema_name):
+        log.warning(
+            "%sOgiltigt schemanamn '%s' - matchar inte monster '%s'. Ignorerar.",
+            tag,
+            schema_name,
+            SCHEMA_PATTERN.pattern,
+        )
+        return False
+
+    log.info("%s  Tar bort workspace '%s' fran GeoServer...", tag, schema_name)
+    if not gs_client.delete_workspace(schema_name):
+        log.error("%s  Workspace '%s' kunde inte tas bort", tag, schema_name)
+        return False
+
+    log.info("%s  Schema '%s' avpublicerat fran GeoServer", tag, schema_name)
+    return True
+
+
 # =============================================================================
 # POSTGRESQL LISTENER
 # =============================================================================
@@ -642,8 +716,9 @@ def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None, notifier
 
             cur = conn.cursor()
             cur.execute("LISTEN geoserver_schema;")
-            log.info("[%s] Lyssnar pa kanal 'geoserver_schema'...", db_label)
-            log.info("[%s] Vantar pa nya scheman...", db_label)
+            cur.execute("LISTEN geoserver_schema_drop;")
+            log.info("[%s] Lyssnar pa kanaler 'geoserver_schema' och 'geoserver_schema_drop'...", db_label)
+            log.info("[%s] Vantar pa schema-handelser...", db_label)
 
             # Skicka aterhamtningsnotifiering om vi tappat anslutning tidigare
             if was_disconnected and notifier:
@@ -668,28 +743,51 @@ def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None, notifier
                         continue
 
                     try:
-                        handle_schema_notification(
-                            schema_name,
-                            db_config["jndi_mappings"],
-                            gs_client,
-                            db_label=db_label,
-                        )
+                        if notify.channel == "geoserver_schema_drop":
+                            handle_schema_removal_notification(
+                                schema_name,
+                                gs_client,
+                                db_label=db_label,
+                            )
+                        else:
+                            handle_schema_notification(
+                                schema_name,
+                                db_config["jndi_mappings"],
+                                gs_client,
+                                db_label=db_label,
+                            )
                     except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
                         # Transienta fel - alla retry i _request_with_retry
                         # ar forbrukade. Logga tydligt sa det syns i loggen.
-                        log.error(
-                            "[%s] Schema '%s' misslyckades efter alla retry-forsok: %s. "
-                            "Schemat ignoreras denna gang - skicka NOTIFY manuellt "
-                            "eller aterskap schemat for att forsoka igen.",
-                            db_label, schema_name, e,
-                        )
-                        if notifier:
-                            notifier.notify_schema_failure(schema_name, db_label, e)
+                        if notify.channel == "geoserver_schema_drop":
+                            log.error(
+                                "[%s] Borttagning av schema '%s' misslyckades efter alla retry-forsok: %s. "
+                                "Skicka NOTIFY manuellt for att forsoka igen: "
+                                "NOTIFY geoserver_schema_drop, '%s';",
+                                db_label, schema_name, e, schema_name,
+                            )
+                            if notifier:
+                                notifier.notify_schema_removal_failure(schema_name, db_label, e)
+                        else:
+                            log.error(
+                                "[%s] Schema '%s' misslyckades efter alla retry-forsok: %s. "
+                                "Schemat ignoreras denna gang - skicka NOTIFY manuellt "
+                                "eller aterskap schemat for att forsoka igen.",
+                                db_label, schema_name, e,
+                            )
+                            if notifier:
+                                notifier.notify_schema_failure(schema_name, db_label, e)
                     except Exception as e:
-                        log.error("[%s] Fel vid hantering av schema '%s': %s",
-                                  db_label, schema_name, e)
-                        if notifier:
-                            notifier.notify_schema_failure(schema_name, db_label, e)
+                        if notify.channel == "geoserver_schema_drop":
+                            log.error("[%s] Fel vid borttagning av schema '%s': %s",
+                                      db_label, schema_name, e)
+                            if notifier:
+                                notifier.notify_schema_removal_failure(schema_name, db_label, e)
+                        else:
+                            log.error("[%s] Fel vid hantering av schema '%s': %s",
+                                      db_label, schema_name, e)
+                            if notifier:
+                                notifier.notify_schema_failure(schema_name, db_label, e)
 
         except psycopg2.OperationalError as e:
             log.error("[%s] PostgreSQL-anslutning forlorad: %s", db_label, e)
