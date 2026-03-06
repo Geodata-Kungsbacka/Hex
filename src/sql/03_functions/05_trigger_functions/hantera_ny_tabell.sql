@@ -288,7 +288,19 @@ BEGIN
                     -- Cap at 60 chars to prevent collision with history table name
                     -- (history table = left(tabell_namn,61)+'_h' = 63 chars after PG truncation)
                     index_namn text := left(tabell_namn, 50) || '_geom_gidx';
+                    r          record;
                 BEGIN
+                    -- Ta bort GiST-index med annat namn (t.ex. FME-skapade) för att undvika dubbletter
+                    FOR r IN
+                        SELECT indexname FROM pg_indexes
+                        WHERE schemaname = schema_namn
+                          AND tablename  = tabell_namn
+                          AND indexdef   LIKE '%USING gist%'
+                          AND indexname  <> index_namn
+                    LOOP
+                        EXECUTE format('DROP INDEX %I.%I', schema_namn, r.indexname);
+                        RAISE NOTICE '  ✓ Dubblerat GiST-index borttaget: %', r.indexname;
+                    END LOOP;
                     EXECUTE format(
                         'CREATE INDEX IF NOT EXISTS %I ON %I.%I USING GIST (%I)',
                         index_namn,
