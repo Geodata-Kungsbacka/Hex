@@ -209,6 +209,18 @@ src/sql/04_triggers/notifiera_geoserver_trigger.sql
 
 **Praktisk nytta**: Säkerställer att inga kolumnegenskaper förloras när tabeller omstruktureras automatiskt.
 
+#### `hex_metadata`
+**Syfte**: Kopplar varje Hex-hanterad föräldertabell till dess historiktabell och QA-triggerfunktion via OID.
+
+**Varför OID?** OID:er är stabila vid `ALTER TABLE RENAME TO`, till skillnad från namnkonventionsuppslag (`tabell_h`) som slutar fungera direkt vid omdöpning. `hex_metadata` är därför den auktoritativa källan för rensning och namnpropagering.
+
+**Livscykel**:
+- *Registreras* av `skapa_historik_qa()` när en historiktabell skapas
+- *Uppdateras* av `hantera_kolumntillagg()` vid `ALTER TABLE RENAME TO` (historiktabell och parent_table uppdateras)
+- *Raderas* av `hantera_borttagen_tabell()` vid `DROP TABLE`
+
+**Praktisk nytta**: En kvarliggande rad vars föräldertabell inte längre finns indikerar ett ofullständigt DROP — granska och rensa manuellt vid behov.
+
 #### `hex_systemanvandare`
 **Syfte**: Register över kända systemanvändare och verktyg som skapar tabeller i två steg (t.ex. FME).
 
