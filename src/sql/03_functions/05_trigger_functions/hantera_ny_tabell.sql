@@ -19,6 +19,7 @@ AS $BODY$
  * 8. Skapar GiST-index för geometrikolumn (alla scheman)
  * 9. Lägger till geometrivalidering för _kba_-scheman
  * 10. Skapar historiktabell och QA-triggers om behövs
+ * 11. Lägger till dummy-geometrirad för QGIS-kompatibilitet (tabeller med geom)
  ******************************************************************************/
 DECLARE
     -- Grundläggande variabler för tabellhantering
@@ -336,11 +337,22 @@ BEGIN
             
             -- Steg 10: Skapa historik och QA om behövs
             op_steg := 'skapa historik/qa';
-            RAISE NOTICE 'Steg 10/10: Kontrollerar historik/QA-behov';
+            RAISE NOTICE 'Steg 10/11: Kontrollerar historik/QA-behov';
             IF skapa_historik_qa(schema_namn, tabell_namn) THEN
                 RAISE NOTICE '  ✓ Historiktabell och QA-triggers skapade';
             ELSE
                 RAISE NOTICE '  - Ingen historik/QA behövs';
+            END IF;
+
+            -- Steg 11: Lägg till dummy-geometrirad för QGIS-kompatibilitet
+            -- En dummy låter QGIS identifiera geometritypen utan manuell dialog.
+            -- Dummyn tas automatiskt bort när den första riktiga raden läggs in.
+            op_steg := 'dummy-geometri för QGIS';
+            RAISE NOTICE 'Steg 11/11: Lägger till dummy-geometrirad för QGIS';
+            IF geometriinfo IS NOT NULL AND geometriinfo.kolumnnamn IS NOT NULL THEN
+                PERFORM lagg_till_dummy_geometri(schema_namn, tabell_namn, geometriinfo);
+            ELSE
+                RAISE NOTICE '  - Ingen geometri, dummy ej relevant';
             END IF;
 
             RAISE NOTICE '✓ Tabell %.% omstrukturerad', schema_namn, tabell_namn;
@@ -375,4 +387,7 @@ omstrukturera tabeller enligt standardiserade kolumner. Kända systemanvändare
 utan geometrikolumn och registreras i hex_afvaktande_geometri; GiST-index och
 geometrivalidering slutförs av hantera_kolumntillagg när geom-kolumnen läggs
 till via ALTER TABLE. PRIMARY KEY-constraints från den ursprungliga tabellen
-återställs inte – Hex tillhandahåller alltid sin egen PK via gid-kolumnen.';
+återställs inte – Hex tillhandahåller alltid sin egen PK via gid-kolumnen.
+Geometritabeller får en dummy-geometrirad via lagg_till_dummy_geometri() för
+att QGIS ska kunna identifiera geometritypen utan manuell dialog. Dummyn tas
+automatiskt bort av triggern hex_ta_bort_dummy när riktig data läggs in.';

@@ -122,6 +122,15 @@ BEGIN
             RAISE NOTICE '[hantera_borttagen_tabell] ✓ SRID-avvikelsepost borttagen: %.%',
                 schema_namn, tabell_namn;
         END IF;
+
+        -- Rensa eventuella dummy-geometriposter (triggern hex_ta_bort_dummy
+        -- droppas automatiskt av PostgreSQL när tabellen tas bort)
+        EXECUTE 'DELETE FROM public.hex_dummy_geometrier WHERE schema_namn = $1 AND tabell_namn = $2'
+            USING schema_namn, tabell_namn;
+        IF FOUND THEN
+            RAISE NOTICE '[hantera_borttagen_tabell] ✓ Dummy-geometripost borttagen: %.%',
+                schema_namn, tabell_namn;
+        END IF;
     END LOOP;
 
     PERFORM set_config('temp.historikborttagning_pagar', 'false', true);

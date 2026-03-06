@@ -519,6 +519,13 @@ BEGIN
                 USING schema_namn, tabell_namn;
             RAISE NOTICE '[hantera_kolumntillagg]   ✓ Tabell %.% borttagen ur hex_afvaktande_geometri',
                 schema_namn, tabell_namn;
+
+            -- Steg 5b.6: Lägg till dummy-geometrirad för QGIS-kompatibilitet
+            IF geometriinfo IS NOT NULL AND geometriinfo.kolumnnamn IS NOT NULL THEN
+                op_steg := 'dummy-geometri för QGIS (afvaktande tabell)';
+                PERFORM lagg_till_dummy_geometri(schema_namn, tabell_namn, geometriinfo);
+                RAISE NOTICE '[hantera_kolumntillagg]   ✓ Dummy-geometrirad tillagd';
+            END IF;
         ELSE
             RAISE NOTICE '[hantera_kolumntillagg] Tabell ej afvaktande, inget extra steg behövs';
         END IF;
