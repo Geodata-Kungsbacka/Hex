@@ -42,7 +42,9 @@ flowchart LR
     CV --> HNV["hantera_ny_vy"]
     DT --> HBT["hantera_borttagen_tabell"]
     DS --> TBS["ta_bort_schemaroller"]
-    NG -.->|pg_notify| GS["GeoServer-lyssnaren<br/>(Python)"]
+    DS --> NGB["notifiera_geoserver_borttagning"]
+    NG  -.->|pg_notify geoserver_schema| GS["GeoServer-lyssnaren<br/>(Python)"]
+    NGB -.->|pg_notify geoserver_schema_drop| GS
 ```
 
 ---
@@ -695,22 +697,37 @@ hantera_borttagen_tabell()
 ```mermaid
 flowchart TD
     START(["DROP SCHEMA sk0_kba_bygg CASCADE"])
-    START --> SYS{"Systemschema?"}
+    START --> TBS_T["ta_bort_schemaroller_trigger<br/>SQL_DROP"]
+    START --> NGB_T["notifiera_geoserver_borttagning_trigger<br/>SQL_DROP"]
+
+    TBS_T --> SYS{"Systemschema?"}
     SYS --> |ja| SKIP(["hoppar över"])
     SYS --> |nej| LOOP["För varje rad i standardiserade_roller<br/>där ta_bort_med_schema = true"]
     LOOP --> GLOBAL{"global_roll = true?"}
     GLOBAL --> |ja| KEEP(["Roll bevaras<br/>t.ex. r_sk0_global"])
     GLOBAL --> |nej| LOGIN["För varje loginroll i login_roller:<br/>REASSIGN OWNED TO postgres<br/>DROP OWNED<br/>DROP ROLE loginroll"]
     LOGIN --> GROUP["REASSIGN OWNED TO postgres<br/>DROP OWNED<br/>DROP ROLE grupproll"]
-    GROUP --> DONE(["Roller borttagna ✓<br/>PostgreSQL hanterar schema<br/>och objekt via CASCADE"])
+    GROUP --> DONE_ROLES(["Roller borttagna ✓"])
+
+    NGB_T --> SYS2{"Systemschema?"}
+    SYS2 --> |ja| SKIP2(["hoppar över"])
+    SYS2 --> |nej| GS_CHK["Kontrollera prefix mot<br/>standardiserade_skyddsnivaer<br/>publiceras_geoserver = true"]
+    GS_CHK --> |"sk2 / ej GeoServer-publicerat"| SKIP3(["hoppar över"])
+    GS_CHK --> |"sk0 / sk1"| NOTIFY["pg_notify<br/>geoserver_schema_drop<br/>sk0_kba_bygg"]
+    NOTIFY -.->|"Python-lyssnaren tar emot"| GS(["GeoServer REST API<br/>DELETE /workspaces/sk0_kba_bygg?recurse=true"])
+    GS --> DONE_GS(["Workspace borttagen ✓"])
 ```
 
 ```sql
 DROP SCHEMA sk0_kba_bygg CASCADE;
 ```
 
-`ta_bort_schemaroller_trigger` → `ta_bort_schemaroller()`
-Körs vid `SQL_DROP`.
+Två eventutlösare körs parallellt vid `SQL_DROP`:
+
+---
+
+### Trigger A — `ta_bort_schemaroller_trigger` → `ta_bort_schemaroller()`
+
 **Kör som:** SECURITY DEFINER (postgres) — krävs för att ta bort roller.
 
 ```
@@ -736,56 +753,80 @@ ta_bort_schemaroller()
               r_sk0_global och r_sk1_global överlever DROP SCHEMA
 ```
 
-> PostgreSQL hanterar borttagningen av själva schemat och dess objekt
+---
+
+### Trigger B — `notifiera_geoserver_borttagning_trigger` → `notifiera_geoserver_borttagning()`
+
+**Syfte:** Signalera till den externa GeoServer-lyssnaren att rensa bort workspace och datastores.
+
+```
+notifiera_geoserver_borttagning()
+  ├── Hoppar över systemscheman
+  ├── Identifierar borttagna scheman via pg_event_trigger_dropped_objects()
+  │     (schemat är borttaget — namnprefixet jämförs mot standardiserade_skyddsnivaer)
+  ├── Om prefix = sk0 eller sk1 (publiceras_geoserver = true):
+  │     pg_notify('geoserver_schema_drop', 'sk0_kba_bygg')
+  │       → Python-lyssnaren tar emot och kör:
+  │         DELETE /rest/workspaces/sk0_kba_bygg?recurse=true
+  │         (tar bort workspace + alla datastores + publicerade lager)
+  └── Icke-kritisk: om notifieringen misslyckas rullas inte DROP SCHEMA tillbaka
+        → se avsnitt 9 för vad som händer i Python-lyssnaren
+```
+
+> PostgreSQL hanterar borttagningen av schemat och dess objekt
 > (tabeller, vyer etc.) via CASCADE — det är standardbeteende.
-> Hex tar hand om det som PostgreSQL inte rensar: roller och eventuella
-> historiktabeller i andra scheman.
+> Hex tar hand om det PostgreSQL inte rensar: roller (Trigger A) och
+> GeoServer workspace (Trigger B).
 
 ---
 
 ## 9. Externt system: GeoServer-lyssnaren (Python)
 
 Lyssnaren är ett fristående program (eller Windows-tjänst) som kopplar upp
-mot PostgreSQL och väntar på `pg_notify`-meddelanden.
+mot PostgreSQL och väntar på `pg_notify`-meddelanden på **två kanaler**.
 
 ```mermaid
 flowchart TD
-    PG(["PostgreSQL<br/>notifiera_geoserver()"])
-    PG --> |"pg_notify<br/>geoserver_schema<br/>sk0_kba_bygg"| LL
+    PG_C(["PostgreSQL<br/>notifiera_geoserver()"])
+    PG_D(["PostgreSQL<br/>notifiera_geoserver_borttagning()"])
+    PG_C --> |"pg_notify<br/>geoserver_schema<br/>sk0_kba_bygg"| LL
+    PG_D --> |"pg_notify<br/>geoserver_schema_drop<br/>sk0_kba_bygg"| LL
 
     subgraph PY["Python-lyssnaren (geoserver_listener.py)"]
         direction TB
         LL["listen_loop<br/>autocommit · LISTEN · 5 s select-timeout"]
-        LL --> |notifiering| HSN["handle_schema_notification<br/>validerar ^sk01_ext/kba/sys_<br/>extraherar prefix sk0<br/>slår upp JNDI-mapping"]
+        LL --> |"kanal: geoserver_schema"| HSN["handle_schema_notification<br/>validerar ^sk01_ext/kba/sys_<br/>extraherar prefix sk0<br/>slår upp JNDI-mapping"]
+        LL --> |"kanal: geoserver_schema_drop"| HRN["handle_schema_removal_notification<br/>validerar ^sk01_ext/kba/sys_<br/>tar bort workspace"]
         LL --> |"anslutning tappas"| REC["Väntar reconnect_delay<br/>återansluter"]
         REC --> EMAIL1["EmailNotifier<br/>skickar varning<br/>300 s cooldown"]
         EMAIL1 --> LL
         REC --> LL
     end
 
-    HSN --> GS1
+    HSN --> GS_CREATE
+    HRN --> GS_DELETE
 
     subgraph REST["GeoServerClient (HTTP Basic Auth)"]
         direction TB
-        GS1["GET /rest/workspaces/sk0_kba_bygg<br/>200 = finns · 404 = skapa"]
-        GS1 --> GS2["POST /rest/workspaces<br/>skapa workspace sk0_kba_bygg"]
-        GS2 --> GS3["GET .../datastores/sk0_kba_bygg<br/>200 = finns · 404 = skapa"]
-        GS3 --> GS4["POST .../datastores<br/>JNDI PostGIS<br/>schema=sk0_kba_bygg · fetch 1000 · loose bbox"]
-        GS4 --> OK(["201 Created ✓"])
+        GS_CREATE["POST /rest/workspaces<br/>POST /rest/.../datastores<br/>→ 201 Created ✓"]
+        GS_DELETE["DELETE /rest/workspaces/{namn}?recurse=true<br/>200 = borttagen · 404 = fanns inte (ok)<br/>→ workspace + datastores + lager raderade ✓"]
     end
 
-    GS4 --> |"nätverksfel"| RETRY["Retry 3 ggr<br/>2 s · 5 s · 10 s"]
-    RETRY --> GS1
-    GS4 --> |"4xx / 5xx"| FAIL["Misslyckas direkt<br/>EmailNotifier"]
+    GS_CREATE --> |"nätverksfel"| RETRY["Retry 3 ggr<br/>2 s · 5 s · 10 s"]
+    GS_DELETE --> |"nätverksfel"| RETRY
+    GS_CREATE --> |"4xx / 5xx"| FAIL["Misslyckas direkt<br/>EmailNotifier"]
+    GS_DELETE --> |"4xx / 5xx"| FAIL
 ```
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │  PostgreSQL                                                         │
-│    notifiera_geoserver() ──→ pg_notify('geoserver_schema',         │
-│                                         'sk0_kba_bygg')            │
+│    notifiera_geoserver()            → pg_notify('geoserver_schema', │
+│                                                  'sk0_kba_bygg')   │
+│    notifiera_geoserver_borttagning()→ pg_notify('geoserver_schema_  │
+│                                         drop', 'sk0_kba_bygg')     │
 └──────────────────────────────────┬──────────────────────────────────┘
-                                   │  LISTEN / NOTIFY
+                       LISTEN / NOTIFY (två kanaler)
 ┌──────────────────────────────────▼──────────────────────────────────┐
 │  Python-lyssnaren (geoserver_listener.py)                           │
 │                                                                     │
@@ -801,9 +842,12 @@ flowchart TD
 │                                                                     │
 │  Per databas: listen_loop()                                         │
 │    ├── Ansluter med autocommit                                      │
-│    ├── LISTEN geoserver_schema                                      │
+│    ├── LISTEN geoserver_schema       (CREATE SCHEMA-händelser)     │
+│    ├── LISTEN geoserver_schema_drop  (DROP SCHEMA-händelser)       │
 │    ├── select() med 5 s timeout (håller anslutningen levande)      │
-│    ├── Tar emot notifiering → handle_schema_notification()         │
+│    ├── Tar emot notifiering, routar på notify.channel:             │
+│    │     geoserver_schema      → handle_schema_notification()      │
+│    │     geoserver_schema_drop → handle_schema_removal_notification │
 │    ├── Tappad anslutning → väntar HEX_RECONNECT_DELAY (std 5 s)   │
 │    │    → e-post om EmailNotifier är konfigurerad                  │
 │    └── Återkopplad → e-post om EmailNotifier är konfigurerad      │
@@ -813,7 +857,11 @@ flowchart TD
 │    ├── Extraherar prefix: sk0                                       │
 │    ├── Slår upp JNDI: jndi_map['sk0']                              │
 │    │     = 'java:comp/env/jdbc/server.database'                    │
-│    └── → GeoServerClient                                           │
+│    └── → GeoServerClient.create_workspace() + create_jndi_datastore│
+│                                                                     │
+│  handle_schema_removal_notification('sk0_kba_bygg', gs_client)     │
+│    ├── Validerar mönster: ^sk[01]_(ext|kba|sys)_.+$                │
+│    └── → GeoServerClient.delete_workspace()                        │
 │                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
                                    │
@@ -822,6 +870,8 @@ flowchart TD
 │                                                                     │
 │  Retry-logik: timeout/nätverksfel → 3 försök (2s, 5s, 10s)        │
 │               4xx/5xx-svar         → misslyckas direkt             │
+│                                                                     │
+│  SKAPANDE (handle_schema_notification):                             │
 │                                                                     │
 │  1. GET  /rest/workspaces/sk0_kba_bygg.json                        │
 │       200 = workspace finns redan → hoppa över                     │
@@ -846,11 +896,19 @@ flowchart TD
 │         Estimated extends:  true                                    │
 │         encode functions:   true                                    │
 │       → 201 Created                                                 │
+│                                                                     │
+│  BORTTAGNING (handle_schema_removal_notification):                  │
+│                                                                     │
+│  1. DELETE /rest/workspaces/sk0_kba_bygg?recurse=true              │
+│       200 = borttagen (inkl. datastores och publicerade lager)     │
+│       404 = workspace fanns inte → behandlas som framgång (ok)     │
+│       övrigt → misslyckas, EmailNotifier skickar varning           │
+│                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
 
   EmailNotifier (valfri, konfigureras via HEX_SMTP_*)
     ├── STARTTLS mot Office 365 (port 587 som standard)
-    ├── Skickas vid: anslutningsförlust, GeoServer-fel
+    ├── Skickas vid: anslutningsförlust, GeoServer-fel (skapande och borttagning)
     ├── Skickas vid: återkoppling (återhämtning)
     └── Spam-skydd: 300 s cooldown per unikt meddelande
 ```
@@ -893,6 +951,7 @@ det utlöser i sin tur nya eventutlösare. Tre flaggor förhindrar oändliga ked
 | `validera_schemanamn()` | `validera_schemanamn_trigger` | CREATE SCHEMA, DDL_COMMAND_END |
 | `hantera_standardiserade_roller()` | `hantera_standardiserade_roller_trigger` | CREATE SCHEMA, DDL_COMMAND_END |
 | `notifiera_geoserver()` | `notifiera_geoserver_trigger` | CREATE SCHEMA, DDL_COMMAND_END |
+| `notifiera_geoserver_borttagning()` | `notifiera_geoserver_borttagning_trigger` | DROP SCHEMA, SQL_DROP |
 | `hantera_ny_tabell()` | `hantera_ny_tabell_trigger` | CREATE TABLE, DDL_COMMAND_END |
 | `hantera_kolumntillagg()` | `hantera_kolumntillagg_trigger` | ALTER TABLE, DDL_COMMAND_END |
 | `hantera_ny_vy()` | `hantera_ny_vy_trigger` | CREATE VIEW, DDL_COMMAND_END |

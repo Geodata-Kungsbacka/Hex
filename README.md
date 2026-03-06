@@ -48,17 +48,22 @@ För varje nytt schema skapas automatiskt:
 - `r_schemanamn` - roll med läsrättigheter
 - `w_schemanamn` - roll med läs- och skrivrättigheter
 
-### 4. **Automatisk GeoServer-publicering**
-När sk0- eller sk1-scheman skapas skickas en `pg_notify` som fångas av en Python-lyssnare.
-Lyssnaren skapar automatiskt:
-- En workspace i GeoServer med samma namn som schemat
-- En JNDI PostGIS-datastore i den workspace med samma namn som schemat
+### 4. **Automatisk GeoServer-publicering och rensning**
+Lyssnaren hanterar två livscykelhändelser automatiskt via `pg_notify`:
+
+**Vid CREATE SCHEMA** (kanal `geoserver_schema`) — för sk0- och sk1-scheman:
+- Skapar en workspace i GeoServer med samma namn som schemat
+- Skapar en JNDI PostGIS-datastore i den workspace med samma namn som schemat
+
+**Vid DROP SCHEMA** (kanal `geoserver_schema_drop`) — för sk0- och sk1-scheman:
+- Tar bort workspace från GeoServer med `recurse=true`, vilket raderar datastores och publicerade lager automatiskt
+- Förhindrar att GeoServer gör upprepade anrop mot ett schema som inte längre existerar
 
 Schemaprefix mappas till JNDI-anslutningar via konfigurerbara miljövariabler (t.ex. `sk0` → `java:comp/env/jdbc/[server].[sk0-databas]`). sk2-scheman exkluderas — de kräver manuell konfiguration.
 
 **Felhantering:**
 - Automatisk retry med backoff vid timeout eller anslutningsfel mot GeoServer (upp till 4 försök)
-- Valfria e-postnotifieringar vid misslyckad publicering, PostgreSQL-anslutningsavbrott och återhämtning
+- Valfria e-postnotifieringar vid misslyckad publicering, misslyckad workspace-borttagning, PostgreSQL-anslutningsavbrott och återhämtning
 - Konfigureras via `HEX_SMTP_*`-miljövariabler (Office 365/Exchange som standard)
 
 Lyssnaren körs som en Windows-tjänst (`HexGeoServerListener`) via `services.msc`.
@@ -179,6 +184,7 @@ src/sql/03_functions/05_trigger_functions/ta_bort_schemaroller.sql
 src/sql/03_functions/05_trigger_functions/hantera_standardiserade_roller.sql
 src/sql/03_functions/05_trigger_functions/hantera_borttagen_tabell.sql
 src/sql/03_functions/05_trigger_functions/notifiera_geoserver.sql
+src/sql/03_functions/05_trigger_functions/notifiera_geoserver_borttagning.sql
 
 -- 4. Skapa databastriggers
 src/sql/04_triggers/hantera_ny_tabell_trigger.sql
@@ -189,6 +195,7 @@ src/sql/04_triggers/hantera_standardiserade_roller_trigger.sql
 src/sql/04_triggers/hantera_borttagen_tabell_trigger.sql
 src/sql/04_triggers/validera_schemanamn_trigger.sql
 src/sql/04_triggers/notifiera_geoserver_trigger.sql
+src/sql/04_triggers/notifiera_geoserver_borttagning_trigger.sql
 ```
 
 ## Detaljerad funktionsbeskrivning
@@ -504,6 +511,19 @@ src/sql/04_triggers/notifiera_geoserver_trigger.sql
 
 **Mottagare**: Python-lyssnaren (`geoserver_listener.py`) som skapar workspace och JNDI-datastore i GeoServer.
 
+#### `notifiera_geoserver_borttagning()`
+**Syfte**: Skickar `pg_notify` till GeoServer-lyssnaren när scheman med `publiceras_geoserver = true` tas bort, så att motsvarande workspace rensas ut från GeoServer.
+
+**Funktionalitet**:
+- Identifierar borttagna scheman via `pg_event_trigger_dropped_objects()`
+- Filtrerar mot `standardiserade_skyddsnivaer` via namnprefixet (schemat är redan borttaget och kan inte frågas direkt)
+- Skickar schemanamnet som payload på kanalen `geoserver_schema_drop`
+- Fel i notifieringen blockerar **inte** borttagningen av schemat
+
+**Trigger**: Körs vid DROP SCHEMA via `notifiera_geoserver_borttagning_trigger`.
+
+**Mottagare**: Python-lyssnaren (`geoserver_listener.py`) som tar bort workspace och tillhörande datastores och lager i GeoServer via `DELETE /rest/workspaces/{namn}?recurse=true`.
+
 ## Exempel på användning
 
 ### Skapa schema med korrekt namngivning
@@ -748,6 +768,7 @@ Om du föredrar att köra SQL direkt, kör följande block som superanvändare (
 
 ```sql
 -- 1. Ta bort event triggers (måste tas bort innan funktioner)
+DROP EVENT TRIGGER IF EXISTS notifiera_geoserver_borttagning_trigger;
 DROP EVENT TRIGGER IF EXISTS notifiera_geoserver_trigger;
 DROP EVENT TRIGGER IF EXISTS validera_schemanamn_trigger;
 DROP EVENT TRIGGER IF EXISTS hantera_standardiserade_roller_trigger;
@@ -758,6 +779,7 @@ DROP EVENT TRIGGER IF EXISTS hantera_ny_tabell_trigger;
 DROP EVENT TRIGGER IF EXISTS hantera_borttagen_tabell_trigger;
 
 -- 2. Ta bort triggerfunktioner
+DROP FUNCTION IF EXISTS public.notifiera_geoserver_borttagning();
 DROP FUNCTION IF EXISTS public.notifiera_geoserver();
 DROP FUNCTION IF EXISTS public.hantera_standardiserade_roller();
 DROP FUNCTION IF EXISTS public.ta_bort_schemaroller();

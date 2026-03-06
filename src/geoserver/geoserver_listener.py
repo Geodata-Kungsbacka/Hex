@@ -1,20 +1,35 @@
 #!/usr/bin/env python3
 """
-GeoServer Schema Listener - Lyssnar pa pg_notify och skapar workspace/store i GeoServer.
+GeoServer Schema Listener - Lyssnar pa pg_notify och hanterar workspace/store i GeoServer.
 
-Denna process lyssnar pa PostgreSQL-kanalen 'geoserver_schema' och nar ett nytt
-sk0- eller sk1-schema skapas, skapar den automatiskt:
-  1. En workspace i GeoServer med samma namn som schemat
-  2. En JNDI-datastore i den workspace med samma namn som schemat
+Processen lyssnar pa tva PostgreSQL-kanaler och hanterar schema-handelser automatiskt:
+
+  Kanal 'geoserver_schema'  (utloses av CREATE SCHEMA via SQL-triggern
+                             notifiera_geoserver_trigger):
+    1. Skapar en workspace i GeoServer med samma namn som schemat.
+    2. Skapar en JNDI-datastore i workspace med samma namn som schemat.
+
+  Kanal 'geoserver_schema_drop'  (utloses av DROP SCHEMA via SQL-triggern
+                                  notifiera_geoserver_borttagning_trigger):
+    1. Tar bort workspace fran GeoServer med recurse=true, vilket raderar
+       alla datastores och publicerade lager i workspace.
+       Det forhindrar att GeoServer gor upprepade anrop mot ett schema
+       som inte langre existerar.
+
+Bada kanalerna hanterar enbart scheman vars skyddsniva har publiceras_geoserver = true
+i tabellen standardiserade_skyddsnivaer (standardkonfiguration: sk0 och sk1).
 
 Stodjer flera databaser - en lyssnartrad per databas.
-
 Konfiguration laddas fran miljovariabler eller .env-fil.
 
 Anvandning:
     python geoserver_listener.py              # Starta lyssnaren
     python geoserver_listener.py --test       # Testa GeoServer-anslutning
     python geoserver_listener.py --dry-run    # Visa vad som skulle goras utan att gora det
+
+Manuell ateruppsandning (om lyssnaren var nere nar ett schema skapades/togs bort):
+    NOTIFY geoserver_schema,      'sk0_kba_mittschema';   -- lagg till workspace
+    NOTIFY geoserver_schema_drop, 'sk0_kba_mittschema';   -- ta bort workspace
 
 Krav:
     pip install psycopg2 requests python-dotenv
@@ -317,7 +332,7 @@ class EmailNotifier:
             f"Fel: {error}\n\n"
             f"Atgard: Kontrollera att GeoServer ar tillgangligt och skicka sedan "
             f"NOTIFY manuellt:\n"
-            f"  NOTIFY geoserver_schema, '{schema_name}';\n",
+            f"  NOTIFY {CHANNEL_SCHEMA_CREATE}, '{schema_name}';\n",
         )
 
     def notify_pg_connection_lost(self, db_label, error):
@@ -349,7 +364,7 @@ class EmailNotifier:
             f"Fel: {error}\n\n"
             f"Atgard: Kontrollera att GeoServer ar tillgangligt och ta sedan bort "
             f"workspace manuellt i GeoServer, eller skicka NOTIFY manuellt:\n"
-            f"  NOTIFY geoserver_schema_drop, '{schema_name}';\n",
+            f"  NOTIFY {CHANNEL_SCHEMA_DROP}, '{schema_name}';\n",
         )
 
     def notify_unexpected_error(self, db_label, error):
@@ -497,13 +512,13 @@ class GeoServerClient:
     def delete_workspace(self, name):
         """Tar bort en workspace i GeoServer, inklusive alla datastores och lager.
 
-        Anvander recurse=true for att kaskadradera allt som tillhor workspace.
-        Returnerar True om borttagningen lyckades eller om workspace inte hittades.
-        """
-        if not self.workspace_exists(name):
-            log.info("  Workspace '%s' finns inte i GeoServer - inget att ta bort", name)
-            return True
+        Anvander recurse=true for att kaskadradera allt som tillhor workspace:
+        datastores, publicerade lager och stilar som ar knutna enbart till
+        den har workspace tas bort automatiskt av GeoServer.
 
+        Returnerar True om borttagningen lyckades eller om workspace inte hittades
+        (404 behandlas som framgang - operationen ar idempotent).
+        """
         if self.dry_run:
             log.info("  [DRY-RUN] Skulle ta bort workspace (inkl. datastores/lager): %s", name)
             log.info("  [DRY-RUN] DELETE %s/workspaces/%s?recurse=true", self.rest_url, name)
@@ -601,18 +616,30 @@ class GeoServerClient:
 # men begransat till sk0/sk1 (sk2 publiceras inte till GeoServer).
 SCHEMA_PATTERN = re.compile(r"^sk[01]_(ext|kba|sys)_.+$")
 
+# pg_notify-kanalnamn. Maste overensstamma med SQL-funktionerna
+# notifiera_geoserver() och notifiera_geoserver_borttagning().
+CHANNEL_SCHEMA_CREATE = "geoserver_schema"
+CHANNEL_SCHEMA_DROP   = "geoserver_schema_drop"
 
-def handle_schema_notification(schema_name, jndi_mappings, gs_client, db_label=""):
-    """Hanterar en notifiering om nytt schema.
 
-    Skapar workspace och JNDI-datastore i GeoServer.
+def _db_tag(db_label):
+    """Returnerar ett formatterat logg-prefix for en databas, t.ex. '[geodata_sk0] '."""
+    return f"[{db_label}] " if db_label else ""
+
+
+def _validate_schema_name(schema_name, tag):
+    """Validerar att schemanamnet matchar det forväntade monstret.
+
+    SQL-triggern filtrerar redan, men pg_notify-kanalerna ar oppna for
+    alla med NOTIFY-rattighet. Den har valideringen ar ett andra skyddslager.
+
+    Args:
+        schema_name: Schemanamnet fran notifieringens payload.
+        tag:         Logg-prefix (fran _db_tag).
+
+    Returns:
+        True om schemanamnet ar giltigt, annars False (efter loggning).
     """
-    tag = f"[{db_label}] " if db_label else ""
-    log.info("%sMottog notifiering for schema: %s", tag, schema_name)
-
-    # Validera schemanamnet innan vi gor nagot mot GeoServer.
-    # SQL-triggern filtrerar redan, men pg_notify-kanalen ar oppen
-    # sa vem som helst med NOTIFY-rattighet kan skicka godtycklig payload.
     if not SCHEMA_PATTERN.match(schema_name):
         log.warning(
             "%sOgiltigt schemanamn '%s' - matchar inte monster '%s'. Ignorerar.",
@@ -620,6 +647,19 @@ def handle_schema_notification(schema_name, jndi_mappings, gs_client, db_label="
             schema_name,
             SCHEMA_PATTERN.pattern,
         )
+        return False
+    return True
+
+
+def handle_schema_notification(schema_name, jndi_mappings, gs_client, db_label=""):
+    """Hanterar en notifiering om nytt schema (kanal: CHANNEL_SCHEMA_CREATE).
+
+    Skapar workspace och JNDI-datastore i GeoServer.
+    """
+    tag = _db_tag(db_label)
+    log.info("%sMottog notifiering for schema: %s", tag, schema_name)
+
+    if not _validate_schema_name(schema_name, tag):
         return False
 
     # Extrahera prefix (sk0 eller sk1)
@@ -654,21 +694,16 @@ def handle_schema_notification(schema_name, jndi_mappings, gs_client, db_label="
 
 
 def handle_schema_removal_notification(schema_name, gs_client, db_label=""):
-    """Hanterar en notifiering om borttaget schema.
+    """Hanterar en notifiering om borttaget schema (kanal: CHANNEL_SCHEMA_DROP).
 
     Tar bort workspace (inkl. datastores och publicerade lager) i GeoServer.
+    Samma validering som handle_schema_notification — kanalen ar oppen for
+    alla med NOTIFY-rattighet sa schemanamnet maste kontrolleras.
     """
-    tag = f"[{db_label}] " if db_label else ""
+    tag = _db_tag(db_label)
     log.info("%sMottog borttagningsnotifiering for schema: %s", tag, schema_name)
 
-    # Samma validering som vid skapande - skyddar kanalen mot skräpdata.
-    if not SCHEMA_PATTERN.match(schema_name):
-        log.warning(
-            "%sOgiltigt schemanamn '%s' - matchar inte monster '%s'. Ignorerar.",
-            tag,
-            schema_name,
-            SCHEMA_PATTERN.pattern,
-        )
+    if not _validate_schema_name(schema_name, tag):
         return False
 
     log.info("%s  Tar bort workspace '%s' fran GeoServer...", tag, schema_name)
@@ -683,6 +718,49 @@ def handle_schema_removal_notification(schema_name, gs_client, db_label=""):
 # =============================================================================
 # POSTGRESQL LISTENER
 # =============================================================================
+
+def _dispatch_notification_error(channel, db_label, schema_name, error, notifier, transient=False):
+    """Centraliserad felhantering for schema-notifieringar.
+
+    Loggar ett beskrivande felmeddelande och skickar e-postnotifiering via
+    notifier (om konfigurerat). Beteendet skiljer sig beroende pa kanal och
+    om felet ar transient (GeoServer otillganglig) eller oväntat.
+
+    Args:
+        channel:   pg_notify-kanalen (CHANNEL_SCHEMA_CREATE eller CHANNEL_SCHEMA_DROP).
+        db_label:  Databasnamn for logg-prefix.
+        schema_name: Schemanamnet fran notifieringens payload.
+        error:     Undantaget eller felbeskrivningen.
+        notifier:  EmailNotifier-instans eller None.
+        transient: True om felet beror pa timeout/anslutningsproblem mot GeoServer.
+                   Dessa fel kan atgardas genom att skicka om notifieringen manuellt.
+    """
+    is_drop = channel == CHANNEL_SCHEMA_DROP
+
+    if is_drop:
+        if transient:
+            log.error(
+                "[%s] Borttagning av schema '%s' misslyckades efter alla retry-forsok: %s. "
+                "Skicka NOTIFY manuellt for att forsoka igen: "
+                "NOTIFY %s, '%s';",
+                db_label, schema_name, error, CHANNEL_SCHEMA_DROP, schema_name,
+            )
+        else:
+            log.error("[%s] Fel vid borttagning av schema '%s': %s", db_label, schema_name, error)
+        if notifier:
+            notifier.notify_schema_removal_failure(schema_name, db_label, error)
+    else:
+        if transient:
+            log.error(
+                "[%s] Schema '%s' misslyckades efter alla retry-forsok: %s. "
+                "Schemat ignoreras denna gang - skicka NOTIFY manuellt "
+                "eller aterskap schemat for att forsoka igen.",
+                db_label, schema_name, error,
+            )
+        else:
+            log.error("[%s] Fel vid hantering av schema '%s': %s", db_label, schema_name, error)
+        if notifier:
+            notifier.notify_schema_failure(schema_name, db_label, error)
 
 def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None, notifier=None):
     """Huvudloop som lyssnar pa pg_notify och hanterar notifieringar for en databas.
@@ -715,9 +793,10 @@ def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None, notifier
             conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
 
             cur = conn.cursor()
-            cur.execute("LISTEN geoserver_schema;")
-            cur.execute("LISTEN geoserver_schema_drop;")
-            log.info("[%s] Lyssnar pa kanaler 'geoserver_schema' och 'geoserver_schema_drop'...", db_label)
+            cur.execute(f"LISTEN {CHANNEL_SCHEMA_CREATE};")
+            cur.execute(f"LISTEN {CHANNEL_SCHEMA_DROP};")
+            log.info("[%s] Lyssnar pa kanaler '%s' och '%s'...",
+                     db_label, CHANNEL_SCHEMA_CREATE, CHANNEL_SCHEMA_DROP)
             log.info("[%s] Vantar pa schema-handelser...", db_label)
 
             # Skicka aterhamtningsnotifiering om vi tappat anslutning tidigare
@@ -743,7 +822,7 @@ def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None, notifier
                         continue
 
                     try:
-                        if notify.channel == "geoserver_schema_drop":
+                        if notify.channel == CHANNEL_SCHEMA_DROP:
                             handle_schema_removal_notification(
                                 schema_name,
                                 gs_client,
@@ -757,37 +836,14 @@ def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None, notifier
                                 db_label=db_label,
                             )
                     except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
-                        # Transienta fel - alla retry i _request_with_retry
-                        # ar forbrukade. Logga tydligt sa det syns i loggen.
-                        if notify.channel == "geoserver_schema_drop":
-                            log.error(
-                                "[%s] Borttagning av schema '%s' misslyckades efter alla retry-forsok: %s. "
-                                "Skicka NOTIFY manuellt for att forsoka igen: "
-                                "NOTIFY geoserver_schema_drop, '%s';",
-                                db_label, schema_name, e, schema_name,
-                            )
-                            if notifier:
-                                notifier.notify_schema_removal_failure(schema_name, db_label, e)
-                        else:
-                            log.error(
-                                "[%s] Schema '%s' misslyckades efter alla retry-forsok: %s. "
-                                "Schemat ignoreras denna gang - skicka NOTIFY manuellt "
-                                "eller aterskap schemat for att forsoka igen.",
-                                db_label, schema_name, e,
-                            )
-                            if notifier:
-                                notifier.notify_schema_failure(schema_name, db_label, e)
+                        # Transienta fel - alla retry i _request_with_retry ar forbrukade.
+                        _dispatch_notification_error(
+                            notify.channel, db_label, schema_name, e, notifier, transient=True
+                        )
                     except Exception as e:
-                        if notify.channel == "geoserver_schema_drop":
-                            log.error("[%s] Fel vid borttagning av schema '%s': %s",
-                                      db_label, schema_name, e)
-                            if notifier:
-                                notifier.notify_schema_removal_failure(schema_name, db_label, e)
-                        else:
-                            log.error("[%s] Fel vid hantering av schema '%s': %s",
-                                      db_label, schema_name, e)
-                            if notifier:
-                                notifier.notify_schema_failure(schema_name, db_label, e)
+                        _dispatch_notification_error(
+                            notify.channel, db_label, schema_name, e, notifier, transient=False
+                        )
 
         except psycopg2.OperationalError as e:
             log.error("[%s] PostgreSQL-anslutning forlorad: %s", db_label, e)
