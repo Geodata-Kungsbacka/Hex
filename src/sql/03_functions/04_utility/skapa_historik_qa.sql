@@ -133,8 +133,8 @@ BEGIN
     
     RAISE NOTICE '[skapa_historik_qa]   » Originaltabell har %s kolumner', antal_original_kolumner;
     
-    -- Hämta kolumnnamn för INSERT
-    SELECT string_agg(c.column_name, ', ' ORDER BY c.ordinal_position)
+    -- Hämta kolumnnamn för INSERT (citerade med %I för att hantera reserverade ord)
+    SELECT string_agg(format('%I', c.column_name), ', ' ORDER BY c.ordinal_position)
     INTO kolumn_lista
     FROM information_schema.columns c
     WHERE c.table_schema = p_schema_namn
