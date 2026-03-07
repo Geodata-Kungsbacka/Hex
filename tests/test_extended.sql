@@ -231,7 +231,7 @@ BEGIN
     END IF;
 END $$;
 
--- Login role for sk2 (suffixed _pub)
+-- Login role for sk2 (suffixed _pub, from standardiserade_roller login_roller column)
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'r_sk2_ext_test_pub') THEN
@@ -946,11 +946,16 @@ BEGIN
     SELECT COUNT(*) INTO hist_count
     FROM sk2_kba_test.data_test_y_h WHERE naam = 'objekt_1' AND h_typ = 'U';
 
-    IF hist_count = 1 AND new_ts > old_ts THEN
+    -- andrad_tidpunkt has historik_qa=true so no DEFAULT - it starts NULL and is set by
+    -- the UPDATE trigger. Check that new_ts IS NOT NULL and (was NULL or advanced).
+    IF hist_count = 1 AND new_ts IS NOT NULL AND (old_ts IS NULL OR new_ts > old_ts) THEN
         RAISE NOTICE 'TEST F3 PASSED: UPDATE wrote 1 history row and bumped andrad_tidpunkt (old=%, new=%)',
             old_ts, new_ts;
+    ELSIF hist_count = 1 AND new_ts IS NULL THEN
+        RAISE WARNING 'TEST F3 FAILED: History row written but andrad_tidpunkt still NULL after UPDATE (old=%, new=%)',
+            old_ts, new_ts;
     ELSIF hist_count = 1 THEN
-        RAISE WARNING 'TEST F3 PARTIAL: History row written but andrad_tidpunkt not updated (old=%, new=%)',
+        RAISE WARNING 'TEST F3 PARTIAL: History row written but andrad_tidpunkt not advanced (old=%, new=%)',
             old_ts, new_ts;
     ELSE
         RAISE WARNING 'TEST F3 FAILED: Expected 1 history row, got %. andrad_tidpunkt: old=%, new=%',

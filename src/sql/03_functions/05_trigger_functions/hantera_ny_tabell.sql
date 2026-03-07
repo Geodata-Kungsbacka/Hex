@@ -167,7 +167,7 @@ BEGIN
 
                     INSERT INTO public.hex_avvikande_srid (schema_namn, tabell_namn, srid)
                     VALUES (schema_namn, tabell_namn, geometriinfo.srid)
-                    ON CONFLICT (schema_namn, tabell_namn)
+                    ON CONFLICT ON CONSTRAINT hex_avvikande_srid_pkey
                         DO UPDATE SET srid           = EXCLUDED.srid,
                                       registrerad    = now(),
                                       registrerad_av = current_user;

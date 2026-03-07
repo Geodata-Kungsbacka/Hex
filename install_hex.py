@@ -48,6 +48,8 @@ INSTALL_ORDER = [
     "src/sql/02_tables/hex_metadata.sql",
     "src/sql/02_tables/hex_systemanvandare.sql",
     "src/sql/02_tables/hex_afvaktande_geometri.sql",
+    "src/sql/02_tables/hex_dummy_geometrier.sql",
+    "src/sql/02_tables/hex_avvikande_srid.sql",
     # Functions - Structure
     "src/sql/03_functions/01_structure/hamta_geometri_definition.sql",
     "src/sql/03_functions/01_structure/hamta_kolumnstandard.sql",
@@ -68,6 +70,8 @@ INSTALL_ORDER = [
     "src/sql/03_functions/04_utility/skapa_historik_qa.sql",
     "src/sql/03_functions/04_utility/tilldela_rollrattigheter.sql",
     # Functions - Trigger functions
+    "src/sql/03_functions/05_trigger_functions/ta_bort_dummy_rad.sql",
+    "src/sql/03_functions/04_utility/lagg_till_dummy_geometri.sql",
     "src/sql/03_functions/05_trigger_functions/kontrollera_geometri.sql",
     "src/sql/03_functions/05_trigger_functions/hantera_ny_tabell.sql",
     "src/sql/03_functions/05_trigger_functions/hantera_kolumntillagg.sql",
@@ -117,6 +121,8 @@ DROP FUNCTION IF EXISTS public.hantera_borttagen_tabell();
 DROP FUNCTION IF EXISTS public.kontrollera_geometri_trigger();
 
 -- Utility Functions
+DROP FUNCTION IF EXISTS public.lagg_till_dummy_geometri(text, text, geom_info);
+DROP FUNCTION IF EXISTS public.ta_bort_dummy_rad();
 DROP FUNCTION IF EXISTS public.tilldela_rollrattigheter(text, text, text);
 DROP FUNCTION IF EXISTS public.skapa_historik_qa(text, text);
 DROP FUNCTION IF EXISTS public.uppdatera_sekvensnamn(text, text, text);
@@ -143,6 +149,8 @@ DROP FUNCTION IF EXISTS public.hamta_geometri_definition(text, text);
 DROP FUNCTION IF EXISTS public.system_owner();
 
 -- Tables
+DROP TABLE IF EXISTS public.hex_avvikande_srid;
+DROP TABLE IF EXISTS public.hex_dummy_geometrier;
 DROP TABLE IF EXISTS public.hex_afvaktande_geometri;
 DROP TABLE IF EXISTS public.hex_systemanvandare;
 DROP TABLE IF EXISTS public.hex_metadata;
