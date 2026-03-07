@@ -523,13 +523,24 @@ BEGIN
                     );
                     RAISE NOTICE '[hantera_kolumntillagg]   ✓ Geometrivalidering tillagd: %', constraint_namn;
                     op_steg := 'lägger till geometritrigger (afvaktande tabell)';
-                    EXECUTE format(
-                        'CREATE TRIGGER hex_kontrollera_geom'
-                        ' BEFORE INSERT OR UPDATE ON %I.%I'
-                        ' FOR EACH ROW EXECUTE FUNCTION public.kontrollera_geometri_trigger()',
-                        schema_namn, tabell_namn
-                    );
-                    RAISE NOTICE '[hantera_kolumntillagg]   ✓ Geometritrigger tillagd: hex_kontrollera_geom';
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_trigger t
+                        JOIN pg_class c ON c.oid = t.tgrelid
+                        JOIN pg_namespace n ON n.oid = c.relnamespace
+                        WHERE n.nspname = schema_namn
+                          AND c.relname = tabell_namn
+                          AND t.tgname  = 'hex_kontrollera_geom'
+                    ) THEN
+                        EXECUTE format(
+                            'CREATE TRIGGER hex_kontrollera_geom'
+                            ' BEFORE INSERT OR UPDATE ON %I.%I'
+                            ' FOR EACH ROW EXECUTE FUNCTION public.kontrollera_geometri_trigger()',
+                            schema_namn, tabell_namn
+                        );
+                        RAISE NOTICE '[hantera_kolumntillagg]   ✓ Geometritrigger tillagd: hex_kontrollera_geom';
+                    ELSE
+                        RAISE NOTICE '[hantera_kolumntillagg]   ✓ Geometritrigger finns redan: hex_kontrollera_geom';
+                    END IF;
                 END;
             END IF;
 
@@ -648,13 +659,24 @@ BEGIN
                         );
                         RAISE NOTICE '[hantera_kolumntillagg]   ✓ Geometrivalidering tillagd: %', constraint_namn;
                         op_steg := 'lägger till geometritrigger (ny geom utan afvaktande)';
-                        EXECUTE format(
-                            'CREATE TRIGGER hex_kontrollera_geom'
-                            ' BEFORE INSERT OR UPDATE ON %I.%I'
-                            ' FOR EACH ROW EXECUTE FUNCTION public.kontrollera_geometri_trigger()',
-                            schema_namn, tabell_namn
-                        );
-                        RAISE NOTICE '[hantera_kolumntillagg]   ✓ Geometritrigger tillagd: hex_kontrollera_geom';
+                        IF NOT EXISTS (
+                            SELECT 1 FROM pg_trigger t
+                            JOIN pg_class c ON c.oid = t.tgrelid
+                            JOIN pg_namespace n ON n.oid = c.relnamespace
+                            WHERE n.nspname = schema_namn
+                              AND c.relname = tabell_namn
+                              AND t.tgname  = 'hex_kontrollera_geom'
+                        ) THEN
+                            EXECUTE format(
+                                'CREATE TRIGGER hex_kontrollera_geom'
+                                ' BEFORE INSERT OR UPDATE ON %I.%I'
+                                ' FOR EACH ROW EXECUTE FUNCTION public.kontrollera_geometri_trigger()',
+                                schema_namn, tabell_namn
+                            );
+                            RAISE NOTICE '[hantera_kolumntillagg]   ✓ Geometritrigger tillagd: hex_kontrollera_geom';
+                        ELSE
+                            RAISE NOTICE '[hantera_kolumntillagg]   ✓ Geometritrigger finns redan: hex_kontrollera_geom';
+                        END IF;
                     END;
                 END IF;
 
