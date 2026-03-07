@@ -37,6 +37,7 @@ AS $BODY$
  * - Tydliga avgränsare används för att separera olika operationer i loggen
  * - Varningsmeddelanden för historiktabeller använder WARNING-nivå för synlighet
  ******************************************************************************/
+<<hkt>>
 DECLARE
     -- Grundläggande variabler för tabellhantering
     flagg_varde text;          -- För rekursionskontroll
@@ -475,7 +476,7 @@ BEGIN
                     schema_namn, tabell_namn, geometriinfo.srid;
 
                 INSERT INTO public.hex_avvikande_srid (schema_namn, tabell_namn, srid)
-                VALUES (schema_namn, tabell_namn, geometriinfo.srid)
+                VALUES (hkt.schema_namn, hkt.tabell_namn, geometriinfo.srid)
                 ON CONFLICT ON CONSTRAINT hex_avvikande_srid_pkey
                     DO UPDATE SET srid           = EXCLUDED.srid,
                                   registrerad    = now(),
@@ -522,13 +523,24 @@ BEGIN
                     );
                     RAISE NOTICE '[hantera_kolumntillagg]   ✓ Geometrivalidering tillagd: %', constraint_namn;
                     op_steg := 'lägger till geometritrigger (afvaktande tabell)';
-                    EXECUTE format(
-                        'CREATE TRIGGER hex_kontrollera_geom'
-                        ' BEFORE INSERT OR UPDATE ON %I.%I'
-                        ' FOR EACH ROW EXECUTE FUNCTION public.kontrollera_geometri_trigger()',
-                        schema_namn, tabell_namn
-                    );
-                    RAISE NOTICE '[hantera_kolumntillagg]   ✓ Geometritrigger tillagd: hex_kontrollera_geom';
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_trigger t
+                        JOIN pg_class c ON c.oid = t.tgrelid
+                        JOIN pg_namespace n ON n.oid = c.relnamespace
+                        WHERE n.nspname = schema_namn
+                          AND c.relname = tabell_namn
+                          AND t.tgname  = 'hex_kontrollera_geom'
+                    ) THEN
+                        EXECUTE format(
+                            'CREATE TRIGGER hex_kontrollera_geom'
+                            ' BEFORE INSERT OR UPDATE ON %I.%I'
+                            ' FOR EACH ROW EXECUTE FUNCTION public.kontrollera_geometri_trigger()',
+                            schema_namn, tabell_namn
+                        );
+                        RAISE NOTICE '[hantera_kolumntillagg]   ✓ Geometritrigger tillagd: hex_kontrollera_geom';
+                    ELSE
+                        RAISE NOTICE '[hantera_kolumntillagg]   ✓ Geometritrigger finns redan: hex_kontrollera_geom';
+                    END IF;
                 END;
             END IF;
 
@@ -604,7 +616,7 @@ BEGIN
                         'Tabellen registreras i hex_avvikande_srid.',
                         schema_namn, tabell_namn, geometriinfo.srid;
                     INSERT INTO public.hex_avvikande_srid (schema_namn, tabell_namn, srid)
-                    VALUES (schema_namn, tabell_namn, geometriinfo.srid)
+                    VALUES (hkt.schema_namn, hkt.tabell_namn, geometriinfo.srid)
                     ON CONFLICT ON CONSTRAINT hex_avvikande_srid_pkey
                         DO UPDATE SET srid           = EXCLUDED.srid,
                                       registrerad    = now(),
@@ -641,31 +653,19 @@ BEGIN
                         constraint_namn text := 'validera_geom_' || tabell_namn;
                     BEGIN
                         op_steg := 'lägger till geometrivalidering (ny geom utan afvaktande)';
-                        -- Constraint kan ha droppats automatiskt när geom-kolumnen omstrukturerades
-                        -- (DROP COLUMN tar bort alla constraints som refererar kolumnen).
-                        -- Kontrollera att den inte redan finns innan vi lägger till den.
-                        IF NOT EXISTS (
-                            SELECT 1 FROM pg_constraint c
-                            JOIN pg_namespace n ON n.oid = c.connamespace
-                            WHERE n.nspname = schema_namn AND c.conname = constraint_namn
-                        ) THEN
-                            EXECUTE format(
-                                'ALTER TABLE %I.%I ADD CONSTRAINT %I CHECK (public.validera_geometri(geom))',
-                                schema_namn, tabell_namn, constraint_namn
-                            );
-                            RAISE NOTICE '[hantera_kolumntillagg]   ✓ Geometrivalidering tillagd: %', constraint_namn;
-                        ELSE
-                            RAISE NOTICE '[hantera_kolumntillagg]   - Geometrivalidering finns redan: %', constraint_namn;
-                        END IF;
+                        EXECUTE format(
+                            'ALTER TABLE %I.%I ADD CONSTRAINT %I CHECK (public.validera_geometri(geom))',
+                            schema_namn, tabell_namn, constraint_namn
+                        );
+                        RAISE NOTICE '[hantera_kolumntillagg]   ✓ Geometrivalidering tillagd: %', constraint_namn;
                         op_steg := 'lägger till geometritrigger (ny geom utan afvaktande)';
-                        -- Triggern droppas INTE när geom-kolumnen omstruktureras (triggers hör till
-                        -- tabellen, inte kolumnen). Kontrollera att den inte redan finns.
                         IF NOT EXISTS (
                             SELECT 1 FROM pg_trigger t
                             JOIN pg_class c ON c.oid = t.tgrelid
                             JOIN pg_namespace n ON n.oid = c.relnamespace
-                            WHERE n.nspname = schema_namn AND c.relname = tabell_namn
-                              AND t.tgname = 'hex_kontrollera_geom'
+                            WHERE n.nspname = schema_namn
+                              AND c.relname = tabell_namn
+                              AND t.tgname  = 'hex_kontrollera_geom'
                         ) THEN
                             EXECUTE format(
                                 'CREATE TRIGGER hex_kontrollera_geom'
@@ -675,7 +675,7 @@ BEGIN
                             );
                             RAISE NOTICE '[hantera_kolumntillagg]   ✓ Geometritrigger tillagd: hex_kontrollera_geom';
                         ELSE
-                            RAISE NOTICE '[hantera_kolumntillagg]   - Geometritrigger finns redan: hex_kontrollera_geom';
+                            RAISE NOTICE '[hantera_kolumntillagg]   ✓ Geometritrigger finns redan: hex_kontrollera_geom';
                         END IF;
                     END;
                 END IF;
