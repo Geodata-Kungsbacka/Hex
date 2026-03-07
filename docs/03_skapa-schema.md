@@ -61,7 +61,7 @@ ORDER BY rolname;
 ```
 
 Du bör se `w_sk1_kba_parkering` (skrivrollen per schema) och de globala rollerna
-`r_sk1_global`, `r_sk1_global_geoserver` m.fl. (läsroller skapas globalt för sk1, inte per schema).
+`r_sk1_global`, `r_sk1_global_pub` m.fl. (läsroller skapas globalt för sk1, inte per schema, baserat på `standardiserade_roller`).
 
 ### 3. Ge användare åtkomst
 

@@ -266,7 +266,7 @@ BEGIN
     RAISE WARNING 'TEST 4a FAILED: Invalid schema name was accepted';
 EXCEPTION
     WHEN OTHERS THEN
-        IF SQLERRM LIKE '%validera_schemanamn%' AND SQLERRM LIKE '%sk[0-2]%' THEN
+        IF SQLERRM LIKE '%validera_schemanamn%' AND (SQLERRM LIKE '%sk0%' OR SQLERRM LIKE '%sk1%' OR SQLERRM LIKE '%sk2%') THEN
             RAISE NOTICE 'TEST 4a PASSED: Invalid schema rejected with helpful error';
         ELSE
             RAISE WARNING 'TEST 4a PARTIAL: Schema rejected but message unclear: %', SQLERRM;

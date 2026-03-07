@@ -22,7 +22,7 @@ vissa scheman.
 | `schema_uttryck` | SQL-uttryck som avgör för vilka scheman mallen ska gälla (se exempel nedan). |
 | `global_roll` | `true` = rollen är global och skapas en gång (inte per schema). `false` = skapas per schema. |
 | `ta_bort_med_schema` | `true` = rollen tas bort automatiskt när schemat droppas. |
-| `login_roller` | Array med suffix för inloggningsroller, t.ex. `{_geoserver,_qgis}`. Kan vara `NULL`. |
+| `login_roller` | Array med suffix för inloggningsroller. Standardvärde: `{_pub}` (en inloggningsroll per gruproll). Kan vara `NULL`. Roller skapas baserat på innehållet här — inga specifika appnamn är hårdkodade. |
 | `beskrivning` | Fritext för dokumentation. |
 
 ---
@@ -37,9 +37,11 @@ ORDER BY rollnamn;
 
 ---
 
-## Lägga till en rollmall för en ny applikation
+## Lägga till en rollmall
 
-Exempel: en ny applikation (`_cesium`) ska få läsrättigheter på alla `sk0`-scheman.
+Roller skapas automatiskt baserat på innehållet i `standardiserade_roller` — inga specifika applikationsnamn är hårdkodade. Standardvärdet för `login_roller` är `{_pub}`, vilket ger en inloggningsroll per gruproll för publiceringstjänster.
+
+Exempel: lägg till en extra läsroll för alla `sk0`-scheman med ett eget suffix.
 
 ```sql
 INSERT INTO standardiserade_roller (
@@ -51,12 +53,12 @@ INSERT INTO standardiserade_roller (
     'LIKE ''sk0_%''',
     false,
     true,
-    ARRAY['_cesium'],
-    'Läsroll för Cesium-applikationen på sk0-scheman'
+    ARRAY['_lasroll'],
+    'Extra läsroll för sk0-scheman'
 );
 ```
 
-En inloggningsroll `r_<schema>_cesium` skapas nu automatiskt för alla
+En inloggningsroll `r_<schema>_lasroll` skapas nu automatiskt för alla
 kommande `sk0`-scheman.
 
 ---
@@ -79,7 +81,7 @@ Tar bort mallen, men **inte** roller som redan skapats:
 
 ```sql
 DELETE FROM standardiserade_roller
-WHERE rollnamn = 'r_{schema}' AND login_roller = ARRAY['_cesium'];
+WHERE rollnamn = 'r_{schema}' AND login_roller = ARRAY['_lasroll'];
 ```
 
 ---

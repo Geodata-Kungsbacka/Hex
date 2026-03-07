@@ -88,16 +88,16 @@ Definierar vilka roller som automatiskt skapas för nya scheman.
 | `schema_uttryck` | SQL-filter — rollen skapas bara om schemanamnet matchar |
 | `global_roll` | `true` = rollen är global och tas **inte** bort med schemat |
 | `ta_bort_med_schema` | `false` för globala roller |
-| `login_roller` | Array med suffix/prefix för LOGIN-roller (t.ex. `['_geoserver', '_qgis']`) |
+| `login_roller` | Array med suffix/prefix för LOGIN-roller. Standardvärde: `['_pub']` (en inloggningsroll per gruproll, för publiceringstjänster). Roller skapas baserat på innehållet i denna kolumn — inga appnamn är hårdkodade. |
 
 **Fördefinierade roller:**
 
 | Rollnamn | Typ | Matchar | Global | LOGIN-varianter |
 |---|---|---|---|---|
-| `r_sk0_global` | read | `LIKE 'sk0_%'` | ja | `r_sk0_global_geoserver`, `r_sk0_global_qgis` |
-| `r_sk1_global` | read | `LIKE 'sk1_%'` | ja | `r_sk1_global_geoserver`, `r_sk1_global_qgis` |
-| `r_{schema}` | read | `LIKE 'sk2_%'` | nej | `r_{schema}_geoserver`, `r_{schema}_qgis` |
-| `w_{schema}` | write | IS NOT NULL (alla) | nej | `w_{schema}_geoserver`, `w_{schema}_qgis` |
+| `r_sk0_global` | read | `LIKE 'sk0_%'` | ja | `r_sk0_global_pub` |
+| `r_sk1_global` | read | `LIKE 'sk1_%'` | ja | `r_sk1_global_pub` |
+| `r_{schema}` | read | `LIKE 'sk2_%'` | nej | `r_{schema}_pub` |
+| `w_{schema}` | write | IS NOT NULL (alla) | nej | `w_{schema}_pub` |
 
 ---
 
@@ -223,16 +223,16 @@ hantera_standardiserade_roller()
   │           │     (DEFAULT PRIVILEGES säkerställer att framtida tabeller
   │           │      också får rätt behörigheter automatiskt)
   │           │
-  │           └── För varje post i login_roller-arrayen (t.ex. ['_geoserver', '_qgis']):
-  │                 ├── Suffix (_geoserver) → r_sk0_global_geoserver
-  │                 ├── Prefix (geoserver_) → geoserver_r_sk0_global
+  │           └── För varje post i login_roller-arrayen (standardvärde: ['_pub']):
+  │                 ├── Suffix (_pub) → r_sk0_global_pub
+  │                 ├── Prefix (pub_) → pub_r_sk0_global
   │                 ├── CREATE ROLE <loginrollnamn> WITH LOGIN
   │                 └── GRANT <grupproll> TO <loginroll>  (ärver behörigheter)
   │
   └── Resultat för sk0_kba_bygg:
         NOLOGIN: r_sk0_global, w_sk0_kba_bygg
-        LOGIN:   r_sk0_global_geoserver, r_sk0_global_qgis,
-                 w_sk0_kba_bygg_geoserver, w_sk0_kba_bygg_qgis
+        LOGIN:   r_sk0_global_pub,
+                 w_sk0_kba_bygg_pub
 ```
 
 ---
