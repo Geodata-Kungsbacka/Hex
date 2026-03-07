@@ -21,6 +21,7 @@ AS $BODY$
  * 10. Skapar historiktabell och QA-triggers om behövs
  * 11. Lägger till dummy-geometrirad för QGIS-kompatibilitet (tabeller med geom)
  ******************************************************************************/
+<<hnt>>
 DECLARE
     -- Grundläggande variabler för tabellhantering
     flagg_varde text;          -- För rekursionskontroll
@@ -166,7 +167,7 @@ BEGIN
                         schema_namn, tabell_namn, geometriinfo.srid;
 
                     INSERT INTO public.hex_avvikande_srid (schema_namn, tabell_namn, srid)
-                    VALUES (schema_namn, tabell_namn, geometriinfo.srid)
+                    VALUES (hnt.schema_namn, hnt.tabell_namn, geometriinfo.srid)
                     ON CONFLICT ON CONSTRAINT hex_avvikande_srid_pkey
                         DO UPDATE SET srid           = EXCLUDED.srid,
                                       registrerad    = now(),
