@@ -99,6 +99,12 @@ BEGIN
             CONTINUE;
         END IF;
 
+        -- Kontrollera undantag: temporära scheman (pg_temp, pg_temp_N)
+        IF schema_namn = 'pg_temp' OR schema_namn LIKE 'pg_temp_%' THEN
+            RAISE NOTICE 'Hoppar över tabell %.% - temporär tabell (pg_temp)', schema_namn, tabell_namn;
+            CONTINUE;
+        END IF;
+
         -- Kontrollera undantag: _h-suffix (reserverat för historiktabeller)
         -- Systemets egna _h-tabeller (skapade av skapa_historik_qa i steg 10)
         -- når aldrig hit - de fångas av rekursionsskyddet (temp.tabellstrukturering_pagar)
