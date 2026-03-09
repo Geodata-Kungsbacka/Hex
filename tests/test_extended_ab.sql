@@ -363,6 +363,30 @@ EXCEPTION
         RAISE WARNING 'TEST B7 FAILED: ST_ transformation with cast rejected: %', SQLERRM;
 END $$;
 
+-- B8: CREATE OR REPLACE VIEW with valid name - replacing an existing valid view
+DO $$
+BEGIN
+    EXECUTE 'CREATE OR REPLACE VIEW sk2_ext_test.v_fororeningar_y AS
+             SELECT *
+             FROM sk2_ext_test.fororeningar_y
+             WHERE gid IS NOT NULL';
+    RAISE NOTICE 'TEST B8 PASSED: CREATE OR REPLACE VIEW accepted (valid name, replacing existing view)';
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE WARNING 'TEST B8 FAILED: CREATE OR REPLACE VIEW on existing valid view rejected: %', SQLERRM;
+END $$;
+
+-- B9: CREATE OR REPLACE VIEW with invalid name (no v_ prefix) - must be rejected
+DO $$
+BEGIN
+    EXECUTE 'CREATE OR REPLACE VIEW sk2_ext_test.fororeningar_alt_y AS
+             SELECT gid, geom FROM sk2_ext_test.fororeningar_y';
+    RAISE WARNING 'TEST B9 FAILED: CREATE OR REPLACE VIEW without v_ prefix was accepted';
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE NOTICE 'TEST B9 PASSED: CREATE OR REPLACE VIEW without v_ prefix correctly rejected';
+END $$;
+
 -- ============================================================
 -- Cleanup
 -- ============================================================
