@@ -684,6 +684,60 @@ EXCEPTION WHEN OTHERS THEN
     PERFORM _fail(40, 'Table: IDENTITY sequence', SQLERRM);
 END $$;
 
+-- TEST 41: hex_tvinga_gid trigger exists and discards client-supplied gid
+-- Simulates QGIS behaviour: INSERT ... OVERRIDING SYSTEM VALUE VALUES (999, ...)
+-- The trigger must replace 999 with the next sequence value.
+DO $$ DECLARE
+    trig_exists  boolean;
+    inserted_gid integer;
+BEGIN
+    CREATE TABLE sk1_kba_stress.gid_override_test (
+        naam text
+    );
+
+    -- 41a: trigger was created by hantera_ny_tabell
+    SELECT EXISTS (
+        SELECT 1
+        FROM   pg_trigger      t
+        JOIN   pg_class        c ON c.oid = t.tgrelid
+        JOIN   pg_namespace    n ON n.oid = c.relnamespace
+        WHERE  n.nspname = 'sk1_kba_stress'
+          AND  c.relname = 'gid_override_test'
+          AND  t.tgname  = 'hex_tvinga_gid'
+    ) INTO trig_exists;
+
+    IF trig_exists THEN
+        PERFORM _pass(41, 'GID override: trigger hex_tvinga_gid created');
+    ELSE
+        PERFORM _fail(41, 'GID override: trigger hex_tvinga_gid created', 'trigger missing');
+        DROP TABLE sk1_kba_stress.gid_override_test;
+        RETURN;
+    END IF;
+
+    -- 41b: client-supplied gid is silently replaced
+    INSERT INTO sk1_kba_stress.gid_override_test (gid, naam)
+    OVERRIDING SYSTEM VALUE
+    VALUES (999, 'override-test');
+
+    SELECT gid INTO inserted_gid
+    FROM   sk1_kba_stress.gid_override_test
+    WHERE  naam = 'override-test';
+
+    IF inserted_gid IS NOT NULL AND inserted_gid <> 999 THEN
+        PERFORM _pass(42, 'GID override: client gid 999 replaced by sequence value');
+    ELSIF inserted_gid = 999 THEN
+        PERFORM _fail(42, 'GID override: client gid 999 replaced by sequence value',
+            'trigger did not override – gid 999 was stored');
+    ELSE
+        PERFORM _fail(42, 'GID override: client gid 999 replaced by sequence value',
+            format('unexpected gid=%s', inserted_gid));
+    END IF;
+
+    DROP TABLE sk1_kba_stress.gid_override_test;
+EXCEPTION WHEN OTHERS THEN
+    PERFORM _fail(41, 'GID override: hex_tvinga_gid', SQLERRM);
+END $$;
+
 
 -- =============================================================================
 -- CLEANUP
