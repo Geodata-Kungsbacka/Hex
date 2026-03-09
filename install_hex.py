@@ -70,6 +70,7 @@ INSTALL_ORDER = [
     "src/sql/03_functions/04_utility/skapa_historik_qa.sql",
     "src/sql/03_functions/04_utility/tilldela_rollrattigheter.sql",
     "src/sql/03_functions/04_utility/tvinga_gid_fran_sekvens.sql",
+    "src/sql/03_functions/04_utility/reparera_rad_triggers.sql",
     # Functions - Trigger functions
     "src/sql/03_functions/05_trigger_functions/ta_bort_dummy_rad.sql",
     "src/sql/03_functions/04_utility/lagg_till_dummy_geometri.sql",
@@ -123,8 +124,9 @@ DROP FUNCTION IF EXISTS public.kontrollera_geometri_trigger() CASCADE;
 
 -- Utility Functions
 DROP FUNCTION IF EXISTS public.lagg_till_dummy_geometri(text, text, geom_info);
-DROP FUNCTION IF EXISTS public.ta_bort_dummy_rad();
+DROP FUNCTION IF EXISTS public.ta_bort_dummy_rad() CASCADE;
 DROP FUNCTION IF EXISTS public.tvinga_gid_fran_sekvens() CASCADE;
+DROP FUNCTION IF EXISTS public.reparera_rad_triggers();
 DROP FUNCTION IF EXISTS public.tilldela_rollrattigheter(text, text, text);
 DROP FUNCTION IF EXISTS public.skapa_historik_qa(text, text);
 DROP FUNCTION IF EXISTS public.uppdatera_sekvensnamn(text, text, text);
@@ -279,6 +281,29 @@ COMMENT ON FUNCTION public.system_owner()
         print("=" * 60)
         print(f"Installed {installed} components successfully.")
         print("=" * 60)
+
+        # Repair row-level triggers on pre-existing tables (separate step so a
+        # failure here never rolls back the main install).
+        print("Repairing row-level triggers on existing tables...")
+        try:
+            cur.execute(
+                "SELECT schema_namn, tabell_namn, trigger_namn, atgard"
+                " FROM public.reparera_rad_triggers()"
+            )
+            rows = cur.fetchall()
+            conn.commit()
+            created = [(s, t, tr) for s, t, tr, a in rows if a == "skapad"]
+            if created:
+                for s, t, tr in created:
+                    print(f"  ✓ {s}.{t} → {tr}")
+                print(f"  {len(created)} trigger(s) reattached.")
+            else:
+                print("  No triggers needed reattachment.")
+        except Exception as repair_err:
+            conn.rollback()
+            print(f"  Warning: trigger repair failed: {repair_err}")
+            print("  Hex is installed. Run SELECT * FROM public.reparera_rad_triggers() manually.")
+
         print("+++Anthill Inside+++")
         
     except Exception as e:
