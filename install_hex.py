@@ -119,12 +119,12 @@ DROP FUNCTION IF EXISTS public.hantera_ny_vy();
 DROP FUNCTION IF EXISTS public.hantera_kolumntillagg();
 DROP FUNCTION IF EXISTS public.hantera_ny_tabell();
 DROP FUNCTION IF EXISTS public.hantera_borttagen_tabell();
-DROP FUNCTION IF EXISTS public.kontrollera_geometri_trigger();
+DROP FUNCTION IF EXISTS public.kontrollera_geometri_trigger() CASCADE;
 
 -- Utility Functions
 DROP FUNCTION IF EXISTS public.lagg_till_dummy_geometri(text, text, geom_info);
 DROP FUNCTION IF EXISTS public.ta_bort_dummy_rad();
-DROP FUNCTION IF EXISTS public.tvinga_gid_fran_sekvens();
+DROP FUNCTION IF EXISTS public.tvinga_gid_fran_sekvens() CASCADE;
 DROP FUNCTION IF EXISTS public.tilldela_rollrattigheter(text, text, text);
 DROP FUNCTION IF EXISTS public.skapa_historik_qa(text, text);
 DROP FUNCTION IF EXISTS public.uppdatera_sekvensnamn(text, text, text);
