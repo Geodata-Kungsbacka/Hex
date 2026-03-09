@@ -16,6 +16,7 @@ AS $BODY$
  * 5. Ersätter originaltabellen med den temporära och döper om sekvenser
  * 6. Återskapar tabellregler (PRIMARY KEY undantas – hanteras av gid)
  * 7. Återskapar kolumnegenskaper
+ * 7.5. Skapar trigger hex_tvinga_gid (gid sätts alltid av sekvensen, aldrig av klienten)
  * 8. Skapar GiST-index för geometrikolumn (alla scheman)
  * 9. Lägger till geometrivalidering för _kba_-scheman
  * 10. Skapar historiktabell och QA-triggers om behövs
@@ -280,6 +281,20 @@ BEGIN
             RAISE NOTICE 'Steg 7/10: Återskapar kolumnegenskaper';
             PERFORM aterskapa_kolumnegenskaper(schema_namn, tabell_namn, kolumn_egenskaper);
             
+            -- Steg 7.5: Tvinga gid att alltid hämtas från sekvensen
+            -- Klienter som QGIS använder OVERRIDING SYSTEM VALUE för att skicka
+            -- med ett eget gid-värde. Denna trigger kastar klientens värde och
+            -- sätter alltid NEW.gid = nextval(sekvens) innan raden skrivs.
+            op_steg := 'tvinga gid från sekvens';
+            RAISE NOTICE 'Steg 7.5/11: Skapar trigger hex_tvinga_gid';
+            EXECUTE format(
+                'CREATE TRIGGER hex_tvinga_gid'
+                ' BEFORE INSERT ON %I.%I'
+                ' FOR EACH ROW EXECUTE FUNCTION public.tvinga_gid_fran_sekvens()',
+                schema_namn, tabell_namn
+            );
+            RAISE NOTICE '  ✓ Trigger hex_tvinga_gid skapad';
+
             -- Steg 8: Skapa GiST-index för geometrikolumn (alla scheman med geometri)
             op_steg := 'skapa gist-index';
             RAISE NOTICE 'Steg 8/10: Kontrollerar GiST-index';

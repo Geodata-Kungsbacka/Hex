@@ -69,6 +69,7 @@ INSTALL_ORDER = [
     "src/sql/03_functions/04_utility/uppdatera_sekvensnamn.sql",
     "src/sql/03_functions/04_utility/skapa_historik_qa.sql",
     "src/sql/03_functions/04_utility/tilldela_rollrattigheter.sql",
+    "src/sql/03_functions/04_utility/tvinga_gid_fran_sekvens.sql",
     # Functions - Trigger functions
     "src/sql/03_functions/05_trigger_functions/ta_bort_dummy_rad.sql",
     "src/sql/03_functions/04_utility/lagg_till_dummy_geometri.sql",
@@ -123,6 +124,7 @@ DROP FUNCTION IF EXISTS public.kontrollera_geometri_trigger();
 -- Utility Functions
 DROP FUNCTION IF EXISTS public.lagg_till_dummy_geometri(text, text, geom_info);
 DROP FUNCTION IF EXISTS public.ta_bort_dummy_rad();
+DROP FUNCTION IF EXISTS public.tvinga_gid_fran_sekvens();
 DROP FUNCTION IF EXISTS public.tilldela_rollrattigheter(text, text, text);
 DROP FUNCTION IF EXISTS public.skapa_historik_qa(text, text);
 DROP FUNCTION IF EXISTS public.uppdatera_sekvensnamn(text, text, text);
