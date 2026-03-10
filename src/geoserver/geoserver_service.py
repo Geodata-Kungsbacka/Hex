@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-HexGeoServer Windows Service - Kor GeoServer Schema Listener som en Windows-tjanst.
+HexGeoServer Windows Service - Kör GeoServer Schema Listener som en Windows-tjänst.
 
-Installera, starta och hantera tjansten via kommandoraden:
+Installera, starta och hantera tjänsten via kommandoraden:
 
     python geoserver_service.py install     Installera tjansten
     python geoserver_service.py start       Starta tjansten
@@ -12,11 +12,11 @@ Installera, starta och hantera tjansten via kommandoraden:
 
 Eller hantera via services.msc (Windows Services).
 
-Konfiguration laddas fran miljovariabler (systemvida) eller .env-fil
+Konfiguration laddas från miljövariabler (systemvida) eller .env-fil
 i samma katalog som detta skript.
 
 Loggning sker till Windows Event Log (Application) och till fil:
-    C:\\ProgramData\\Hex\\geoserver_listener.log
+    D:\\ProgramData\\Hex\\geoserver_listener.log
 
 Krav:
     pip install psycopg2 requests python-dotenv pywin32
@@ -34,16 +34,16 @@ import win32service
 import win32serviceutil
 import servicemanager
 
-# Lagg till skriptets katalog i sys.path sa att geoserver_listener kan importeras
+# Lägg till skriptets katalog i sys.path så att geoserver_listener kan importeras
 SCRIPT_DIR = Path(__file__).parent.resolve()
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from geoserver_listener import load_config, GeoServerClient, run_all_listeners, log
 
-# Ladda .env tidigt sa att HEX_LOG_DIR finns tillganglig nar LOG_DIR beraknas nedan.
-# load_config() lader .env igen senare men override=False innebar att variabler som
-# redan satts har (fran .env) inte skrivs over av systemets miljovariabler.
+# Ladda .env tidigt så att HEX_LOG_DIR finns tillgänglig när LOG_DIR beräknas nedan.
+# load_config() laddar .env igen senare men override=False innebär att variabler som
+# redan satts här (från .env) inte skrivs över av systemets miljövariabler.
 _env_path = SCRIPT_DIR / ".env"
 if _env_path.exists():
     try:
@@ -57,7 +57,7 @@ if _env_path.exists():
 # LOGGING TILL FIL
 # =============================================================================
 
-LOG_DIR = Path(os.environ.get("HEX_LOG_DIR", r"C:\ProgramData\Hex"))
+LOG_DIR = Path(os.environ.get("HEX_LOG_DIR", r"D:\ProgramData\Hex"))
 LOG_FILE = LOG_DIR / "geoserver_listener.log"
 
 
@@ -79,7 +79,7 @@ def setup_file_logging():
         )
     )
 
-    # Lagg till fil-handler pa geoserver_listener-loggern
+    # Lägg till fil-handler på geoserver_listener-loggern
     log.addHandler(file_handler)
 
 
@@ -110,7 +110,7 @@ class HexGeoServerService(win32serviceutil.ServiceFramework):
         win32event.SetEvent(self.hWaitStop)
 
     def SvcDoRun(self):
-        """Huvudmetod som kor nar tjansten startar."""
+        """Huvudmetod som körs när tjänsten startar."""
         try:
             servicemanager.LogMsg(
                 servicemanager.EVENTLOG_INFORMATION_TYPE,
@@ -125,7 +125,7 @@ class HexGeoServerService(win32serviceutil.ServiceFramework):
             log.info("Loggfil: %s", LOG_FILE)
             log.info("=" * 60)
 
-            # Byt arbetskatalog till skriptets katalog (for .env)
+            # Byt arbetskatalog till skriptets katalog (för .env)
             os.chdir(SCRIPT_DIR)
 
             config = load_config()
@@ -146,7 +146,7 @@ class HexGeoServerService(win32serviceutil.ServiceFramework):
 
             if not gs_client.test_connection():
                 log.error("Kunde inte ansluta till GeoServer vid uppstart")
-                log.error("Tjansten fortsatter - forsoker igen vid nasta notifiering")
+                log.error("Tjänsten fortsätter - försöker igen vid nästa notifiering")
 
             run_all_listeners(config, stop_event=self.stop_event)
 
@@ -180,7 +180,7 @@ def show_status():
                     ws.SERVICE_STOPPED: "Stoppad",
                     ws.SERVICE_START_PENDING: "Startar...",
                     ws.SERVICE_STOP_PENDING: "Stoppar...",
-                    ws.SERVICE_RUNNING: "Kor",
+                    ws.SERVICE_RUNNING: "Kör",
                     ws.SERVICE_CONTINUE_PENDING: "Aterupptar...",
                     ws.SERVICE_PAUSE_PENDING: "Pausar...",
                     ws.SERVICE_PAUSED: "Pausad",
@@ -208,7 +208,7 @@ if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "status":
         show_status()
     elif len(sys.argv) == 1:
-        # Kors av Windows Service Manager
+        # Körs av Windows Service Manager
         servicemanager.Initialize()
         servicemanager.PrepareToHostSingle(HexGeoServerService)
         servicemanager.StartServiceCtrlDispatcher()

@@ -1,34 +1,34 @@
 #!/usr/bin/env python3
 """
-GeoServer Schema Listener - Lyssnar pa pg_notify och hanterar workspace/store i GeoServer.
+GeoServer Schema Listener - Lyssnar på pg_notify och hanterar workspace/store i GeoServer.
 
-Processen lyssnar pa tva PostgreSQL-kanaler och hanterar schema-handelser automatiskt:
+Processen lyssnar på två PostgreSQL-kanaler och hanterar schema-händelser automatiskt:
 
-  Kanal 'geoserver_schema'  (utloses av CREATE SCHEMA via SQL-triggern
+  Kanal 'geoserver_schema'  (utlöses av CREATE SCHEMA via SQL-triggern
                              notifiera_geoserver_trigger):
     1. Skapar en workspace i GeoServer med samma namn som schemat.
     2. Skapar en JNDI-datastore i workspace med samma namn som schemat.
 
-  Kanal 'geoserver_schema_drop'  (utloses av DROP SCHEMA via SQL-triggern
+  Kanal 'geoserver_schema_drop'  (utlöses av DROP SCHEMA via SQL-triggern
                                   notifiera_geoserver_borttagning_trigger):
-    1. Tar bort workspace fran GeoServer med recurse=true, vilket raderar
+    1. Tar bort workspace från GeoServer med recurse=true, vilket raderar
        alla datastores och publicerade lager i workspace.
-       Det forhindrar att GeoServer gor upprepade anrop mot ett schema
-       som inte langre existerar.
+       Det förhindrar att GeoServer gör upprepade anrop mot ett schema
+       som inte längre existerar.
 
-Bada kanalerna hanterar enbart scheman vars skyddsniva har publiceras_geoserver = true
+Båda kanalerna hanterar enbart scheman vars skyddsnivå har publiceras_geoserver = true
 i tabellen standardiserade_skyddsnivaer (standardkonfiguration: sk0 och sk1).
 
-Stodjer flera databaser - en lyssnartrad per databas.
-Konfiguration laddas fran miljovariabler eller .env-fil.
+Stödjer flera databaser - en lyssnartråd per databas.
+Konfiguration laddas från miljövariabler eller .env-fil.
 
-Anvandning:
+Användning:
     python geoserver_listener.py              # Starta lyssnaren
     python geoserver_listener.py --test       # Testa GeoServer-anslutning
-    python geoserver_listener.py --dry-run    # Visa vad som skulle goras utan att gora det
+    python geoserver_listener.py --dry-run    # Visa vad som skulle göras utan att göra det
 
-Manuell ateruppsandning (om lyssnaren var nere nar ett schema skapades/togs bort):
-    NOTIFY geoserver_schema,      'sk0_kba_mittschema';   -- lagg till workspace
+Manuell återutsändning (om lyssnaren var nere när ett schema skapades/togs bort):
+    NOTIFY geoserver_schema,      'sk0_kba_mittschema';   -- lägg till workspace
     NOTIFY geoserver_schema_drop, 'sk0_kba_mittschema';   -- ta bort workspace
 
 Krav:
@@ -60,8 +60,8 @@ from requests.auth import HTTPBasicAuth
 log = logging.getLogger("geoserver_listener")
 log.setLevel(logging.INFO)
 
-# Lagg till en konsollhandler bara om ingen handler redan finns
-# (geoserver_service.py lagger till en filhandler innan import)
+# Lägg till en konsollhandler bara om ingen handler redan finns
+# (geoserver_service.py lägger till en filhandler innan import)
 if not log.handlers:
     _console = logging.StreamHandler()
     _console.setFormatter(logging.Formatter(
@@ -70,7 +70,7 @@ if not log.handlers:
     ))
     log.addHandler(_console)
 
-# Forhindra dubbletter via root-loggern
+# Förhindra dubbletter via root-loggern
 log.propagate = False
 
 # =============================================================================
@@ -78,25 +78,25 @@ log.propagate = False
 # =============================================================================
 
 def load_config():
-    """Laddar konfiguration fran miljovariabler.
+    """Laddar konfiguration från miljövariabler.
 
-    Soker forst efter en .env-fil i samma katalog som skriptet.
-    Miljovariabler som redan ar satta har foretrrade framfor .env-filen.
+    Söker först efter en .env-fil i samma katalog som skriptet.
+    Miljövariabler som redan är satta har företräde framför .env-filen.
 
-    Stodjer tva format:
+    Stödjer två format:
     1. Nytt flerdatabas-format: HEX_DB_1_DBNAME, HEX_DB_1_JNDI_sk0 osv.
     2. Gammalt enkeldatabas-format: HEX_PG_DBNAME, HEX_JNDI_sk0 osv.
     """
-    # Forsok ladda .env fran samma katalog som skriptet
+    # Försök ladda .env från samma katalog som skriptet
     env_path = Path(__file__).parent / ".env"
     if env_path.exists():
         try:
             from dotenv import load_dotenv
             load_dotenv(env_path, override=False)
-            log.info("Laddade konfiguration fran %s", env_path)
+            log.info("Laddade konfiguration från %s", env_path)
         except ImportError:
             log.warning(
-                "python-dotenv ar inte installerat - lader enbart fran miljovariabler. "
+                "python-dotenv är inte installerat - laddar enbart från miljövariabler. "
                 "Installera med: pip install python-dotenv"
             )
             _load_env_file_fallback(env_path)
@@ -110,7 +110,7 @@ def load_config():
         "reconnect_delay": int(os.environ.get("HEX_RECONNECT_DELAY", "5")),
         # Databaser
         "databases": _parse_database_configs(),
-        # E-post (valfritt - inaktivt om HEX_SMTP_TO inte ar satt)
+        # E-post (valfritt - inaktivt om HEX_SMTP_TO inte är satt)
         "smtp": {
             "enabled": bool(os.environ.get("HEX_SMTP_TO", "")),
             "host": os.environ.get("HEX_SMTP_HOST", "smtp.office365.com"),
@@ -122,7 +122,7 @@ def load_config():
         },
     }
 
-    # Validera att kritiska variabler ar satta
+    # Validera att kritiska variabler är satta
     missing = []
     if not config["gs_user"]:
         missing.append("HEX_GS_USER")
@@ -132,11 +132,11 @@ def load_config():
         missing.append("HEX_DB_1_DBNAME (eller HEX_PG_DBNAME)")
 
     if missing:
-        log.error("Saknade miljovariabler: %s", ", ".join(missing))
-        log.error("Konfigurera dessa i .env eller som miljovariabler.")
+        log.error("Saknade miljövariabler: %s", ", ".join(missing))
+        log.error("Konfigurera dessa i .env eller som miljövariabler.")
         sys.exit(1)
 
-    # Varna om nagon databas saknar JNDI-kopplingar
+    # Varna om någon databas saknar JNDI-kopplingar
     for db in config["databases"]:
         if not db["jndi_mappings"]:
             log.warning(
@@ -149,12 +149,12 @@ def load_config():
 
 
 def _parse_database_configs():
-    """Parsar databaskonfigurationer fran miljovariabler.
+    """Parsar databaskonfigurationer från miljövariabler.
 
-    Forsoker forst det nya flerdatabas-formatet (HEX_DB_N_*).
+    Försöker först det nya flerdatabas-formatet (HEX_DB_N_*).
     Faller tillbaka till det gamla formatet (HEX_PG_* + HEX_JNDI_*).
     """
-    # Forsoker nytt format: HEX_DB_1_DBNAME, HEX_DB_2_DBNAME osv.
+    # Försöker nytt format: HEX_DB_1_DBNAME, HEX_DB_2_DBNAME osv.
     db_numbers = set()
     for key in os.environ:
         m = re.match(r"^HEX_DB_(\d+)_DBNAME$", key)
@@ -180,10 +180,10 @@ def _parse_database_configs():
 
 
 def _parse_multi_database_configs(db_numbers):
-    """Parsar HEX_DB_N_* grupper fran miljovariabler.
+    """Parsar HEX_DB_N_* grupper från miljövariabler.
 
-    Delade standardvarden hamtas fran HEX_PG_HOST, HEX_PG_PORT osv.
-    Varje databas kan overrida dessa med HEX_DB_N_HOST, HEX_DB_N_PORT osv.
+    Delade standardvärden hämtas från HEX_PG_HOST, HEX_PG_PORT osv.
+    Varje databas kan överskriva dessa med HEX_DB_N_HOST, HEX_DB_N_PORT osv.
     """
     default_host = os.environ.get("HEX_PG_HOST", "localhost")
     default_port = int(os.environ.get("HEX_PG_PORT", "5432"))
@@ -194,7 +194,7 @@ def _parse_multi_database_configs(db_numbers):
     for n in sorted(db_numbers, key=int):
         prefix = f"HEX_DB_{n}_"
 
-        # Parsa JNDI-kopplingar for denna databas
+        # Parsa JNDI-kopplingar för denna databas
         jndi = {}
         jndi_prefix = prefix + "JNDI_"
         for key, value in os.environ.items():
@@ -219,9 +219,9 @@ def _parse_multi_database_configs(db_numbers):
 
 
 def _parse_jndi_mappings():
-    """Parsar JNDI-kopplingar fran miljovariabler (gammalt format).
+    """Parsar JNDI-kopplingar från miljövariabler (gammalt format).
 
-    Lader HEX_JNDI_sk0, HEX_JNDI_sk1 osv.
+    Laddar HEX_JNDI_sk0, HEX_JNDI_sk1 osv.
     Returnerar dict med prefix -> JNDI-namn.
     """
     mappings = {}
@@ -234,7 +234,7 @@ def _parse_jndi_mappings():
 
 
 def _load_env_file_fallback(env_path):
-    """Enkel .env-laddare om python-dotenv inte ar tillgangligt."""
+    """Enkel .env-laddare om python-dotenv inte är tillgängligt."""
     try:
         with open(env_path, encoding="utf-8") as f:
             for line in f:
@@ -256,12 +256,12 @@ def _load_env_file_fallback(env_path):
 # =============================================================================
 
 class EmailNotifier:
-    """Skickar e-postnotifieringar vid fel och aterhamtning.
+    """Skickar e-postnotifieringar vid fel och återhämtning.
 
-    Aktiveras genom att satta HEX_SMTP_TO i miljovariabler.
-    Anvander STARTTLS (port 587) mot Exchange/Office 365 som standard.
+    Aktiveras genom att sätta HEX_SMTP_TO i miljövariabler.
+    Använder STARTTLS (port 587) mot Exchange/Office 365 som standard.
 
-    Har en enkel spam-sparre: samma amne skickas inte oftare an var 5:e minut.
+    Har en enkel spam-spärr: samma ämne skickas inte oftare än var 5:e minut.
     """
 
     # Minsta tid (sekunder) mellan identiska notifieringar
@@ -275,21 +275,21 @@ class EmailNotifier:
         self.password = smtp_config.get("password", "")
         self.from_addr = smtp_config.get("from_addr", "")
         self.to_addr = smtp_config.get("to_addr", "")
-        self._last_sent = {}  # amne -> tidpunkt
+        self._last_sent = {}  # ämne -> tidpunkt
         self._lock = threading.Lock()
 
         if self.enabled:
             if not self.user or not self.password:
                 log.warning(
                     "E-post aktiverad (HEX_SMTP_TO satt) men HEX_SMTP_USER/HEX_SMTP_PASSWORD "
-                    "saknas - e-postnotifieringar avaktiverade"
+                    "saknas — e-postnotifieringar avaktiverade"
                 )
                 self.enabled = False
             else:
                 log.info("E-postnotifieringar aktiverade -> %s", self.to_addr)
 
     def _should_send(self, subject):
-        """Kontrollerar spam-sparren. Returnerar True om meddelandet far skickas."""
+        """Kontrollerar spam-spärren. Returnerar True om meddelandet får skickas."""
         with self._lock:
             last = self._last_sent.get(subject, 0)
             now = time.time()
@@ -321,7 +321,7 @@ class EmailNotifier:
         except Exception as e:
             log.error("Kunde inte skicka e-post ('%s'): %s", subject, e)
 
-    # -- Bekvama metoder for vanliga handelser ---------------------------------
+    # -- Bekväma metoder för vanliga händelser ---------------------------------
 
     def notify_schema_failure(self, schema_name, db_label, error):
         """Notifierar om misslyckad schema-publicering till GeoServer."""
@@ -330,28 +330,28 @@ class EmailNotifier:
             f"Schema '{schema_name}' kunde inte publiceras till GeoServer.\n\n"
             f"Databas: {db_label}\n"
             f"Fel: {error}\n\n"
-            f"Atgard: Kontrollera att GeoServer ar tillgangligt och skicka sedan "
+            f"Åtgärd: Kontrollera att GeoServer är tillgängligt och skicka sedan "
             f"NOTIFY manuellt:\n"
             f"  NOTIFY {CHANNEL_SCHEMA_CREATE}, '{schema_name}';\n",
         )
 
     def notify_pg_connection_lost(self, db_label, error):
-        """Notifierar om forlorad PostgreSQL-anslutning."""
+        """Notifierar om förlorad PostgreSQL-anslutning."""
         self.send(
-            f"[Hex] PostgreSQL-anslutning forlorad: {db_label}",
+            f"[Hex] PostgreSQL-anslutning förlorad: {db_label}",
             f"Lyssnaren tappade anslutningen till databas '{db_label}'.\n\n"
             f"Fel: {error}\n\n"
-            f"Lyssnaren forsoker ateransluta automatiskt.\n"
-            f"Under avbrottet kan schema-notifieringar ga forlorade.\n",
+            f"Lyssnaren försöker återansluta automatiskt.\n"
+            f"Under avbrottet kan schema-notifieringar gå förlorade.\n",
         )
 
     def notify_pg_reconnected(self, db_label):
-        """Notifierar om lyckad ateranslutning till PostgreSQL."""
+        """Notifierar om lyckad återanslutning till PostgreSQL."""
         self.send(
-            f"[Hex] PostgreSQL ateransluten: {db_label}",
-            f"Lyssnaren har ateranslutit till databas '{db_label}'.\n\n"
+            f"[Hex] PostgreSQL återansluten: {db_label}",
+            f"Lyssnaren har återanslutit till databas '{db_label}'.\n\n"
             f"Schema-notifieringar hanteras nu som vanligt.\n"
-            f"OBS: Notifieringar som skickades under avbrottet kan ha gatt forlorade.\n",
+            f"OBS: Notifieringar som skickades under avbrottet kan ha gått förlorade.\n",
         )
 
     def notify_schema_removal_failure(self, schema_name, db_label, error):
@@ -362,18 +362,18 @@ class EmailNotifier:
             f"kunde inte tas bort från GeoServer.\n\n"
             f"Databas: {db_label}\n"
             f"Fel: {error}\n\n"
-            f"Atgard: Kontrollera att GeoServer ar tillgangligt och ta sedan bort "
+            f"Åtgärd: Kontrollera att GeoServer är tillgängligt och ta sedan bort "
             f"workspace manuellt i GeoServer, eller skicka NOTIFY manuellt:\n"
             f"  NOTIFY {CHANNEL_SCHEMA_DROP}, '{schema_name}';\n",
         )
 
     def notify_unexpected_error(self, db_label, error):
-        """Notifierar om ovantat fel."""
+        """Notifierar om oväntat fel."""
         self.send(
-            f"[Hex] Ovantat fel i lyssnaren: {db_label}",
-            f"Ett ovantat fel uppstod i lyssnaren for databas '{db_label}'.\n\n"
+            f"[Hex] Oväntat fel i lyssnaren: {db_label}",
+            f"Ett oväntat fel uppstod i lyssnaren för databas '{db_label}'.\n\n"
             f"Fel: {error}\n\n"
-            f"Lyssnaren forsoker ateransluta automatiskt.\n",
+            f"Lyssnaren försöker återansluta automatiskt.\n",
         )
 
 
@@ -384,12 +384,12 @@ class EmailNotifier:
 class GeoServerClient:
     """Klient for GeoServer REST API."""
 
-    # Timeout i sekunder for enskilda HTTP-anrop
+    # Timeout i sekunder för enskilda HTTP-anrop
     REQUEST_TIMEOUT = 30
 
-    # Retry-konfiguration for transienta fel (timeout, anslutningsfel)
+    # Retry-konfiguration för transienta fel (timeout, anslutningsfel)
     MAX_RETRIES = 3
-    RETRY_BACKOFF = [2, 5, 10]  # Sekunder mellan forsok
+    RETRY_BACKOFF = [2, 5, 10]  # Sekunder mellan försök
 
     def __init__(self, base_url, user, password, dry_run=False):
         self.base_url = base_url.rstrip("/")
@@ -404,17 +404,17 @@ class GeoServerClient:
         })
 
     def _request_with_retry(self, method, url, **kwargs):
-        """Gor ett HTTP-anrop med retry vid transienta fel.
+        """Gör ett HTTP-anrop med retry vid transienta fel.
 
-        Transienta fel (timeout, anslutningsfel) far upp till MAX_RETRIES
-        nya forsok med exponentiell backoff. Lyckade svar och HTTP-felkoder
+        Transienta fel (timeout, anslutningsfel) får upp till MAX_RETRIES
+        nya försök med exponentiell backoff. Lyckade svar och HTTP-felkoder
         (4xx, 5xx) returneras direkt utan retry.
 
         Returns:
             requests.Response
         Raises:
-            requests.exceptions.ConnectionError: Om alla forsok misslyckats
-            requests.exceptions.Timeout: Om alla forsok timeout:at
+            requests.exceptions.ConnectionError: Om alla försök misslyckats
+            requests.exceptions.Timeout: Om alla försök timeout:at
         """
         kwargs.setdefault("timeout", self.REQUEST_TIMEOUT)
         last_exc = None
@@ -428,8 +428,8 @@ class GeoServerClient:
                 if attempt < self.MAX_RETRIES:
                     delay = self.RETRY_BACKOFF[attempt]
                     log.warning(
-                        "  GeoServer-anrop misslyckades (forsok %d/%d): %s. "
-                        "Forsoker igen om %ds...",
+                        "  GeoServer-anrop misslyckades (försök %d/%d): %s. "
+                        "Försöker igen om %ds...",
                         attempt + 1,
                         1 + self.MAX_RETRIES,
                         e,
@@ -438,7 +438,7 @@ class GeoServerClient:
                     time.sleep(delay)
                 else:
                     log.error(
-                        "  GeoServer-anrop misslyckades efter %d forsok: %s",
+                        "  GeoServer-anrop misslyckades efter %d försök: %s",
                         1 + self.MAX_RETRIES,
                         e,
                     )
@@ -452,21 +452,21 @@ class GeoServerClient:
             if resp.status_code == 200:
                 data = resp.json()
                 resources = data.get("about", {}).get("resource", [])
-                gs_version = "okand"
+                gs_version = "okänd"
                 for r in resources:
                     if r.get("@name") == "GeoServer":
-                        gs_version = r.get("Version", "okand")
+                        gs_version = r.get("Version", "okänd")
                         break
-                log.info("Ansluten till GeoServer %s pa %s", gs_version, self.base_url)
+                log.info("Ansluten till GeoServer %s på %s", gs_version, self.base_url)
                 return True
             elif resp.status_code == 401:
-                log.error("Autentisering misslyckades - kontrollera anvandardnamn/losenord")
+                log.error("Autentisering misslyckades - kontrollera användarnamn/lösenord")
                 return False
             else:
-                log.error("Ovantad statuskod fran GeoServer: %d", resp.status_code)
+                log.error("Oväntad statuskod från GeoServer: %d", resp.status_code)
                 return False
         except requests.ConnectionError:
-            log.error("Kan inte ansluta till GeoServer pa %s", self.base_url)
+            log.error("Kan inte ansluta till GeoServer på %s", self.base_url)
             return False
         except Exception as e:
             log.error("Fel vid anslutning till GeoServer: %s", e)
@@ -482,7 +482,7 @@ class GeoServerClient:
     def create_workspace(self, name):
         """Skapar en workspace i GeoServer."""
         if self.workspace_exists(name):
-            log.info("  Workspace '%s' finns redan - hoppar over skapande", name)
+            log.info("  Workspace '%s' finns redan - hoppar över skapande", name)
             return True
 
         payload = {"workspace": {"name": name}}
@@ -512,12 +512,12 @@ class GeoServerClient:
     def delete_workspace(self, name):
         """Tar bort en workspace i GeoServer, inklusive alla datastores och lager.
 
-        Anvander recurse=true for att kaskadradera allt som tillhor workspace:
-        datastores, publicerade lager och stilar som ar knutna enbart till
-        den har workspace tas bort automatiskt av GeoServer.
+        Använder recurse=true för att kaskadradera allt som tillhör workspace:
+        datastores, publicerade lager och stilar som är knutna enbart till
+        den här workspace tas bort automatiskt av GeoServer.
 
         Returnerar True om borttagningen lyckades eller om workspace inte hittades
-        (404 behandlas som framgang - operationen ar idempotent).
+        (404 behandlas som framgång - operationen är idempotent).
         """
         if self.dry_run:
             log.info("  [DRY-RUN] Skulle ta bort workspace (inkl. datastores/lager): %s", name)
@@ -560,7 +560,7 @@ class GeoServerClient:
             schema_name: PostgreSQL-schemanamn att exponera
         """
         if self.datastore_exists(workspace, store_name):
-            log.info("  Datastore '%s' finns redan i workspace '%s' - hoppar over", store_name, workspace)
+            log.info("  Datastore '%s' finns redan i workspace '%s' - hoppar över", store_name, workspace)
             return True
 
         payload = {
@@ -611,38 +611,38 @@ class GeoServerClient:
 # SCHEMA HANDLER
 # =============================================================================
 
-# Regex som matchar giltiga schemanamn for GeoServer-publicering.
-# Maste overensstamma med SQL-valideringen i validera_schemanamn(),
-# men begransat till sk0/sk1 (sk2 publiceras inte till GeoServer).
+# Regex som matchar giltiga schemanamn för GeoServer-publicering.
+# Måste överensstämma med SQL-valideringen i validera_schemanamn(),
+# men begränsat till sk0/sk1 (sk2 publiceras inte till GeoServer).
 SCHEMA_PATTERN = re.compile(r"^sk[01]_(ext|kba|sys)_.+$")
 
-# pg_notify-kanalnamn. Maste overensstamma med SQL-funktionerna
+# pg_notify-kanalnamn. Måste överensstämma med SQL-funktionerna
 # notifiera_geoserver() och notifiera_geoserver_borttagning().
 CHANNEL_SCHEMA_CREATE = "geoserver_schema"
 CHANNEL_SCHEMA_DROP   = "geoserver_schema_drop"
 
 
 def _db_tag(db_label):
-    """Returnerar ett formatterat logg-prefix for en databas, t.ex. '[geodata_sk0] '."""
+    """Returnerar ett formaterat logg-prefix för en databas, t.ex. '[geodata_sk0] '."""
     return f"[{db_label}] " if db_label else ""
 
 
 def _validate_schema_name(schema_name, tag):
-    """Validerar att schemanamnet matchar det forväntade monstret.
+    """Validerar att schemanamnet matchar det förväntade mönstret.
 
-    SQL-triggern filtrerar redan, men pg_notify-kanalerna ar oppna for
-    alla med NOTIFY-rattighet. Den har valideringen ar ett andra skyddslager.
+    SQL-triggern filtrerar redan, men pg_notify-kanalerna är öppna för
+    alla med NOTIFY-rättighet. Den här valideringen är ett andra skyddslager.
 
     Args:
-        schema_name: Schemanamnet fran notifieringens payload.
-        tag:         Logg-prefix (fran _db_tag).
+        schema_name: Schemanamnet från notifieringens payload.
+        tag:         Logg-prefix (från _db_tag).
 
     Returns:
-        True om schemanamnet ar giltigt, annars False (efter loggning).
+        True om schemanamnet är giltigt, annars False (efter loggning).
     """
     if not SCHEMA_PATTERN.match(schema_name):
         log.warning(
-            "%sOgiltigt schemanamn '%s' - matchar inte monster '%s'. Ignorerar.",
+            "%sOgiltigt schemanamn '%s' - matchar inte mönster '%s'. Ignorerar.",
             tag,
             schema_name,
             SCHEMA_PATTERN.pattern,
@@ -697,8 +697,8 @@ def handle_schema_removal_notification(schema_name, gs_client, db_label=""):
     """Hanterar en notifiering om borttaget schema (kanal: CHANNEL_SCHEMA_DROP).
 
     Tar bort workspace (inkl. datastores och publicerade lager) i GeoServer.
-    Samma validering som handle_schema_notification — kanalen ar oppen for
-    alla med NOTIFY-rattighet sa schemanamnet maste kontrolleras.
+    Samma validering som handle_schema_notification — kanalen är öppen för
+    alla med NOTIFY-rättighet så schemanamnet måste kontrolleras.
     """
     tag = _db_tag(db_label)
     log.info("%sMottog borttagningsnotifiering for schema: %s", tag, schema_name)
@@ -706,12 +706,12 @@ def handle_schema_removal_notification(schema_name, gs_client, db_label=""):
     if not _validate_schema_name(schema_name, tag):
         return False
 
-    log.info("%s  Tar bort workspace '%s' fran GeoServer...", tag, schema_name)
+    log.info("%s  Tar bort workspace '%s' från GeoServer...", tag, schema_name)
     if not gs_client.delete_workspace(schema_name):
         log.error("%s  Workspace '%s' kunde inte tas bort", tag, schema_name)
         return False
 
-    log.info("%s  Schema '%s' avpublicerat fran GeoServer", tag, schema_name)
+    log.info("%s  Schema '%s' avpublicerat från GeoServer", tag, schema_name)
     return True
 
 
@@ -720,28 +720,28 @@ def handle_schema_removal_notification(schema_name, gs_client, db_label=""):
 # =============================================================================
 
 def _dispatch_notification_error(channel, db_label, schema_name, error, notifier, transient=False):
-    """Centraliserad felhantering for schema-notifieringar.
+    """Centraliserad felhantering för schema-notifieringar.
 
     Loggar ett beskrivande felmeddelande och skickar e-postnotifiering via
-    notifier (om konfigurerat). Beteendet skiljer sig beroende pa kanal och
-    om felet ar transient (GeoServer otillganglig) eller oväntat.
+    notifier (om konfigurerat). Beteendet skiljer sig beroende på kanal och
+    om felet är transient (GeoServer otillgänglig) eller oväntat.
 
     Args:
         channel:   pg_notify-kanalen (CHANNEL_SCHEMA_CREATE eller CHANNEL_SCHEMA_DROP).
-        db_label:  Databasnamn for logg-prefix.
-        schema_name: Schemanamnet fran notifieringens payload.
+        db_label:  Databasnamn för logg-prefix.
+        schema_name: Schemanamnet från notifieringens payload.
         error:     Undantaget eller felbeskrivningen.
         notifier:  EmailNotifier-instans eller None.
-        transient: True om felet beror pa timeout/anslutningsproblem mot GeoServer.
-                   Dessa fel kan atgardas genom att skicka om notifieringen manuellt.
+        transient: True om felet beror på timeout/anslutningsproblem mot GeoServer.
+                   Dessa fel kan åtgärdas genom att skicka om notifieringen manuellt.
     """
     is_drop = channel == CHANNEL_SCHEMA_DROP
 
     if is_drop:
         if transient:
             log.error(
-                "[%s] Borttagning av schema '%s' misslyckades efter alla retry-forsok: %s. "
-                "Skicka NOTIFY manuellt for att forsoka igen: "
+                "[%s] Borttagning av schema '%s' misslyckades efter alla retry-försök: %s. "
+                "Skicka NOTIFY manuellt för att försöka igen: "
                 "NOTIFY %s, '%s';",
                 db_label, schema_name, error, CHANNEL_SCHEMA_DROP, schema_name,
             )
@@ -752,9 +752,9 @@ def _dispatch_notification_error(channel, db_label, schema_name, error, notifier
     else:
         if transient:
             log.error(
-                "[%s] Schema '%s' misslyckades efter alla retry-forsok: %s. "
-                "Schemat ignoreras denna gang - skicka NOTIFY manuellt "
-                "eller aterskap schemat for att forsoka igen.",
+                "[%s] Schema '%s' misslyckades efter alla retry-försök: %s. "
+                "Schemat ignoreras denna gång - skicka NOTIFY manuellt "
+                "eller återskapa schemat för att försöka igen.",
                 db_label, schema_name, error,
             )
         else:
@@ -763,18 +763,18 @@ def _dispatch_notification_error(channel, db_label, schema_name, error, notifier
             notifier.notify_schema_failure(schema_name, db_label, error)
 
 def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None, notifier=None):
-    """Huvudloop som lyssnar pa pg_notify och hanterar notifieringar for en databas.
+    """Huvudloop som lyssnar på pg_notify och hanterar notifieringar för en databas.
 
     Args:
         db_config: Databaskonfiguration med host, port, dbname, user, password, jndi_mappings
-        reconnect_delay: Sekunder att vanta innan ateranslutning
+        reconnect_delay: Sekunder att vänta innan återanslutning
         gs_client: GeoServerClient-instans
         stop_event: threading.Event som signalerar att loopen ska avslutas
-                    (anvands av Windows-tjansten for graceful shutdown)
+                    (används av Windows-tjänsten för graceful shutdown)
         notifier: EmailNotifier-instans (eller None om e-post ej konfigurerats)
     """
     db_label = db_config["dbname"]
-    was_disconnected = False  # Sparar om vi tappat anslutning for aterhamtningsnotifiering
+    was_disconnected = False  # Sparar om vi tappat anslutning för återhämtningsnotifiering
 
     while not (stop_event and stop_event.is_set()):
         conn = None
@@ -795,18 +795,18 @@ def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None, notifier
             cur = conn.cursor()
             cur.execute(f"LISTEN {CHANNEL_SCHEMA_CREATE};")
             cur.execute(f"LISTEN {CHANNEL_SCHEMA_DROP};")
-            log.info("[%s] Lyssnar pa kanaler '%s' och '%s'...",
+            log.info("[%s] Lyssnar på kanaler '%s' och '%s'...",
                      db_label, CHANNEL_SCHEMA_CREATE, CHANNEL_SCHEMA_DROP)
-            log.info("[%s] Vantar pa schema-handelser...", db_label)
+            log.info("[%s] Väntar på schema-händelser...", db_label)
 
-            # Skicka aterhamtningsnotifiering om vi tappat anslutning tidigare
+            # Skicka återhämtningsnotifiering om vi tappat anslutning tidigare
             if was_disconnected and notifier:
                 notifier.notify_pg_reconnected(db_label)
                 was_disconnected = False
 
             while not (stop_event and stop_event.is_set()):
-                # Vanta pa notifiering med 5s timeout
-                # Kort timeout sa att stop_event kontrolleras regelbundet
+                # Vänta på notifiering med 5s timeout
+                # Kort timeout så att stop_event kontrolleras regelbundet
                 if select.select([conn], [], [], 5) == ([], [], []):
                     # Timeout - skicka keepalive
                     cur.execute("SELECT 1")
@@ -836,7 +836,7 @@ def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None, notifier
                                 db_label=db_label,
                             )
                     except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
-                        # Transienta fel - alla retry i _request_with_retry ar forbrukade.
+                        # Transienta fel - alla retry i _request_with_retry är förbrukade.
                         _dispatch_notification_error(
                             notify.channel, db_label, schema_name, e, notifier, transient=True
                         )
@@ -846,12 +846,12 @@ def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None, notifier
                         )
 
         except psycopg2.OperationalError as e:
-            log.error("[%s] PostgreSQL-anslutning forlorad: %s", db_label, e)
+            log.error("[%s] PostgreSQL-anslutning förlorad: %s", db_label, e)
             was_disconnected = True
             if notifier:
                 notifier.notify_pg_connection_lost(db_label, e)
         except Exception as e:
-            log.error("[%s] Ovantat fel: %s", db_label, e)
+            log.error("[%s] Oväntat fel: %s", db_label, e)
             was_disconnected = True
             if notifier:
                 notifier.notify_unexpected_error(db_label, e)
@@ -862,17 +862,17 @@ def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None, notifier
         if stop_event and stop_event.is_set():
             break
 
-        log.info("[%s] Ateransluter om %d sekunder...", db_label, reconnect_delay)
+        log.info("[%s] Återansluter om %d sekunder...", db_label, reconnect_delay)
         time.sleep(reconnect_delay)
 
     log.info("[%s] Lyssnaren avslutad.", db_label)
 
 
 def run_all_listeners(config, dry_run=False, stop_event=None):
-    """Startar lyssnare for alla konfigurerade databaser.
+    """Startar lyssnare för alla konfigurerade databaser.
 
-    En databas kors direkt i anropande trad.
-    Flera databaser far varsin trad.
+    En databas körs direkt i anropande tråd.
+    Flera databaser får varsin tråd.
     """
     if stop_event is None:
         stop_event = threading.Event()
@@ -881,7 +881,7 @@ def run_all_listeners(config, dry_run=False, stop_event=None):
     notifier = EmailNotifier(config["smtp"])
 
     if len(databases) == 1:
-        # En databas - kor direkt utan extra trad
+        # En databas - kör direkt utan extra tråd
         gs_client = GeoServerClient(
             base_url=config["gs_url"],
             user=config["gs_user"],
@@ -891,10 +891,10 @@ def run_all_listeners(config, dry_run=False, stop_event=None):
         listen_loop(databases[0], config["reconnect_delay"], gs_client, stop_event, notifier)
         return
 
-    # Flera databaser - en trad per databas
+    # Flera databaser - en tråd per databas
     threads = []
     for db_config in databases:
-        # Varje trad far sin egen GeoServerClient (requests.Session ar inte tradsaker)
+        # Varje tråd får sin egen GeoServerClient (requests.Session är inte trådsäker)
         gs_client = GeoServerClient(
             base_url=config["gs_url"],
             user=config["gs_user"],
@@ -909,14 +909,14 @@ def run_all_listeners(config, dry_run=False, stop_event=None):
         )
         t.start()
         threads.append(t)
-        log.info("Startade lyssnartrad for databas '%s'", db_config["dbname"])
+        log.info("Startade lyssnartråd för databas '%s'", db_config["dbname"])
 
     try:
         while any(t.is_alive() for t in threads):
             for t in threads:
                 t.join(timeout=1.0)
     except KeyboardInterrupt:
-        log.info("Avbruten av anvandaren - avslutar alla lyssnare...")
+        log.info("Avbruten av användaren - avslutar alla lyssnare...")
         stop_event.set()
         for t in threads:
             t.join(timeout=5.0)
@@ -938,7 +938,7 @@ def main():
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Visa vad som skulle goras utan att gora det",
+        help="Visa vad som skulle göras utan att göra det",
     )
     args = parser.parse_args()
 
@@ -958,9 +958,9 @@ def main():
     if config["smtp"]["enabled"]:
         log.info("E-post:     %s -> %s", config["smtp"]["host"], config["smtp"]["to_addr"])
     else:
-        log.info("E-post:     avaktiverad (satt HEX_SMTP_TO for att aktivera)")
+        log.info("E-post:     avaktiverad (sätt HEX_SMTP_TO för att aktivera)")
     if args.dry_run:
-        log.info("LAGE: dry-run (inga andringar gors)")
+        log.info("LÄGE: dry-run (inga ändringar görs)")
     log.info("=" * 60)
 
     # Testa GeoServer-anslutning
@@ -979,7 +979,7 @@ def main():
         log.info("Anslutningstest lyckat")
         sys.exit(0)
 
-    # Starta lyssnare for alla databaser
+    # Starta lyssnare för alla databaser
     run_all_listeners(config, dry_run=args.dry_run)
 
 
