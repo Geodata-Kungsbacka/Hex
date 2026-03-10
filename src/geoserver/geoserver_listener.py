@@ -279,14 +279,10 @@ class EmailNotifier:
         self._lock = threading.Lock()
 
         if self.enabled:
-            if not self.user or not self.password:
-                log.warning(
-                    "E-post aktiverad (HEX_SMTP_TO satt) men HEX_SMTP_USER/HEX_SMTP_PASSWORD "
-                    "saknas — e-postnotifieringar avaktiverade"
-                )
-                self.enabled = False
+            if self.user and self.password:
+                log.info("E-postnotifieringar aktiverade (autentiserad) -> %s", self.to_addr)
             else:
-                log.info("E-postnotifieringar aktiverade -> %s", self.to_addr)
+                log.info("E-postnotifieringar aktiverade (anonym relay) -> %s", self.to_addr)
 
     def _should_send(self, subject):
         """Kontrollerar spam-spärren. Returnerar True om meddelandet får skickas."""
@@ -314,8 +310,9 @@ class EmailNotifier:
 
         try:
             with smtplib.SMTP(self.host, self.port, timeout=30) as server:
-                server.starttls()
-                server.login(self.user, self.password)
+                if self.user and self.password:
+                    server.starttls()
+                    server.login(self.user, self.password)
                 server.send_message(msg)
             log.info("E-postnotifiering skickad: %s", subject)
         except Exception as e:
