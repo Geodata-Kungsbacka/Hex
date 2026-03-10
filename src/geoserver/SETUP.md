@@ -596,12 +596,32 @@ Tjänsten startar automatiskt med Windows om du ställt in det i services.msc
 
 | Fil | Beskrivning |
 |---|---|
-| `D:\ProgramData\Hex\geoserver_listener.log` | Huvudlogg |
+| `D:\ProgramData\Hex\geoserver_listener.log` | Huvudlogg (standardsökväg) |
 | Windows Event Viewer > Application | Start/stopp-händelser |
 
 Loggen roterar automatiskt vid 5 MB (5 gamla filer sparas).
 
-Ändra loggkatalogen med miljövariabeln `HEX_LOG_DIR`.
+### Anpassa loggkatalogen med HEX_LOG_DIR
+
+Loggfilens plats styrs av miljövariabeln `HEX_LOG_DIR`. Om den inte är satt
+används standardvärdet `D:\ProgramData\Hex`.
+
+Sätt den i `.env` för att lägga loggen nära övriga installationsfiler:
+
+```env
+HEX_LOG_DIR=D:\Hex\src\geoserver\logs
+```
+
+Katalogen skapas automatiskt om den inte finns. Den exakta sökvägen loggas
+vid uppstart:
+
+```
+[INFO] Loggfil: D:\Hex\src\geoserver\logs\geoserver_listener.log
+```
+
+> **OBS:** Kommandona för att läsa loggen i steg 9d och 10 nedan använder
+> standardsökvägen `D:\ProgramData\Hex`. Ersätt med din sökväg om du har
+> satt `HEX_LOG_DIR`.
 
 ---
 
