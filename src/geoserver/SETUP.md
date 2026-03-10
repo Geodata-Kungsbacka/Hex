@@ -372,8 +372,28 @@ Testa att lyssnaren kan nå både PostgreSQL och GeoServer:
 
 ```cmd
 cd D:\Hex\src\geoserver
-py geoserver_listener.py --test
+[Python-sökväg]\python.exe geoserver_listener.py --test
 ```
+
+> **OBS – systemspecifikt Python-sökväg**
+> Kommandot `py` (Windows Python Launcher) läser skriptets shebang-rad
+> (`#!/usr/bin/env python3`) och letar upp `python3` i PATH. På servrar där
+> Python installerats på en icke-standardiserad plats (t.ex. `D:\Python\`)
+> kan detta leda till att Windows Store-stubben (`WindowsApps\python3.exe`)
+> hittas istället – en platshållare som inte kan köra filer och ger felet
+> *"Unable to create process using …\WindowsApps\python3.exe"*.
+>
+> **Lösning:** Anropa Python-tolken direkt med dess fulla sökväg:
+>
+> ```cmd
+> D:\Python\python.exe geoserver_listener.py --test
+> ```
+>
+> Rätt sökväg på den aktuella servern kan alltid verifieras med:
+>
+> ```cmd
+> py -c "import sys; print(sys.executable)"
+> ```
 
 Förväntad utskrift:
 ```
