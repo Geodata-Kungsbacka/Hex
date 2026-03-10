@@ -428,7 +428,7 @@ Kör lyssnaren i dry-run-läge för att se vad som händer utan att göra ändri
 
 **Terminal 1 - Starta lyssnaren** (från `D:\Hex\src\geoserver`):
 ```cmd
-py geoserver_listener.py --dry-run
+[Python-sökväg]\python.exe geoserver_listener.py --dry-run
 ```
 
 **Terminal 2 - Skapa ett testschema i psql (anslut till en av databaserna):**
@@ -472,7 +472,7 @@ Avbryt lyssnaren med `Ctrl+C`.
 Upprepa steg 7, men UTAN `--dry-run`:
 
 ```cmd
-py geoserver_listener.py
+[Python-sökväg]\python.exe geoserver_listener.py
 ```
 
 Skapa schemat och verifiera i GeoServer:
@@ -501,7 +501,7 @@ Nu när vi vet att allt fungerar, installera det som en riktig tjänst.
 
 ```cmd
 cd D:\Hex\src\geoserver
-py geoserver_service.py install
+[Python-sökväg]\python.exe geoserver_service.py install
 ```
 
 Förväntad utskrift:
@@ -528,7 +528,7 @@ efter felsökning. Starttypen ska vara **Automatic** (sätts under fliken
 ### 9c. Starta tjänsten
 
 ```cmd
-py geoserver_service.py start
+[Python-sökväg]\python.exe geoserver_service.py start
 ```
 
 Eller via `services.msc`, eller:
@@ -539,7 +539,7 @@ net start HexGeoServerListener
 ### 9d. Kontrollera status
 
 ```cmd
-py geoserver_service.py status
+[Python-sökväg]\python.exe geoserver_service.py status
 ```
 
 Kontrollera loggfilen:
