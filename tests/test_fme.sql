@@ -1,61 +1,61 @@
 /******************************************************************************
- * TEST SUITE: FME TWO-STEP TABLE CREATION
+ * TESTSVIT: FME TVÅSTEGS-TABELLSKAPANDE
  *
- * Tests the deferred geometry path for system users (e.g. FME) that create
- * tables in two steps:
- *   Step A) CREATE TABLE ... (data columns, NO geometry column)
- *   Step B) ALTER TABLE ... ADD COLUMN geom geometry(...)
+ * Testar den uppskjutna geometrivägen för systemanvändare (t.ex. FME) som
+ * skapar tabeller i två steg:
+ *   Steg A) CREATE TABLE ... (datakolumner, INGEN geometrikolumn)
+ *   Steg B) ALTER TABLE ... ADD COLUMN geom geometry(...)
  *
- * Objects under test:
- *   public.hex_systemanvandare     — system user registry
- *   public.hex_afvaktande_geometri — pending geometry registry
- *   hantera_ny_tabell              — deferred validation logic
- *   hantera_kolumntillagg          — pending completion + suffix validation
+ * Objekt under test:
+ *   public.hex_systemanvandare     — register över systemanvändare
+ *   public.hex_afvaktande_geometri — register över väntande geometri
+ *   hantera_ny_tabell              — uppskjuten valideringslogik
+ *   hantera_kolumntillagg          — väntande slutförande + suffixvalidering
  *
- * Groups:
- *   F1  Infrastructure (tables exist, fme seeded)
- *   F2  Happy path – _ext_ schema two-step
- *   F3  Happy path – _kba_ schema two-step (geometry constraint deferred)
- *   F4  Suffix mismatch caught at ALTER TABLE ADD COLUMN geom
- *   F5  Non-system user still blocked (regression guard)
- *   F6  FME with geometry in CREATE TABLE (normal path, no deferral)
- *   F7  Custom system user registered in hex_systemanvandare
- *   F8  Multiple pending tables simultaneously
- *   F9  FME non-geometry table without suffix (no deferral expected)
- *   F10 Partial application_name does not trigger deferred path
- *   F11 DROP TABLE on pending table cleans hex_afvaktande_geometri
+ * Grupper:
+ *   F1  Infrastruktur (tabeller finns, fme inlagd)
+ *   F2  Lyckad väg – _ext_-schema tvåsteg
+ *   F3  Lyckad väg – _kba_-schema tvåsteg (geometribegränsning uppskjuten)
+ *   F4  Suffixmismatch fångad vid ALTER TABLE ADD COLUMN geom
+ *   F5  Vanlig användare fortfarande blockerad (regressionstest)
+ *   F6  FME med geometri i CREATE TABLE (normal väg, ingen uppskjutning)
+ *   F7  Anpassad systemanvändare registrerad i hex_systemanvandare
+ *   F8  Flera väntande tabeller samtidigt
+ *   F9  FME-tabell utan geometrisuffix (ingen uppskjutning förväntad)
+ *   F10 Partiellt application_name utlöser inte uppskjuten väg
+ *   F11 DROP TABLE på väntande tabell rensar hex_afvaktande_geometri
  *
- * Convention: NOTICE = PASSED/INFO,  WARNING = FAILED/BUG CONFIRMED
+ * Konvention: NOTICE = GODKÄNT/INFO,  WARNING = MISSLYCKAT/BUG BEKRÄFTAD
  *
- * PREREQUISITES:
- *   Hex installed (all functions + tables deployed, including hex_systemanvandare
- *   and hex_afvaktande_geometri from this release).
- *   Run as superuser or Hex system owner.
+ * FÖRUTSÄTTNINGAR:
+ *   Hex installerat (alla funktioner + tabeller driftsatta, inklusive
+ *   hex_systemanvandare och hex_afvaktande_geometri från denna release).
+ *   Kör som superuser eller Hex-systemägare.
  ******************************************************************************/
 
 \echo ''
 \echo '============================================================'
-\echo 'HEX FME TWO-STEP TEST SUITE'
+\echo 'HEX FME TVÅSTEGS-TESTSVIT'
 \echo '============================================================'
 
 ------------------------------------------------------------------------
--- INITIAL CLEANUP
+-- INLEDANDE RENSNING
 ------------------------------------------------------------------------
 \echo ''
-\echo '--- Initial cleanup ---'
+\echo '--- Inledande rensning ---'
 
 DROP SCHEMA IF EXISTS sk0_ext_fmetest     CASCADE;
 DROP SCHEMA IF EXISTS sk1_kba_fmetest CASCADE;
 
--- Clean any stale pending entries left by previous test runs
+-- Rensa eventuella kvarstående väntande poster från tidigare testkörningar
 DELETE FROM public.hex_afvaktande_geometri AS ag
 WHERE ag.schema_namn IN ('sk0_ext_fmetest', 'sk1_kba_fmetest');
 
 ------------------------------------------------------------------------
--- SETUP
+-- FÖRBEREDELSER
 ------------------------------------------------------------------------
 \echo ''
-\echo '--- Creating test schemas ---'
+\echo '--- Skapar testscheman ---'
 
 CREATE SCHEMA sk0_ext_fmetest;
 CREATE SCHEMA sk1_kba_fmetest;
@@ -63,71 +63,71 @@ CREATE SCHEMA sk1_kba_fmetest;
 RESET application_name;
 
 ------------------------------------------------------------------------
--- F1: INFRASTRUCTURE
+-- F1: INFRASTRUKTUR
 ------------------------------------------------------------------------
 \echo ''
-\echo '--- GROUP F1: Infrastructure ---'
+\echo '--- GRUPP F1: Infrastruktur ---'
 
--- F1a: hex_systemanvandare table exists
+-- F1a: tabellen hex_systemanvandare finns
 DO $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM information_schema.tables
         WHERE table_schema = 'public' AND table_name = 'hex_systemanvandare'
     ) THEN
-        RAISE NOTICE 'TEST F1a PASSED: public.hex_systemanvandare table exists';
+        RAISE NOTICE 'TEST F1a GODKÄNT:tabellen public.hex_systemanvandare finns';
     ELSE
-        RAISE WARNING 'TEST F1a FAILED: public.hex_systemanvandare table missing – install incomplete';
+        RAISE WARNING 'TEST F1a MISSLYCKAT:tabellen public.hex_systemanvandare saknas – installation ofullständig';
     END IF;
 END $$;
 
--- F1b: 'fme' is seeded in hex_systemanvandare
+-- F1b: 'fme' är inlagd i hex_systemanvandare
 DO $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM public.hex_systemanvandare WHERE anvandare = 'fme'
     ) THEN
-        RAISE NOTICE 'TEST F1b PASSED: fme entry seeded in hex_systemanvandare';
+        RAISE NOTICE 'TEST F1b GODKÄNT:fme-post finns i hex_systemanvandare';
     ELSE
-        RAISE WARNING 'TEST F1b FAILED: fme not found in hex_systemanvandare – seed missing or install incomplete';
+        RAISE WARNING 'TEST F1b MISSLYCKAT:fme saknas i hex_systemanvandare – grunddata saknas eller installation ofullständig';
     END IF;
 END $$;
 
--- F1c: hex_afvaktande_geometri table exists
+-- F1c: tabellen hex_afvaktande_geometri finns
 DO $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM information_schema.tables
         WHERE table_schema = 'public' AND table_name = 'hex_afvaktande_geometri'
     ) THEN
-        RAISE NOTICE 'TEST F1c PASSED: public.hex_afvaktande_geometri table exists';
+        RAISE NOTICE 'TEST F1c GODKÄNT:tabellen public.hex_afvaktande_geometri finns';
     ELSE
-        RAISE WARNING 'TEST F1c FAILED: public.hex_afvaktande_geometri table missing – install incomplete';
+        RAISE WARNING 'TEST F1c MISSLYCKAT:tabellen public.hex_afvaktande_geometri saknas – installation ofullständig';
     END IF;
 END $$;
 
--- F1d: hex_afvaktande_geometri starts empty for our test schemas
+-- F1d: hex_afvaktande_geometri är tom för våra testscheman
 DO $$
 DECLARE cnt integer;
 BEGIN
     SELECT COUNT(*) INTO cnt FROM public.hex_afvaktande_geometri AS ag
     WHERE ag.schema_namn IN ('sk0_ext_fmetest', 'sk1_kba_fmetest');
     IF cnt = 0 THEN
-        RAISE NOTICE 'TEST F1d PASSED: No stale pending entries for test schemas';
+        RAISE NOTICE 'TEST F1d GODKÄNT:Inga inaktuella väntande poster för testscheman';
     ELSE
-        RAISE WARNING 'TEST F1d FAILED: % stale pending entries exist for test schemas (cleanup failed)', cnt;
+        RAISE WARNING 'TEST F1d MISSLYCKAT:% inaktuella väntande poster finns för testscheman (rensning misslyckades)', cnt;
     END IF;
 END $$;
 
 ------------------------------------------------------------------------
--- F2: HAPPY PATH – _ext_ SCHEMA TWO-STEP
+-- F2: LYCKAD VÄG – _ext_-SCHEMA TVÅSTEG
 ------------------------------------------------------------------------
 \echo ''
-\echo '--- GROUP F2: Happy path – ext schema two-step ---'
+\echo '--- GRUPP F2: Lyckad väg – ext-schema tvåsteg ---'
 
--- Step A: FME creates table with geometry suffix but no geometry column.
--- Expect: WARNING (not EXCEPTION), table created, standard columns added,
---         row inserted into hex_afvaktande_geometri.
+-- Steg A: FME skapar tabell med geometrisuffix men utan geometrikolumn.
+-- Förväntat: WARNING (inte EXCEPTION), tabell skapad, standardkolumner tillagda,
+--            rad infogad i hex_afvaktande_geometri.
 SET application_name = 'fme';
 
 DO $$
@@ -137,28 +137,28 @@ BEGIN
         vagnamn    text,
         hastighet  integer
     );
-    RAISE NOTICE 'TEST F2a PASSED: Step A succeeded – FME created _l table without geom (no exception)';
+    RAISE NOTICE 'TEST F2a GODKÄNT:Steg A lyckades – FME skapade _l-tabell utan geom (inget undantag)';
 EXCEPTION
     WHEN OTHERS THEN
-        RAISE WARNING 'TEST F2a FAILED: Step A raised exception: %', SQLERRM;
+        RAISE WARNING 'TEST F2a MISSLYCKAT:Steg A orsakade undantag: %', SQLERRM;
 END $$;
 
 RESET application_name;
 
--- F2b: Row registered in hex_afvaktande_geometri
+-- F2b: Rad registrerad i hex_afvaktande_geometri
 DO $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM public.hex_afvaktande_geometri AS ag
         WHERE ag.schema_namn = 'sk0_ext_fmetest' AND ag.tabell_namn = 'trafikdata_l'
     ) THEN
-        RAISE NOTICE 'TEST F2b PASSED: Table registered in hex_afvaktande_geometri after step A';
+        RAISE NOTICE 'TEST F2b GODKÄNT:Tabell registrerad i hex_afvaktande_geometri efter steg A';
     ELSE
-        RAISE WARNING 'TEST F2b FAILED: Table NOT in hex_afvaktande_geometri – deferred path did not fire';
+        RAISE WARNING 'TEST F2b MISSLYCKAT:Tabell EJ i hex_afvaktande_geometri – uppskjuten sökväg aktiverades inte';
     END IF;
 END $$;
 
--- F2c: Standard column gid added in step A (geometry columns are deferred, standard cols are not)
+-- F2c: Standardkolumnen gid tillagd i steg A (geometrikolumner är uppskjutna, standardkolumner inte)
 DO $$
 BEGIN
     IF EXISTS (
@@ -166,13 +166,13 @@ BEGIN
         WHERE table_schema = 'sk0_ext_fmetest' AND table_name = 'trafikdata_l'
         AND column_name = 'gid'
     ) THEN
-        RAISE NOTICE 'TEST F2c PASSED: Standard column gid added during step A (non-geometry columns not deferred)';
+        RAISE NOTICE 'TEST F2c GODKÄNT:Standardkolumn gid tillagd under steg A (icke-geometrikolumner uppskjuts inte)';
     ELSE
-        RAISE WARNING 'TEST F2c FAILED: gid missing – hantera_ny_tabell did not restructure table during step A';
+        RAISE WARNING 'TEST F2c MISSLYCKAT:gid saknas – hantera_ny_tabell omstrukturerade inte tabellen under steg A';
     END IF;
 END $$;
 
--- F2d: No GiST index yet (step 8 was deferred because geometriinfo = NULL)
+-- F2d: Inget GiST-index ännu (steg 8 uppskjutet eftersom geometriinfo = NULL)
 DO $$
 DECLARE idx_count integer;
 BEGIN
@@ -180,42 +180,42 @@ BEGIN
     WHERE schemaname = 'sk0_ext_fmetest' AND tablename = 'trafikdata_l'
     AND indexdef LIKE '%USING gist%';
     IF idx_count = 0 THEN
-        RAISE NOTICE 'TEST F2d PASSED: No GiST index yet after step A (correctly deferred)';
+        RAISE NOTICE 'TEST F2d GODKÄNT:Inget GiST-index ännu efter steg A (korrekt uppskjutet)';
     ELSE
-        RAISE WARNING 'TEST F2d FAILED: GiST index exists after step A – deferred path not taken';
+        RAISE WARNING 'TEST F2d MISSLYCKAT:GiST-index finns efter steg A – uppskjuten sökväg togs inte';
     END IF;
 END $$;
 
--- F2e: No geometry column yet
+-- F2e: Ingen geometrikolumn ännu
 DO $$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM geometry_columns
         WHERE f_table_schema = 'sk0_ext_fmetest' AND f_table_name = 'trafikdata_l'
     ) THEN
-        RAISE NOTICE 'TEST F2e PASSED: No geometry column on table after step A (as expected)';
+        RAISE NOTICE 'TEST F2e GODKÄNT:Ingen geometrikolumn på tabellen efter steg A (som förväntat)';
     ELSE
-        RAISE WARNING 'TEST F2e FAILED: Geometry column found after step A – unexpected';
+        RAISE WARNING 'TEST F2e MISSLYCKAT:Geometrikolumn hittades efter steg A – oväntat';
     END IF;
 END $$;
 
--- Step B: FME issues ALTER TABLE ADD COLUMN geom
+-- Steg B: FME kör ALTER TABLE ADD COLUMN geom
 ALTER TABLE sk0_ext_fmetest.trafikdata_l ADD COLUMN geom geometry(LineString, 3007);
 
--- F2f: Pending entry removed
+-- F2f: Väntande post borttagen
 DO $$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM public.hex_afvaktande_geometri AS ag
         WHERE ag.schema_namn = 'sk0_ext_fmetest' AND ag.tabell_namn = 'trafikdata_l'
     ) THEN
-        RAISE NOTICE 'TEST F2f PASSED: Pending entry removed from hex_afvaktande_geometri after step B';
+        RAISE NOTICE 'TEST F2f GODKÄNT:Väntande post borttagen från hex_afvaktande_geometri efter steg B';
     ELSE
-        RAISE WARNING 'TEST F2f FAILED: Pending entry still in hex_afvaktande_geometri after step B';
+        RAISE WARNING 'TEST F2f MISSLYCKAT:Väntande post finns kvar i hex_afvaktande_geometri efter steg B';
     END IF;
 END $$;
 
--- F2g: GiST index created during step B (deferred step 5b.2)
+-- F2g: GiST-index skapat under steg B (uppskjutet steg 5b.2)
 DO $$
 BEGIN
     IF EXISTS (
@@ -223,13 +223,13 @@ BEGIN
         WHERE schemaname = 'sk0_ext_fmetest' AND tablename = 'trafikdata_l'
         AND indexname = 'trafikdata_l_geom_gidx'
     ) THEN
-        RAISE NOTICE 'TEST F2g PASSED: GiST index trafikdata_l_geom_gidx created during step B';
+        RAISE NOTICE 'TEST F2g GODKÄNT:GiST-index trafikdata_l_geom_gidx skapat under steg B';
     ELSE
-        RAISE WARNING 'TEST F2g FAILED: GiST index not created during step B';
+        RAISE WARNING 'TEST F2g MISSLYCKAT:GiST-index inte skapat under steg B';
     END IF;
 END $$;
 
--- F2h: geom column exists and is the last column
+-- F2h: geom-kolumnen finns och är sist
 DO $$
 DECLARE
     geom_pos integer;
@@ -245,15 +245,15 @@ BEGIN
     WHERE table_schema = 'sk0_ext_fmetest' AND table_name = 'trafikdata_l';
 
     IF geom_pos IS NOT NULL AND geom_pos = max_pos THEN
-        RAISE NOTICE 'TEST F2h PASSED: geom column exists and is last (position %/%)', geom_pos, max_pos;
+        RAISE NOTICE 'TEST F2h GODKÄNT:geom-kolumn finns och är sist (position %/%)', geom_pos, max_pos;
     ELSIF geom_pos IS NULL THEN
-        RAISE WARNING 'TEST F2h FAILED: geom column missing after step B';
+        RAISE WARNING 'TEST F2h MISSLYCKAT:geom-kolumn saknas efter steg B';
     ELSE
-        RAISE WARNING 'TEST F2h FAILED: geom not last (position % of %)', geom_pos, max_pos;
+        RAISE WARNING 'TEST F2h MISSLYCKAT:geom är inte sist (position % av %)', geom_pos, max_pos;
     END IF;
 END $$;
 
--- F2i: No geometry validation constraint on _ext_ schema (only _kba_ gets this)
+-- F2i: Ingen geometrivalideringsbegränsning på _ext_-schema (endast _kba_ får detta)
 DO $$
 BEGIN
     IF NOT EXISTS (
@@ -262,21 +262,21 @@ BEGIN
         AND contype = 'c'
         AND pg_get_constraintdef(oid) LIKE '%validera_geometri%'
     ) THEN
-        RAISE NOTICE 'TEST F2i PASSED: No geometry validation constraint on _ext_ table (correct)';
+        RAISE NOTICE 'TEST F2i GODKÄNT:Ingen geometrivalideringsbegränsning på _ext_-tabell (korrekt)';
     ELSE
-        RAISE WARNING 'TEST F2i FAILED: Geometry validation constraint added to _ext_ table (should only be on _kba_)';
+        RAISE WARNING 'TEST F2i MISSLYCKAT:Geometrivalideringsbegränsning tillagd på _ext_-tabell (ska bara vara på _kba_)';
     END IF;
 END $$;
 
 DROP TABLE IF EXISTS sk0_ext_fmetest.trafikdata_l;
 
 ------------------------------------------------------------------------
--- F3: HAPPY PATH – _kba_ SCHEMA TWO-STEP
+-- F3: LYCKAD VÄG – _kba_-SCHEMA TVÅSTEG
 ------------------------------------------------------------------------
 \echo ''
-\echo '--- GROUP F3: Happy path – kba schema two-step ---'
+\echo '--- GRUPP F3: Lyckad väg – kba-schema tvåsteg ---'
 
--- Step A: pending table in _kba_ schema
+-- Steg A: väntande tabell i _kba_-schema
 SET application_name = 'fme';
 
 DO $$
@@ -285,31 +285,31 @@ BEGIN
         fastighetsid  text,
         areal         numeric
     );
-    RAISE NOTICE 'TEST F3a PASSED: Step A – kba pending table created without exception';
+    RAISE NOTICE 'TEST F3a GODKÄNT:Steg A – kba-väntande tabell skapad utan undantag';
 EXCEPTION
     WHEN OTHERS THEN
-        RAISE WARNING 'TEST F3a FAILED: Step A raised exception: %', SQLERRM;
+        RAISE WARNING 'TEST F3a MISSLYCKAT:Steg A orsakade undantag: %', SQLERRM;
 END $$;
 
 RESET application_name;
 
--- F3b: Pending entry registered
+-- F3b: Väntande post registrerad
 DO $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM public.hex_afvaktande_geometri AS ag
         WHERE ag.schema_namn = 'sk1_kba_fmetest' AND ag.tabell_namn = 'fastigheter_y'
     ) THEN
-        RAISE NOTICE 'TEST F3b PASSED: kba table registered as pending';
+        RAISE NOTICE 'TEST F3b GODKÄNT:kba-tabell registrerad som väntande';
     ELSE
-        RAISE WARNING 'TEST F3b FAILED: kba table NOT registered as pending';
+        RAISE WARNING 'TEST F3b MISSLYCKAT:kba-tabell EJ registrerad som väntande';
     END IF;
 END $$;
 
--- Step B
+-- Steg B
 ALTER TABLE sk1_kba_fmetest.fastigheter_y ADD COLUMN geom geometry(Polygon, 3007);
 
--- F3c: Geometry validation constraint added for _kba_ (deferred step 5b.3)
+-- F3c: Geometrivalideringsbegränsning tillagd för _kba_ (uppskjutet steg 5b.3)
 DO $$
 BEGIN
     IF EXISTS (
@@ -318,13 +318,13 @@ BEGIN
         AND contype = 'c'
         AND pg_get_constraintdef(oid) LIKE '%validera_geometri%'
     ) THEN
-        RAISE NOTICE 'TEST F3c PASSED: Geometry validation constraint added to kba table during step B';
+        RAISE NOTICE 'TEST F3c GODKÄNT:Geometrivalideringsbegränsning tillagd på kba-tabell under steg B';
     ELSE
-        RAISE WARNING 'TEST F3c FAILED: Geometry validation constraint missing from kba table after step B';
+        RAISE WARNING 'TEST F3c MISSLYCKAT:Geometrivalideringsbegränsning saknas på kba-tabell efter steg B';
     END IF;
 END $$;
 
--- F3d: GiST index created
+-- F3d: GiST-index skapat
 DO $$
 BEGIN
     IF EXISTS (
@@ -332,85 +332,85 @@ BEGIN
         WHERE schemaname = 'sk1_kba_fmetest' AND tablename = 'fastigheter_y'
         AND indexname = 'fastigheter_y_geom_gidx'
     ) THEN
-        RAISE NOTICE 'TEST F3d PASSED: GiST index created on kba table during step B';
+        RAISE NOTICE 'TEST F3d GODKÄNT:GiST-index skapat på kba-tabell under steg B';
     ELSE
-        RAISE WARNING 'TEST F3d FAILED: GiST index missing from kba table after step B';
+        RAISE WARNING 'TEST F3d MISSLYCKAT:GiST-index saknas på kba-tabell efter steg B';
     END IF;
 END $$;
 
--- F3e: Pending entry removed
+-- F3e: Väntande post borttagen
 DO $$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM public.hex_afvaktande_geometri AS ag
         WHERE ag.schema_namn = 'sk1_kba_fmetest' AND ag.tabell_namn = 'fastigheter_y'
     ) THEN
-        RAISE NOTICE 'TEST F3e PASSED: kba pending entry correctly removed after step B';
+        RAISE NOTICE 'TEST F3e GODKÄNT:kba-väntande post korrekt borttagen efter steg B';
     ELSE
-        RAISE WARNING 'TEST F3e FAILED: kba pending entry still present after step B';
+        RAISE WARNING 'TEST F3e MISSLYCKAT:kba-väntande post finns kvar efter steg B';
     END IF;
 END $$;
 
--- F3f: Geometry validation blocks invalid geometry and gives a descriptive error
+-- F3f: Geometrivalidering blockerar ogiltig geometri och ger ett beskrivande fel
 DO $$
 BEGIN
     INSERT INTO sk1_kba_fmetest.fastigheter_y (fastighetsid, geom)
     VALUES ('test', ST_GeomFromText('POLYGON EMPTY', 3007));
-    RAISE WARNING 'TEST F3f FAILED: Empty geometry accepted – validation not enforced';
+    RAISE WARNING 'TEST F3f MISSLYCKAT:Tom geometri accepterades – validering ej aktiverad';
 EXCEPTION
     WHEN OTHERS THEN
         IF SQLERRM LIKE '%Ogiltig geometri%' AND SQLERRM LIKE '%tom%' THEN
-            RAISE NOTICE 'TEST F3f PASSED: Empty geometry blocked with descriptive message: %', left(SQLERRM, 120);
+            RAISE NOTICE 'TEST F3f GODKÄNT:Tom geometri blockerades med beskrivande meddelande: %', left(SQLERRM, 120);
         ELSIF SQLERRM LIKE '%check constraint%' OR SQLERRM LIKE '%validera_geom%' THEN
-            RAISE WARNING 'TEST F3f PARTIAL: Geometry blocked by CHECK constraint but trigger message missing. Is kontrollera_geometri_trigger installed?';
+            RAISE WARNING 'TEST F3f DELVIS: Geometri blockerades av CHECK-begränsning men triggermeddelande saknas. Är kontrollera_geometri_trigger installerad?';
         ELSE
-            RAISE NOTICE 'TEST F3f PASSED (other reason): %', left(SQLERRM, 120);
+            RAISE NOTICE 'TEST F3f GODKÄNT (annan anledning): %', left(SQLERRM, 120);
         END IF;
 END $$;
 
--- F3f2: Self-intersecting geometry gives a reason from ST_IsValidReason
+-- F3f2: Självskärande geometri ger en anledning från ST_IsValidReason
 DO $$
 BEGIN
     -- Bowtie polygon: self-intersecting, ST_IsValidReason returns e.g. "Self-intersection[…]"
     INSERT INTO sk1_kba_fmetest.fastigheter_y (fastighetsid, geom)
     VALUES ('test', ST_GeomFromText(
         'POLYGON((0 0, 10 10, 10 0, 0 10, 0 0))', 3007));
-    RAISE WARNING 'TEST F3f2 FAILED: Self-intersecting geometry accepted';
+    RAISE WARNING 'TEST F3f2 MISSLYCKAT:Självskärande geometri accepterades';
 EXCEPTION
     WHEN OTHERS THEN
         IF SQLERRM LIKE '%Ogiltig geometri%' AND SQLERRM LIKE '%Self-intersection%' THEN
-            RAISE NOTICE 'TEST F3f2 PASSED: Self-intersection reported with location: %', left(SQLERRM, 120);
+            RAISE NOTICE 'TEST F3f2 GODKÄNT:Självskärning rapporterad med plats: %', left(SQLERRM, 120);
         ELSIF SQLERRM LIKE '%check constraint%' THEN
-            RAISE WARNING 'TEST F3f2 PARTIAL: Blocked by CHECK but trigger message missing';
+            RAISE WARNING 'TEST F3f2 DELVIS: Blockerades av CHECK men triggermeddelande saknas';
         ELSE
-            RAISE NOTICE 'TEST F3f2 PASSED (other reason): %', left(SQLERRM, 120);
+            RAISE NOTICE 'TEST F3f2 GODKÄNT (annan anledning): %', left(SQLERRM, 120);
         END IF;
 END $$;
 
--- F3g: Document known gap – no history table for FME kba deferred table
---      skapa_historik_qa runs in step 10 of hantera_ny_tabell with geometriinfo=NULL.
---      If it requires geometry to create history, the history table is never made.
+-- F3g: Dokumenterar känd brist – ingen historiktabell för FME kba-uppskjuten tabell
+--      skapa_historik_qa körs i steg 10 av hantera_ny_tabell med geometriinfo=NULL.
+--      Om geometri krävs för att skapa historik skapas aldrig historiktabellen.
 DO $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM information_schema.tables
         WHERE table_schema = 'sk1_kba_fmetest' AND table_name = 'fastigheter_y_h'
     ) THEN
-        RAISE NOTICE 'TEST F3g INFO: History table WAS created for kba deferred table (skapa_historik_qa runs schema-based, not geometry-based)';
+        RAISE NOTICE 'TEST F3g INFO: Historiktabell SKAPADES för kba-uppskjuten tabell (skapa_historik_qa körs schemabaserat, inte geometribaserat)';
     ELSE
-        RAISE NOTICE 'TEST F3g INFO: No history table for FME deferred kba table. skapa_historik_qa requires geometry at step A time. History tables for FME-loaded kba data must be created manually.';
+        RAISE NOTICE 'TEST F3g INFO: Ingen historiktabell för FME-uppskjuten kba-tabell. skapa_historik_qa kräver geometri vid steg A. Historiktabeller för FME-laddad kba-data måste skapas manuellt.';
     END IF;
 END $$;
 
 DROP TABLE IF EXISTS sk1_kba_fmetest.fastigheter_y;
 
 ------------------------------------------------------------------------
--- F4: SUFFIX MISMATCH CAUGHT AT ALTER TABLE
+-- F4: SUFFIXMISMATCH FÅNGAD VID ALTER TABLE
 ------------------------------------------------------------------------
 \echo ''
-\echo '--- GROUP F4: Suffix mismatch validation ---'
+\echo '--- GRUPP F4: Suffixvalidering ---'
 
--- Create a pending table named _l (expects LineString geometry)
+-- Skapa en väntande tabell med namn _l (förväntar LineString-geometri)
 SET application_name = 'fme';
 
 DO $$
@@ -419,79 +419,79 @@ BEGIN
         typkod  varchar(10),
         beskr   text
     );
-    RAISE NOTICE 'TEST F4a PASSED: Pending bantyp_l created (expects LineString via _l suffix)';
+    RAISE NOTICE 'TEST F4a GODKÄNT:Väntande bantyp_l skapad (förväntar LineString via _l-suffix)';
 EXCEPTION
     WHEN OTHERS THEN
-        RAISE WARNING 'TEST F4a FAILED: %', SQLERRM;
+        RAISE WARNING 'TEST F4a MISSLYCKAT:%', SQLERRM;
 END $$;
 
 RESET application_name;
 
--- F4b: Attempt to add POLYGON geometry to a table named _l → exception
+-- F4b: Försök att lägga till POLYGON-geometri till en tabell med namn _l → undantag
 DO $$
 BEGIN
     ALTER TABLE sk0_ext_fmetest.bantyp_l ADD COLUMN geom geometry(Polygon, 3007);
-    RAISE WARNING 'TEST F4b FAILED: Suffix mismatch (Polygon on _l table) was NOT caught';
+    RAISE WARNING 'TEST F4b MISSLYCKAT:Suffixmismatch (Polygon på _l-tabell) FÅNGADES INTE';
 EXCEPTION
     WHEN OTHERS THEN
         IF SQLERRM LIKE '%Suffixkollision%' OR SQLERRM LIKE '%suffix%' OR SQLERRM LIKE '%_l%' THEN
-            RAISE NOTICE 'TEST F4b PASSED: Suffix mismatch caught – Polygon rejected on _l table: %',
+            RAISE NOTICE 'TEST F4b GODKÄNT:Suffixmismatch fångad – Polygon avvisad på _l-tabell: %',
                 left(SQLERRM, 120);
         ELSE
-            RAISE NOTICE 'TEST F4b PASSED (other exception): %', left(SQLERRM, 120);
+            RAISE NOTICE 'TEST F4b GODKÄNT (annat undantag): %', left(SQLERRM, 120);
         END IF;
 END $$;
 
--- F4c: ALTER TABLE was rolled back – geom column should NOT exist
+-- F4c: ALTER TABLE återställdes – geom-kolumn ska INTE finnas
 DO $$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM geometry_columns
         WHERE f_table_schema = 'sk0_ext_fmetest' AND f_table_name = 'bantyp_l'
     ) THEN
-        RAISE NOTICE 'TEST F4c PASSED: geom column not present after rolled-back ALTER TABLE';
+        RAISE NOTICE 'TEST F4c GODKÄNT:geom-kolumn inte tillgänglig efter återställd ALTER TABLE';
     ELSE
-        RAISE WARNING 'TEST F4c FAILED: geom column exists despite suffix mismatch exception (rollback failed)';
+        RAISE WARNING 'TEST F4c MISSLYCKAT:geom-kolumn finns trots suffixmismatch-undantag (återställning misslyckades)';
     END IF;
 END $$;
 
--- F4d: Table still pending (DELETE in step 5b.4 was rolled back with the exception)
+-- F4d: Tabell fortfarande väntande (DELETE i steg 5b.4 återställdes med undantaget)
 DO $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM public.hex_afvaktande_geometri AS ag
         WHERE ag.schema_namn = 'sk0_ext_fmetest' AND ag.tabell_namn = 'bantyp_l'
     ) THEN
-        RAISE NOTICE 'TEST F4d PASSED: bantyp_l still pending after suffix mismatch exception (correctly rolled back)';
+        RAISE NOTICE 'TEST F4d GODKÄNT:bantyp_l fortfarande väntande efter suffixmismatch-undantag (korrekt återställd)';
     ELSE
-        RAISE WARNING 'TEST F4d FAILED: bantyp_l removed from pending despite exception – partial state';
+        RAISE WARNING 'TEST F4d MISSLYCKAT:bantyp_l borttagen från väntande trots undantag – delvist tillstånd';
     END IF;
 END $$;
 
--- F4e: Now add the CORRECT geometry type (LineString for _l) → should succeed
+-- F4e: Lägg nu till RÄTT geometrityp (LineString för _l) → ska lyckas
 DO $$
 BEGIN
     ALTER TABLE sk0_ext_fmetest.bantyp_l ADD COLUMN geom geometry(LineString, 3007);
-    RAISE NOTICE 'TEST F4e PASSED: Correct geometry type (LineString for _l) accepted after previous failure';
+    RAISE NOTICE 'TEST F4e GODKÄNT:Rätt geometrityp (LineString för _l) accepterades efter tidigare fel';
 EXCEPTION
     WHEN OTHERS THEN
-        RAISE WARNING 'TEST F4e FAILED: Correct geometry type rejected: %', SQLERRM;
+        RAISE WARNING 'TEST F4e MISSLYCKAT:Rätt geometrityp avvisades: %', SQLERRM;
 END $$;
 
--- F4f: Pending entry removed after correct ALTER TABLE
+-- F4f: Väntande post borttagen efter korrekt ALTER TABLE
 DO $$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM public.hex_afvaktande_geometri AS ag
         WHERE ag.schema_namn = 'sk0_ext_fmetest' AND ag.tabell_namn = 'bantyp_l'
     ) THEN
-        RAISE NOTICE 'TEST F4f PASSED: bantyp_l removed from pending after correct step B';
+        RAISE NOTICE 'TEST F4f GODKÄNT:bantyp_l borttagen från väntande efter korrekt steg B';
     ELSE
-        RAISE WARNING 'TEST F4f FAILED: bantyp_l still pending after correct step B';
+        RAISE WARNING 'TEST F4f MISSLYCKAT:bantyp_l fortfarande väntande efter korrekt steg B';
     END IF;
 END $$;
 
--- F4g: GiST index created after recovery
+-- F4g: GiST-index skapat efter återhämtning
 DO $$
 BEGIN
     IF EXISTS (
@@ -499,23 +499,23 @@ BEGIN
         WHERE schemaname = 'sk0_ext_fmetest' AND tablename = 'bantyp_l'
         AND indexname = 'bantyp_l_geom_gidx'
     ) THEN
-        RAISE NOTICE 'TEST F4g PASSED: GiST index created after correct step B';
+        RAISE NOTICE 'TEST F4g GODKÄNT:GiST-index skapat efter korrekt steg B';
     ELSE
-        RAISE WARNING 'TEST F4g FAILED: GiST index missing after correct step B';
+        RAISE WARNING 'TEST F4g MISSLYCKAT:GiST-index saknas efter korrekt steg B';
     END IF;
 END $$;
 
 DROP TABLE IF EXISTS sk0_ext_fmetest.bantyp_l;
 
 ------------------------------------------------------------------------
--- F5: NON-SYSTEM USER STILL BLOCKED (REGRESSION GUARD)
+-- F5: VANLIG ANVÄNDARE FORTFARANDE BLOCKERAD (REGRESSIONSTEST)
 ------------------------------------------------------------------------
 \echo ''
-\echo '--- GROUP F5: Non-system user regression guard ---'
+\echo '--- GRUPP F5: Regressionstest – vanlig användare ---'
 
--- A regular user (no special application_name) must still get EXCEPTION
--- when trying to create a table with a geometry suffix but no geometry.
--- This ensures the deferred path is NOT an accidental bypass for everyone.
+-- En vanlig användare (utan särskilt application_name) måste fortfarande få EXCEPTION
+-- vid försök att skapa en tabell med geometrisuffix men utan geometri.
+-- Detta säkerställer att den uppskjutna vägen INTE är en oavsiktlig bypass för alla.
 RESET application_name;
 
 DO $$
@@ -523,50 +523,50 @@ BEGIN
     CREATE TABLE sk0_ext_fmetest.trick_l (
         data text
     );
-    RAISE WARNING 'TEST F5a FAILED: Non-system user created a geometry-suffix table without geometry (bypass!)';
+    RAISE WARNING 'TEST F5a MISSLYCKAT:Icke-systemanvändare skapade en geometrisuffix-tabell utan geometri (förbikoppling!)';
 EXCEPTION
     WHEN OTHERS THEN
         IF SQLERRM LIKE '%suffix%' OR SQLERRM LIKE '%geometri%' OR SQLERRM LIKE '%reserverade%' THEN
-            RAISE NOTICE 'TEST F5a PASSED: Non-system user correctly blocked from geometry-suffix table without geom';
+            RAISE NOTICE 'TEST F5a GODKÄNT:Icke-systemanvändare korrekt blockerad från geometrisuffix-tabell utan geom';
         ELSE
-            RAISE NOTICE 'TEST F5a PASSED (different reason): %', left(SQLERRM, 80);
+            RAISE NOTICE 'TEST F5a GODKÄNT (annan anledning): %', left(SQLERRM, 80);
         END IF;
 END $$;
 
--- F5b: Verify the table was NOT created (exception rolled back creation)
+-- F5b: Verifiera att tabellen INTE skapades (undantag återställde skapandet)
 DO $$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM information_schema.tables
         WHERE table_schema = 'sk0_ext_fmetest' AND table_name = 'trick_l'
     ) THEN
-        RAISE NOTICE 'TEST F5b PASSED: trick_l table does not exist (creation was rolled back)';
+        RAISE NOTICE 'TEST F5b GODKÄNT:tabellen trick_l finns inte (skapande återställdes)';
     ELSE
-        RAISE WARNING 'TEST F5b FAILED: trick_l table exists despite exception';
+        RAISE WARNING 'TEST F5b MISSLYCKAT:tabellen trick_l finns trots undantag';
     END IF;
 END $$;
 
--- F5c: No stale pending entry created for the blocked table
+-- F5c: Ingen kvarstående väntande post skapad för den blockerade tabellen
 DO $$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM public.hex_afvaktande_geometri AS ag
         WHERE ag.schema_namn = 'sk0_ext_fmetest' AND ag.tabell_namn = 'trick_l'
     ) THEN
-        RAISE NOTICE 'TEST F5c PASSED: No pending entry for blocked table';
+        RAISE NOTICE 'TEST F5c GODKÄNT:Ingen väntande post för blockerad tabell';
     ELSE
-        RAISE WARNING 'TEST F5c FAILED: Stale pending entry created for blocked table';
+        RAISE WARNING 'TEST F5c MISSLYCKAT:Inaktuell väntande post skapad för blockerad tabell';
     END IF;
 END $$;
 
 ------------------------------------------------------------------------
--- F6: FME WITH GEOMETRY IN CREATE TABLE (NORMAL PATH, NO DEFERRAL)
+-- F6: FME MED GEOMETRI I CREATE TABLE (NORMAL VÄG, INGEN UPPSKJUTNING)
 ------------------------------------------------------------------------
 \echo ''
-\echo '--- GROUP F6: FME normal path (geometry in CREATE TABLE) ---'
+\echo '--- GRUPP F6: FME normal väg (geometri i CREATE TABLE) ---'
 
--- When FME includes geometry in CREATE TABLE, the deferred path must NOT fire.
--- The table goes through validera_tabell normally.
+-- När FME inkluderar geometri i CREATE TABLE får den uppskjutna vägen INTE aktiveras.
+-- Tabellen genomgår validera_tabell på normalt sätt.
 SET application_name = 'fme';
 
 DO $$
@@ -576,28 +576,28 @@ BEGIN
         namn     text,
         geom     geometry(Point, 3007)
     );
-    RAISE NOTICE 'TEST F6a PASSED: FME table with geometry in CREATE TABLE accepted normally';
+    RAISE NOTICE 'TEST F6a GODKÄNT:FME-tabell med geometri i CREATE TABLE accepterades normalt';
 EXCEPTION
     WHEN OTHERS THEN
-        RAISE WARNING 'TEST F6a FAILED: FME table with geometry rejected: %', SQLERRM;
+        RAISE WARNING 'TEST F6a MISSLYCKAT:FME-tabell med geometri avvisades: %', SQLERRM;
 END $$;
 
 RESET application_name;
 
--- F6b: NOT in hex_afvaktande_geometri (deferred path must not have fired)
+-- F6b: INTE i hex_afvaktande_geometri (uppskjuten väg får inte ha aktiverats)
 DO $$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM public.hex_afvaktande_geometri AS ag
         WHERE ag.schema_namn = 'sk0_ext_fmetest' AND ag.tabell_namn = 'komplett_import_p'
     ) THEN
-        RAISE NOTICE 'TEST F6b PASSED: Table with geometry not registered as pending (correct)';
+        RAISE NOTICE 'TEST F6b GODKÄNT:Tabell med geometri inte registrerad som väntande (korrekt)';
     ELSE
-        RAISE WARNING 'TEST F6b FAILED: Table with geometry incorrectly registered as pending';
+        RAISE WARNING 'TEST F6b MISSLYCKAT:Tabell med geometri felaktigt registrerad som väntande';
     END IF;
 END $$;
 
--- F6c: GiST index created immediately (during CREATE TABLE, not deferred)
+-- F6c: GiST-index skapat direkt (under CREATE TABLE, inte uppskjutet)
 DO $$
 BEGIN
     IF EXISTS (
@@ -605,13 +605,13 @@ BEGIN
         WHERE schemaname = 'sk0_ext_fmetest' AND tablename = 'komplett_import_p'
         AND indexname = 'komplett_import_p_geom_gidx'
     ) THEN
-        RAISE NOTICE 'TEST F6c PASSED: GiST index created immediately (normal path)';
+        RAISE NOTICE 'TEST F6c GODKÄNT:GiST-index skapat direkt (normal väg)';
     ELSE
-        RAISE WARNING 'TEST F6c FAILED: GiST index missing after FME normal-path CREATE TABLE';
+        RAISE WARNING 'TEST F6c MISSLYCKAT:GiST-index saknas efter FME normal-väg CREATE TABLE';
     END IF;
 END $$;
 
--- F6d: gid present
+-- F6d: gid finns
 DO $$
 BEGIN
     IF EXISTS (
@@ -619,21 +619,21 @@ BEGIN
         WHERE table_schema = 'sk0_ext_fmetest' AND table_name = 'komplett_import_p'
         AND column_name = 'gid'
     ) THEN
-        RAISE NOTICE 'TEST F6d PASSED: gid column present on FME normal-path table';
+        RAISE NOTICE 'TEST F6d GODKÄNT:gid-kolumn finns på FME normal-väg-tabell';
     ELSE
-        RAISE WARNING 'TEST F6d FAILED: gid missing from FME normal-path table';
+        RAISE WARNING 'TEST F6d MISSLYCKAT:gid saknas från FME normal-väg-tabell';
     END IF;
 END $$;
 
 DROP TABLE IF EXISTS sk0_ext_fmetest.komplett_import_p;
 
 ------------------------------------------------------------------------
--- F7: CUSTOM SYSTEM USER IN hex_systemanvandare
+-- F7: ANPASSAD SYSTEMANVÄNDARE I hex_systemanvandare
 ------------------------------------------------------------------------
 \echo ''
-\echo '--- GROUP F7: Custom system user ---'
+\echo '--- GRUPP F7: Anpassad systemanvändare ---'
 
--- Add a fictional system user to the registry
+-- Lägg till en fiktiv systemanvändare i registret
 INSERT INTO public.hex_systemanvandare (anvandare, beskrivning)
 VALUES ('test_etl_tool', 'Testverktyg för FME-testsvitens F7-test')
 ON CONFLICT DO NOTHING;
@@ -646,10 +646,10 @@ BEGIN
         rad_id integer,
         kalla  text
     );
-    RAISE NOTICE 'TEST F7a PASSED: Custom system user got deferred treatment (table created without exception)';
+    RAISE NOTICE 'TEST F7a GODKÄNT:Anpassad systemanvändare fick uppskjuten behandling (tabell skapad utan undantag)';
 EXCEPTION
     WHEN OTHERS THEN
-        RAISE WARNING 'TEST F7a FAILED: Custom system user not recognized or raised exception: %', SQLERRM;
+        RAISE WARNING 'TEST F7a MISSLYCKAT:Anpassad systemanvändare inte igenkänd eller orsakade undantag: %', SQLERRM;
 END $$;
 
 RESET application_name;
@@ -660,13 +660,13 @@ BEGIN
         SELECT 1 FROM public.hex_afvaktande_geometri AS ag
         WHERE ag.schema_namn = 'sk0_ext_fmetest' AND ag.tabell_namn = 'etl_import_l'
     ) THEN
-        RAISE NOTICE 'TEST F7b PASSED: Custom system user table registered as pending';
+        RAISE NOTICE 'TEST F7b GODKÄNT:Anpassad systemanvändares tabell registrerad som väntande';
     ELSE
-        RAISE WARNING 'TEST F7b FAILED: Custom system user table not registered as pending';
+        RAISE WARNING 'TEST F7b MISSLYCKAT:Anpassad systemanvändares tabell inte registrerad som väntande';
     END IF;
 END $$;
 
--- Cleanup: complete the pending table, then remove the custom user
+-- Rensning: slutför den väntande tabellen, ta sedan bort den anpassade användaren
 ALTER TABLE sk0_ext_fmetest.etl_import_l ADD COLUMN geom geometry(LineString, 3007);
 
 DELETE FROM public.hex_systemanvandare WHERE anvandare = 'test_etl_tool';
@@ -674,19 +674,19 @@ DELETE FROM public.hex_systemanvandare WHERE anvandare = 'test_etl_tool';
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM public.hex_systemanvandare WHERE anvandare = 'test_etl_tool') THEN
-        RAISE NOTICE 'TEST F7c PASSED: Custom system user removed from hex_systemanvandare';
+        RAISE NOTICE 'TEST F7c GODKÄNT:Anpassad systemanvändare borttagen från hex_systemanvandare';
     ELSE
-        RAISE WARNING 'TEST F7c FAILED: Custom system user still present after deletion';
+        RAISE WARNING 'TEST F7c MISSLYCKAT:Anpassad systemanvändare finns kvar efter borttagning';
     END IF;
 END $$;
 
 DROP TABLE IF EXISTS sk0_ext_fmetest.etl_import_l;
 
 ------------------------------------------------------------------------
--- F8: MULTIPLE PENDING TABLES SIMULTANEOUSLY
+-- F8: FLERA VÄNTANDE TABELLER SAMTIDIGT
 ------------------------------------------------------------------------
 \echo ''
-\echo '--- GROUP F8: Multiple pending tables simultaneously ---'
+\echo '--- GRUPP F8: Flera väntande tabeller samtidigt ---'
 
 SET application_name = 'fme';
 
@@ -696,7 +696,7 @@ CREATE TABLE sk0_ext_fmetest.batch_c_l (id integer, data text);
 
 RESET application_name;
 
--- F8a: All three are pending
+-- F8a: Alla tre är väntande
 DO $$
 DECLARE cnt integer;
 BEGIN
@@ -704,13 +704,13 @@ BEGIN
     WHERE ag.schema_namn = 'sk0_ext_fmetest'
     AND ag.tabell_namn IN ('batch_a_p', 'batch_b_y', 'batch_c_l');
     IF cnt = 3 THEN
-        RAISE NOTICE 'TEST F8a PASSED: All 3 batch tables registered as pending simultaneously';
+        RAISE NOTICE 'TEST F8a GODKÄNT:Alla 3 batch-tabeller registrerade som väntande samtidigt';
     ELSE
-        RAISE WARNING 'TEST F8a FAILED: Expected 3 pending entries, found %', cnt;
+        RAISE WARNING 'TEST F8a MISSLYCKAT:Förväntade 3 väntande poster, hittade %', cnt;
     END IF;
 END $$;
 
--- F8b: Complete batch_a_p only → only batch_a_p removed from pending
+-- F8b: Slutför bara batch_a_p → bara batch_a_p tas bort från väntande
 ALTER TABLE sk0_ext_fmetest.batch_a_p ADD COLUMN geom geometry(Point, 3007);
 
 DO $$
@@ -724,14 +724,14 @@ BEGIN
     SELECT EXISTS (SELECT 1 FROM public.hex_afvaktande_geometri AS ag WHERE ag.schema_namn = 'sk0_ext_fmetest' AND ag.tabell_namn = 'batch_c_l') INTO c_pending;
 
     IF NOT a_pending AND b_pending AND c_pending THEN
-        RAISE NOTICE 'TEST F8b PASSED: Only batch_a_p removed from pending; batch_b_y and batch_c_l still pending';
+        RAISE NOTICE 'TEST F8b GODKÄNT:Endast batch_a_p borttagen från väntande; batch_b_y och batch_c_l fortfarande väntande';
     ELSE
-        RAISE WARNING 'TEST F8b FAILED: Pending state: a_p=% b_y=% c_l=% (expected false/true/true)',
+        RAISE WARNING 'TEST F8b MISSLYCKAT:Väntande tillstånd: a_p=% b_y=% c_l=% (förväntade false/true/true)',
             a_pending, b_pending, c_pending;
     END IF;
 END $$;
 
--- F8c: Complete batch_b_y and batch_c_l
+-- F8c: Slutför batch_b_y och batch_c_l
 ALTER TABLE sk0_ext_fmetest.batch_b_y ADD COLUMN geom geometry(Polygon, 3007);
 ALTER TABLE sk0_ext_fmetest.batch_c_l ADD COLUMN geom geometry(LineString, 3007);
 
@@ -742,9 +742,9 @@ BEGIN
     WHERE ag.schema_namn = 'sk0_ext_fmetest'
     AND ag.tabell_namn IN ('batch_a_p', 'batch_b_y', 'batch_c_l');
     IF cnt = 0 THEN
-        RAISE NOTICE 'TEST F8c PASSED: All 3 batch tables removed from pending after step B';
+        RAISE NOTICE 'TEST F8c GODKÄNT:Alla 3 batch-tabeller borttagna från väntande efter steg B';
     ELSE
-        RAISE WARNING 'TEST F8c FAILED: % pending entries remain after completing all 3 tables', cnt;
+        RAISE WARNING 'TEST F8c MISSLYCKAT:% väntande poster kvar efter att alla 3 tabeller slutförts', cnt;
     END IF;
 END $$;
 
@@ -753,13 +753,13 @@ DROP TABLE IF EXISTS sk0_ext_fmetest.batch_b_y;
 DROP TABLE IF EXISTS sk0_ext_fmetest.batch_c_l;
 
 ------------------------------------------------------------------------
--- F9: FME NON-GEOMETRY TABLE WITHOUT GEOMETRY SUFFIX
+-- F9: FME-TABELL UTAN GEOMETRI OCH UTAN GEOMETRISUFFIX
 ------------------------------------------------------------------------
 \echo ''
-\echo '--- GROUP F9: FME non-geometry table (no suffix, no deferral) ---'
+\echo '--- GRUPP F9: FME icke-geometrisk tabell (inget suffix, ingen uppskjutning) ---'
 
--- FME can also write non-geometry tables. These have no geometry suffix so the
--- deferred path must NOT fire – they go through validera_tabell normally.
+-- FME kan också skriva icke-geometritabeller. Dessa har inget geometrisuffix så den
+-- uppskjutna vägen FÅR INTE aktiveras – de går genom validera_tabell normalt.
 SET application_name = 'fme';
 
 DO $$
@@ -769,28 +769,28 @@ BEGIN
         namn text,
         typ  integer
     );
-    RAISE NOTICE 'TEST F9a PASSED: FME non-geometry table (no suffix) created normally';
+    RAISE NOTICE 'TEST F9a GODKÄNT:FME icke-geometri-tabell (inget suffix) skapad normalt';
 EXCEPTION
     WHEN OTHERS THEN
-        RAISE WARNING 'TEST F9a FAILED: FME non-geometry table rejected: %', SQLERRM;
+        RAISE WARNING 'TEST F9a MISSLYCKAT:FME icke-geometri-tabell avvisades: %', SQLERRM;
 END $$;
 
 RESET application_name;
 
--- F9b: NOT in hex_afvaktande_geometri (no suffix → no deferral)
+-- F9b: INTE i hex_afvaktande_geometri (inget suffix → ingen uppskjutning)
 DO $$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM public.hex_afvaktande_geometri AS ag
         WHERE ag.schema_namn = 'sk0_ext_fmetest' AND ag.tabell_namn = 'referensdata'
     ) THEN
-        RAISE NOTICE 'TEST F9b PASSED: Non-geometry FME table not registered as pending (correct)';
+        RAISE NOTICE 'TEST F9b GODKÄNT:Icke-geometri FME-tabell inte registrerad som väntande (korrekt)';
     ELSE
-        RAISE WARNING 'TEST F9b FAILED: Non-geometry FME table incorrectly registered as pending';
+        RAISE WARNING 'TEST F9b MISSLYCKAT:Icke-geometri FME-tabell felaktigt registrerad som väntande';
     END IF;
 END $$;
 
--- F9c: gid added normally (table was restructured by normal path)
+-- F9c: gid tillagd normalt (tabellen omstrukturerades via normal väg)
 DO $$
 BEGIN
     IF EXISTS (
@@ -798,54 +798,54 @@ BEGIN
         WHERE table_schema = 'sk0_ext_fmetest' AND table_name = 'referensdata'
         AND column_name = 'gid'
     ) THEN
-        RAISE NOTICE 'TEST F9c PASSED: FME non-geometry table restructured normally (gid present)';
+        RAISE NOTICE 'TEST F9c GODKÄNT:FME icke-geometri-tabell omstrukturerad normalt (gid finns)';
     ELSE
-        RAISE WARNING 'TEST F9c FAILED: FME non-geometry table not restructured (gid missing)';
+        RAISE WARNING 'TEST F9c MISSLYCKAT:FME icke-geometri-tabell inte omstrukturerad (gid saknas)';
     END IF;
 END $$;
 
 DROP TABLE IF EXISTS sk0_ext_fmetest.referensdata;
 
 ------------------------------------------------------------------------
--- F10: PARTIAL application_name DOES NOT TRIGGER DEFERRED PATH
+-- F10: PARTIELLT application_name UTLÖSER INTE UPPSKJUTEN VÄG
 ------------------------------------------------------------------------
 \echo ''
-\echo '--- GROUP F10: Partial application_name not triggered ---'
+\echo '--- GRUPP F10: Partiellt application_name utlöser ej uppskjutning ---'
 
--- application_name = 'FME Desktop 2024.0.0.0' does NOT match 'fme' in
--- hex_systemanvandare (exact lowercase match required). Such connections
--- get normal validation – no deferral bypass.
+-- application_name = 'FME Desktop 2024.0.0.0' matchar INTE 'fme' i
+-- hex_systemanvandare (exakt gemensmatchning krävs). Sådana anslutningar
+-- får normal validering – ingen uppskjutningsförbikoppling.
 SET application_name = 'FME Desktop 2024.0.0.0';
 
 DO $$
 BEGIN
     CREATE TABLE sk0_ext_fmetest.partial_match_l (data text);
-    RAISE WARNING 'TEST F10a FAILED: Partial application_name triggered deferred bypass (unexpected)';
+    RAISE WARNING 'TEST F10a MISSLYCKAT:Partiellt application_name utlöste uppskjuten förbikoppling (oväntat)';
 EXCEPTION
     WHEN OTHERS THEN
-        RAISE NOTICE 'TEST F10a PASSED: Partial application_name (''FME Desktop...'') correctly blocked – exact match required';
+        RAISE NOTICE 'TEST F10a GODKÄNT:Partiellt application_name (''FME Desktop...'') korrekt blockerat – exakt matchning krävs';
 END $$;
 
 RESET application_name;
 
--- F10b: No pending entry (deferred path was not triggered)
+-- F10b: Ingen väntande post (uppskjuten väg aktiverades inte)
 DO $$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM public.hex_afvaktande_geometri AS ag
         WHERE ag.schema_namn = 'sk0_ext_fmetest' AND ag.tabell_namn = 'partial_match_l'
     ) THEN
-        RAISE NOTICE 'TEST F10b PASSED: No pending entry for partial-match connection (table blocked, not deferred)';
+        RAISE NOTICE 'TEST F10b GODKÄNT:Ingen väntande post för partiellt-matchad anslutning (tabell blockerad, inte uppskjuten)';
     ELSE
-        RAISE WARNING 'TEST F10b FAILED: Pending entry created for partial-match connection';
+        RAISE WARNING 'TEST F10b MISSLYCKAT:Väntande post skapad för partiellt-matchad anslutning';
     END IF;
 END $$;
 
 ------------------------------------------------------------------------
--- F11: DROP TABLE ON PENDING TABLE
+-- F11: DROP TABLE PÅ VÄNTANDE TABELL
 ------------------------------------------------------------------------
 \echo ''
-\echo '--- GROUP F11: DROP TABLE on pending table ---'
+\echo '--- GRUPP F11: DROP TABLE på väntande tabell ---'
 
 SET application_name = 'fme';
 CREATE TABLE sk0_ext_fmetest.abandoned_l (data text);
@@ -857,206 +857,206 @@ BEGIN
         SELECT 1 FROM public.hex_afvaktande_geometri AS ag
         WHERE ag.schema_namn = 'sk0_ext_fmetest' AND ag.tabell_namn = 'abandoned_l'
     ) THEN
-        RAISE NOTICE 'TEST F11 setup: abandoned_l registered as pending';
+        RAISE NOTICE 'TEST F11 förberedelse: abandoned_l registrerad som väntande';
     ELSE
-        RAISE WARNING 'TEST F11 setup FAILED: abandoned_l not pending – cannot run gap test';
+        RAISE WARNING 'TEST F11 förberedelse MISSLYCKAT:abandoned_l inte väntande – kan inte köra gap-test';
     END IF;
 END $$;
 
 DROP TABLE sk0_ext_fmetest.abandoned_l;
 
--- After DROP TABLE the pending entry should be cleaned up by hantera_borttagen_tabell.
+-- Efter DROP TABLE ska den väntande posten rensas av hantera_borttagen_tabell.
 DO $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM public.hex_afvaktande_geometri AS ag
         WHERE ag.schema_namn = 'sk0_ext_fmetest' AND ag.tabell_namn = 'abandoned_l'
     ) THEN
-        RAISE WARNING 'TEST F11 GAP CONFIRMED: Pending entry for abandoned_l survives DROP TABLE. '
-            'hantera_borttagen_tabell does not clean hex_afvaktande_geometri. '
-            'Stale entries must be removed manually: '
+        RAISE WARNING 'TEST F11 GAP BEKRÄFTAT: Väntande post för abandoned_l överlever DROP TABLE. '
+            'hantera_borttagen_tabell rensar inte hex_afvaktande_geometri. '
+            'Inaktuella poster måste tas bort manuellt: '
             'DELETE FROM public.hex_afvaktande_geometri WHERE schema_namn = ''sk0_ext_fmetest'' AND tabell_namn = ''abandoned_l'';';
     ELSE
-        RAISE NOTICE 'TEST F11 PASSED: Pending entry removed on DROP TABLE '
-            '(hantera_borttagen_tabell cleans hex_afvaktande_geometri – gap resolved)';
+        RAISE NOTICE 'TEST F11 GODKÄNT:Väntande post borttagen vid DROP TABLE '
+            '(hantera_borttagen_tabell rensar hex_afvaktande_geometri – gap löst)';
     END IF;
 END $$;
 
--- Manual cleanup for the gap case
+-- Manuell rensning för gap-fallet
 DELETE FROM public.hex_afvaktande_geometri AS ag
 WHERE ag.schema_namn = 'sk0_ext_fmetest' AND ag.tabell_namn = 'abandoned_l';
 
 ------------------------------------------------------------------------
--- F12: STEG 5C – TABLE WITHOUT SUFFIX GETS GEOM VIA ALTER TABLE
+-- F12: STEG 5C – TABELL UTAN SUFFIX FÅR GEOMETRI VIA ALTER TABLE
 ------------------------------------------------------------------------
--- Tests the steg 5c bug-fix: a table created without any geometry suffix
--- (allowed as a non-geometry table by validera_tabell) must be REJECTED when
--- a geometry column is added via ALTER TABLE, because there is no suffix to
--- validate the geometry type against.
+-- Testar steg 5c-buggfixen: en tabell skapad utan geometrisuffix
+-- (tillåten som icke-geometrisk tabell av validera_tabell) måste AVVISAS när
+-- en geometrikolumn läggs till via ALTER TABLE, eftersom det inte finns något
+-- suffix att validera geometritypen mot.
 --
--- The only way steg 5c's "success" branch can be reached is when a table was
--- created with the correct suffix but without going through normal Hex
--- processing (e.g. bypassed by setting temp.tabellstrukturering_pagar).
--- F12i tests that path via an explicit bypass.
+-- Det enda sättet att nå steg 5c:s "framgång"-gren är när en tabell skapades
+-- med korrekt suffix men utan att gå genom normal Hex-bearbetning
+-- (t.ex. förbikopp via temp.tabellstrukturering_pagar).
+-- F12i testar den vägen via en explicit bypass.
 \echo ''
-\echo '--- GROUP F12: Steg 5c – no-suffix table gets geom via ALTER TABLE ---'
+\echo '--- GRUPP F12: Steg 5c – tabell utan suffix får geometri via ALTER TABLE ---'
 
--- F12a: Any user can create a table without suffix (no geom → fine)
+-- F12a: Vilken användare som helst kan skapa en tabell utan suffix (ingen geom → ok)
 DO $$
 BEGIN
     CREATE TABLE sk0_ext_fmetest.import_staging (
         id    integer,
         data  text
     );
-    RAISE NOTICE 'TEST F12a PASSED: Unsuffixed non-geometry table created normally';
+    RAISE NOTICE 'TEST F12a GODKÄNT:Icke-suffixad icke-geometri-tabell skapad normalt';
 EXCEPTION
     WHEN OTHERS THEN
-        RAISE WARNING 'TEST F12a FAILED: Unsuffixed table rejected: %', SQLERRM;
+        RAISE WARNING 'TEST F12a MISSLYCKAT:Icke-suffixad tabell avvisades: %', SQLERRM;
 END $$;
 
--- F12b: Adding POLYGON to unsuffixed table → steg 5c catches and blocks
+-- F12b: Lägga till POLYGON till tabell utan suffix → steg 5c fångar och blockerar
 DO $$
 BEGIN
     ALTER TABLE sk0_ext_fmetest.import_staging ADD COLUMN geom geometry(Polygon, 3007);
-    RAISE WARNING 'TEST F12b FAILED: Polygon accepted on unsuffixed table (steg 5c not working)';
+    RAISE WARNING 'TEST F12b MISSLYCKAT:Polygon accepterades på icke-suffixad tabell (steg 5c fungerar ej)';
 EXCEPTION
     WHEN OTHERS THEN
         IF SQLERRM LIKE '%saknar korrekt suffix%' OR SQLERRM LIKE '%suffix%' OR SQLERRM LIKE '%_y%' THEN
-            RAISE NOTICE 'TEST F12b PASSED: Polygon on unsuffixed table rejected by steg 5c: %',
+            RAISE NOTICE 'TEST F12b GODKÄNT:Polygon på icke-suffixad tabell avvisad av steg 5c: %',
                 left(SQLERRM, 120);
         ELSE
-            RAISE NOTICE 'TEST F12b PASSED (other exception): %', left(SQLERRM, 120);
+            RAISE NOTICE 'TEST F12b GODKÄNT (annat undantag): %', left(SQLERRM, 120);
         END IF;
 END $$;
 
--- F12c: Table still exists (only ALTER TABLE rolled back, not the CREATE TABLE)
+-- F12c: Tabellen finns fortfarande (bara ALTER TABLE återställdes, inte CREATE TABLE)
 DO $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM information_schema.tables
         WHERE table_schema = 'sk0_ext_fmetest' AND table_name = 'import_staging'
     ) THEN
-        RAISE NOTICE 'TEST F12c PASSED: import_staging still exists (only ALTER TABLE was rolled back)';
+        RAISE NOTICE 'TEST F12c GODKÄNT:import_staging finns fortfarande (bara ALTER TABLE återställdes)';
     ELSE
-        RAISE WARNING 'TEST F12c FAILED: import_staging gone – more than ALTER TABLE was rolled back';
+        RAISE WARNING 'TEST F12c MISSLYCKAT:import_staging borta – mer än ALTER TABLE återställdes';
     END IF;
 END $$;
 
--- F12d: geom column not present (ALTER TABLE was rolled back)
+-- F12d: geom-kolumn finns inte (ALTER TABLE återställdes)
 DO $$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM geometry_columns
         WHERE f_table_schema = 'sk0_ext_fmetest' AND f_table_name = 'import_staging'
     ) THEN
-        RAISE NOTICE 'TEST F12d PASSED: geom column absent (ALTER TABLE rollback confirmed)';
+        RAISE NOTICE 'TEST F12d GODKÄNT:geom-kolumn frånvarande (ALTER TABLE-återställning bekräftad)';
     ELSE
-        RAISE WARNING 'TEST F12d FAILED: geom column present despite exception';
+        RAISE WARNING 'TEST F12d MISSLYCKAT:geom-kolumn finns trots undantag';
     END IF;
 END $$;
 
 DROP TABLE sk0_ext_fmetest.import_staging;
 
--- F12e–F12h: All four geometry types produce the correct expected-suffix hint
--- Each test creates a fresh unsuffixed table and tries to add a typed geometry.
--- The exception message must mention the required suffix.
+-- F12e–F12h: Alla fyra geometrityper ger korrekt förväntat-suffix-tips
+-- Varje test skapar en ny tabell utan suffix och försöker lägga till en typad geometri.
+-- Undantagsmeddelandet måste nämna det obligatoriska suffixet.
 
--- F12e: POINT → expects _p
+-- F12e: POINT → förväntar _p
 DO $$
 BEGIN
     CREATE TABLE sk0_ext_fmetest.steg5c_nosfx (id int);
     ALTER TABLE sk0_ext_fmetest.steg5c_nosfx ADD COLUMN geom geometry(Point, 3007);
-    RAISE WARNING 'TEST F12e FAILED: POINT accepted on unsuffixed table';
+    RAISE WARNING 'TEST F12e MISSLYCKAT:POINT accepterades på icke-suffixad tabell';
 EXCEPTION
     WHEN OTHERS THEN
         IF SQLERRM LIKE '%_p%' OR SQLERRM LIKE '%suffix%' THEN
-            RAISE NOTICE 'TEST F12e PASSED: POINT on unsuffixed table rejected (expects _p): %',
+            RAISE NOTICE 'TEST F12e GODKÄNT:POINT på icke-suffixad tabell avvisad (förväntar _p): %',
                 left(SQLERRM, 100);
         ELSE
-            RAISE NOTICE 'TEST F12e PASSED (other): %', left(SQLERRM, 80);
+            RAISE NOTICE 'TEST F12e GODKÄNT (annat): %', left(SQLERRM, 80);
         END IF;
 END $$;
 DROP TABLE IF EXISTS sk0_ext_fmetest.steg5c_nosfx;
 
--- F12f: LINESTRING → expects _l
+-- F12f: LINESTRING → förväntar _l
 DO $$
 BEGIN
     CREATE TABLE sk0_ext_fmetest.steg5c_nosfx (id int);
     ALTER TABLE sk0_ext_fmetest.steg5c_nosfx ADD COLUMN geom geometry(LineString, 3007);
-    RAISE WARNING 'TEST F12f FAILED: LineString accepted on unsuffixed table';
+    RAISE WARNING 'TEST F12f MISSLYCKAT:LineString accepterades på icke-suffixad tabell';
 EXCEPTION
     WHEN OTHERS THEN
         IF SQLERRM LIKE '%_l%' OR SQLERRM LIKE '%suffix%' THEN
-            RAISE NOTICE 'TEST F12f PASSED: LineString on unsuffixed table rejected (expects _l): %',
+            RAISE NOTICE 'TEST F12f GODKÄNT:LineString på icke-suffixad tabell avvisad (förväntar _l): %',
                 left(SQLERRM, 100);
         ELSE
-            RAISE NOTICE 'TEST F12f PASSED (other): %', left(SQLERRM, 80);
+            RAISE NOTICE 'TEST F12f GODKÄNT (annat): %', left(SQLERRM, 80);
         END IF;
 END $$;
 DROP TABLE IF EXISTS sk0_ext_fmetest.steg5c_nosfx;
 
--- F12g: POLYGON → expects _y
+-- F12g: POLYGON → förväntar _y
 DO $$
 BEGIN
     CREATE TABLE sk0_ext_fmetest.steg5c_nosfx (id int);
     ALTER TABLE sk0_ext_fmetest.steg5c_nosfx ADD COLUMN geom geometry(Polygon, 3007);
-    RAISE WARNING 'TEST F12g FAILED: Polygon accepted on unsuffixed table';
+    RAISE WARNING 'TEST F12g MISSLYCKAT:Polygon accepterades på icke-suffixad tabell';
 EXCEPTION
     WHEN OTHERS THEN
         IF SQLERRM LIKE '%_y%' OR SQLERRM LIKE '%suffix%' THEN
-            RAISE NOTICE 'TEST F12g PASSED: Polygon on unsuffixed table rejected (expects _y): %',
+            RAISE NOTICE 'TEST F12g GODKÄNT:Polygon på icke-suffixad tabell avvisad (förväntar _y): %',
                 left(SQLERRM, 100);
         ELSE
-            RAISE NOTICE 'TEST F12g PASSED (other): %', left(SQLERRM, 80);
+            RAISE NOTICE 'TEST F12g GODKÄNT (annat): %', left(SQLERRM, 80);
         END IF;
 END $$;
 DROP TABLE IF EXISTS sk0_ext_fmetest.steg5c_nosfx;
 
--- F12h: GEOMETRY (generic) → expects _g
+-- F12h: GEOMETRY (generisk) → förväntar _g
 DO $$
 BEGIN
     CREATE TABLE sk0_ext_fmetest.steg5c_nosfx (id int);
     ALTER TABLE sk0_ext_fmetest.steg5c_nosfx ADD COLUMN geom geometry(Geometry, 3007);
-    RAISE WARNING 'TEST F12h FAILED: generic GEOMETRY accepted on unsuffixed table';
+    RAISE WARNING 'TEST F12h MISSLYCKAT:generisk GEOMETRY accepterades på icke-suffixad tabell';
 EXCEPTION
     WHEN OTHERS THEN
         IF SQLERRM LIKE '%_g%' OR SQLERRM LIKE '%suffix%' THEN
-            RAISE NOTICE 'TEST F12h PASSED: generic GEOMETRY on unsuffixed table rejected (expects _g): %',
+            RAISE NOTICE 'TEST F12h GODKÄNT:generisk GEOMETRY på icke-suffixad tabell avvisad (förväntar _g): %',
                 left(SQLERRM, 100);
         ELSE
-            RAISE NOTICE 'TEST F12h PASSED (other): %', left(SQLERRM, 80);
+            RAISE NOTICE 'TEST F12h GODKÄNT (annat): %', left(SQLERRM, 80);
         END IF;
 END $$;
 DROP TABLE IF EXISTS sk0_ext_fmetest.steg5c_nosfx;
 
--- F12i: Steg 5c SUCCESS path.
--- A table with the correct suffix that somehow bypassed hantera_ny_tabell
--- (e.g. a direct DB restore or migration tool) should be handled gracefully
--- when geom is added later: steg 5c recognises the correct suffix, creates
--- the GiST, and runs the standard geometry setup without error.
--- Setup: bypass Hex on CREATE TABLE by setting the recursion flag.
+-- F12i: Steg 5c FRAMGÅNG-väg.
+-- En tabell med korrekt suffix som på något sätt förbigick hantera_ny_tabell
+-- (t.ex. en direkt DB-återställning eller migreringsverktyg) ska hanteras elegant
+-- när geom läggs till senare: steg 5c känner igen korrekt suffix, skapar
+-- GiST och kör standardgeometriinställningar utan fel.
+-- Förberedelse: förbikoppla Hex vid CREATE TABLE via rekursionsflaggan.
 
 DO $$
 BEGIN
     PERFORM set_config('temp.tabellstrukturering_pagar', 'true', true);
     EXECUTE 'CREATE TABLE sk0_ext_fmetest.steg5c_ok_l (id int)';
     PERFORM set_config('temp.tabellstrukturering_pagar', 'false', true);
-    RAISE NOTICE 'TEST F12i setup: steg5c_ok_l created with _l suffix (Hex bypassed)';
+    RAISE NOTICE 'TEST F12i förberedelse: steg5c_ok_l skapad med _l-suffix (Hex förbikopplat)';
 EXCEPTION
     WHEN OTHERS THEN
-        RAISE WARNING 'TEST F12i setup FAILED: %', SQLERRM;
+        RAISE WARNING 'TEST F12i setup MISSLYCKAT:%', SQLERRM;
 END $$;
 
 DO $$
 BEGIN
     ALTER TABLE sk0_ext_fmetest.steg5c_ok_l ADD COLUMN geom geometry(LineString, 3007);
-    RAISE NOTICE 'TEST F12i PASSED: LineString accepted on correctly-suffixed _l table via steg 5c';
+    RAISE NOTICE 'TEST F12i GODKÄNT:LineString accepterades på korrekt suffixad _l-tabell via steg 5c';
 EXCEPTION
     WHEN OTHERS THEN
-        RAISE WARNING 'TEST F12i FAILED: geom rejected on correctly-suffixed _l table: %', SQLERRM;
+        RAISE WARNING 'TEST F12i MISSLYCKAT:geom avvisad på korrekt suffixad _l-tabell: %', SQLERRM;
 END $$;
 
--- F12i-GiST: GiST created by steg 5c success path
+-- F12i-GiST: GiST skapat via steg 5c framgång-väg
 DO $$
 BEGIN
     IF EXISTS (
@@ -1064,35 +1064,35 @@ BEGIN
         WHERE schemaname = 'sk0_ext_fmetest' AND tablename = 'steg5c_ok_l'
         AND indexname = 'steg5c_ok_l_geom_gidx'
     ) THEN
-        RAISE NOTICE 'TEST F12i-GiST PASSED: GiST steg5c_ok_l_geom_gidx created by steg 5c success path';
+        RAISE NOTICE 'TEST F12i-GiST GODKÄNT:GiST steg5c_ok_l_geom_gidx skapat via steg 5c framgång-väg';
     ELSE
-        RAISE WARNING 'TEST F12i-GiST FAILED: GiST missing after steg 5c success path';
+        RAISE WARNING 'TEST F12i-GiST MISSLYCKAT:GiST saknas efter steg 5c framgång-väg';
     END IF;
 END $$;
 
 DROP TABLE sk0_ext_fmetest.steg5c_ok_l;
 
 ------------------------------------------------------------------------
--- F13: GIST COUNT – Exactly one GiST after every Hex processing path
+-- F13: GIST-ANTAL – Exakt ett GiST efter varje Hex-bearbetningsväg
 ------------------------------------------------------------------------
--- Verifies the duplicate GiST cleanup: before creating its own standard
--- GiST index (<table>_geom_gidx), Hex drops any pre-existing GiST with a
--- different name (e.g. one created by FME). After processing, exactly one
--- GiST with the correct Hex-standard name must exist.
+-- Verifierar rensning av dubblerade GiST-index: innan Hex skapar sitt eget
+-- GiST-index (<tabell>_geom_gidx) tar det bort eventuella befintliga GiST
+-- med annat namn (t.ex. ett skapat av FME). Efter bearbetning ska exakt ett
+-- GiST med korrekt Hex-standardnamn finnas.
 \echo ''
-\echo '--- GROUP F13: GiST count – exactly one GiST after each Hex path ---'
+\echo '--- GRUPP F13: GiST-antal – exakt ett GiST efter varje Hex-väg ---'
 
--- F13a: Normal path (geom in CREATE TABLE) → exactly one GiST
+-- F13a: Normal väg (geom i CREATE TABLE) → exakt ett GiST
 DO $$
 BEGIN
     CREATE TABLE sk0_ext_fmetest.en_gist_p (
         kod  text,
         geom geometry(Point, 3007)
     );
-    RAISE NOTICE 'TEST F13a setup: en_gist_p created via normal path';
+    RAISE NOTICE 'TEST F13a förberedelse: en_gist_p skapad via normal väg';
 EXCEPTION
     WHEN OTHERS THEN
-        RAISE WARNING 'TEST F13a setup FAILED: %', SQLERRM;
+        RAISE WARNING 'TEST F13a setup MISSLYCKAT:%', SQLERRM;
 END $$;
 
 DO $$
@@ -1102,15 +1102,15 @@ BEGIN
     WHERE schemaname = 'sk0_ext_fmetest' AND tablename = 'en_gist_p'
       AND indexdef LIKE '%USING gist%';
     IF cnt = 1 THEN
-        RAISE NOTICE 'TEST F13a PASSED: Exactly 1 GiST after normal path (no duplicates)';
+        RAISE NOTICE 'TEST F13a GODKÄNT:Exakt 1 GiST efter normal väg (inga duplikat)';
     ELSE
-        RAISE WARNING 'TEST F13a FAILED: Expected 1 GiST, found %', cnt;
+        RAISE WARNING 'TEST F13a MISSLYCKAT:Förväntade 1 GiST, hittade %', cnt;
     END IF;
 END $$;
 
 DROP TABLE sk0_ext_fmetest.en_gist_p;
 
--- F13b: Afvaktande path (FME step A + B) → exactly one GiST
+-- F13b: Afvaktande-väg (FME steg A + B) → exakt ett GiST
 SET application_name = 'fme';
 CREATE TABLE sk0_ext_fmetest.en_gist_l (a text);
 RESET application_name;
@@ -1123,15 +1123,15 @@ BEGIN
     WHERE schemaname = 'sk0_ext_fmetest' AND tablename = 'en_gist_l'
       AND indexdef LIKE '%USING gist%';
     IF cnt = 1 THEN
-        RAISE NOTICE 'TEST F13b PASSED: Exactly 1 GiST after afvaktande path (no duplicates)';
+        RAISE NOTICE 'TEST F13b GODKÄNT:Exakt 1 GiST efter afvaktande-väg (inga duplikat)';
     ELSE
-        RAISE WARNING 'TEST F13b FAILED: Expected 1 GiST, found %', cnt;
-    END IF;
+        RAISE WARNING 'TEST F13b MISSLYCKAT:Förväntade 1 GiST, hittade %', cnt;
+  END IF;
 END $$;
 
 DROP TABLE sk0_ext_fmetest.en_gist_l;
 
--- F13c: Steg 5c path (bypassed CREATE TABLE + normal ALTER TABLE) → exactly one GiST
+-- F13c: Steg 5c-väg (förbikopp CREATE TABLE + normal ALTER TABLE) → exakt ett GiST
 DO $$
 BEGIN
     PERFORM set_config('temp.tabellstrukturering_pagar', 'true', true);
@@ -1147,51 +1147,51 @@ BEGIN
     WHERE schemaname = 'sk0_ext_fmetest' AND tablename = 'en_gist_y'
       AND indexdef LIKE '%USING gist%';
     IF cnt = 1 THEN
-        RAISE NOTICE 'TEST F13c PASSED: Exactly 1 GiST after steg 5c path (no duplicates)';
+        RAISE NOTICE 'TEST F13c GODKÄNT:Exakt 1 GiST efter steg 5c-väg (inga duplikat)';
     ELSE
-        RAISE WARNING 'TEST F13c FAILED: Expected 1 GiST on steg 5c path, found %', cnt;
+        RAISE WARNING 'TEST F13c MISSLYCKAT:Förväntade 1 GiST på steg 5c-väg, hittade %', cnt;
     END IF;
 END $$;
 
 DROP TABLE sk0_ext_fmetest.en_gist_y;
 
--- F13d: Deduplication – FME-style GiST removed when afvaktande completion fires.
+-- F13d: Deduplicering – FME-stilat GiST borttaget när afvaktande-slutförande aktiveras.
 --
--- Simulates the scenario where FME:
---   1) Creates a pending table (step A – normal, with suffix)
---   2) Adds geom and its OWN GiST via a bypassed ALTER TABLE (step B bypassed)
---   3) Later triggers another ALTER TABLE which fires hantera_kolumntillagg,
---      which runs step 5b (table still in hex_afvaktande_geometri).
---      Step 5b.3 deduplicates: drops the FME-style GiST, creates the Hex standard.
+-- Simulerar scenariot där FME:
+--   1) Skapar en väntande tabell (steg A – normalt, med suffix)
+--   2) Lägger till geom och ett EGET GiST via en förbikopp ALTER TABLE (steg B förbikopp)
+--   3) Utlöser senare en ny ALTER TABLE som aktiverar hantera_kolumntillagg,
+--      som kör steg 5b (tabell fortfarande i hex_afvaktande_geometri).
+--      Steg 5b.3 deduplicerar: tar bort FME-stilat GiST, skapar Hex-standarden.
 --
--- After the deduplication: exactly 1 GiST with the correct Hex name.
+-- Efter deduplicering: exakt 1 GiST med korrekt Hex-namn.
 
--- Setup A: FME pending table
+-- Förberedelse A: FME väntande tabell
 SET application_name = 'fme';
 DO $$
 BEGIN
     CREATE TABLE sk0_ext_fmetest.dup_gist_p (id int);
-    RAISE NOTICE 'TEST F13d setup A: dup_gist_p created as pending (FME step A)';
+    RAISE NOTICE 'TEST F13d förberedelse A: dup_gist_p skapad som väntande (FME steg A)';
 EXCEPTION
     WHEN OTHERS THEN
-        RAISE WARNING 'TEST F13d setup A FAILED: %', SQLERRM;
+        RAISE WARNING 'TEST F13d förberedelse A MISSLYCKAT:%', SQLERRM;
 END $$;
 RESET application_name;
 
--- Setup B: Bypass Hex to add geom + FME-style GiST without Hex processing
+-- Förberedelse B: Förbikoppla Hex för att lägga till geom + FME-stilat GiST utan Hex-behandling
 DO $$
 BEGIN
     PERFORM set_config('temp.reorganization_in_progress', 'true', true);
     EXECUTE 'ALTER TABLE sk0_ext_fmetest.dup_gist_p ADD COLUMN geom geometry(Point, 3007)';
     EXECUTE 'CREATE INDEX fme_dup_gist_idx ON sk0_ext_fmetest.dup_gist_p USING GIST (geom)';
     PERFORM set_config('temp.reorganization_in_progress', 'false', true);
-    RAISE NOTICE 'TEST F13d setup B: geom added and FME-style GiST fme_dup_gist_idx created (bypassed Hex)';
+    RAISE NOTICE 'TEST F13d förberedelse B: geom tillagd och FME-stilat GiST fme_dup_gist_idx skapat (förbikopplat Hex)';
 EXCEPTION
     WHEN OTHERS THEN
-        RAISE WARNING 'TEST F13d setup B FAILED: %', SQLERRM;
+        RAISE WARNING 'TEST F13d förberedelse B MISSLYCKAT:%', SQLERRM;
 END $$;
 
--- Pre-check: table is afvaktande and has exactly one (wrong-named) GiST
+-- Förkontroll: tabellen är afvaktande och har exakt ett (felnamnat) GiST
 DO $$
 DECLARE
     is_pending boolean;
@@ -1206,17 +1206,17 @@ BEGIN
       AND indexdef LIKE '%USING gist%';
 
     IF is_pending AND gist_count = 1 THEN
-        RAISE NOTICE 'TEST F13d pre-check OK: table is pending, has 1 FME-style GiST – ready for dedup test';
+        RAISE NOTICE 'TEST F13d förkontroll OK: tabell är väntande, har 1 FME-stilat GiST – redo för dedupliceringstest';
     ELSE
-        RAISE WARNING 'TEST F13d pre-check: pending=%, gist_count=% (expected true, 1) – setup may have failed',
+        RAISE WARNING 'TEST F13d förkontroll: väntande=%, gist_antal=% (förväntade true, 1) – förberedelse kan ha misslyckats',
             is_pending, gist_count;
     END IF;
 END $$;
 
--- Step C: Trigger afvaktande completion (any ALTER TABLE fires hantera_kolumntillagg → step 5b)
+-- Steg C: Utlös afvaktande-slutförande (valfri ALTER TABLE aktiverar hantera_kolumntillagg → steg 5b)
 ALTER TABLE sk0_ext_fmetest.dup_gist_p ADD COLUMN extra_kol text;
 
--- F13d: Exactly one GiST with the Hex standard name after deduplication
+-- F13d: Exakt ett GiST med Hex-standardnamn efter deduplicering
 DO $$
 DECLARE
     cnt       integer;
@@ -1227,35 +1227,35 @@ BEGIN
       AND indexdef LIKE '%USING gist%';
 
     IF cnt = 1 AND gist_namn = 'dup_gist_p_geom_gidx' THEN
-        RAISE NOTICE 'TEST F13d PASSED: Exactly 1 GiST with Hex standard name (FME duplicate removed by deduplication in step 5b.3)';
+        RAISE NOTICE 'TEST F13d GODKÄNT:Exakt 1 GiST med Hex-standardnamn (FME-duplikat borttaget av deduplicering i steg 5b.3)';
     ELSIF cnt = 1 THEN
-        RAISE WARNING 'TEST F13d PARTIAL: 1 GiST but wrong name "%" – dedup ran but used unexpected name', gist_namn;
+        RAISE WARNING 'TEST F13d DELVIS: 1 GiST men fel namn "%" – dedup körde men använde oväntat namn', gist_namn;
     ELSIF cnt = 2 THEN
-        RAISE WARNING 'TEST F13d FAILED: 2 GiSTs still present – deduplication in step 5b.3 did not fire or did not remove the FME GiST';
+        RAISE WARNING 'TEST F13d MISSLYCKAT:2 GiST fortfarande kvar – deduplicering i steg 5b.3 aktiverades inte eller tog inte bort FME-GiST';
     ELSE
-        RAISE WARNING 'TEST F13d UNEXPECTED: % GiSTs found', cnt;
+        RAISE WARNING 'TEST F13d OVÄNTAT: % GiST hittades', cnt;
     END IF;
 END $$;
 
 DROP TABLE sk0_ext_fmetest.dup_gist_p;
 
 ------------------------------------------------------------------------
--- FINAL CLEANUP
+-- SLUTLIG RENSNING
 ------------------------------------------------------------------------
 \echo ''
-\echo '--- Final cleanup ---'
+\echo '--- Slutlig rensning ---'
 
 RESET application_name;
 
 DROP SCHEMA IF EXISTS sk0_ext_fmetest     CASCADE;
 DROP SCHEMA IF EXISTS sk1_kba_fmetest CASCADE;
 
--- Defensive: remove any test pending entries that survived cleanup
+-- Säkerhetsåtgärd: ta bort eventuella test-väntande poster som överlevde rensningen
 DELETE FROM public.hex_afvaktande_geometri AS ag
 WHERE ag.schema_namn IN ('sk0_ext_fmetest', 'sk1_kba_fmetest');
 
 \echo ''
 \echo '============================================================'
-\echo 'HEX FME TWO-STEP TEST SUITE COMPLETE'
-\echo 'NOTICE = PASSED/INFO,  WARNING = FAILED/BUG CONFIRMED'
+\echo 'HEX FME TVÅSTEGS-TESTSVIT KLAR'
+\echo 'NOTICE = GODKÄNT/INFO,  WARNING = MISSLYCKAT/BUG BEKRÄFTAT'
 \echo '============================================================'

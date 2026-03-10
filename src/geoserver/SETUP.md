@@ -420,7 +420,7 @@ CREATE SCHEMA sk0_kba_test;
 
 **Förväntad utskrift i Terminal 1 (skapande):**
 ```
-[INFO] [geodata_sk0] Mottog notifiering for schema: sk0_kba_test
+[INFO] [geodata_sk0] Mottog notifiering för schema: sk0_kba_test
 [INFO] [geodata_sk0]   Prefix: sk0 -> JNDI: java:comp/env/jdbc/server.geodata_sk0
 [INFO] [geodata_sk0]   Steg 1: Skapar workspace 'sk0_kba_test'...
 [INFO]   [DRY-RUN] Skulle skapa workspace: sk0_kba_test
@@ -436,11 +436,11 @@ DROP SCHEMA sk0_kba_test CASCADE;
 
 **Förväntad utskrift i Terminal 1 (borttagning):**
 ```
-[INFO] [geodata_sk0] Mottog borttagningsnotifiering for schema: sk0_kba_test
-[INFO] [geodata_sk0]   Tar bort workspace 'sk0_kba_test' fran GeoServer...
+[INFO] [geodata_sk0] Mottog borttagningsnotifiering för schema: sk0_kba_test
+[INFO] [geodata_sk0]   Tar bort workspace 'sk0_kba_test' från GeoServer...
 [INFO]   [DRY-RUN] Skulle ta bort workspace (inkl. datastores/lager): sk0_kba_test
 [INFO]   [DRY-RUN] DELETE .../workspaces/sk0_kba_test?recurse=true
-[INFO] [geodata_sk0]   Schema 'sk0_kba_test' avpublicerat fran GeoServer
+[INFO] [geodata_sk0]   Schema 'sk0_kba_test' avpublicerat från GeoServer
 ```
 
 Avbryt lyssnaren med `Ctrl+C`.
@@ -524,12 +524,12 @@ py geoserver_service.py status
 
 Kontrollera loggfilen:
 ```cmd
-type C:\ProgramData\Hex\geoserver_listener.log
+type D:\ProgramData\Hex\geoserver_listener.log
 ```
 
 Eller följ loggen i realtid:
 ```cmd
-powershell Get-Content C:\ProgramData\Hex\geoserver_listener.log -Wait -Tail 20
+powershell Get-Content D:\ProgramData\Hex\geoserver_listener.log -Wait -Tail 20
 ```
 
 ---
@@ -546,7 +546,7 @@ CREATE SCHEMA sk1_kba_parkering;
 
 Kontrollera loggen:
 ```cmd
-type C:\ProgramData\Hex\geoserver_listener.log
+type D:\ProgramData\Hex\geoserver_listener.log
 ```
 
 Kontrollera GeoServer:
@@ -576,7 +576,7 @@ Tjänsten startar automatiskt med Windows om du ställt in det i services.msc
 
 | Fil | Beskrivning |
 |---|---|
-| `C:\ProgramData\Hex\geoserver_listener.log` | Huvudlogg |
+| `D:\ProgramData\Hex\geoserver_listener.log` | Huvudlogg |
 | Windows Event Viewer > Application | Start/stopp-händelser |
 
 Loggen roterar automatiskt vid 5 MB (5 gamla filer sparas).

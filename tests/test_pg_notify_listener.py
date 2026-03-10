@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-Test: pg_notify listener simulation – both directions.
+Test: pg_notify-lyssnarsimulering – båda riktningarna.
 
-Verifies that the listener logic correctly receives and dispatches:
-  - geoserver_schema        (schema creation)
-  - geoserver_schema_drop   (schema deletion)
+Verifierar att lyssnaren korrekt tar emot och vidarebefordrar:
+  - geoserver_schema        (schema-skapande)
+  - geoserver_schema_drop   (schema-borttagning)
 
-No GeoServer is required: the GeoServerClient is replaced with a mock that
-records every call. The test uses a real PostgreSQL connection so the actual
-LISTEN / NOTIFY plumbing is exercised.
+GeoServer krävs inte: GeoServerClient ersätts med en mock som
+registrerar varje anrop. Testet använder en riktig PostgreSQL-anslutning
+så att den faktiska LISTEN/NOTIFY-mekaniken testas.
 
-Usage:
+Användning:
     python3 tests/test_pg_notify_listener.py
 """
 
@@ -27,7 +27,7 @@ import psycopg2.extensions
 import select
 
 # ---------------------------------------------------------------------------
-# Resolve project root so we can import geoserver_listener directly
+# Lös projektrotroten så att geoserver_listener kan importeras direkt
 # ---------------------------------------------------------------------------
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SRC_PATH = PROJECT_ROOT / "src" / "geoserver"
@@ -36,10 +36,10 @@ sys.path.insert(0, str(SRC_PATH))
 import geoserver_listener as gl  # noqa: E402
 
 # ---------------------------------------------------------------------------
-# PostgreSQL connection parameters (local cluster, no password needed)
+# PostgreSQL-anslutningsparametrar (lokalt kluster, inget lösenord krävs)
 # ---------------------------------------------------------------------------
 PG_PARAMS = {
-    "host": "/var/run/postgresql",  # Unix socket – avoids password auth
+    "host": "/var/run/postgresql",  # Unix socket – undviker lösenordsautentisering
     "port": 5432,
     "dbname": "postgres",
     "user": "root",
@@ -60,7 +60,7 @@ JNDI_MAPPINGS = {
 
 
 # ---------------------------------------------------------------------------
-# Helper: open a plain psycopg2 connection in autocommit mode
+# Hjälpare: öppna en psycopg2-anslutning i autocommit-läge
 # ---------------------------------------------------------------------------
 def make_conn():
     conn = psycopg2.connect(**PG_PARAMS)
@@ -69,10 +69,10 @@ def make_conn():
 
 
 # ---------------------------------------------------------------------------
-# Helper: send a NOTIFY from a separate connection and return
+# Hjälpare: skicka NOTIFY från en separat anslutning och returnera
 # ---------------------------------------------------------------------------
 def pg_notify(channel, payload):
-    """Issue NOTIFY channel, 'payload'; from a short-lived connection."""
+    """Skickar NOTIFY channel, 'payload'; från en kortlivad anslutning."""
     conn = make_conn()
     try:
         cur = conn.cursor()
@@ -82,12 +82,12 @@ def pg_notify(channel, payload):
 
 
 # ---------------------------------------------------------------------------
-# Core listener poll – single iteration helper used in tests
+# Lyssnarpollning – hjälpare för en iteration, används i tester
 # ---------------------------------------------------------------------------
 def run_listener_once(listen_conn, timeout=3.0):
     """
-    Poll *listen_conn* for up to *timeout* seconds and return all
-    (channel, payload) pairs received.
+    Pollar *listen_conn* i upp till *timeout* sekunder och returnerar alla
+    mottagna (kanal, payload)-par.
     """
     received = []
     deadline = time.monotonic() + timeout
@@ -96,7 +96,7 @@ def run_listener_once(listen_conn, timeout=3.0):
         remaining = deadline - time.monotonic()
         ready = select.select([listen_conn], [], [], max(0, remaining))
         if ready == ([], [], []):
-            break  # timed out – stop polling
+            break  # timeout – avbryt pollning
         listen_conn.poll()
         while listen_conn.notifies:
             n = listen_conn.notifies.pop(0)
@@ -106,11 +106,11 @@ def run_listener_once(listen_conn, timeout=3.0):
 
 
 # ===========================================================================
-# Tests
+# Tester
 # ===========================================================================
 
 class TestPgNotifyRoundTrip(unittest.TestCase):
-    """End-to-end LISTEN / NOTIFY round-trip via a real PostgreSQL connection."""
+    """End-to-end LISTEN/NOTIFY-runda via en riktig PostgreSQL-anslutning."""
 
     def setUp(self):
         self.listen_conn = make_conn()
@@ -123,10 +123,10 @@ class TestPgNotifyRoundTrip(unittest.TestCase):
             self.listen_conn.close()
 
     # ------------------------------------------------------------------
-    # 1. Raw LISTEN / NOTIFY – no application logic, just the plumbing
+    # 1. Rå LISTEN/NOTIFY – ingen applikationslogik, bara mekaniken
     # ------------------------------------------------------------------
     def test_raw_notify_create_channel_received(self):
-        """NOTIFY on geoserver_schema is delivered to the listener."""
+        """NOTIFY på geoserver_schema levereras till lyssnaren."""
         pg_notify(CHANNEL_CREATE, VALID_CREATE_SCHEMA)
         msgs = run_listener_once(self.listen_conn)
 
@@ -136,7 +136,7 @@ class TestPgNotifyRoundTrip(unittest.TestCase):
         self.assertEqual(payload, VALID_CREATE_SCHEMA)
 
     def test_raw_notify_drop_channel_received(self):
-        """NOTIFY on geoserver_schema_drop is delivered to the listener."""
+        """NOTIFY på geoserver_schema_drop levereras till lyssnaren."""
         pg_notify(CHANNEL_DROP, VALID_DROP_SCHEMA)
         msgs = run_listener_once(self.listen_conn)
 
@@ -146,7 +146,7 @@ class TestPgNotifyRoundTrip(unittest.TestCase):
         self.assertEqual(payload, VALID_DROP_SCHEMA)
 
     def test_both_channels_in_sequence(self):
-        """Both channels can carry notifications in the same session."""
+        """Båda kanaler kan bära notifieringar i samma session."""
         pg_notify(CHANNEL_CREATE, VALID_CREATE_SCHEMA)
         pg_notify(CHANNEL_DROP,   VALID_DROP_SCHEMA)
         msgs = run_listener_once(self.listen_conn)
@@ -160,9 +160,9 @@ class TestPgNotifyRoundTrip(unittest.TestCase):
 
     def test_invalid_schema_not_forwarded_by_listener(self):
         """
-        Raw NOTIFY with an invalid schema name *is* delivered at the transport
-        level, but the handler rejects it. Verify the transport still works
-        and the handler returns False.
+        Rå NOTIFY med ogiltigt schemanamn *levereras* på transportnivå men
+        avvisas av hanteraren. Verifierar att transporten fortfarande fungerar
+        och att hanteraren returnerar False.
         """
         pg_notify(CHANNEL_CREATE, INVALID_SCHEMA)
         msgs = run_listener_once(self.listen_conn)
@@ -171,7 +171,7 @@ class TestPgNotifyRoundTrip(unittest.TestCase):
         _, payload = msgs[0]
         self.assertEqual(payload, INVALID_SCHEMA)
 
-        # Handler must reject the invalid name
+        # Hanteraren måste avvisa det ogiltiga namnet
         mock_gs = MagicMock()
         result = gl.handle_schema_notification(
             INVALID_SCHEMA, JNDI_MAPPINGS, mock_gs
@@ -182,14 +182,14 @@ class TestPgNotifyRoundTrip(unittest.TestCase):
 
 class TestHandlerLogicWithMockGeoServer(unittest.TestCase):
     """
-    Unit tests for handle_schema_notification and
-    handle_schema_removal_notification using a mock GeoServerClient.
-    The PostgreSQL connection is used only for NOTIFY; the handlers run
-    synchronously in the test thread.
+    Enhetstester för handle_schema_notification och
+    handle_schema_removal_notification med en mockad GeoServerClient.
+    PostgreSQL-anslutningen används enbart för NOTIFY; hanterarna körs
+    synkront i testtråden.
     """
 
     def _make_gs_mock(self, workspace_ok=True, datastore_ok=True):
-        """Return a GeoServerClient mock with configurable outcomes."""
+        """Returnerar en GeoServerClient-mock med konfigurerbart utfall."""
         gs = MagicMock()
         gs.workspace_exists.return_value = False
         gs.create_workspace.return_value = workspace_ok
@@ -199,10 +199,10 @@ class TestHandlerLogicWithMockGeoServer(unittest.TestCase):
         return gs
 
     # ------------------------------------------------------------------
-    # 2. Schema CREATE handler
+    # 2. Schema CREATE-hanterare
     # ------------------------------------------------------------------
     def test_create_handler_calls_workspace_and_datastore(self):
-        """Happy path: workspace + datastore are created for a valid sk0 schema."""
+        """Lyckad väg: workspace + datastore skapas för ett giltigt sk0-schema."""
         gs = self._make_gs_mock()
         result = gl.handle_schema_notification(
             VALID_CREATE_SCHEMA, JNDI_MAPPINGS, gs
@@ -218,7 +218,7 @@ class TestHandlerLogicWithMockGeoServer(unittest.TestCase):
         )
 
     def test_create_handler_rejects_invalid_schema(self):
-        """Schema names that don't match the regex are silently skipped."""
+        """Schemanamn som inte matchar regex hoppas tyst över."""
         gs = self._make_gs_mock()
         result = gl.handle_schema_notification(
             "public_bad", JNDI_MAPPINGS, gs
@@ -227,9 +227,9 @@ class TestHandlerLogicWithMockGeoServer(unittest.TestCase):
         gs.create_workspace.assert_not_called()
 
     def test_create_handler_missing_jndi_mapping(self):
-        """Schema with no matching JNDI mapping (e.g. sk2_*) is skipped."""
+        """Schema utan matchande JNDI-koppling (t.ex. sk2_*) hoppas över."""
         gs = self._make_gs_mock()
-        # sk2 is not in JNDI_MAPPINGS
+        # sk2 finns inte i JNDI_MAPPINGS
         result = gl.handle_schema_notification(
             "sk0_kba_missing", {"sk1": "java:comp/env/jdbc/db"}, gs
         )
@@ -237,7 +237,7 @@ class TestHandlerLogicWithMockGeoServer(unittest.TestCase):
         gs.create_workspace.assert_not_called()
 
     def test_create_handler_workspace_failure_aborts(self):
-        """If workspace creation fails the datastore step is skipped."""
+        """Om workspace-skapande misslyckas hoppas datastore-steget över."""
         gs = self._make_gs_mock(workspace_ok=False)
         result = gl.handle_schema_notification(
             VALID_CREATE_SCHEMA, JNDI_MAPPINGS, gs
@@ -246,7 +246,7 @@ class TestHandlerLogicWithMockGeoServer(unittest.TestCase):
         gs.create_jndi_datastore.assert_not_called()
 
     def test_create_handler_sk1_schema(self):
-        """sk1 schemas are handled identically to sk0 schemas."""
+        """sk1-scheman hanteras identiskt med sk0-scheman."""
         gs = self._make_gs_mock()
         result = gl.handle_schema_notification(
             VALID_DROP_SCHEMA,   # "sk1_ext_oldschema"
@@ -257,10 +257,10 @@ class TestHandlerLogicWithMockGeoServer(unittest.TestCase):
         gs.create_workspace.assert_called_once_with(VALID_DROP_SCHEMA)
 
     # ------------------------------------------------------------------
-    # 3. Schema DROP handler
+    # 3. Schema DROP-hanterare
     # ------------------------------------------------------------------
     def test_drop_handler_calls_delete_workspace(self):
-        """Happy path: delete_workspace is called for a valid schema."""
+        """Lyckad väg: delete_workspace anropas för ett giltigt schema."""
         gs = self._make_gs_mock()
         result = gl.handle_schema_removal_notification(VALID_DROP_SCHEMA, gs)
 
@@ -268,14 +268,14 @@ class TestHandlerLogicWithMockGeoServer(unittest.TestCase):
         gs.delete_workspace.assert_called_once_with(VALID_DROP_SCHEMA)
 
     def test_drop_handler_rejects_invalid_schema(self):
-        """Invalid schema names are rejected before touching GeoServer."""
+        """Ogiltiga schemanamn avvisas innan GeoServer kontaktas."""
         gs = self._make_gs_mock()
         result = gl.handle_schema_removal_notification("bad_schema_name", gs)
         self.assertFalse(result)
         gs.delete_workspace.assert_not_called()
 
     def test_drop_handler_returns_false_on_geoserver_failure(self):
-        """Handler returns False when GeoServer delete fails."""
+        """Hanteraren returnerar False när GeoServer-borttagning misslyckas."""
         gs = self._make_gs_mock()
         gs.delete_workspace.return_value = False
         result = gl.handle_schema_removal_notification(VALID_DROP_SCHEMA, gs)
@@ -284,11 +284,11 @@ class TestHandlerLogicWithMockGeoServer(unittest.TestCase):
 
 class TestListenLoopIntegration(unittest.TestCase):
     """
-    Integration test: run listen_loop in a background thread, fire NOTIFY
-    from the main thread, and assert the mock GeoServer was called correctly.
+    Integrationstest: kör listen_loop i en bakgrundstråd, skicka NOTIFY
+    från huvudtråden och verifiera att mock-GeoServer anropades korrekt.
     """
 
-    TIMEOUT = 5  # seconds to wait for the thread to pick up the notification
+    TIMEOUT = 5  # sekunder att vänta på att tråden plockar upp notifieringen
 
     def _run_listen_loop(self, gs_mock, stop_event, db_label="testdb"):
         db_config = {**PG_PARAMS, "jndi_mappings": JNDI_MAPPINGS}
@@ -309,7 +309,7 @@ class TestListenLoopIntegration(unittest.TestCase):
         return gs
 
     def test_listen_loop_picks_up_create_notification(self):
-        """listen_loop receives geoserver_schema NOTIFY and calls create_workspace."""
+        """listen_loop tar emot geoserver_schema NOTIFY och anropar create_workspace."""
         gs = self._make_gs_mock()
         stop = threading.Event()
 
@@ -317,7 +317,7 @@ class TestListenLoopIntegration(unittest.TestCase):
             target=self._run_listen_loop, args=(gs, stop), daemon=True
         )
         t.start()
-        time.sleep(0.5)  # give the thread time to LISTEN
+        time.sleep(0.5)  # ge tråden tid att köra LISTEN
 
         pg_notify(CHANNEL_CREATE, VALID_CREATE_SCHEMA)
 
@@ -334,7 +334,7 @@ class TestListenLoopIntegration(unittest.TestCase):
         gs.create_jndi_datastore.assert_called_once()
 
     def test_listen_loop_picks_up_drop_notification(self):
-        """listen_loop receives geoserver_schema_drop NOTIFY and calls delete_workspace."""
+        """listen_loop tar emot geoserver_schema_drop NOTIFY och anropar delete_workspace."""
         gs = self._make_gs_mock()
         stop = threading.Event()
 
@@ -358,7 +358,7 @@ class TestListenLoopIntegration(unittest.TestCase):
         gs.delete_workspace.assert_called_once_with(VALID_DROP_SCHEMA)
 
     def test_listen_loop_both_directions(self):
-        """Both NOTIFY channels are processed in a single listen_loop run."""
+        """Båda NOTIFY-kanaler bearbetas i en enda listen_loop-körning."""
         gs = self._make_gs_mock()
         stop = threading.Event()
 
@@ -385,7 +385,7 @@ class TestListenLoopIntegration(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Entry point
+# Startpunkt
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     logging.basicConfig(
@@ -393,7 +393,7 @@ if __name__ == "__main__":
         format="%(asctime)s [%(levelname)s] %(message)s",
         datefmt="%H:%M:%S",
     )
-    # Keep geoserver_listener log output visible so the test output is informative
+    # Håll geoserver_listener-loggutskrift synlig så att testutskriften är informativ
     logging.getLogger("geoserver_listener").setLevel(logging.INFO)
 
     unittest.main(verbosity=2)
