@@ -372,8 +372,28 @@ Testa att lyssnaren kan nå både PostgreSQL och GeoServer:
 
 ```cmd
 cd D:\Hex\src\geoserver
-py geoserver_listener.py --test
+[Python-sökväg]\python.exe geoserver_listener.py --test
 ```
+
+> **OBS – systemspecifikt Python-sökväg**
+> Kommandot `py` (Windows Python Launcher) läser skriptets shebang-rad
+> (`#!/usr/bin/env python3`) och letar upp `python3` i PATH. På servrar där
+> Python installerats på en icke-standardiserad plats (t.ex. `D:\Python\`)
+> kan detta leda till att Windows Store-stubben (`WindowsApps\python3.exe`)
+> hittas istället – en platshållare som inte kan köra filer och ger felet
+> *"Unable to create process using …\WindowsApps\python3.exe"*.
+>
+> **Lösning:** Anropa Python-tolken direkt med dess fulla sökväg:
+>
+> ```cmd
+> D:\Python\python.exe geoserver_listener.py --test
+> ```
+>
+> Rätt sökväg på den aktuella servern kan alltid verifieras med:
+>
+> ```cmd
+> py -c "import sys; print(sys.executable)"
+> ```
 
 Förväntad utskrift:
 ```
@@ -408,7 +428,7 @@ Kör lyssnaren i dry-run-läge för att se vad som händer utan att göra ändri
 
 **Terminal 1 - Starta lyssnaren** (från `D:\Hex\src\geoserver`):
 ```cmd
-py geoserver_listener.py --dry-run
+[Python-sökväg]\python.exe geoserver_listener.py --dry-run
 ```
 
 **Terminal 2 - Skapa ett testschema i psql (anslut till en av databaserna):**
@@ -452,7 +472,7 @@ Avbryt lyssnaren med `Ctrl+C`.
 Upprepa steg 7, men UTAN `--dry-run`:
 
 ```cmd
-py geoserver_listener.py
+[Python-sökväg]\python.exe geoserver_listener.py
 ```
 
 Skapa schemat och verifiera i GeoServer:
@@ -481,7 +501,7 @@ Nu när vi vet att allt fungerar, installera det som en riktig tjänst.
 
 ```cmd
 cd D:\Hex\src\geoserver
-py geoserver_service.py install
+[Python-sökväg]\python.exe geoserver_service.py install
 ```
 
 Förväntad utskrift:
@@ -508,7 +528,7 @@ efter felsökning. Starttypen ska vara **Automatic** (sätts under fliken
 ### 9c. Starta tjänsten
 
 ```cmd
-py geoserver_service.py start
+[Python-sökväg]\python.exe geoserver_service.py start
 ```
 
 Eller via `services.msc`, eller:
@@ -519,7 +539,7 @@ net start HexGeoServerListener
 ### 9d. Kontrollera status
 
 ```cmd
-py geoserver_service.py status
+[Python-sökväg]\python.exe geoserver_service.py status
 ```
 
 Kontrollera loggfilen:
