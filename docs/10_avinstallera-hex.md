@@ -8,9 +8,12 @@
 
 Avinstallation tar bort alla event-triggers, funktioner, konfigurationstabeller
 och anpassade datatyper som Hex installerade. Tabeller och scheman i databasen
-**berörs inte** – data raderas inte. Historiktabeller (`_h`) och QA-funktioner
-som Hex skapade per tabell tas **inte** bort automatiskt och måste rensas manuellt
-om de inte längre behövs.
+**berörs inte** – data raderas inte.
+
+**Obs:** Så länge Hex är installerat tas historiktabeller (`_h`) och
+QA-triggerfunktioner (`trg_fn_*_qa`) bort automatiskt när föräldratabellen
+droppas. Efter avinstallation är den event-triggern borta – kvarvarande `_h`-tabeller
+och QA-funktioner måste därefter rensas manuellt vid behov.
 
 ---
 
@@ -101,5 +104,7 @@ DROP TYPE IF EXISTS public.geom_info;
   py geoserver_service.py stop
   py geoserver_service.py remove
   ```
-- Historiktabeller (`_h`) och deras triggers/funktioner per tabell
-  måste tas bort manuellt om de inte längre behövs.
+- Historiktabeller (`_h`) och QA-triggerfunktioner (`trg_fn_*_qa`) som
+  skapades innan avinstallationen finns kvar och måste tas bort manuellt
+  om de inte längre behövs. (Framtida DROP TABLE på föräldratabellen
+  utlöser inte längre automatisk städning – event-triggern är borta.)
