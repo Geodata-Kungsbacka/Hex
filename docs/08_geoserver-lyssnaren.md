@@ -38,14 +38,20 @@ py geoserver_service.py status
 
 ### Visa loggen
 
+Loggens plats styrs av `.env`-variabeln `HEX_LOG_DIR` (standard:
+`D:\ProgramData\Hex`):
+
 ```cmd
-type C:\ProgramData\Hex\geoserver_listener.log
+type %HEX_LOG_DIR%\geoserver_listener.log
 ```
 
 Följ loggen i realtid:
 ```cmd
-powershell Get-Content C:\ProgramData\Hex\geoserver_listener.log -Wait -Tail 20
+powershell Get-Content "$env:HEX_LOG_DIR\geoserver_listener.log" -Wait -Tail 20
 ```
+
+Om `HEX_LOG_DIR` inte är satt som systemmiljövariabel, ersätt med den faktiska
+sökvägen (t.ex. `D:\ProgramData\Hex\geoserver_listener.log`).
 
 ---
 
