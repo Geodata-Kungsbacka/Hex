@@ -96,4 +96,4 @@ Hex tar automatiskt bort alla tillhörande roller (de som är märkta med
 `ta_bort_med_schema = true` i `standardiserade_roller`).
 
 > **OBS:** `CASCADE` tar bort alla tabeller och objekt i schemat – använd med försiktighet.
-> GeoServer-workspace tas **inte** bort automatiskt och måste rensas manuellt vid behov.
+> GeoServer-workspace tas bort automatiskt, och tar med sig Store och Leyers däri.
