@@ -14,7 +14,7 @@ AS $BODY$
  * för att säkerställa att befintliga tabeller har alla förväntade triggers,
  * även när de skapades med en äldre version av Hex.
  *
- * Hanterar tre triggertyper:
+ * Hanterar fyra triggertyper:
  *
  *   hex_tvinga_gid       BEFORE INSERT på alla Hex-tabeller med en gid
  *                        IDENTITY-kolumn. Förhindrar att klienter (t.ex. QGIS)
@@ -22,6 +22,11 @@ AS $BODY$
  *
  *   hex_kontrollera_geom BEFORE INSERT OR UPDATE på _kba_-schemats
  *                        geometritabeller. Validerar OGC-giltighet.
+ *
+ *   hex_ta_bort_dummy    AFTER INSERT på geometritabeller som fortfarande har
+ *                        en dummy-rad registrerad i hex_dummy_geometrier.
+ *                        Transient – tar bort sig själv när första riktiga
+ *                        raden infogas. Återkopplas bara om dummy-raden finns.
  *
  *   trg_<tabell>_qa      BEFORE UPDATE OR DELETE på tabeller med historik.
  *                        Identifieras via triggerfunktioner (trg_fn_%_qa) som
@@ -269,6 +274,7 @@ ALTER FUNCTION public.reparera_rad_triggers()
 
 COMMENT ON FUNCTION public.reparera_rad_triggers()
     IS 'Återkopplar saknade rad-nivå-triggers (hex_tvinga_gid, hex_kontrollera_geom,
-trg_<tabell>_qa) på alla Hex-hanterade tabeller. Idempotent. Anropas automatiskt
-av installeraren efter varje installation/uppgradering så att tabeller skapade
-med en äldre version av Hex får nya triggers utan att behöva återskapas.';
+hex_ta_bort_dummy, trg_<tabell>_qa) på alla Hex-hanterade tabeller. Idempotent.
+Anropas automatiskt av installeraren efter varje installation/uppgradering så att
+tabeller skapade med en äldre version av Hex får nya triggers utan att behöva
+återskapas.';
