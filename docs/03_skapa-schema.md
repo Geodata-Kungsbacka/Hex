@@ -16,13 +16,18 @@ När ett schema skapas triggar Hex automatiskt:
 
 ## Namngivningskonvention
 
-Schemanamn måste följa mönstret: **`sk[0-2]_(ext|kba|sys)_<beskrivning>`**
+Schemanamn måste följa mönstret: **`<skyddsnivå>_(ext|kba|sys)_<beskrivning>`**
+
+Giltiga skyddsnivåer och datakategorier hämtas dynamiskt ur konfigurationstabellerna
+`standardiserade_skyddsnivaer` och `standardiserade_datakategorier`. Med
+standardkonfigurationen gäller:
 
 | Del | Värden | Betydelse |
 |-----|--------|-----------|
-| `sk0` | öppen data | Tillgänglig för alla |
-| `sk1` | kommunal data | Kräver inloggning |
-| `sk2` | begränsad data | Känslig, begränsad åtkomst |
+| `sk0` | öppen data | Tillgänglig för alla; publiceras automatiskt till GeoServer |
+| `sk1` | kommunal data | Kräver inloggning; publiceras automatiskt till GeoServer |
+| `sk2` | begränsad data | Känslig, begränsad åtkomst; publiceras **inte** till GeoServer |
+| `skx` | oklassificerad data | Används av GIS-administratörer för testprojekt o.d.; publiceras **inte** till GeoServer |
 | `ext` | externa källor | Data från myndigheter, leverantörer m.m. |
 | `kba` | interna källor | Data som produceras internt |
 | `sys` | systemdata | Systemspecifik data |
@@ -32,7 +37,7 @@ Schemanamn måste följa mönstret: **`sk[0-2]_(ext|kba|sys)_<beskrivning>`**
 ## Förutsättningar
 
 - Anslutning som PostgreSQL-roll med rättighet att skapa scheman (normalt ägarrollen, t.ex. `gis_admin`).
-- Beslut om säkerhetsnivå (sk0/sk1/sk2), kategori (ext/kba/sys) och ett beskrivande namn.
+- Beslut om säkerhetsnivå (sk0/sk1/sk2/skx), kategori (ext/kba/sys) och ett beskrivande namn.
 
 ---
 
@@ -74,8 +79,8 @@ tilldelar roller till användare.
 
 ```sql
 CREATE SCHEMA min_data;        -- FEL: Följer inte mönstret
-CREATE SCHEMA sk3_ext_test;    -- FEL: sk3 finns inte
-CREATE SCHEMA sk0_foo_bygg;    -- FEL: "foo" är inte ext/kba/sys
+CREATE SCHEMA sk3_ext_test;    -- FEL: sk3 finns inte (giltiga: sk0, sk1, sk2, skx)
+CREATE SCHEMA sk0_foo_bygg;    -- FEL: "foo" är inte en giltig datakategori
 ```
 
 Felmeddelandet berättar exakt vilket mönster som krävs.
@@ -96,4 +101,4 @@ Hex tar automatiskt bort alla tillhörande roller (de som är märkta med
 `ta_bort_med_schema = true` i `standardiserade_roller`).
 
 > **OBS:** `CASCADE` tar bort alla tabeller och objekt i schemat – använd med försiktighet.
-> GeoServer-workspace tas bort automatiskt, och tar med sig Store och Leyers däri.
+> GeoServer-workspace tas bort automatiskt, och tar med sig Store och Layers däri.
