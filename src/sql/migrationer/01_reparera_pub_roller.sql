@@ -31,7 +31,18 @@ DECLARE
     v_login_read    text;
     v_grp_write     text;
     v_login_write   text;
+
+    -- Gemensamt
+    v_owner         text;
 BEGIN
+    -- Lös upp system_owner() om funktionen finns i denna databas,
+    -- annars fall tillbaka på 'gis_admin'.
+    BEGIN
+        SELECT system_owner() INTO v_owner;
+    EXCEPTION WHEN undefined_function THEN
+        v_owner := 'gis_admin';
+        RAISE NOTICE 'system_owner() saknas i denna databas – använder ''gis_admin'' som ägare.';
+    END;
 
 -- =============================================================================
 -- DEL 1: Skapa _pub-roller för gamla _cesium / _geoserver / _qgis loginroller
@@ -63,7 +74,7 @@ LOOP
     -- Skapa _pub LOGIN-roll om den saknas
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = v_new_role) THEN
         EXECUTE format('CREATE ROLE %I WITH LOGIN', v_new_role);
-        EXECUTE format('GRANT %I TO %I WITH ADMIN OPTION', v_new_role, system_owner());
+        EXECUTE format('GRANT %I TO %I WITH ADMIN OPTION', v_new_role, v_owner);
         RAISE NOTICE '    ✓ Skapade LOGIN-roll: %', v_new_role;
     ELSE
         RAISE NOTICE '    - LOGIN-roll finns redan: %', v_new_role;
@@ -125,7 +136,7 @@ LOOP
     -- Läs-grupproll
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = v_grp_read) THEN
         EXECUTE format('CREATE ROLE %I WITH NOLOGIN', v_grp_read);
-        EXECUTE format('GRANT %I TO %I WITH ADMIN OPTION', v_grp_read, system_owner());
+        EXECUTE format('GRANT %I TO %I WITH ADMIN OPTION', v_grp_read, v_owner);
         PERFORM tilldela_rollrattigheter(v_schema, v_grp_read, 'read');
         RAISE NOTICE '    ✓ Skapade grupproll (NOLOGIN): %', v_grp_read;
     ELSE
@@ -137,7 +148,7 @@ LOOP
     -- Läs-loginroll
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = v_login_read) THEN
         EXECUTE format('CREATE ROLE %I WITH LOGIN', v_login_read);
-        EXECUTE format('GRANT %I TO %I WITH ADMIN OPTION', v_login_read, system_owner());
+        EXECUTE format('GRANT %I TO %I WITH ADMIN OPTION', v_login_read, v_owner);
         EXECUTE format('GRANT %I TO %I', v_grp_read, v_login_read);
         RAISE NOTICE '    ✓ Skapade LOGIN-roll: %', v_login_read;
     ELSE
@@ -147,7 +158,7 @@ LOOP
     -- Skriv-grupproll
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = v_grp_write) THEN
         EXECUTE format('CREATE ROLE %I WITH NOLOGIN', v_grp_write);
-        EXECUTE format('GRANT %I TO %I WITH ADMIN OPTION', v_grp_write, system_owner());
+        EXECUTE format('GRANT %I TO %I WITH ADMIN OPTION', v_grp_write, v_owner);
         PERFORM tilldela_rollrattigheter(v_schema, v_grp_write, 'write');
         RAISE NOTICE '    ✓ Skapade grupproll (NOLOGIN): %', v_grp_write;
     ELSE
@@ -158,7 +169,7 @@ LOOP
     -- Skriv-loginroll
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = v_login_write) THEN
         EXECUTE format('CREATE ROLE %I WITH LOGIN', v_login_write);
-        EXECUTE format('GRANT %I TO %I WITH ADMIN OPTION', v_login_write, system_owner());
+        EXECUTE format('GRANT %I TO %I WITH ADMIN OPTION', v_login_write, v_owner);
         EXECUTE format('GRANT %I TO %I', v_grp_write, v_login_write);
         RAISE NOTICE '    ✓ Skapade LOGIN-roll: %', v_login_write;
     ELSE
