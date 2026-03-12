@@ -180,6 +180,45 @@ END LOOP;
 
 RAISE NOTICE '';
 RAISE NOTICE '=== DEL 2 klar ===';
+
+
+-- =============================================================================
+-- DEL 3: Backfill tabellrättigheter för globala roller (sk0, sk1)
+-- =============================================================================
+-- r_sk0_global och r_sk1_global skapas en gång och ärver sedan automatiskt
+-- USAGE + SELECT på nya scheman via event-triggern. Men scheman som skapades
+-- INNAN triggern, eller innan rollen fick en _pub-loginroll, saknar dessa
+-- rättigheter på befintliga tabeller. tilldela_rollrattigheter är idempotent.
+-- =============================================================================
+RAISE NOTICE '';
+RAISE NOTICE '=== DEL 3: Backfill tabellrättigheter för globala roller ===';
+
+FOR v_schema IN
+    SELECT nspname FROM pg_namespace WHERE nspname LIKE 'sk0\_%' ESCAPE '\'
+    ORDER BY nspname
+LOOP
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'r_sk0_global') THEN
+        PERFORM tilldela_rollrattigheter(v_schema, 'r_sk0_global', 'read');
+        RAISE NOTICE '    ✓ Backfilled r_sk0_global på %', v_schema;
+    ELSE
+        RAISE WARNING '    ! r_sk0_global saknas – hoppar över %', v_schema;
+    END IF;
+END LOOP;
+
+FOR v_schema IN
+    SELECT nspname FROM pg_namespace WHERE nspname LIKE 'sk1\_%' ESCAPE '\'
+    ORDER BY nspname
+LOOP
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'r_sk1_global') THEN
+        PERFORM tilldela_rollrattigheter(v_schema, 'r_sk1_global', 'read');
+        RAISE NOTICE '    ✓ Backfilled r_sk1_global på %', v_schema;
+    ELSE
+        RAISE WARNING '    ! r_sk1_global saknas – hoppar över %', v_schema;
+    END IF;
+END LOOP;
+
+RAISE NOTICE '';
+RAISE NOTICE '=== DEL 3 klar ===';
 RAISE NOTICE '';
 RAISE NOTICE 'Migration slutförd.';
 RAISE NOTICE 'Gamla _cesium/_geoserver/_qgis-roller är INTE borttagna.';
