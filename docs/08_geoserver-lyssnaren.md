@@ -89,6 +89,29 @@ som systemövergripande miljövariabler:
 
 ---
 
+## Lägga till eller byta JNDI-anslutningsanvändare
+
+JNDI-poolens databasanvändare är den roll som GeoServer faktiskt ansluter med mot PostgreSQL.
+
+**Vad systemet hanterar automatiskt:**
+Schema- och tabellrättigheter tilldelas via `hantera_standardiserade_roller()` när scheman skapas, inklusive `DEFAULT PRIVILEGES` för framtida tabeller. Login-rollen ärver alla rättigheter från gruppollen via PostgreSQL roll-arv.
+
+**Vad som konfigureras per miljö:**
+
+1. **Skapa login-rollen** i PostgreSQL och tilldela den lämplig grupproll:
+   ```sql
+   CREATE ROLE r_sk0_global_pub WITH LOGIN PASSWORD '...';
+   GRANT r_sk0_global TO r_sk0_global_pub;
+   ```
+
+2. **PostgreSQL-autentisering** — `pg_hba.conf`-poster är per login-roll och ärvs inte via gruppmedlemskap. Varje ny login-roll behöver en egen post konfigurerad enligt er miljö (IP-adress, autentiseringsmetod). Ladda om utan omstart: `SELECT pg_reload_conf()`.
+
+3. **JNDI-resursen i Tomcat** — miljöspecifik konfiguration i er Tomcat-installation. Resursens `name` (på formen `jdbc/...`) måste matcha `HEX_DB_N_JNDI_*`-variabeln i `.env`. Tomcat måste startas om för att läsa nya pooler.
+
+4. **Uppdatera lyssnaren** — lägg till `HEX_DB_N_JNDI_*` i `.env` och starta om tjänsten så att lyssnaren känner till den nya poolen.
+
+---
+
 ## Avinstallera tjänsten
 
 ```cmd
