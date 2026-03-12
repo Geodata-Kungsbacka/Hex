@@ -38,8 +38,7 @@ INSERT INTO standardiserade_roller (
 -- Schemaspecifika roller
 INSERT INTO standardiserade_roller (rollnamn, rolltyp, schema_uttryck, login_roller, beskrivning) VALUES
     ('r_{schema}', 'read', 'LIKE ''sk2_%''', ARRAY['_pub'], 'Schemaspecifik läsroll'),
-    -- skx: oklassificerad data, inga applikationsroller – åtkomst hanteras manuellt av GIS-administratörer
-    ('r_{schema}', 'read', 'LIKE ''skx_%''', ARRAY[]::text[], 'Schemaspecifik läsroll för oklassificerad skyddsnivå (skx)'),
+    ('r_{schema}', 'read', 'LIKE ''skx_%''', ARRAY['_pub'], 'Schemaspecifik läsroll för oklassificerad skyddsnivå (skx)'),
     ('w_{schema}', 'write', 'IS NOT NULL', ARRAY['_pub'], 'Schemaspecifik skrivroll');
 
 -- Any database user who creates tables needs to read these configuration tables,
