@@ -58,8 +58,8 @@ ORDER BY evtname;
 SELECT tablename
 FROM pg_tables
 WHERE schemaname = 'public'
-  AND tablename LIKE '%hex%'
-   OR tablename LIKE 'standardiserade%'
+  AND (tablename LIKE '%hex%'
+   OR tablename LIKE 'standardiserade%')
 ORDER BY tablename;
 ```
 
