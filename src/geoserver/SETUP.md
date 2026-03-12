@@ -640,6 +640,101 @@ vid uppstart:
    (ändrad regex från `^(sk[01])_` till `^(sk[013])_`)
 5. Starta om tjänsten: `python geoserver_service.py restart`
 
+### Lägga till eller byta JNDI-anslutningsanvändare
+
+JNDI-poolens databasanvändare (t.ex. `r_sk0_global_pub`) är den roll som
+GeoServer faktiskt ansluter med mot PostgreSQL. Följande steg krävs när du
+skapar en ny sådan roll eller byter ut en befintlig.
+
+#### 1. Skapa rollen i PostgreSQL och ge den grupprättigheter
+
+```sql
+-- Kör som postgres i rätt databas (t.ex. [databas])
+CREATE ROLE r_sk0_global_pub WITH LOGIN PASSWORD 'starkt_losenord_har';
+GRANT r_sk0_global TO r_sk0_global_pub;
+```
+
+Rollen ärver alla schema- och tabellrättigheter via gruppollen (`r_sk0_global`).
+Om scheman skapades innan gruppollen fick dessa rättigheter, kör migrationen
+`src/sql/migrationer/01_reparera_pub_roller.sql` i rätt databas för att backfilla.
+
+#### 2. Registrera lösenordskontot i localusers.txt
+
+> **Gäller endast lösenordsbaserade konton** — AD-användare (Windows-autentisering)
+> hanteras av domänkontrollanten och ska inte läggas här.
+
+Lägg till rollen i `localusers.txt` så att lösenordskontot är spårbart och
+inte faller bort vid nästa genomgång av databasanvändare:
+
+```
+r_sk0_global_pub   # JNDI-pool för GeoServer sk0-databas
+r_sk1_global_pub   # JNDI-pool för GeoServer sk1-databas
+```
+
+#### 3. Lägg till rollen i pg_hba.conf
+
+> **Gäller endast lösenordsbaserade konton** — AD-användare behöver inte detta.
+
+Rader i `pg_hba.conf` är per login-roll och ärvs inte via gruppmedlemskap.
+Varje ny `_pub`-roll måste ha en egen rad:
+
+```
+# GeoServer JNDI-pooler (GeoServer-serverns IP)
+host    [databas_sk0]    r_sk0_global_pub    <geoserver_ip>/32    scram-sha-256
+host    [databas_sk1]    r_sk1_global_pub    <geoserver_ip>/32    scram-sha-256
+```
+
+Ladda om PostgreSQL efter ändringen — ingen omstart krävs:
+
+```sql
+SELECT pg_reload_conf();
+```
+
+#### 4. Lägg till JNDI-resursen i geoserver.xml
+
+Tomcat läser `D:\Tomcat\conf\Catalina\localhost\geoserver.xml` vid start.
+Lägg till en ny `<Resource>`-post för varje ny anslutningspool:
+
+```xml
+<Resource name="jdbc/[server].[databas]"
+          auth="Container"
+          type="javax.sql.DataSource"
+          driverClassName="org.postgresql.Driver"
+          url="jdbc:postgresql://[pg-server]:5432/[databas]"
+          username="r_sk0_global_pub" password="starkt_losenord_har"
+          maxTotal="20"
+          initialSize="0"
+          minIdle="0"
+          maxIdle="8"
+          maxWaitMillis="10000"
+          timeBetweenEvictionRunsMillis="30000"
+          minEvictableIdleTimeMillis="60000"
+          testWhileIdle="true"
+          validationQuery="SELECT 1"
+          rollbackOnReturn="true" />
+```
+
+JNDI-resursens `name` (utan `java:comp/env/`-prefix) måste matcha vad
+GeoServers datastores refererar till. Kontrollera `.env`:
+
+```
+HEX_DB_1_JNDI_sk0=java:comp/env/jdbc/[server].[databas]
+```
+
+#### 5. Starta om Tomcat
+
+`geoserver.xml` läses bara vid uppstart. Starta om Tomcat-tjänsten:
+
+```cmd
+net stop Tomcat9
+net start Tomcat9
+```
+
+> **OBS:** Nya scheman som publiceras via lyssnaren kräver **inte** Tomcat-omstart
+> — det är bara ändringar i `geoserver.xml` (nya pooler) som gör det.
+
+---
+
 ### Ändra JNDI-koppling
 
 1. Ändra miljövariabel eller .env
