@@ -649,7 +649,7 @@ skapar en ny sådan roll eller byter ut en befintlig.
 #### 1. Skapa rollen i PostgreSQL och ge den grupprättigheter
 
 ```sql
--- Kör som postgres i rätt databas (t.ex. geodata_sk0_oppen)
+-- Kör som postgres i rätt databas (t.ex. [databas])
 CREATE ROLE r_sk0_global_pub WITH LOGIN PASSWORD 'starkt_losenord_har';
 GRANT r_sk0_global TO r_sk0_global_pub;
 ```
@@ -680,8 +680,8 @@ Varje ny `_pub`-roll måste ha en egen rad:
 
 ```
 # GeoServer JNDI-pooler (GeoServer-serverns IP)
-host    geodata_sk0_oppen     r_sk0_global_pub    <geoserver_ip>/32    scram-sha-256
-host    geodata_sk1_kommun    r_sk1_global_pub    <geoserver_ip>/32    scram-sha-256
+host    [databas_sk0]    r_sk0_global_pub    <geoserver_ip>/32    scram-sha-256
+host    [databas_sk1]    r_sk1_global_pub    <geoserver_ip>/32    scram-sha-256
 ```
 
 Ladda om PostgreSQL efter ändringen — ingen omstart krävs:
@@ -696,11 +696,11 @@ Tomcat läser `D:\Tomcat\conf\Catalina\localhost\geoserver.xml` vid start.
 Lägg till en ny `<Resource>`-post för varje ny anslutningspool:
 
 ```xml
-<Resource name="jdbc/db-devkarta.geodata_sk0_oppen"
+<Resource name="jdbc/[server].[databas]"
           auth="Container"
           type="javax.sql.DataSource"
           driverClassName="org.postgresql.Driver"
-          url="jdbc:postgresql://<pg-server>:5432/geodata_sk0_oppen"
+          url="jdbc:postgresql://[pg-server]:5432/[databas]"
           username="r_sk0_global_pub" password="starkt_losenord_har"
           maxTotal="20"
           initialSize="0"
@@ -718,7 +718,7 @@ JNDI-resursens `name` (utan `java:comp/env/`-prefix) måste matcha vad
 GeoServers datastores refererar till. Kontrollera `.env`:
 
 ```
-HEX_DB_1_JNDI_sk0=java:comp/env/jdbc/db-devkarta.geodata_sk0_oppen
+HEX_DB_1_JNDI_sk0=java:comp/env/jdbc/[server].[databas]
 ```
 
 #### 5. Starta om Tomcat
