@@ -384,6 +384,94 @@ class TestListenLoopIntegration(unittest.TestCase):
         gs.delete_workspace.assert_called_once_with(VALID_DROP_SCHEMA)
 
 
+class TestCreateWorkspaceNamespaceUri(unittest.TestCase):
+    """
+    Enhetstester för GeoServerClient.create_workspace som verifierar att
+    namespace-URI sätts korrekt efter att workspace skapats.
+    """
+
+    def _make_client(self):
+        return gl.GeoServerClient(
+            base_url="http://geoserver.example.com",
+            user="admin",
+            password="secret",
+        )
+
+    def _mock_response(self, status_code):
+        resp = MagicMock()
+        resp.status_code = status_code
+        resp.text = ""
+        return resp
+
+    def test_namespace_uri_put_called_after_workspace_created(self):
+        """Efter lyckat POST ska PUT /namespaces/<name> anropas med korrekt URI."""
+        client = self._make_client()
+        post_resp = self._mock_response(201)
+        put_resp = self._mock_response(200)
+
+        with patch.object(client, "_request_with_retry", side_effect=[
+            self._mock_response(404),  # workspace_exists -> 404 = does not exist
+            post_resp,                 # POST /workspaces -> 201
+            put_resp,                  # PUT /namespaces/<name> -> 200
+        ]) as mock_req:
+            result = client.create_workspace("sk0_ext_sjv")
+
+        self.assertTrue(result)
+        calls = mock_req.call_args_list
+        self.assertEqual(len(calls), 3)
+
+        # Third call must be PUT to the namespaces endpoint
+        method, url = calls[2][0][0], calls[2][0][1]
+        self.assertEqual(method, "PUT")
+        self.assertIn("/namespaces/sk0_ext_sjv", url)
+
+        # Verify the URI in the payload is a proper https URI, not "http://sk0_ext_sjv"
+        ns_payload = calls[2][1]["json"]
+        uri = ns_payload["namespace"]["uri"]
+        self.assertTrue(uri.startswith("https://"), f"Expected https URI, got: {uri}")
+        self.assertNotEqual(uri, "http://sk0_ext_sjv")
+        self.assertIn("sk0_ext_sjv", uri)
+
+    def test_namespace_put_failure_still_returns_true(self):
+        """Misslyckad namespace-uppdatering ska inte hindra workspace från att rapporteras som skapad."""
+        client = self._make_client()
+
+        with patch.object(client, "_request_with_retry", side_effect=[
+            self._mock_response(404),  # workspace_exists
+            self._mock_response(201),  # POST /workspaces
+            self._mock_response(500),  # PUT /namespaces -> failure
+        ]):
+            result = client.create_workspace("sk0_ext_sjv")
+
+        self.assertTrue(result)
+
+    def test_workspace_post_failure_skips_namespace_put(self):
+        """Om POST /workspaces misslyckas ska inget namespace-PUT skickas."""
+        client = self._make_client()
+
+        with patch.object(client, "_request_with_retry", side_effect=[
+            self._mock_response(404),  # workspace_exists
+            self._mock_response(500),  # POST /workspaces -> failure
+        ]) as mock_req:
+            result = client.create_workspace("sk0_ext_sjv")
+
+        self.assertFalse(result)
+        # Only 2 calls: workspace_exists + POST; no PUT
+        self.assertEqual(len(mock_req.call_args_list), 2)
+
+    def test_existing_workspace_skips_all_calls(self):
+        """Om workspace redan finns ska varken POST eller PUT anropas."""
+        client = self._make_client()
+
+        with patch.object(client, "_request_with_retry", side_effect=[
+            self._mock_response(200),  # workspace_exists -> 200 = exists
+        ]) as mock_req:
+            result = client.create_workspace("sk0_ext_sjv")
+
+        self.assertTrue(result)
+        self.assertEqual(len(mock_req.call_args_list), 1)
+
+
 # ---------------------------------------------------------------------------
 # Startpunkt
 # ---------------------------------------------------------------------------
