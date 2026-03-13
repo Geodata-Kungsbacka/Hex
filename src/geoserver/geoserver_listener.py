@@ -488,16 +488,16 @@ class GeoServerClient:
             log.info("  [DRY-RUN] Skulle skapa workspace: %s", name)
             log.info("  [DRY-RUN] POST %s/workspaces", self.rest_url)
             log.info("  [DRY-RUN] Payload: %s", json.dumps(payload))
+            ns_payload = {"namespace": {"prefix": name, "uri": f"https://geoserver.kungsbacka.se/{name}"}}
+            log.info("  [DRY-RUN] Skulle sätta namespace URI: PUT %s/namespaces/%s", self.rest_url, name)
+            log.info("  [DRY-RUN] Namespace payload: %s", json.dumps(ns_payload))
             return True
 
         resp = self._request_with_retry(
             "POST", f"{self.rest_url}/workspaces", json=payload
         )
 
-        if resp.status_code == 201:
-            log.info("  Workspace '%s' skapad", name)
-            return True
-        else:
+        if resp.status_code != 201:
             log.error(
                 "  Misslyckades att skapa workspace '%s': %d %s",
                 name,
@@ -505,6 +505,26 @@ class GeoServerClient:
                 resp.text,
             )
             return False
+
+        log.info("  Workspace '%s' skapad", name)
+
+        # GeoServer auto-generates the namespace URI as "http://<name>" which is
+        # not a valid URI. Update it to a proper URI after workspace creation.
+        ns_payload = {"namespace": {"prefix": name, "uri": f"https://geoserver.kungsbacka.se/{name}"}}
+        ns_resp = self._request_with_retry(
+            "PUT", f"{self.rest_url}/namespaces/{name}", json=ns_payload
+        )
+        if ns_resp.status_code == 200:
+            log.info("  Namespace URI satt för '%s'", name)
+        else:
+            log.warning(
+                "  Workspace skapad men namespace URI kunde inte uppdateras för '%s': %d %s",
+                name,
+                ns_resp.status_code,
+                ns_resp.text,
+            )
+
+        return True
 
     def delete_workspace(self, name):
         """Tar bort en workspace i GeoServer, inklusive alla datastores och lager.
