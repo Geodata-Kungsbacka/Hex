@@ -515,15 +515,10 @@ Service installed
 Öppna `services.msc`, hitta **Hex GeoServer Schema Listener**, högerklicka
 och välj **Properties > Recovery**:
 
-| Inställning | Värde |
-|---|---|
-| First failure | Take No Action |
-| Second failure | Take No Action |
-| Subsequent failures | Take No Action |
-
-Tjänsten startas **inte** om automatiskt vid krasch — återstart sker manuellt
-efter felsökning. Starttypen ska vara **Automatic** (sätts under fliken
+Starttypen ska vara **Automatic** (sätts under fliken
 **General > Startup type**) så att tjänsten startar vid serveromstart.
+
+Hör med din IT avdelning hur dom vill att tjänster sätts upp.
 
 ### 9c. Starta tjänsten
 
