@@ -30,6 +30,14 @@ DB_CONFIG = {
 OWNER_ROLE = "gis_admin"        # Rollen som ska äga Hex-objekt
 ```
 
+> **OBS – `localhost` på Windows Server:** Om du installerar mot en lokal
+> PostgreSQL-instans på Windows, byt `"localhost"` mot `"127.0.0.1"` i
+> `host`-fältet. På moderna Windows-servrar kan `localhost` lösas till `::1`
+> (IPv6) i stället för `127.0.0.1`, beroende på `hosts`-filens ordning. Om
+> PostgreSQL lyssnar på `127.0.0.1` men Python ansluter via `::1` (eller
+> vice versa) misslyckas installationen med `connection refused`. Använd
+> samma literala adress i `DB_CONFIG` och i `pg_hba.conf`.
+
 > Installationsskriptet måste köras **en gång per databas** om du har
 > flera databaser som ska ha Hex.
 

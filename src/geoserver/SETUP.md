@@ -210,15 +210,37 @@ GRANT CONNECT ON DATABASE geodata_sk1 TO hex_listener;
 Ingen ytterligare rättighet behövs - `LISTEN` på en kanal är tillgängligt för
 alla roller som kan ansluta till databasen.
 
-> **IPv6:** Windows Server 2022 kan föredra IPv6 för `localhost`-uppslag (`::1`).
-> Kontrollera att `pg_hba.conf` har poster för **båda** protokollen:
-> ```
-> host  all  hex_listener  127.0.0.1/32  scram-sha-256
-> host  all  hex_listener  ::1/128       scram-sha-256
-> ```
-> Om du ser `connection refused` trots att PostgreSQL är igång, kontrollera detta.
-> Du kan också sätta `HEX_PG_HOST=127.0.0.1` (IPv4) eller `HEX_PG_HOST=::1` (IPv6)
-> i `.env` för att tvinga ett specifikt protokoll.
+> **Loopback-adresser och `localhost` på Windows Server**
+>
+> Använd alltid den **literala IP-adressen** i stället för hostnamnet `localhost`
+> vid loopback-konfiguration. På moderna Windows-servrar kan `localhost` lösas
+> upp till `::1` (IPv6) i stället för `127.0.0.1`, beroende på `hosts`-filens
+> ordning och JVM/runtime-inställning. Det skapar ett svårupptäckt felläge:
+>
+> - Lyssnaren ansluter till `127.0.0.1` men PostgreSQL lyssnar på `::1`
+>   → anslutning nekas, trots att PostgreSQL är igång.
+> - Lyssnaren ansluter till `::1` men PostgreSQL lyssnar på `127.0.0.1`
+>   → samma fel, omvänd riktning.
+>
+> **Rekommendation — välj ett protokoll och använd samma literala adress överallt:**
+>
+> - **IPv4 loopback:** Sätt `HEX_PG_HOST=127.0.0.1` i `.env`. Lägg till en
+>   `pg_hba.conf`-post för `127.0.0.1/32`:
+>   ```
+>   host  all  hex_listener  127.0.0.1/32  scram-sha-256
+>   ```
+> - **IPv6 loopback:** Sätt `HEX_PG_HOST=::1` i `.env`. Lägg till en post
+>   för `::1/128` i `pg_hba.conf`:
+>   ```
+>   host  all  hex_listener  ::1/128       scram-sha-256
+>   ```
+> - **Blanda aldrig:** Bind PostgreSQL till `127.0.0.1` men anslut via
+>   `localhost` som löses till `::1` — det är exakt det felläge som ger
+>   `connection refused` utan uppenbar anledning.
+>
+> Om felet kvarstår: kör `netstat -an | findstr 5432` för att se vilken
+> adress PostgreSQL faktiskt lyssnar på, och verifiera att `.env` och
+> `pg_hba.conf` använder samma adress.
 
 ### GeoServer - REST API-användare
 
@@ -265,6 +287,16 @@ vitlista det i GeoServers `web.xml`.
 
 > **OBS:** Om parametern redan finns, lägg bara till `, localhost` i
 > befintligt `<param-value>`. Starta om GeoServer efteråt.
+>
+> **OBS – koppling till `HEX_GS_URL`:** CSRF-filtret matchar på `Host`-headerns
+> värde i anropet. Om du konfigurerar `HEX_GS_URL` med en literal IP-adress i
+> stället för `localhost` (t.ex. `http://127.0.0.1:8080/geoserver`, vilket
+> rekommenderas — se Steg 3), måste vitlistan matcha den adressen:
+> ```xml
+> <param-value>[din-geoserver-doman], 127.0.0.1</param-value>
+> ```
+> Vitlistar du `localhost` men lyssnaren anropar via `127.0.0.1` (eller vice
+> versa) blockerar CSRF-filtret anropen. Håll `HEX_GS_URL` och vitlistan i sync.
 
 ---
 
@@ -282,13 +314,13 @@ Fyll i dina värden i `.env`:
 
 ```env
 # PostgreSQL - delade standardvärden (använd INTE postgres-kontot)
-HEX_PG_HOST=localhost
+HEX_PG_HOST=localhost        # Rekommenderas: byt till 127.0.0.1 (IPv4) eller ::1 (IPv6)
 HEX_PG_PORT=5432
 HEX_PG_USER=hex_listener
 HEX_PG_PASSWORD=ditt_listener_losenord
 
 # GeoServer (dedikerad admin-användare - använd INTE standardkontot admin)
-HEX_GS_URL=http://localhost:8080/geoserver
+HEX_GS_URL=http://localhost:8080/geoserver  # Rekommenderas: byt till 127.0.0.1 (se not nedan)
 HEX_GS_USER=hex_publisher
 HEX_GS_PASSWORD=ditt_geoserver_losenord
 
@@ -303,6 +335,12 @@ HEX_DB_2_JNDI_sk1=java:comp/env/jdbc/server.geodata_sk1
 # HEX_DB_3_DBNAME=geodata_sk3
 # HEX_DB_3_JNDI_sk3=java:comp/env/jdbc/server.geodata_sk3
 ```
+
+> **OBS – `localhost` kontra literal IP-adress:** På Windows Server rekommenderas
+> att ersätta `localhost` med `127.0.0.1` (IPv4) för både `HEX_PG_HOST` och
+> `HEX_GS_URL`. Se Steg 3 för förklaring av varför `localhost` kan orsaka
+> anslutningsfel, och Steg 4 för hur CSRF-vitlistan i GeoServer måste uppdateras
+> om du ändrar `HEX_GS_URL`.
 
 Varje `HEX_DB_N_`-grupp måste ha ett `DBNAME` och minst en `JNDI_`-koppling.
 HOST/PORT/USER/PASSWORD kan anges per databas om de skiljer sig från
