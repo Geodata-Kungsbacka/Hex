@@ -10,6 +10,9 @@ GeoServer krävs inte: GeoServerClient ersätts med en mock som
 registrerar varje anrop. Testet använder en riktig PostgreSQL-anslutning
 så att den faktiska LISTEN/NOTIFY-mekaniken testas.
 
+Lyssnaren använder direkta PostgreSQL-anslutningar (inte JNDI): autentiseringsuppgifter
+för läsrollen hämtas från tabellen hex_role_credentials.
+
 Användning:
     python3 tests/test_pg_notify_listener.py
 """
@@ -46,6 +49,11 @@ PG_PARAMS = {
     "password": "",
 }
 
+# db_config-format som används av handle_schema_notification och listen_loop
+DB_CONFIG = {
+    **PG_PARAMS,
+}
+
 CHANNEL_CREATE = gl.CHANNEL_SCHEMA_CREATE   # "geoserver_schema"
 CHANNEL_DROP   = gl.CHANNEL_SCHEMA_DROP     # "geoserver_schema_drop"
 
@@ -53,10 +61,9 @@ VALID_CREATE_SCHEMA = "sk0_kba_testschema"
 VALID_DROP_SCHEMA   = "sk1_ext_oldschema"
 INVALID_SCHEMA      = "public_not_a_valid_name"
 
-JNDI_MAPPINGS = {
-    "sk0": "java:comp/env/jdbc/server.testdb",
-    "sk1": "java:comp/env/jdbc/server.testdb",
-}
+# Testuppgifter för läsrollen som lagras i hex_role_credentials
+TEST_ROLE_NAME = f"r_{VALID_CREATE_SCHEMA}"
+TEST_ROLE_PASSWORD = "test_password_123"
 
 
 # ---------------------------------------------------------------------------
@@ -171,10 +178,11 @@ class TestPgNotifyRoundTrip(unittest.TestCase):
         _, payload = msgs[0]
         self.assertEqual(payload, INVALID_SCHEMA)
 
-        # Hanteraren måste avvisa det ogiltiga namnet
+        # Hanteraren måste avvisa det ogiltiga namnet (pg_conn mockas – nås inte)
         mock_gs = MagicMock()
+        mock_conn = MagicMock()
         result = gl.handle_schema_notification(
-            INVALID_SCHEMA, JNDI_MAPPINGS, mock_gs
+            INVALID_SCHEMA, DB_CONFIG, mock_conn, mock_gs
         )
         self.assertFalse(result)
         mock_gs.create_workspace.assert_not_called()
@@ -184,8 +192,8 @@ class TestHandlerLogicWithMockGeoServer(unittest.TestCase):
     """
     Enhetstester för handle_schema_notification och
     handle_schema_removal_notification med en mockad GeoServerClient.
-    PostgreSQL-anslutningen används enbart för NOTIFY; hanterarna körs
-    synkront i testtråden.
+    _fetch_role_credentials mockas för att undvika beroende av databasens
+    hex_role_credentials-tabell.
     """
 
     def _make_gs_mock(self, workspace_ok=True, datastore_ok=True):
@@ -194,67 +202,101 @@ class TestHandlerLogicWithMockGeoServer(unittest.TestCase):
         gs.workspace_exists.return_value = False
         gs.create_workspace.return_value = workspace_ok
         gs.datastore_exists.return_value = False
-        gs.create_jndi_datastore.return_value = datastore_ok
+        gs.create_pg_datastore.return_value = datastore_ok
         gs.delete_workspace.return_value = True
         return gs
+
+    def _make_pg_conn_mock(self):
+        """Returnerar en psycopg2-anslutnings-mock."""
+        return MagicMock()
 
     # ------------------------------------------------------------------
     # 2. Schema CREATE-hanterare
     # ------------------------------------------------------------------
     def test_create_handler_calls_workspace_and_datastore(self):
-        """Lyckad väg: workspace + datastore skapas för ett giltigt sk0-schema."""
+        """Lyckad väg: workspace + direkt PG-datastore skapas för ett giltigt sk0-schema."""
         gs = self._make_gs_mock()
-        result = gl.handle_schema_notification(
-            VALID_CREATE_SCHEMA, JNDI_MAPPINGS, gs
-        )
+        mock_conn = self._make_pg_conn_mock()
+
+        with patch.object(gl, "_fetch_role_credentials", return_value=(TEST_ROLE_NAME, TEST_ROLE_PASSWORD)):
+            result = gl.handle_schema_notification(
+                VALID_CREATE_SCHEMA, DB_CONFIG, mock_conn, gs
+            )
 
         self.assertTrue(result)
         gs.create_workspace.assert_called_once_with(VALID_CREATE_SCHEMA)
-        gs.create_jndi_datastore.assert_called_once_with(
-            VALID_CREATE_SCHEMA,
-            VALID_CREATE_SCHEMA,
-            JNDI_MAPPINGS["sk0"],
-            VALID_CREATE_SCHEMA,
+        gs.create_pg_datastore.assert_called_once_with(
+            workspace=VALID_CREATE_SCHEMA,
+            store_name=VALID_CREATE_SCHEMA,
+            host=DB_CONFIG["host"],
+            port=DB_CONFIG["port"],
+            dbname=DB_CONFIG["dbname"],
+            schema_name=VALID_CREATE_SCHEMA,
+            pg_user=TEST_ROLE_NAME,
+            pg_password=TEST_ROLE_PASSWORD,
         )
 
     def test_create_handler_rejects_invalid_schema(self):
         """Schemanamn som inte matchar regex hoppas tyst över."""
         gs = self._make_gs_mock()
+        mock_conn = self._make_pg_conn_mock()
         result = gl.handle_schema_notification(
-            "public_bad", JNDI_MAPPINGS, gs
+            "public_bad", DB_CONFIG, mock_conn, gs
         )
         self.assertFalse(result)
         gs.create_workspace.assert_not_called()
 
-    def test_create_handler_missing_jndi_mapping(self):
-        """Schema utan matchande JNDI-koppling (t.ex. sk2_*) hoppas över."""
+    def test_create_handler_missing_credentials(self):
+        """Schema utan autentiseringsuppgifter i hex_role_credentials hoppas över."""
         gs = self._make_gs_mock()
-        # sk2 finns inte i JNDI_MAPPINGS
-        result = gl.handle_schema_notification(
-            "sk0_kba_missing", {"sk1": "java:comp/env/jdbc/db"}, gs
-        )
+        mock_conn = self._make_pg_conn_mock()
+
+        with patch.object(gl, "_fetch_role_credentials", return_value=(None, None)):
+            result = gl.handle_schema_notification(
+                VALID_CREATE_SCHEMA, DB_CONFIG, mock_conn, gs
+            )
         self.assertFalse(result)
         gs.create_workspace.assert_not_called()
 
     def test_create_handler_workspace_failure_aborts(self):
         """Om workspace-skapande misslyckas hoppas datastore-steget över."""
         gs = self._make_gs_mock(workspace_ok=False)
-        result = gl.handle_schema_notification(
-            VALID_CREATE_SCHEMA, JNDI_MAPPINGS, gs
-        )
+        mock_conn = self._make_pg_conn_mock()
+
+        with patch.object(gl, "_fetch_role_credentials", return_value=(TEST_ROLE_NAME, TEST_ROLE_PASSWORD)):
+            result = gl.handle_schema_notification(
+                VALID_CREATE_SCHEMA, DB_CONFIG, mock_conn, gs
+            )
         self.assertFalse(result)
-        gs.create_jndi_datastore.assert_not_called()
+        gs.create_pg_datastore.assert_not_called()
 
     def test_create_handler_sk1_schema(self):
         """sk1-scheman hanteras identiskt med sk0-scheman."""
         gs = self._make_gs_mock()
-        result = gl.handle_schema_notification(
-            VALID_DROP_SCHEMA,   # "sk1_ext_oldschema"
-            JNDI_MAPPINGS,
-            gs,
-        )
+        mock_conn = self._make_pg_conn_mock()
+        sk1_role = f"r_{VALID_DROP_SCHEMA}"
+
+        with patch.object(gl, "_fetch_role_credentials", return_value=(sk1_role, TEST_ROLE_PASSWORD)):
+            result = gl.handle_schema_notification(
+                VALID_DROP_SCHEMA,   # "sk1_ext_oldschema"
+                DB_CONFIG,
+                mock_conn,
+                gs,
+            )
         self.assertTrue(result)
         gs.create_workspace.assert_called_once_with(VALID_DROP_SCHEMA)
+
+    def test_create_handler_datastore_failure(self):
+        """Om datastore-skapande misslyckas returneras False."""
+        gs = self._make_gs_mock(datastore_ok=False)
+        mock_conn = self._make_pg_conn_mock()
+
+        with patch.object(gl, "_fetch_role_credentials", return_value=(TEST_ROLE_NAME, TEST_ROLE_PASSWORD)):
+            result = gl.handle_schema_notification(
+                VALID_CREATE_SCHEMA, DB_CONFIG, mock_conn, gs
+            )
+        self.assertFalse(result)
+        gs.create_workspace.assert_called_once()
 
     # ------------------------------------------------------------------
     # 3. Schema DROP-hanterare
@@ -286,25 +328,28 @@ class TestListenLoopIntegration(unittest.TestCase):
     """
     Integrationstest: kör listen_loop i en bakgrundstråd, skicka NOTIFY
     från huvudtråden och verifiera att mock-GeoServer anropades korrekt.
+
+    _fetch_role_credentials mockas för att undvika beroende av databasens
+    hex_role_credentials-tabell under integrationstester.
     """
 
     TIMEOUT = 5  # sekunder att vänta på att tråden plockar upp notifieringen
 
-    def _run_listen_loop(self, gs_mock, stop_event, db_label="testdb"):
-        db_config = {**PG_PARAMS, "jndi_mappings": JNDI_MAPPINGS}
-        gl.listen_loop(
-            db_config,
-            reconnect_delay=1,
-            gs_client=gs_mock,
-            stop_event=stop_event,
-        )
+    def _run_listen_loop(self, gs_mock, stop_event):
+        with patch.object(gl, "_fetch_role_credentials", return_value=(TEST_ROLE_NAME, TEST_ROLE_PASSWORD)):
+            gl.listen_loop(
+                DB_CONFIG,
+                reconnect_delay=1,
+                gs_client=gs_mock,
+                stop_event=stop_event,
+            )
 
     def _make_gs_mock(self):
         gs = MagicMock()
         gs.workspace_exists.return_value = False
         gs.create_workspace.return_value = True
         gs.datastore_exists.return_value = False
-        gs.create_jndi_datastore.return_value = True
+        gs.create_pg_datastore.return_value = True
         gs.delete_workspace.return_value = True
         return gs
 
@@ -331,7 +376,7 @@ class TestListenLoopIntegration(unittest.TestCase):
         t.join(timeout=3)
 
         gs.create_workspace.assert_called_once_with(VALID_CREATE_SCHEMA)
-        gs.create_jndi_datastore.assert_called_once()
+        gs.create_pg_datastore.assert_called_once()
 
     def test_listen_loop_picks_up_drop_notification(self):
         """listen_loop tar emot geoserver_schema_drop NOTIFY och anropar delete_workspace."""
@@ -470,6 +515,109 @@ class TestCreateWorkspaceNamespaceUri(unittest.TestCase):
 
         self.assertTrue(result)
         self.assertEqual(len(mock_req.call_args_list), 1)
+
+
+class TestCreatePgDatastore(unittest.TestCase):
+    """
+    Enhetstester för GeoServerClient.create_pg_datastore som verifierar att
+    direkta PostgreSQL-anslutningsparametrar skickas korrekt till GeoServer.
+    """
+
+    def _make_client(self):
+        return gl.GeoServerClient(
+            base_url="http://geoserver.example.com",
+            user="admin",
+            password="secret",
+        )
+
+    def _mock_response(self, status_code):
+        resp = MagicMock()
+        resp.status_code = status_code
+        resp.text = ""
+        return resp
+
+    def test_create_pg_datastore_success(self):
+        """Lyckad skapning av direkt PG-datastore returnerar True."""
+        client = self._make_client()
+
+        with patch.object(client, "_request_with_retry", side_effect=[
+            self._mock_response(404),  # datastore_exists -> 404
+            self._mock_response(201),  # POST /datastores -> 201
+        ]) as mock_req:
+            result = client.create_pg_datastore(
+                workspace="sk0_kba_testschema",
+                store_name="sk0_kba_testschema",
+                host="localhost",
+                port=5432,
+                dbname="geodata",
+                schema_name="sk0_kba_testschema",
+                pg_user="r_sk0_kba_testschema",
+                pg_password="secret",
+            )
+
+        self.assertTrue(result)
+        calls = mock_req.call_args_list
+        self.assertEqual(len(calls), 2)
+
+        # Andra anropet ska vara POST till datastores
+        method, url = calls[1][0][0], calls[1][0][1]
+        self.assertEqual(method, "POST")
+        self.assertIn("/workspaces/sk0_kba_testschema/datastores", url)
+
+        # Kontrollera att payload innehåller direkta PG-parametrar (inte JNDI)
+        payload = calls[1][1]["json"]
+        ds = payload["dataStore"]
+        self.assertEqual(ds["type"], "PostGIS")
+        entries = {e["@key"]: e["$"] for e in ds["connectionParameters"]["entry"]}
+        self.assertEqual(entries["dbtype"], "postgis")
+        self.assertEqual(entries["host"], "localhost")
+        self.assertEqual(entries["port"], "5432")
+        self.assertEqual(entries["database"], "geodata")
+        self.assertEqual(entries["schema"], "sk0_kba_testschema")
+        self.assertEqual(entries["user"], "r_sk0_kba_testschema")
+        self.assertEqual(entries["passwd"], "secret")
+
+    def test_create_pg_datastore_already_exists(self):
+        """Om datastore redan finns returneras True utan att skapa."""
+        client = self._make_client()
+
+        with patch.object(client, "_request_with_retry", side_effect=[
+            self._mock_response(200),  # datastore_exists -> 200 = exists
+        ]) as mock_req:
+            result = client.create_pg_datastore(
+                workspace="sk0_kba_testschema",
+                store_name="sk0_kba_testschema",
+                host="localhost",
+                port=5432,
+                dbname="geodata",
+                schema_name="sk0_kba_testschema",
+                pg_user="r_sk0_kba_testschema",
+                pg_password="secret",
+            )
+
+        self.assertTrue(result)
+        self.assertEqual(len(mock_req.call_args_list), 1)
+
+    def test_create_pg_datastore_failure(self):
+        """Om GeoServer returnerar fel vid POST returneras False."""
+        client = self._make_client()
+
+        with patch.object(client, "_request_with_retry", side_effect=[
+            self._mock_response(404),  # datastore_exists
+            self._mock_response(500),  # POST -> failure
+        ]):
+            result = client.create_pg_datastore(
+                workspace="sk0_kba_testschema",
+                store_name="sk0_kba_testschema",
+                host="localhost",
+                port=5432,
+                dbname="geodata",
+                schema_name="sk0_kba_testschema",
+                pg_user="r_sk0_kba_testschema",
+                pg_password="secret",
+            )
+
+        self.assertFalse(result)
 
 
 # ---------------------------------------------------------------------------
