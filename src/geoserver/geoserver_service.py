@@ -131,12 +131,11 @@ class HexGeoServerService(win32serviceutil.ServiceFramework):
             config = load_config()
 
             log.info("GeoServer:  %s", config["gs_url"])
+            log.info("Anslutning: direkt PostGIS (autentiseringsuppgifter från hex_role_credentials)")
             log.info("Databaser:  %d st", len(config["databases"]))
             for db in config["databases"]:
                 log.info("  [%s] %s@%s:%d/%s",
                          db["dbname"], db["user"], db["host"], db["port"], db["dbname"])
-                for prefix, jndi in sorted(db["jndi_mappings"].items()):
-                    log.info("    %s -> %s", prefix, jndi)
 
             gs_client = GeoServerClient(
                 base_url=config["gs_url"],

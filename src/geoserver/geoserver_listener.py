@@ -7,7 +7,9 @@ Processen lyssnar på två PostgreSQL-kanaler och hanterar schema-händelser aut
   Kanal 'geoserver_schema'  (utlöses av CREATE SCHEMA via SQL-triggern
                              notifiera_geoserver_trigger):
     1. Skapar en workspace i GeoServer med samma namn som schemat.
-    2. Skapar en JNDI-datastore i workspace med samma namn som schemat.
+    2. Hämtar autentiseringsuppgifter för läsrollen (r_{schema}) från
+       tabellen hex_role_credentials.
+    3. Skapar en direkt PostGIS-datastore i workspace med dessa uppgifter.
 
   Kanal 'geoserver_schema_drop'  (utlöses av DROP SCHEMA via SQL-triggern
                                   notifiera_geoserver_borttagning_trigger):
@@ -136,15 +138,6 @@ def load_config():
         log.error("Konfigurera dessa i .env eller som miljövariabler.")
         sys.exit(1)
 
-    # Varna om någon databas saknar JNDI-kopplingar
-    for db in config["databases"]:
-        if not db["jndi_mappings"]:
-            log.warning(
-                "Databas '%s' har inga JNDI-kopplingar konfigurerade. "
-                "Ange t.ex. HEX_DB_N_JNDI_sk0=java:comp/env/jdbc/server.database",
-                db["dbname"],
-            )
-
     return config
 
 
@@ -152,7 +145,7 @@ def _parse_database_configs():
     """Parsar databaskonfigurationer från miljövariabler.
 
     Försöker först det nya flerdatabas-formatet (HEX_DB_N_*).
-    Faller tillbaka till det gamla formatet (HEX_PG_* + HEX_JNDI_*).
+    Faller tillbaka till det gamla formatet (HEX_PG_*).
     """
     # Försöker nytt format: HEX_DB_1_DBNAME, HEX_DB_2_DBNAME osv.
     db_numbers = set()
@@ -173,7 +166,6 @@ def _parse_database_configs():
             "dbname": dbname,
             "user": os.environ.get("HEX_PG_USER", "postgres"),
             "password": os.environ.get("HEX_PG_PASSWORD", ""),
-            "jndi_mappings": _parse_jndi_mappings(),
         }]
 
     return []
@@ -193,15 +185,6 @@ def _parse_multi_database_configs(db_numbers):
     databases = []
     for n in sorted(db_numbers, key=int):
         prefix = f"HEX_DB_{n}_"
-
-        # Parsa JNDI-kopplingar för denna databas
-        jndi = {}
-        jndi_prefix = prefix + "JNDI_"
-        for key, value in os.environ.items():
-            if key.startswith(jndi_prefix):
-                sk_prefix = key[len(jndi_prefix):].lower()
-                jndi[sk_prefix] = value
-
         dbname = os.environ.get(f"{prefix}DBNAME", "")
         if not dbname:
             continue
@@ -212,25 +195,9 @@ def _parse_multi_database_configs(db_numbers):
             "dbname": dbname,
             "user": os.environ.get(f"{prefix}USER", default_user),
             "password": os.environ.get(f"{prefix}PASSWORD", default_password),
-            "jndi_mappings": jndi,
         })
 
     return databases
-
-
-def _parse_jndi_mappings():
-    """Parsar JNDI-kopplingar från miljövariabler (gammalt format).
-
-    Laddar HEX_JNDI_sk0, HEX_JNDI_sk1 osv.
-    Returnerar dict med prefix -> JNDI-namn.
-    """
-    mappings = {}
-    for key, value in os.environ.items():
-        if key.startswith("HEX_JNDI_"):
-            prefix = key[len("HEX_JNDI_"):].lower()  # t.ex. "sk0"
-            mappings[prefix] = value
-
-    return mappings
 
 
 def _load_env_file_fallback(env_path):
@@ -623,6 +590,73 @@ class GeoServerClient:
             )
             return False
 
+    def create_pg_datastore(self, workspace, store_name, host, port, dbname, schema_name, pg_user, pg_password):
+        """Skapar en direkt PostGIS-datastore i GeoServer.
+
+        Args:
+            workspace:   Workspace-namn
+            store_name:  Datastore-namn (samma som schema)
+            host:        PostgreSQL-host
+            port:        PostgreSQL-port
+            dbname:      Databasnamn
+            schema_name: PostgreSQL-schemanamn att exponera
+            pg_user:     PostgreSQL-användare (läsrollen för schemat)
+            pg_password: Lösenord för pg_user
+        """
+        if self.datastore_exists(workspace, store_name):
+            log.info("  Datastore '%s' finns redan i workspace '%s' - hoppar över", store_name, workspace)
+            return True
+
+        payload = {
+            "dataStore": {
+                "name": store_name,
+                "type": "PostGIS",
+                "enabled": True,
+                "connectionParameters": {
+                    "entry": [
+                        {"@key": "dbtype",              "$": "postgis"},
+                        {"@key": "host",                "$": host},
+                        {"@key": "port",                "$": str(port)},
+                        {"@key": "database",            "$": dbname},
+                        {"@key": "schema",              "$": schema_name},
+                        {"@key": "user",                "$": pg_user},
+                        {"@key": "passwd",              "$": pg_password},
+                        {"@key": "Expose primary keys", "$": "true"},
+                        {"@key": "fetch size",          "$": "1000"},
+                        {"@key": "Loose bbox",          "$": "true"},
+                        {"@key": "Estimated extends",   "$": "true"},
+                        {"@key": "encode functions",    "$": "true"},
+                        {"@key": "validate connections","$": "true"},
+                        {"@key": "max connections",     "$": "10"},
+                        {"@key": "min connections",     "$": "1"},
+                    ]
+                },
+            }
+        }
+
+        if self.dry_run:
+            log.info("  [DRY-RUN] Skulle skapa PG-datastore: %s", store_name)
+            log.info("  [DRY-RUN] POST %s/workspaces/%s/datastores", self.rest_url, workspace)
+            log.info("  [DRY-RUN] Host: %s:%d/%s, Schema: %s, Användare: %s",
+                     host, port, dbname, schema_name, pg_user)
+            return True
+
+        resp = self._request_with_retry(
+            "POST", f"{self.rest_url}/workspaces/{workspace}/datastores", json=payload
+        )
+
+        if resp.status_code == 201:
+            log.info("  Datastore '%s' skapad (direkt PG, användare: %s)", store_name, pg_user)
+            return True
+        else:
+            log.error(
+                "  Misslyckades att skapa datastore '%s': %d %s",
+                store_name,
+                resp.status_code,
+                resp.text,
+            )
+            return False
+
 
 # =============================================================================
 # SCHEMA HANDLER
@@ -642,6 +676,34 @@ CHANNEL_SCHEMA_DROP   = "geoserver_schema_drop"
 def _db_tag(db_label):
     """Returnerar ett formaterat logg-prefix för en databas, t.ex. '[geodata_sk0] '."""
     return f"[{db_label}] " if db_label else ""
+
+
+def _fetch_role_credentials(conn, schema_name):
+    """Hämtar autentiseringsuppgifter för läsrollen för ett schema.
+
+    Slår upp r_{schema_name} i hex_role_credentials.
+
+    Args:
+        conn:        psycopg2-anslutning till databasen (AUTOCOMMIT OK)
+        schema_name: Schemanamn (t.ex. 'sk1_kba_bygg')
+
+    Returns:
+        (rolname, password) tuple, eller (None, None) om ej hittad.
+    """
+    role_name = f"r_{schema_name}"
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT rolname, password FROM public.hex_role_credentials WHERE rolname = %s",
+            (role_name,),
+        )
+        row = cur.fetchone()
+        if row:
+            return row[0], row[1]
+        return None, None
+    except Exception as e:
+        log.error("Kunde inte hämta autentiseringsuppgifter för '%s': %s", role_name, e)
+        return None, None
 
 
 def _validate_schema_name(schema_name, tag):
@@ -668,10 +730,18 @@ def _validate_schema_name(schema_name, tag):
     return True
 
 
-def handle_schema_notification(schema_name, jndi_mappings, gs_client, db_label=""):
+def handle_schema_notification(schema_name, db_config, pg_conn, gs_client, db_label=""):
     """Hanterar en notifiering om nytt schema (kanal: CHANNEL_SCHEMA_CREATE).
 
-    Skapar workspace och JNDI-datastore i GeoServer.
+    Hämtar autentiseringsuppgifter för läsrollen från hex_role_credentials
+    och skapar workspace och direkt PostGIS-datastore i GeoServer.
+
+    Args:
+        schema_name: Schemanamnet från pg_notify-payloaden
+        db_config:   Databaskonfiguration med host/port/dbname
+        pg_conn:     Öppen psycopg2-anslutning (används för att slå upp credentials)
+        gs_client:   GeoServerClient-instans
+        db_label:    Databasnamn för logg-prefix
     """
     tag = _db_tag(db_label)
     log.info("%sMottog notifiering for schema: %s", tag, schema_name)
@@ -679,20 +749,17 @@ def handle_schema_notification(schema_name, jndi_mappings, gs_client, db_label="
     if not _validate_schema_name(schema_name, tag):
         return False
 
-    # Extrahera prefix (sk0 eller sk1)
-    prefix = schema_name.split("_")[0]  # t.ex. "sk0"
-
-    if prefix not in jndi_mappings:
-        log.warning(
-            "%sIngen JNDI-koppling konfigurerad for prefix '%s' - hoppar over schema '%s'",
-            tag,
-            prefix,
-            schema_name,
+    # Hämta autentiseringsuppgifter för läsrollen från hex_role_credentials
+    role_name, password = _fetch_role_credentials(pg_conn, schema_name)
+    if not role_name:
+        log.error(
+            "%sIngen autentiseringsuppgifter hittades för 'r_%s' i hex_role_credentials - "
+            "hoppar över schema '%s'",
+            tag, schema_name, schema_name,
         )
         return False
 
-    jndi_name = jndi_mappings[prefix]
-    log.info("%s  Prefix: %s -> JNDI: %s", tag, prefix, jndi_name)
+    log.info("%s  Hittade autentiseringsuppgifter för roll: %s", tag, role_name)
 
     # 1. Skapa workspace
     log.info("%s  Steg 1: Skapar workspace '%s'...", tag, schema_name)
@@ -700,9 +767,18 @@ def handle_schema_notification(schema_name, jndi_mappings, gs_client, db_label="
         log.error("%s  Avbryter - workspace kunde inte skapas", tag)
         return False
 
-    # 2. Skapa JNDI-datastore
-    log.info("%s  Steg 2: Skapar JNDI-datastore '%s'...", tag, schema_name)
-    if not gs_client.create_jndi_datastore(schema_name, schema_name, jndi_name, schema_name):
+    # 2. Skapa direkt PostGIS-datastore med läsrollens uppgifter
+    log.info("%s  Steg 2: Skapar PostGIS-datastore '%s'...", tag, schema_name)
+    if not gs_client.create_pg_datastore(
+        workspace=schema_name,
+        store_name=schema_name,
+        host=db_config["host"],
+        port=db_config["port"],
+        dbname=db_config["dbname"],
+        schema_name=schema_name,
+        pg_user=role_name,
+        pg_password=password,
+    ):
         log.error("%s  Avbryter - datastore kunde inte skapas", tag)
         return False
 
@@ -848,7 +924,8 @@ def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None, notifier
                         else:
                             handle_schema_notification(
                                 schema_name,
-                                db_config["jndi_mappings"],
+                                db_config,
+                                conn,
                                 gs_client,
                                 db_label=db_label,
                             )
@@ -966,12 +1043,11 @@ def main():
     log.info("GeoServer Schema Listener")
     log.info("=" * 60)
     log.info("GeoServer:  %s", config["gs_url"])
+    log.info("Anslutning: direkt PostGIS (autentiseringsuppgifter från hex_role_credentials)")
     log.info("Databaser:  %d st", len(config["databases"]))
     for db in config["databases"]:
         log.info("  [%s] %s@%s:%d/%s",
                  db["dbname"], db["user"], db["host"], db["port"], db["dbname"])
-        for prefix, jndi in sorted(db["jndi_mappings"].items()):
-            log.info("    %s -> %s", prefix, jndi)
     if config["smtp"]["enabled"]:
         log.info("E-post:     %s -> %s", config["smtp"]["host"], config["smtp"]["to_addr"])
     else:
