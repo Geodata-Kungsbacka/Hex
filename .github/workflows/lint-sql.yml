@@ -19,3 +19,42 @@ jobs:
             echo "       Use round() + ::text casting instead, e.g. round(val, 2)::text"
             exit 1
           fi
+
+          # Also catch bare C-style specifiers: %d, %f, %i, %u, %x, %e, %g etc.
+          # Valid specifiers are %s, %I, %L, %% and positional variants like %1$s
+          if grep -rPn 'format\(.*%[dfiuoxeEgGbB]' src/sql/; then
+            echo ""
+            echo "ERROR: Invalid PostgreSQL format() specifier found."
+            echo "       %d, %f, %i etc. are C-style and not supported by PostgreSQL's format()."
+            echo "       Use %s for strings, %I for identifiers, %L for literals."
+            exit 1
+          fi
+
+      - name: Check for EXECUTE with string concatenation
+        run: |
+          # EXECUTE with || concatenation is a SQL injection risk.
+          # Use format() with %I/%L and the USING clause instead.
+          if grep -rPn 'EXECUTE\s+.*\|\|' src/sql/; then
+            echo ""
+            echo "ERROR: EXECUTE with string concatenation (||) found."
+            echo "       Use format() with %I/%L and EXECUTE ... USING instead."
+            exit 1
+          fi
+
+      - name: Check for SECURITY DEFINER without SET search_path
+        run: |
+          # SECURITY DEFINER functions run as their owner, so a malicious schema
+          # on the search_path could intercept calls. Always pin search_path.
+          found=0
+          while IFS= read -r file; do
+            if ! grep -q 'SET search_path' "$file"; then
+              echo "SECURITY DEFINER without SET search_path: $file"
+              found=1
+            fi
+          done < <(grep -rl 'SECURITY DEFINER' src/sql/)
+          if [ "$found" -eq 1 ]; then
+            echo ""
+            echo "ERROR: SECURITY DEFINER function(s) missing SET search_path."
+            echo "       Add 'SET search_path = public' to the function definition."
+            exit 1
+          fi

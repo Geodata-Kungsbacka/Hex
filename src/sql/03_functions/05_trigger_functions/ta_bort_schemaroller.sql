@@ -4,6 +4,7 @@ CREATE OR REPLACE FUNCTION public.ta_bort_schemaroller()
     COST 100
     VOLATILE NOT LEAKPROOF
     SECURITY DEFINER
+    SET search_path = public
 AS $BODY$
 
 /******************************************************************************
