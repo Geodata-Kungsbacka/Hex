@@ -4,6 +4,7 @@ CREATE OR REPLACE FUNCTION public.hantera_standardiserade_roller()
     COST 100
     VOLATILE NOT LEAKPROOF
     SECURITY DEFINER
+    SET search_path = public
 AS $BODY$
 
 /******************************************************************************
