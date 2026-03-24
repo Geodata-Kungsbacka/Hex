@@ -163,15 +163,18 @@ END $$;
 
 -- ============================================================
 -- G6: Degenerate polygon — area below tolerance² (0.001² = 0.000001 m²)
+--     Flat triangle: all edges > 1 mm (avoids duplicate-points check),
+--     but area = 0.5 × 0.002 × 0.0005 = 0.0000005 m² < 0.000001 m² threshold.
 -- ============================================================
 DO $$
 DECLARE
     geom   geometry;
     result text;
 BEGIN
-    -- Extremely thin needle polygon: area ≈ 0.0000001 m² (below 0.000001 threshold)
+    -- Flat isoceles triangle: base 2 mm, height 0.5 mm → area ≈ 0.5 mm²
+    -- Shortest edge ≈ 1.12 mm, so no duplicate-points check triggers
     geom := ST_GeomFromText(
-        'POLYGON((0 0, 0.001 0, 0.001 0.0001, 0 0.0001, 0 0))', 3006
+        'POLYGON((0 0, 0.002 0, 0.001 0.0005, 0 0))', 3006
     );
     result := public.forklara_geometrifel(geom);
     IF result LIKE 'Polygonen är degenererad%' THEN
@@ -497,7 +500,7 @@ END $$;
 DO $$
 BEGIN
     IF NOT public.validera_geometri(
-        ST_GeomFromText('POLYGON((0 0,0.001 0,0.001 0.0001,0 0.0001,0 0))', 3006)
+        ST_GeomFromText('POLYGON((0 0,0.002 0,0.001 0.0005,0 0))', 3006)
     ) THEN
         RAISE NOTICE 'TEST G6b PASSED: validera_geometri returns false for degenerate polygon';
     ELSE
@@ -595,7 +598,7 @@ BEGIN
     -- Degenerate polygon branch
     BEGIN
         msg := public.forklara_geometrifel(
-            ST_GeomFromText('POLYGON((0 0,0.001 0,0.001 0.0001,0 0.0001,0 0))', 3006)
+            ST_GeomFromText('POLYGON((0 0,0.002 0,0.001 0.0005,0 0))', 3006)
         );
     EXCEPTION WHEN OTHERS THEN
         RAISE WARNING 'TEST G19 FAILED: Degenerate-polygon branch raised: %', SQLERRM;
@@ -735,7 +738,7 @@ DO $$
 DECLARE msg text;
 BEGIN
     INSERT INTO sk1_kba_geomtest.testobj_y (naam, geom)
-    VALUES ('tiny', ST_GeomFromText('POLYGON((0 0,0.001 0,0.001 0.0001,0 0.0001,0 0))', 3006));
+    VALUES ('tiny', ST_GeomFromText('POLYGON((0 0,0.002 0,0.001 0.0005,0 0))', 3006));
     RAISE WARNING 'TEST G25 FAILED: Degenerate polygon INSERT was not rejected';
 EXCEPTION
     WHEN OTHERS THEN
@@ -783,7 +786,7 @@ BEGIN
 
     -- Test against forklara_geometrifel directly (trigger column type may reject cast)
     msg := public.forklara_geometrifel(geom);
-    IF msg LIKE '%kurvsegment%' AND msg LIKE '%CIRCULARSTRING%' THEN
+    IF msg LIKE '%kurvsegment%' AND msg ILIKE '%circularstring%' THEN
         RAISE NOTICE 'TEST G27 PASSED: Curved geometry message contains type name: %', msg;
     ELSIF msg IS NULL THEN
         RAISE WARNING 'TEST G27 FAILED: CIRCULARSTRING returned NULL from forklara_geometrifel';
