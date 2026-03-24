@@ -47,6 +47,7 @@ INSTALL_ORDER = [
     "src/sql/02_tables/standardiserade_roller.sql",
     "src/sql/02_tables/hex_metadata.sql",
     "src/sql/02_tables/hex_systemanvandare.sql",
+    "src/sql/02_tables/hex_grupprattigheter.sql",
     "src/sql/02_tables/hex_afvaktande_geometri.sql",
     "src/sql/02_tables/hex_dummy_geometrier.sql",
     "src/sql/02_tables/hex_avvikande_srid.sql",
@@ -69,6 +70,7 @@ INSTALL_ORDER = [
     "src/sql/03_functions/04_utility/uppdatera_sekvensnamn.sql",
     "src/sql/03_functions/04_utility/skapa_historik_qa.sql",
     "src/sql/03_functions/04_utility/tilldela_rollrattigheter.sql",
+    "src/sql/03_functions/04_utility/tillampa_grupprattigheter.sql",
     "src/sql/03_functions/04_utility/tvinga_gid_fran_sekvens.sql",
     "src/sql/03_functions/04_utility/reparera_rad_triggers.sql",
     # Funktioner - Triggerfunktioner
@@ -123,6 +125,7 @@ DROP FUNCTION IF EXISTS public.hantera_borttagen_tabell();
 DROP FUNCTION IF EXISTS public.kontrollera_geometri_trigger() CASCADE;
 
 -- Hjälpfunktioner
+DROP FUNCTION IF EXISTS public.tillämpa_grupprattigheter();
 DROP FUNCTION IF EXISTS public.lagg_till_dummy_geometri(text, text, geom_info);
 DROP FUNCTION IF EXISTS public.ta_bort_dummy_rad() CASCADE;
 DROP FUNCTION IF EXISTS public.tvinga_gid_fran_sekvens() CASCADE;
@@ -156,6 +159,7 @@ DROP FUNCTION IF EXISTS public.system_owner();
 DROP TABLE IF EXISTS public.hex_avvikande_srid;
 DROP TABLE IF EXISTS public.hex_dummy_geometrier;
 DROP TABLE IF EXISTS public.hex_afvaktande_geometri;
+DROP TABLE IF EXISTS public.hex_grupprattigheter;
 DROP TABLE IF EXISTS public.hex_systemanvandare;
 DROP TABLE IF EXISTS public.hex_metadata;
 DROP TABLE IF EXISTS public.standardiserade_roller;
