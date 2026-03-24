@@ -1,0 +1,21 @@
+name: Lint SQL
+
+on: [push, pull_request]
+
+jobs:
+  check-format-specifiers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for invalid PostgreSQL format() specifiers
+        run: |
+          # PostgreSQL format() only supports %s, %I, %L, %%
+          # C-style numeric specifiers like %.0f, %.3f are NOT supported
+          if grep -rP 'format\([^)]*%\.\d+[a-zA-Z]' src/sql/; then
+            echo ""
+            echo "ERROR: Invalid PostgreSQL format() specifier found."
+            echo "       %.0f, %.3f etc. are not supported by PostgreSQL's format()."
+            echo "       Use round() + ::text casting instead, e.g. round(val, 2)::text"
+            exit 1
+          fi
