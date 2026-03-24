@@ -45,22 +45,24 @@ BEGIN
 
     IF ST_NPoints(geom) != ST_NPoints(ST_RemoveRepeatedPoints(geom, tolerans)) THEN
         RETURN format(
-            'Geometrin innehåller duplicerade punkter inom %.0f mm tolerans',
-            tolerans * 1000
+            'Geometrin innehåller duplicerade punkter inom %s mm tolerans',
+            round((tolerans * 1000)::numeric, 0)
         );
     END IF;
 
     IF ST_Dimension(geom) = 2 AND ST_Area(geom) <= tolerans * tolerans THEN
         RETURN format(
-            'Polygonen är degenererad – arean (%.6f m²) är för liten (minimum: %.6f m²)',
-            ST_Area(geom), tolerans * tolerans
+            'Polygonen är degenererad – arean (%s m²) är för liten (minimum: %s m²)',
+            round(ST_Area(geom)::numeric, 6),
+            round((tolerans * tolerans)::numeric, 6)
         );
     END IF;
 
     IF ST_Dimension(geom) = 1 AND ST_Length(geom) <= tolerans THEN
         RETURN format(
-            'Linjen är degenererad – längden (%.6f m) är för kort (minimum: %.3f m)',
-            ST_Length(geom), tolerans
+            'Linjen är degenererad – längden (%s m) är för kort (minimum: %s m)',
+            round(ST_Length(geom)::numeric, 6),
+            round(tolerans::numeric, 3)
         );
     END IF;
 
