@@ -732,6 +732,109 @@ def handle_schema_removal_notification(schema_name, gs_client, db_label=""):
     return True
 
 
+def _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label=""):
+    """Startavstämning: skapar saknade GeoServer-workspaces för befintliga PG-scheman.
+
+    Körs en gång vid uppstart (första lyckade anslutning), omedelbart efter att
+    LISTEN-kommandona är utfärdade. Använder den befintliga db-cursorn så att
+    ingen extra anslutning öppnas.
+
+    Logik:
+      a) Hämtar sk0/sk1-scheman från information_schema.schemata.
+      b) Hämtar befintliga workspaces via GeoServer REST GET /rest/workspaces.json.
+      c) Skapar workspace+datastore för varje PG-schema som saknas i GeoServer.
+      d) Loggar INFO för varje skapad workspace.
+      e) Loggar WARNING för varje GeoServer-workspace som saknar PG-schema (ingen borttagning).
+      f) Alla fel loggas; funktionen avbryter aldrig LISTEN-loopen.
+    """
+    tag = _db_tag(db_label)
+    log.info("%sStartavstämning: kontrollerar GeoServer mot PostgreSQL-scheman...", tag)
+
+    try:
+        # a) Hämta sk0/sk1-scheman från PostgreSQL
+        cur.execute(
+            "SELECT schema_name"
+            " FROM information_schema.schemata"
+            " WHERE schema_name ~ '^(sk0|sk1)_(ext|kba|sys)_.+'"
+            " ORDER BY schema_name"
+        )
+        pg_schemas = {row[0] for row in cur.fetchall()}
+        log.info(
+            "%sStartavstämning: %d PG-schema(n) matchade mönstret",
+            tag, len(pg_schemas),
+        )
+
+        # b) Hämta befintliga workspaces från GeoServer
+        try:
+            resp = gs_client._request_with_retry(
+                "GET", f"{gs_client.rest_url}/workspaces.json"
+            )
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            log.error(
+                "%sStartavstämning: GeoServer är inte tillgänglig (%s) – "
+                "hoppar över startavstämning och fortsätter till LISTEN-loopen",
+                tag, e,
+            )
+            return
+
+        if resp.status_code != 200:
+            log.error(
+                "%sStartavstämning: GeoServer svarade %d vid hämtning av workspaces – "
+                "hoppar över startavstämning",
+                tag, resp.status_code,
+            )
+            return
+
+        ws_data = resp.json().get("workspaces") or {}
+        gs_workspaces = {ws["name"] for ws in ws_data.get("workspace", [])}
+        log.info(
+            "%sStartavstämning: %d workspace(s) hittades i GeoServer",
+            tag, len(gs_workspaces),
+        )
+
+        # c) Scheman i PG som saknas i GeoServer – skapa dem
+        missing_in_gs = pg_schemas - gs_workspaces
+        for schema_name in sorted(missing_in_gs):
+            try:
+                ok = handle_schema_notification(
+                    schema_name,
+                    db_config["jndi_mappings"],
+                    gs_client,
+                    db_label=db_label,
+                )
+                # d) Logga varje skapad workspace
+                if ok:
+                    log.info(
+                        "%sStartavstämning: skapat saknat GeoServer-workspace '%s'",
+                        tag, schema_name,
+                    )
+            except Exception as e:
+                log.error(
+                    "%sStartavstämning: fel vid skapande av workspace '%s': %s",
+                    tag, schema_name, e,
+                )
+
+        # e) Workspaces i GeoServer utan motsvarande PG-schema – logga varning, gör inget
+        extra_in_gs = {ws for ws in gs_workspaces - pg_schemas if SCHEMA_PATTERN.match(ws)}
+        for ws_name in sorted(extra_in_gs):
+            log.warning(
+                "%sStartavstämning: workspace '%s' finns i GeoServer men "
+                "PG-schemat saknas – kräver manuell DBA-granskning",
+                tag, ws_name,
+            )
+
+        if not missing_in_gs and not extra_in_gs:
+            log.info("%sStartavstämning: GeoServer och PostgreSQL är i synk", tag)
+
+    except Exception as e:
+        # f) Startavstämning får aldrig avbryta uppstarten
+        log.error(
+            "%sStartavstämning misslyckades oväntat: %s – "
+            "fortsätter till LISTEN-loopen",
+            tag, e,
+        )
+
+
 # =============================================================================
 # POSTGRESQL LISTENER
 # =============================================================================
@@ -792,6 +895,7 @@ def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None, notifier
     """
     db_label = db_config["dbname"]
     was_disconnected = False  # Sparar om vi tappat anslutning för återhämtningsnotifiering
+    _reconciliation_done = False  # Startavstämning körs en gång per uppstart
 
     while not (stop_event and stop_event.is_set()):
         conn = None
@@ -815,6 +919,11 @@ def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None, notifier
             log.info("[%s] Lyssnar på kanaler '%s' och '%s'...",
                      db_label, CHANNEL_SCHEMA_CREATE, CHANNEL_SCHEMA_DROP)
             log.info("[%s] Väntar på schema-händelser...", db_label)
+
+            # Startavstämning – körs en gång vid uppstart
+            if not _reconciliation_done:
+                _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label)
+                _reconciliation_done = True
 
             # Skicka återhämtningsnotifiering om vi tappat anslutning tidigare
             if was_disconnected and notifier:

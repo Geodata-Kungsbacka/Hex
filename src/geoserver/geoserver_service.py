@@ -16,7 +16,7 @@ Konfiguration laddas från miljövariabler (systemvida) eller .env-fil
 i samma katalog som detta skript.
 
 Loggning sker till Windows Event Log (Application) och till fil:
-    D:\\ProgramData\\Hex\\geoserver_listener.log
+    D:\\Hex\\Logs\\hex_geoserver_listener.log
 
 Krav:
     pip install psycopg2 requests python-dotenv pywin32
@@ -57,8 +57,8 @@ if _env_path.exists():
 # LOGGING TILL FIL
 # =============================================================================
 
-LOG_DIR = Path(os.environ.get("HEX_LOG_DIR", r"D:\ProgramData\Hex"))
-LOG_FILE = LOG_DIR / "geoserver_listener.log"
+LOG_DIR = Path(os.environ.get("HEX_LOG_DIR", r"D:\Hex\Logs"))
+LOG_FILE = LOG_DIR / "hex_geoserver_listener.log"
 
 
 def setup_file_logging():
@@ -67,7 +67,7 @@ def setup_file_logging():
 
     file_handler = RotatingFileHandler(
         LOG_FILE,
-        maxBytes=5 * 1024 * 1024,  # 5 MB
+        maxBytes=10 * 1024 * 1024,  # 10 MB
         backupCount=5,
         encoding="utf-8",
     )
