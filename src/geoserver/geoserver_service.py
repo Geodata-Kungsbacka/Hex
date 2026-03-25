@@ -4,11 +4,11 @@ HexGeoServer Windows Service - Kör GeoServer Schema Listener som en Windows-tj�
 
 Installera, starta och hantera tjänsten via kommandoraden:
 
-    python geoserver_service.py install     Installera tjansten
-    python geoserver_service.py start       Starta tjansten
-    python geoserver_service.py stop        Stoppa tjansten
-    python geoserver_service.py remove      Avinstallera tjansten
-    python geoserver_service.py status      Visa tjanstens status
+    python geoserver_service.py install     Installera tjänsten
+    python geoserver_service.py start       Starta tjänsten
+    python geoserver_service.py stop        Stoppa tjänsten
+    python geoserver_service.py remove      Avinstallera tjänsten
+    python geoserver_service.py status      Visa tjänstens status
 
 Eller hantera via services.msc (Windows Services).
 
@@ -50,7 +50,7 @@ if _env_path.exists():
         from dotenv import load_dotenv
         load_dotenv(_env_path, override=False)
     except ImportError:
-        pass  # Faller tillbaka pa load_config():s egen laddare senare
+        pass  # Faller tillbaka på load_config():s egen laddare senare
 
 
 # =============================================================================
@@ -88,13 +88,13 @@ def setup_file_logging():
 # =============================================================================
 
 class HexGeoServerService(win32serviceutil.ServiceFramework):
-    """Windows-tjanst som kor GeoServer Schema Listener."""
+    """Windows-tjänst som kör GeoServer Schema Listener."""
 
     _svc_name_ = "HexGeoServerListener"
     _svc_display_name_ = "Hex GeoServer Schema Listener"
     _svc_description_ = (
-        "Lyssnar pa PostgreSQL-notifieringar och skapar automatiskt "
-        "workspace och datastore i GeoServer for nya sk0/sk1-scheman."
+        "Lyssnar på PostgreSQL-notifieringar och skapar automatiskt "
+        "workspace och datastore i GeoServer för nya sk0/sk1-scheman."
     )
 
     def __init__(self, args):
@@ -103,7 +103,7 @@ class HexGeoServerService(win32serviceutil.ServiceFramework):
         self.hWaitStop = win32event.CreateEvent(None, 0, 0, None)
 
     def SvcStop(self):
-        """Anropas nar tjansten stoppas (via services.msc eller net stop)."""
+        """Anropas när tjänsten stoppas (via services.msc eller net stop)."""
         self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING)
         log.info("Stoppsignal mottagen - avslutar lyssnaren...")
         self.stop_event.set()
@@ -150,10 +150,10 @@ class HexGeoServerService(win32serviceutil.ServiceFramework):
             run_all_listeners(config, stop_event=self.stop_event)
 
         except Exception as e:
-            log.error("Tjansten avslutades med fel: %s", e)
+            log.error("Tjänsten avslutades med fel: %s", e)
             servicemanager.LogErrorMsg(f"HexGeoServerListener fel: {e}")
         finally:
-            log.info("Tjansten avslutad.")
+            log.info("Tjänsten avslutad.")
             servicemanager.LogMsg(
                 servicemanager.EVENTLOG_INFORMATION_TYPE,
                 servicemanager.PYS_SERVICE_STOPPED,
@@ -166,7 +166,7 @@ class HexGeoServerService(win32serviceutil.ServiceFramework):
 # =============================================================================
 
 def show_status():
-    """Visar tjanstens aktuella status."""
+    """Visar tjänstens aktuella status."""
     import win32service as ws
     try:
         scm = ws.OpenSCManager(None, None, ws.SC_MANAGER_CONNECT)
@@ -180,12 +180,12 @@ def show_status():
                     ws.SERVICE_START_PENDING: "Startar...",
                     ws.SERVICE_STOP_PENDING: "Stoppar...",
                     ws.SERVICE_RUNNING: "Kör",
-                    ws.SERVICE_CONTINUE_PENDING: "Aterupptar...",
+                    ws.SERVICE_CONTINUE_PENDING: "Återupptar...",
                     ws.SERVICE_PAUSE_PENDING: "Pausar...",
                     ws.SERVICE_PAUSED: "Pausad",
                 }
-                print(f"Tjanst: {HexGeoServerService._svc_display_name_}")
-                print(f"Status: {states.get(state, f'Okand ({state})')}")
+                print(f"Tjänst: {HexGeoServerService._svc_display_name_}")
+                print(f"Status: {states.get(state, f'Okänd ({state})')}")
                 if LOG_FILE.exists():
                     print(f"Loggfil: {LOG_FILE}")
             finally:
@@ -194,7 +194,7 @@ def show_status():
             ws.CloseServiceHandle(scm)
     except Exception as e:
         if "1060" in str(e):
-            print(f"Tjansten '{HexGeoServerService._svc_name_}' ar inte installerad.")
+            print(f"Tjänsten '{HexGeoServerService._svc_name_}' är inte installerad.")
         else:
             print(f"Fel: {e}")
 
