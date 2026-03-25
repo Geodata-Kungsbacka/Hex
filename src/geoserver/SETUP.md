@@ -28,7 +28,8 @@ geoserver_listener.py
         v
 GeoServer REST API:
   1. POST /rest/workspaces          --> workspace "sk0_kba_test"
-  2. POST /rest/.../datastores      --> JNDI store "sk0_kba_test"
+  2. POST /rest/.../datastores      --> PostGIS-datastore "sk0_kba_test"
+                                        (direktanslutning med r_sk0_kba_test-uppgifter)
 ```
 
 **Borttagning** — när du kör `DROP SCHEMA sk0_kba_test CASCADE`:
@@ -247,7 +248,7 @@ alla roller som kan ansluta till databasen.
 Lyssnaren anropar GeoServer REST API för att:
 
 - Kontrollera om workspace/datastore redan finns (`GET`)
-- Skapa workspace och JNDI-datastore (`POST`)
+- Skapa workspace och direkt PostGIS-datastore (`POST`)
 - Ta bort workspace med allt innehåll vid DROP SCHEMA (`DELETE ?recurse=true`)
 
 Att skapa workspaces och datastores kräver **administratörsrättigheter** i
@@ -326,14 +327,11 @@ HEX_GS_PASSWORD=ditt_geoserver_losenord
 
 # Databaser - en grupp per PostgreSQL-databas
 HEX_DB_1_DBNAME=geodata_sk0
-HEX_DB_1_JNDI_sk0=java:comp/env/jdbc/server.geodata_sk0
 
 HEX_DB_2_DBNAME=geodata_sk1
-HEX_DB_2_JNDI_sk1=java:comp/env/jdbc/server.geodata_sk1
 
 # Framtida databaser läggs till här:
 # HEX_DB_3_DBNAME=geodata_sk3
-# HEX_DB_3_JNDI_sk3=java:comp/env/jdbc/server.geodata_sk3
 ```
 
 > **OBS – `localhost` kontra literal IP-adress:** På Windows Server rekommenderas
@@ -342,9 +340,13 @@ HEX_DB_2_JNDI_sk1=java:comp/env/jdbc/server.geodata_sk1
 > anslutningsfel, och Steg 4 för hur CSRF-vitlistan i GeoServer måste uppdateras
 > om du ändrar `HEX_GS_URL`.
 
-Varje `HEX_DB_N_`-grupp måste ha ett `DBNAME` och minst en `JNDI_`-koppling.
-HOST/PORT/USER/PASSWORD kan anges per databas om de skiljer sig från
-standardvärdena ovan (t.ex. `HEX_DB_2_HOST=annan-server`).
+Varje `HEX_DB_N_`-grupp måste ha ett `DBNAME`. HOST/PORT/USER/PASSWORD kan anges
+per databas om de skiljer sig från standardvärdena ovan (t.ex. `HEX_DB_2_HOST=annan-server`).
+
+> **Datastore-autentisering:** Lyssnaren hämtar autentiseringsuppgifter för
+> GeoServer-datastores direkt från tabellen `hex_role_credentials` i varje
+> databas. Lösenorden genereras automatiskt av `hantera_standardiserade_roller()`
+> vid CREATE SCHEMA och kräver ingen manuell konfiguration.
 
 #### E-postnotifieringar (valfritt)
 
@@ -394,9 +396,7 @@ setx /M HEX_PG_PASSWORD "ditt_listener_losenord"
 setx /M HEX_GS_USER "hex_publisher"
 setx /M HEX_GS_PASSWORD "ditt_geoserver_losenord"
 setx /M HEX_DB_1_DBNAME "geodata_sk0"
-setx /M HEX_DB_1_JNDI_sk0 "java:comp/env/jdbc/server.geodata_sk0"
 setx /M HEX_DB_2_DBNAME "geodata_sk1"
-setx /M HEX_DB_2_JNDI_sk1 "java:comp/env/jdbc/server.geodata_sk1"
 ```
 
 > **OBS:** `setx /M` sätter systemövergripande variabler. Du måste starta om
@@ -439,11 +439,10 @@ Förväntad utskrift:
 2026-02-13 10:00:00 [INFO] GeoServer Schema Listener
 2026-02-13 10:00:00 [INFO] ============================================================
 2026-02-13 10:00:00 [INFO] GeoServer:  http://localhost:8080/geoserver
+2026-02-13 10:00:00 [INFO] Anslutning: direkt PostGIS (autentiseringsuppgifter från hex_role_credentials)
 2026-02-13 10:00:00 [INFO] Databaser:  2 st
 2026-02-13 10:00:00 [INFO]   [geodata_sk0] hex_listener@localhost:5432/geodata_sk0
-2026-02-13 10:00:00 [INFO]     sk0 -> java:comp/env/jdbc/server.geodata_sk0
 2026-02-13 10:00:00 [INFO]   [geodata_sk1] hex_listener@localhost:5432/geodata_sk1
-2026-02-13 10:00:00 [INFO]     sk1 -> java:comp/env/jdbc/server.geodata_sk1
 2026-02-13 10:00:00 [INFO] ============================================================
 2026-02-13 10:00:00 [INFO] Ansluten till GeoServer 2.26.x på http://localhost:8080/geoserver
 2026-02-13 10:00:00 [INFO] Anslutningstest lyckat
@@ -479,11 +478,10 @@ CREATE SCHEMA sk0_kba_test;
 **Förväntad utskrift i Terminal 1 (skapande):**
 ```
 [INFO] [geodata_sk0] Mottog notifiering för schema: sk0_kba_test
-[INFO] [geodata_sk0]   Prefix: sk0 -> JNDI: java:comp/env/jdbc/server.geodata_sk0
 [INFO] [geodata_sk0]   Steg 1: Skapar workspace 'sk0_kba_test'...
 [INFO]   [DRY-RUN] Skulle skapa workspace: sk0_kba_test
-[INFO] [geodata_sk0]   Steg 2: Skapar JNDI-datastore 'sk0_kba_test'...
-[INFO]   [DRY-RUN] Skulle skapa JNDI-datastore: sk0_kba_test
+[INFO] [geodata_sk0]   Steg 2: Skapar PostGIS-datastore 'sk0_kba_test'...
+[INFO]   [DRY-RUN] Skulle skapa PG-datastore: sk0_kba_test
 [INFO] [geodata_sk0]   Schema 'sk0_kba_test' publicerat till GeoServer
 ```
 
@@ -517,7 +515,7 @@ Skapa schemat och verifiera i GeoServer:
 1. Gå till http://localhost:8080/geoserver/web/
 2. Klicka på **Workspaces** i vänstermenyn
 3. Du bör se `sk0_kba_test` i listan
-4. Klicka på den, sedan **Stores** — du bör se en JNDI-store med samma namn
+4. Klicka på den, sedan **Stores** — du bör se en PostGIS-datastore med samma namn
 
 Testa sedan borttagning:
 ```sql
@@ -604,7 +602,7 @@ type D:\ProgramData\Hex\geoserver_listener.log
 
 Kontrollera GeoServer:
 - Workspace `sk1_kba_parkering` bör finnas
-- Datastore `sk1_kba_parkering` med rätt JNDI-koppling för sk1
+- Datastore `sk1_kba_parkering` med direktanslutning via rollen `r_sk1_kba_parkering`
 
 ---
 
@@ -663,23 +661,34 @@ vid uppstart:
 ### Lägga till en ny databas (t.ex. sk3)
 
 1. Installera event-triggern `notifiera_geoserver` i den nya databasen
-2. Skapa JNDI-resursen i GeoServers `context.xml`
+2. Ge `hex_listener` CONNECT-rättighet på den nya databasen:
+   ```sql
+   GRANT CONNECT ON DATABASE geodata_sk3 TO hex_listener;
+   GRANT SELECT ON public.hex_role_credentials TO hex_listener;
+   ```
 3. Lägg till en ny databasgrupp i `.env`:
    ```env
    HEX_DB_3_DBNAME=geodata_sk3
-   HEX_DB_3_JNDI_sk3=java:comp/env/jdbc/server.geodata_sk3
    ```
 4. Uppdatera SQL-funktionen `notifiera_geoserver()` så att `sk3` inkluderas
    (ändrad regex från `^(sk[01])_` till `^(sk[013])_`)
 5. Starta om tjänsten: `python geoserver_service.py restart`
 
-### Ändra JNDI-koppling
+### Ändra datastore-autentisering
 
-1. Ändra miljövariabel eller .env
-2. Starta om tjänsten
+Autentiseringsuppgifter för GeoServer-datastores hanteras automatiskt av Hex:
 
-Befintliga workspaces/stores i GeoServer påverkas inte - ändringar gäller
-bara nya scheman som skapas efter omstarten.
+- `hantera_standardiserade_roller()` skapar `r_{schema}` med LOGIN och ett
+  autogenererat lösenord vid varje CREATE SCHEMA
+- Lösenordet sparas i `hex_role_credentials` och läses av lyssnaren vid
+  datastore-skapandet
+
+Det finns normalt inget att konfigurera manuellt. Om du behöver återskapa
+en datastore för ett befintligt schema, skicka en manuell notifiering:
+
+```sql
+NOTIFY geoserver_schema, 'sk0_kba_mittschema';
+```
 
 ---
 
