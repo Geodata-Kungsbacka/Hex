@@ -9,7 +9,8 @@ nya `sk0`- och `sk1`-scheman till GeoServer.
 
 När ett `sk0`- eller `sk1`-schema skapas skickar Hex en `pg_notify`. En
 Python-process lyssnar på dessa notifieringar och skapar automatiskt en
-**workspace** och en **JNDI-datastore** i GeoServer med samma namn som schemat.
+**workspace** och en direkt **PostGIS-datastore** i GeoServer med samma namn som schemat.
+Datastore-autentiseringen hämtas från tabellen `hex_role_credentials` (läsrollen `r_{schema}`).
 
 Processen körs som en Windows-tjänst och startar automatiskt med servern.
 
@@ -69,7 +70,7 @@ Kontrollera loggen efteråt.
 
 ---
 
-## Uppdatera konfigurationen (lösenord, JNDI m.m.)
+## Uppdatera konfigurationen (lösenord m.m.)
 
 Inställningarna finns i antingen en `.env`-fil i `src/geoserver/` eller
 som systemövergripande miljövariabler:
@@ -85,36 +86,35 @@ som systemövergripande miljövariabler:
 ## Lägga till en ny databas att övervaka
 
 1. Installera Hex-triggern i den nya databasen (se [09_installera-uppdatera-hex.md](09_installera-uppdatera-hex.md)).
-2. Skapa JNDI-resursen i GeoServers `context.xml`.
+2. Ge `hex_listener` CONNECT-rättighet och läsåtkomst till `hex_role_credentials`:
+   ```sql
+   GRANT CONNECT ON DATABASE geodata_ny TO hex_listener;
+   GRANT SELECT ON public.hex_role_credentials TO hex_listener;
+   ```
 3. Lägg till i `.env`:
    ```env
    HEX_DB_3_DBNAME=geodata_ny
-   HEX_DB_3_JNDI_sk0=java:comp/env/jdbc/server.geodata_ny_sk0
    ```
 4. Starta om tjänsten.
 
 ---
 
-## Lägga till eller byta JNDI-anslutningsanvändare
+## Datastore-autentisering
 
-JNDI-poolens databasanvändare är den roll som GeoServer faktiskt ansluter med mot PostgreSQL.
+GeoServer ansluter till PostgreSQL via direkta PostGIS-datastores (inte JNDI).
+Autentiseringsuppgifterna hanteras automatiskt av Hex:
 
-**Vad systemet hanterar automatiskt:**
-Schema- och tabellrättigheter tilldelas via `hantera_standardiserade_roller()` när scheman skapas, inklusive `DEFAULT PRIVILEGES` för framtida tabeller. Login-rollen ärver alla rättigheter från gruppollen via PostgreSQL roll-arv.
+- Vid **CREATE SCHEMA** skapar `hantera_standardiserade_roller()` en LOGIN-roll
+  (`r_{schema}`) med ett autogenererat lösenord som sparas i `hex_role_credentials`.
+- Lyssnaren hämtar dessa uppgifter och konfigurerar GeoServer-datastoren med dem.
+- Vid **DROP SCHEMA** tas rollen och dess post i `hex_role_credentials` bort automatiskt.
 
-**Vad som konfigureras per miljö:**
-
-1. **Skapa login-rollen** i PostgreSQL och tilldela den lämplig grupproll:
-   ```sql
-   CREATE ROLE r_sk0_global_pub WITH LOGIN PASSWORD '...';
-   GRANT r_sk0_global TO r_sk0_global_pub;
-   ```
-
-2. **PostgreSQL-autentisering** — `pg_hba.conf`-poster är per login-roll och ärvs inte via gruppmedlemskap. Varje ny login-roll behöver en egen post konfigurerad enligt er miljö (IP-adress, autentiseringsmetod). Ladda om utan omstart: `SELECT pg_reload_conf()`.
-
-3. **JNDI-resursen i Tomcat** — miljöspecifik konfiguration i er Tomcat-installation. Resursens `name` (på formen `jdbc/...`) måste matcha `HEX_DB_N_JNDI_*`-variabeln i `.env`. Tomcat måste startas om för att läsa nya pooler.
-
-4. **Uppdatera lyssnaren** — lägg till `HEX_DB_N_JNDI_*` i `.env` och starta om tjänsten så att lyssnaren känner till den nya poolen.
+Det krävs normalt ingen manuell åtgärd. Om du ändå behöver en `pg_hba.conf`-post
+för GeoServers direktanslutningar, tillåt rollen `r_{schema}` från GeoServers
+IP-adress med din föredragna autentiseringsmetod, och ladda om med:
+```sql
+SELECT pg_reload_conf();
+```
 
 ---
 

@@ -53,13 +53,16 @@ Lyssnaren hanterar två livscykelhändelser automatiskt via `pg_notify`:
 
 **Vid CREATE SCHEMA** (kanal `geoserver_schema`) — för sk0- och sk1-scheman:
 - Skapar en workspace i GeoServer med samma namn som schemat
-- Skapar en JNDI PostGIS-datastore i den workspace med samma namn som schemat
+- Hämtar autentiseringsuppgifter för läsrollen (`r_{schema}`) från tabellen `hex_role_credentials`
+- Skapar en direkt PostGIS-datastore i den workspace med dessa uppgifter
+
+Läsrollen skapas automatiskt av `hantera_standardiserade_roller()` vid CREATE SCHEMA och ett autogenererat lösenord sparas i `hex_role_credentials`. Ingen JNDI-konfiguration i Tomcat krävs.
 
 **Vid DROP SCHEMA** (kanal `geoserver_schema_drop`) — för sk0- och sk1-scheman:
 - Tar bort workspace från GeoServer med `recurse=true`, vilket raderar datastores och publicerade lager automatiskt
 - Förhindrar att GeoServer gör upprepade anrop mot ett schema som inte längre existerar
 
-Schemaprefix mappas till JNDI-anslutningar via konfigurerbara miljövariabler (t.ex. `sk0` → `java:comp/env/jdbc/[server].[sk0-databas]`). sk2-scheman exkluderas — de kräver manuell konfiguration.
+sk2-scheman exkluderas — de kräver manuell konfiguration.
 
 **Felhantering:**
 - Automatisk retry med backoff vid timeout eller anslutningsfel mot GeoServer (upp till 4 försök)
