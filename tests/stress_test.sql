@@ -574,11 +574,9 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 
 -- Restore default roles
-INSERT INTO standardiserade_roller (rollnamn, rolltyp, schema_uttryck, global_roll, ta_bort_med_schema, login_roller, beskrivning) VALUES
-    ('r_sk0_global', 'read',  'LIKE ''sk0_%''', true,  false, ARRAY['_geoserver','_cesium','_qgis'], 'Global läsroll för sk0'),
-    ('r_sk1_global', 'read',  'LIKE ''sk1_%''', true,  false, ARRAY['_geoserver','_cesium','_qgis'], 'Global läsroll för sk1'),
-    ('r_{schema}',   'read',  'LIKE ''sk2_%''', false, true,  ARRAY['_geoserver','_cesium','_qgis'], 'Schemaspecifik läsroll'),
-    ('w_{schema}',   'write', 'IS NOT NULL',    false, true,  ARRAY['_geoserver','_cesium','_qgis'], 'Schemaspecifik skrivroll');
+INSERT INTO standardiserade_roller (rollnamn, rolltyp, schema_uttryck, with_login, beskrivning) VALUES
+    ('r_{schema}', 'read',  'IS NOT NULL', true, 'Schemaspecifik läsroll'),
+    ('w_{schema}', 'write', 'IS NOT NULL', true, 'Schemaspecifik skrivroll');
 
 -- TEST 35: Invalid rolltyp CHECK constraint (should be blocked)
 DO $$ BEGIN

@@ -33,11 +33,26 @@ DROP SCHEMA IF EXISTS sk2_ext_test  CASCADE;
 DROP SCHEMA IF EXISTS sk2_kba_test  CASCADE;
 DROP SCHEMA IF EXISTS sk2_sys_test  CASCADE;
 DROP SCHEMA IF EXISTS sk1_kba_htest CASCADE;
+DROP SCHEMA IF EXISTS sk0_ext_ab_temp CASCADE;
+
+-- Setup global role configuration needed for A4 tests.
+-- r_sk0_global and r_sk1_global are created by the event trigger when a
+-- sk0/sk1 schema is created, provided the rows exist in standardiserade_roller.
+DELETE FROM standardiserade_roller WHERE rollnamn IN ('r_sk0_global', 'r_sk1_global');
+DROP ROLE IF EXISTS r_sk0_global;
+DROP ROLE IF EXISTS r_sk1_global;
+INSERT INTO standardiserade_roller (rollnamn, rolltyp, schema_uttryck, global_roll, ta_bort_med_schema, with_login, beskrivning) VALUES
+    ('r_sk0_global', 'read', 'LIKE ''sk0_%''', true, false, false, 'Global read role for sk0'),
+    ('r_sk1_global', 'read', 'LIKE ''sk1_%''', true, false, false, 'Global read role for sk1');
+
+-- Create a sk0 schema to trigger r_sk0_global; drop it immediately (role persists since ta_bort_med_schema=false)
+CREATE SCHEMA sk0_ext_ab_temp;
+DROP SCHEMA sk0_ext_ab_temp CASCADE;
 
 CREATE SCHEMA sk2_ext_test;
 CREATE SCHEMA sk2_kba_test;
 CREATE SCHEMA sk2_sys_test;
-CREATE SCHEMA sk1_kba_htest;
+CREATE SCHEMA sk1_kba_htest;  -- triggers r_sk1_global creation
 
 -- ============================================================
 -- A: sk2 SCHEMA HANDLING
@@ -394,6 +409,11 @@ DROP SCHEMA IF EXISTS sk2_ext_test  CASCADE;
 DROP SCHEMA IF EXISTS sk2_kba_test  CASCADE;
 DROP SCHEMA IF EXISTS sk2_sys_test  CASCADE;
 DROP SCHEMA IF EXISTS sk1_kba_htest CASCADE;
+
+-- Remove global role configuration added for A4 tests
+DELETE FROM standardiserade_roller WHERE rollnamn IN ('r_sk0_global', 'r_sk1_global');
+DROP ROLE IF EXISTS r_sk0_global;
+DROP ROLE IF EXISTS r_sk1_global;
 
 \echo ''
 \echo 'HEX EXTENDED A & B COMPLETE'
