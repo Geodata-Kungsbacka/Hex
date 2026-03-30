@@ -51,6 +51,7 @@ INSTALL_ORDER = [
     "src/sql/02_tables/hex_afvaktande_geometri.sql",
     "src/sql/02_tables/hex_dummy_geometrier.sql",
     "src/sql/02_tables/hex_avvikande_srid.sql",
+    "src/sql/02_tables/hex_role_credentials.sql",
     # Funktioner - Struktur
     "src/sql/03_functions/01_structure/hamta_geometri_definition.sql",
     "src/sql/03_functions/01_structure/hamta_kolumnstandard.sql",
@@ -156,6 +157,7 @@ DROP FUNCTION IF EXISTS public.hamta_geometri_definition(text, text);
 DROP FUNCTION IF EXISTS public.system_owner();
 
 -- Tabeller
+DROP TABLE IF EXISTS public.hex_role_credentials;
 DROP TABLE IF EXISTS public.hex_avvikande_srid;
 DROP TABLE IF EXISTS public.hex_dummy_geometrier;
 DROP TABLE IF EXISTS public.hex_afvaktande_geometri;
