@@ -663,9 +663,59 @@ class GeoServerClient:
 # =============================================================================
 
 # Regex som matchar giltiga schemanamn för GeoServer-publicering.
-# Måste överensstämma med SQL-valideringen i validera_schemanamn(),
-# men begränsat till sk0/sk1 (sk2 publiceras inte till GeoServer).
+# Laddas dynamiskt från standardiserade_skyddsnivaer (publiceras_geoserver = true)
+# och standardiserade_datakategorier vid uppstart via _load_schema_pattern().
+# Standardvärdet nedan används som fallback om DB-laddningen misslyckas.
 SCHEMA_PATTERN = re.compile(r"^sk[01]_(ext|kba|sys)_.+$")
+_schema_pattern_lock = threading.Lock()
+
+
+def _load_schema_pattern(cur):
+    """Laddar schemanamnsmönstret från konfigurationstabellerna och uppdaterar SCHEMA_PATTERN.
+
+    Bygger ett regex baserat på:
+      - standardiserade_skyddsnivaer WHERE publiceras_geoserver = true  → tillåtna prefix
+      - standardiserade_datakategorier                                  → tillåtna kategorier
+
+    Om tabellerna är tomma eller ett fel uppstår behålls det befintliga mönstret.
+    Anropas i listen_loop efter lyckad DB-anslutning så att mönstret hålls i synk
+    med konfigurationen utan omstart av tjänsten.
+    """
+    global SCHEMA_PATTERN
+    try:
+        cur.execute(
+            "SELECT prefix FROM public.standardiserade_skyddsnivaer"
+            " WHERE publiceras_geoserver = true ORDER BY prefix"
+        )
+        skyddsnivaer = [row[0] for row in cur.fetchall()]
+
+        cur.execute(
+            "SELECT prefix FROM public.standardiserade_datakategorier ORDER BY prefix"
+        )
+        kategorier = [row[0] for row in cur.fetchall()]
+
+        if not skyddsnivaer or not kategorier:
+            log.warning(
+                "Schenanamnsmönster: konfigurationstabellerna är tomma – "
+                "behåller nuvarande mönster '%s'",
+                SCHEMA_PATTERN.pattern,
+            )
+            return
+
+        prefix_alts = "|".join(re.escape(p) for p in skyddsnivaer)
+        kat_alts    = "|".join(re.escape(k) for k in kategorier)
+        pattern = re.compile(rf"^({prefix_alts})_({kat_alts})_.+$")
+
+        with _schema_pattern_lock:
+            SCHEMA_PATTERN = pattern
+        log.info("Schenanamnsmönster uppdaterat från DB: %s", pattern.pattern)
+
+    except Exception as e:
+        log.warning(
+            "Kunde inte ladda schenanamnsmönster från DB: %s – "
+            "behåller nuvarande mönster '%s'",
+            e, SCHEMA_PATTERN.pattern,
+        )
 
 # pg_notify-kanalnamn. Måste överensstämma med SQL-funktionerna
 # notifiera_geoserver() och notifiera_geoserver_borttagning().
@@ -827,11 +877,17 @@ def _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label=""):
     log.info("%sStartavstämning: kontrollerar GeoServer mot PostgreSQL-scheman...", tag)
 
     try:
-        # a) Hämta sk0/sk1-scheman från PostgreSQL
+        # a) Hämta publicerbara scheman från PostgreSQL – styrt av konfigurationstabellerna
         cur.execute(
             "SELECT schema_name"
             " FROM information_schema.schemata"
-            " WHERE schema_name ~ '^(sk0|sk1)_(ext|kba|sys)_.+'"
+            " WHERE EXISTS ("
+            "   SELECT 1"
+            "   FROM public.standardiserade_skyddsnivaer n,"
+            "        public.standardiserade_datakategorier d"
+            "   WHERE n.publiceras_geoserver = true"
+            "     AND schema_name ~ ('^' || n.prefix || '_' || d.prefix || '_')"
+            " )"
             " ORDER BY schema_name"
         )
         pg_schemas = {row[0] for row in cur.fetchall()}
@@ -996,6 +1052,9 @@ def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None, notifier
             log.info("[%s] Lyssnar på kanaler '%s' och '%s'...",
                      db_label, CHANNEL_SCHEMA_CREATE, CHANNEL_SCHEMA_DROP)
             log.info("[%s] Väntar på schema-händelser...", db_label)
+
+            # Ladda schenanamnsmönster från konfigurationstabellerna
+            _load_schema_pattern(cur)
 
             # Startavstämning – körs en gång vid uppstart
             if not _reconciliation_done:

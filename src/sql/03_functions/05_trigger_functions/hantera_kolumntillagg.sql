@@ -509,9 +509,14 @@ BEGIN
                 END;
             END IF;
 
-            -- Steg 5b.4: Lägg till geometrivalidering för _kba_-scheman
+            -- Steg 5b.4: Lägg till geometrivalidering för scheman vars datakategori
+            --            har validera_geometri = true i standardiserade_datakategorier
             IF geometriinfo IS NOT NULL AND geometriinfo.kolumnnamn IS NOT NULL
-               AND schema_namn ~ '^sk[0-2]_kba_'
+               AND EXISTS (
+                   SELECT 1 FROM public.standardiserade_datakategorier d
+                   WHERE d.validera_geometri = true
+                     AND schema_namn ~ ('^sk[a-z0-9]+_' || d.prefix || '_')
+               )
             THEN
                 DECLARE
                     constraint_namn text := 'validera_geom_' || tabell_namn;
@@ -647,8 +652,12 @@ BEGIN
                     RAISE NOTICE '[hantera_kolumntillagg]   ✓ GiST-index skapat: %', index_namn;
                 END;
 
-                -- Geometrivalidering (_kba_-scheman)
-                IF schema_namn ~ '^sk[0-2]_kba_' THEN
+                -- Geometrivalidering (datakategorier med validera_geometri = true)
+                IF EXISTS (
+                    SELECT 1 FROM public.standardiserade_datakategorier d
+                    WHERE d.validera_geometri = true
+                      AND schema_namn ~ ('^sk[a-z0-9]+_' || d.prefix || '_')
+                ) THEN
                     DECLARE
                         constraint_namn text := 'validera_geom_' || tabell_namn;
                     BEGIN

@@ -336,12 +336,16 @@ BEGIN
                 RAISE NOTICE '  - Ingen geometri, GiST-index ej relevant';
             END IF;
 
-            -- Steg 9: Lägg till geometrivalidering för _kba_-scheman
+            -- Steg 9: Lägg till geometrivalidering för scheman vars datakategori
+            --         har validera_geometri = true i standardiserade_datakategorier
             op_steg := 'geometrivalidering';
             RAISE NOTICE 'Steg 9/10: Kontrollerar geometrivalidering';
             RAISE NOTICE '  - geometriinfo.kolumnnamn: %', geometriinfo.kolumnnamn;
-            RAISE NOTICE '  - schema_namn: %, matchar kba: %', schema_namn, (schema_namn ~ '^sk[0-2]_kba_');
-            IF geometriinfo IS NOT NULL AND geometriinfo.kolumnnamn IS NOT NULL AND schema_namn ~ '^sk[0-2]_kba_' THEN
+            IF geometriinfo IS NOT NULL AND geometriinfo.kolumnnamn IS NOT NULL AND EXISTS (
+                SELECT 1 FROM public.standardiserade_datakategorier d
+                WHERE d.validera_geometri = true
+                  AND schema_namn ~ ('^sk[a-z0-9]+_' || d.prefix || '_')
+            ) THEN
                 DECLARE
                     constraint_namn text := 'validera_geom_' || tabell_namn;
                 BEGIN
@@ -365,7 +369,7 @@ BEGIN
                 IF geometriinfo IS NULL OR geometriinfo.kolumnnamn IS NULL THEN
                     RAISE NOTICE '  - Ingen geometri, validering ej relevant';
                 ELSE
-                    RAISE NOTICE '  - Schema % är inte _kba_, validering ej tillagd', schema_namn;
+                    RAISE NOTICE '  - Schema % har ingen datakategori med validera_geometri = true, validering ej tillagd', schema_namn;
                 END IF;
             END IF;
             

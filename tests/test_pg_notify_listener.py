@@ -854,28 +854,94 @@ class TestReconcileGeoServerSchemas(unittest.TestCase):
         gs.create_workspace.assert_not_called()
 
     # ------------------------------------------------------------------
-    # 7. Sk2/skx-scheman publiceras inte till GeoServer
+    # 7. Sk2/skx-scheman publiceras inte om SCHEMA_PATTERN så säger
     # ------------------------------------------------------------------
 
-    def test_sk2_schema_not_included_in_pg_query_results(self):
+    def test_sk2_schema_blocked_by_schema_pattern(self):
         """
-        SQL-frågan i _reconcile filtrerar redan på sk0/sk1. Det här testet
-        verifierar att även om ett sk2-schema vore med i fetchall-resultatet
-        (t.ex. pga en ändrad fråga) avvisas det av SCHEMA_PATTERN-filtret
-        på GeoServer-sidan av diffberäkningen (rad e i funktionen).
+        sk2 är inte publicerbart i standardkonfigurationen (publiceras_geoserver = false).
+        SCHEMA_PATTERN laddas från DB via _load_schema_pattern; i det här testet
+        mockas det till fallback-värdet (sk0/sk1 only) för att verifiera att
+        handle_schema_notification avvisar sk2 via _validate_schema_name.
+
+        Om sk2 skulle läggas till i standardiserade_skyddsnivaer med
+        publiceras_geoserver = true OCH _load_schema_pattern körs, uppdateras
+        SCHEMA_PATTERN och sk2-scheman publiceras. Det är avsiktligt beteende.
         """
-        # Simulera att fetchall returnerar ett sk2-schema (ska inte hända men
-        # om frågan ändras skyddar SCHEMA_PATTERN fortfarande)
         cur = self._make_cur_mock(["sk2_kba_hemlig"])
-        # sk2-schemat matchar inte mönstret → hamnar inte i pg_schemas-setet
-        # och skapar aldrig en workspace
         gs  = self._make_gs_mock(existing_workspaces=[])
 
+        # SCHEMA_PATTERN är fallback-värdet (sk0/sk1 only) – sk2 avvisas
         with patch.object(gl, "_fetch_role_credentials",
                           return_value=("r_sk2_kba_hemlig", "pw")):
             gl._reconcile_geoserver_schemas(cur, self.DB_CONFIG, gs)
 
         gs.create_workspace.assert_not_called()
+
+
+class TestLoadSchemaPattern(unittest.TestCase):
+    """
+    Enhetstester för _load_schema_pattern – verifierar att SCHEMA_PATTERN
+    byggs korrekt från konfigurationstabellerna och att fallback fungerar.
+    """
+
+    def _make_cur_mock(self, skyddsnivaer_prefixes, datakategori_prefixes):
+        """Cursor-mock vars fetchall returnerar rätt data för de två frågorna."""
+        cur = MagicMock()
+        cur.fetchall.side_effect = [
+            [(p,) for p in skyddsnivaer_prefixes],
+            [(p,) for p in datakategori_prefixes],
+        ]
+        return cur
+
+    def setUp(self):
+        """Spara originalvärdet av SCHEMA_PATTERN och återställ efter varje test."""
+        self._original_pattern = gl.SCHEMA_PATTERN
+
+    def tearDown(self):
+        gl.SCHEMA_PATTERN = self._original_pattern
+
+    def test_pattern_built_from_config(self):
+        """Mönstret byggs från skyddsnivaer + datakategorier ur DB."""
+        cur = self._make_cur_mock(["sk0", "sk1"], ["ext", "kba", "sys"])
+        gl._load_schema_pattern(cur)
+        self.assertRegex("sk0_kba_test",  gl.SCHEMA_PATTERN)
+        self.assertRegex("sk1_ext_sjv",   gl.SCHEMA_PATTERN)
+        self.assertNotRegex("sk2_kba_hemlig", gl.SCHEMA_PATTERN)
+
+    def test_new_security_level_included(self):
+        """Om sk2 läggs till med publiceras_geoserver = true inkluderas det i mönstret."""
+        cur = self._make_cur_mock(["sk0", "sk1", "sk2"], ["ext", "kba", "sys"])
+        gl._load_schema_pattern(cur)
+        self.assertRegex("sk2_kba_hemlig", gl.SCHEMA_PATTERN)
+
+    def test_new_datakategori_included(self):
+        """En ny datakategori inkluderas direkt efter att mönstret laddats."""
+        cur = self._make_cur_mock(["sk0", "sk1"], ["ext", "kba", "sys", "int"])
+        gl._load_schema_pattern(cur)
+        self.assertRegex("sk0_int_test", gl.SCHEMA_PATTERN)
+
+    def test_empty_skyddsnivaer_keeps_existing_pattern(self):
+        """Tomma skyddsnivaer → befintligt mönster behålls, ingen krasch."""
+        cur = self._make_cur_mock([], ["kba"])
+        original = gl.SCHEMA_PATTERN
+        gl._load_schema_pattern(cur)
+        self.assertIs(gl.SCHEMA_PATTERN, original)
+
+    def test_empty_kategorier_keeps_existing_pattern(self):
+        """Tomma datakategorier → befintligt mönster behålls."""
+        cur = self._make_cur_mock(["sk0"], [])
+        original = gl.SCHEMA_PATTERN
+        gl._load_schema_pattern(cur)
+        self.assertIs(gl.SCHEMA_PATTERN, original)
+
+    def test_db_error_keeps_existing_pattern(self):
+        """DB-fel → befintligt mönster behålls, ingen krasch."""
+        cur = MagicMock()
+        cur.execute.side_effect = Exception("connection lost")
+        original = gl.SCHEMA_PATTERN
+        gl._load_schema_pattern(cur)
+        self.assertIs(gl.SCHEMA_PATTERN, original)
 
 
 # ---------------------------------------------------------------------------

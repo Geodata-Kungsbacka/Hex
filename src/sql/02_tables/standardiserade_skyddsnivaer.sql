@@ -5,7 +5,6 @@ CREATE TABLE IF NOT EXISTS public.standardiserade_skyddsnivaer (
     prefix text NOT NULL,
     beskrivning text,
     publiceras_geoserver boolean NOT NULL DEFAULT false,
-    har_global_roll boolean NOT NULL DEFAULT false,
 
     CONSTRAINT standardiserade_skyddsnivaer_pkey PRIMARY KEY (gid),
     CONSTRAINT standardiserade_skyddsnivaer_prefix_key UNIQUE (prefix),
@@ -27,16 +26,14 @@ COMMENT ON COLUMN public.standardiserade_skyddsnivaer.prefix
 COMMENT ON COLUMN public.standardiserade_skyddsnivaer.publiceras_geoserver
     IS 'Sant om scheman med detta prefix ska publiceras automatiskt till GeoServer via pg_notify.';
 
-COMMENT ON COLUMN public.standardiserade_skyddsnivaer.har_global_roll
-    IS 'Sant om en global läsroll (r_<prefix>_global) ska skapas för detta prefix. Se standardiserade_roller.';
 
 INSERT INTO public.standardiserade_skyddsnivaer
-    (prefix, beskrivning, publiceras_geoserver, har_global_roll)
+    (prefix, beskrivning, publiceras_geoserver)
 VALUES
-    ('sk0', 'Öppen publik data',                                  true,  true),
-    ('sk1', 'Kommunal data med begränsad åtkomst',                true,  true),
-    ('sk2', 'Begränsad känslig data',                             false, false),
-    ('skx', 'Okänd / oklassificerad data (endast GIS-administratörer)', false, false);
+    ('sk0', 'Öppen publik data',                                       true),
+    ('sk1', 'Kommunal data med begränsad åtkomst',                     true),
+    ('sk2', 'Begränsad känslig data',                                  false),
+    ('skx', 'Okänd / oklassificerad data (endast GIS-administratörer)', false);
 
 -- Trigger functions (hantera_ny_tabell, validera_schemanamn, notifiera_geoserver) run as
 -- SECURITY INVOKER, so the calling user needs SELECT on this table.
