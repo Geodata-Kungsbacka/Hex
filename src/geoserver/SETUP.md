@@ -15,7 +15,18 @@ Lyssnaren hanterar två riktningar automatiskt via var sin pg_notify-kanal.
 CREATE SCHEMA sk0_kba_test
         |
         v
-[PostgreSQL Event Trigger]
+[PostgreSQL Event Trigger 1]
+hantera_standardiserade_roller()
+        |
+        +--> CREATE ROLE r_sk0_kba_test WITH LOGIN PASSWORD '<autogenererat>'
+        |    (läsroll - direkt PostgreSQL-anslutning för GeoServer)
+        +--> CREATE ROLE w_sk0_kba_test WITH LOGIN PASSWORD '<autogenererat>'
+        |    (skrivroll)
+        +--> INSERT INTO hex_role_credentials (rolname, password)
+             (lösenorden sparas i databasen för lyssnaren att hämta)
+        |
+        v
+[PostgreSQL Event Trigger 2]
 notifiera_geoserver()
         |
         v
@@ -25,12 +36,18 @@ pg_notify('geoserver_schema', 'sk0_kba_test')
 [Python Listener - Windows Service]
 geoserver_listener.py
         |
+        +--> SELECT password FROM hex_role_credentials WHERE rolname = 'r_sk0_kba_test'
+        |
         v
 GeoServer REST API:
   1. POST /rest/workspaces          --> workspace "sk0_kba_test"
   2. POST /rest/.../datastores      --> PostGIS-datastore "sk0_kba_test"
                                         (direktanslutning med r_sk0_kba_test-uppgifter)
 ```
+
+> Rolltrigger och notifieringstrigger körs i ordning som en del av samma CREATE
+> SCHEMA-transaktion. Lösenordet är alltid inskrivet i `hex_role_credentials`
+> innan pg_notify når lyssnaren.
 
 **Borttagning** — när du kör `DROP SCHEMA sk0_kba_test CASCADE`:
 
@@ -152,6 +169,9 @@ automatiskt som en del av installationsordningen. De relevanta filerna är:
 
 | Fil | Syfte |
 |---|---|
+| `src/sql/02_tables/hex_role_credentials.sql` | Tabell där lösenord för LOGIN-roller sparas |
+| `src/sql/03_functions/05_trigger_functions/hantera_standardiserade_roller.sql` | Skapar r_/w_-roller med autogenererade lösenord vid CREATE SCHEMA |
+| `src/sql/04_triggers/hantera_standardiserade_roller_trigger.sql` | Registrerar ovanstående trigger |
 | `src/sql/03_functions/05_trigger_functions/notifiera_geoserver.sql` | Skickar pg_notify vid CREATE SCHEMA |
 | `src/sql/04_triggers/notifiera_geoserver_trigger.sql` | Registrerar ovanstående trigger |
 | `src/sql/03_functions/05_trigger_functions/notifiera_geoserver_borttagning.sql` | Skickar pg_notify vid DROP SCHEMA |
@@ -176,10 +196,15 @@ Om du redan har Hex installerat och bara vill lägga till dessa triggers manuell
 SELECT evtname, evtevent, evttags
 FROM pg_event_trigger
 WHERE evtname IN (
+    'hantera_standardiserade_roller_trigger',
     'notifiera_geoserver_trigger',
     'notifiera_geoserver_borttagning_trigger'
 );
 ```
+
+Du bör se tre rader. `hantera_standardiserade_roller_trigger` körs alltid
+**före** `notifiera_geoserver_trigger` så att lösenordet redan finns i
+`hex_role_credentials` när lyssnaren svarar på notifieringen.
 
 ---
 
@@ -208,8 +233,18 @@ GRANT CONNECT ON DATABASE geodata_sk0 TO hex_listener;
 GRANT CONNECT ON DATABASE geodata_sk1 TO hex_listener;
 ```
 
-Ingen ytterligare rättighet behövs - `LISTEN` på en kanal är tillgängligt för
-alla roller som kan ansluta till databasen.
+`LISTEN` på en kanal är tillgängligt för alla roller som kan ansluta till
+databasen. Lyssnaren behöver dessutom kunna läsa `hex_role_credentials` för
+att hämta lösenordet till GeoServer-datastorens direktanslutning. Ge
+rättigheten i **varje databas** som ska övervakas:
+
+```sql
+-- Kör i varje databas (t.ex. \c geodata_sk0 i psql)
+GRANT SELECT ON public.hex_role_credentials TO hex_listener;
+```
+
+> **OBS:** Om du kör Hex-installern (`install_hex.py`) sätts denna rättighet
+> automatiskt av `hex_role_credentials.sql` och behöver inte läggas till manuellt.
 
 > **Loopback-adresser och `localhost` på Windows Server**
 >
@@ -660,10 +695,14 @@ vid uppstart:
 
 ### Lägga till en ny databas (t.ex. sk3)
 
-1. Installera event-triggern `notifiera_geoserver` i den nya databasen
-2. Ge `hex_listener` CONNECT-rättighet på den nya databasen:
+1. Installera alla event-triggers i den nya databasen (enklast via `install_hex.py`):
+   - `hantera_standardiserade_roller` (skapar roller och lösenord)
+   - `notifiera_geoserver` (skickar CREATE-notifiering)
+   - `notifiera_geoserver_borttagning` (skickar DROP-notifiering)
+2. Ge `hex_listener` nödvändiga rättigheter på den nya databasen:
    ```sql
    GRANT CONNECT ON DATABASE geodata_sk3 TO hex_listener;
+   -- Kör i den nya databasen:
    GRANT SELECT ON public.hex_role_credentials TO hex_listener;
    ```
 3. Lägg till en ny databasgrupp i `.env`:
@@ -709,7 +748,7 @@ Lyssnaren har inbyggd retry-logik för transienta fel mot GeoServer:
 
 **Vad som INTE ger retry:**
 - HTTP-felkoder (400, 401, 404, 500 etc.) - dessa returneras direkt
-- Ogiltiga schemanamn, felaktig JNDI-konfiguration, etc.
+- Ogiltiga schemanamn, saknade uppgifter i `hex_role_credentials`, autentiseringsfel mot GeoServer, etc.
 
 Om alla retry-försök misslyckas loggas felet tydligt. Lyssnaren hoppar
 sedan över notifieringen. För att försöka igen manuellt:
