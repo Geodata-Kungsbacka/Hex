@@ -247,6 +247,11 @@ def install(base_path="."):
         print("Kontrollerar PostGIS-tillägget...")
         cur.execute("CREATE EXTENSION IF NOT EXISTS postgis")
 
+        # Säkerställ att pgcrypto finns (krävs av hantera_standardiserade_roller
+        # för gen_random_bytes() vid lösenordsgenerering)
+        print("Kontrollerar pgcrypto-tillägget...")
+        cur.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto")
+
         # Validera att OWNER_ROLE existerar om angiven
         owner_role = OWNER_ROLE or 'postgres'
         cur.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (owner_role,))
