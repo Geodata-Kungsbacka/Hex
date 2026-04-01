@@ -874,7 +874,8 @@ def _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label=""):
             try:
                 ok = handle_schema_notification(
                     schema_name,
-                    db_config["jndi_mappings"],
+                    db_config,
+                    cur.connection,
                     gs_client,
                     db_label=db_label,
                 )
