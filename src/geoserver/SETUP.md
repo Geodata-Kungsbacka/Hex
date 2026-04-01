@@ -378,6 +378,19 @@ HEX_DB_2_DBNAME=geodata_sk1
 Varje `HEX_DB_N_`-grupp måste ha ett `DBNAME`. HOST/PORT/USER/PASSWORD kan anges
 per databas om de skiljer sig från standardvärdena ovan (t.ex. `HEX_DB_2_HOST=annan-server`).
 
+> **VIKTIGT — `HEX_PG_HOST` används av både lyssnaren och GeoServer:**
+> Värdet på `HEX_PG_HOST` (och eventuella `HEX_DB_N_HOST`) gör dubbel tjänst.
+> Det används dels av Python-lyssnaren för att ansluta och lyssna på pg_notify,
+> dels bäddas det in ordagrant i varje PostGIS-datastore som skapas i GeoServer
+> via REST API. Det innebär att GeoServer försöker nå PostgreSQL på exakt den
+> adressen — från GeoServers eget nätverkskontext.
+>
+> - Om GeoServer och PostgreSQL **körs på samma server**: `127.0.0.1` fungerar
+>   för båda.
+> - Om de **körs på olika servrar**: sätt `HEX_PG_HOST` till det faktiska
+>   nätverksnamnet eller IP-adressen som GeoServer-servern kan nå PostgreSQL på.
+>   `127.0.0.1` från lyssnaren gör att GeoServer försöker ansluta till sig själv.
+
 > **Datastore-autentisering:** Lyssnaren hämtar autentiseringsuppgifter för
 > GeoServer-datastores direkt från tabellen `hex_role_credentials` i varje
 > databas. Lösenorden genereras automatiskt av `hantera_standardiserade_roller()`
