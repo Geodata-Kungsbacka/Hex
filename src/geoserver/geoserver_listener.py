@@ -767,7 +767,7 @@ def _load_schema_pattern(cur):
 
     except Exception as e:
         log.warning(
-            "Kunde inte ladda schenanamnsmönster från DB: %s – "
+            "Kunde inte ladda schemanamnsmönster från DB: %s – "
             "behåller nuvarande mönster '%s'",
             e, SCHEMA_PATTERN.pattern,
         )
@@ -854,9 +854,8 @@ def handle_schema_notification(schema_name, db_config, pg_conn, gs_client, db_la
     # Ladda om mönstret innan validering så att ändringar i
     # standardiserade_skyddsnivaer (t.ex. publiceras_geoserver = true för ett
     # nytt prefix) slår igenom utan omstart av tjänsten.
-    cur = pg_conn.cursor()
-    _load_schema_pattern(cur)
-    cur.close()
+    with pg_conn.cursor() as cur:
+        _load_schema_pattern(cur)
 
     if not _validate_schema_name(schema_name, tag):
         return False
@@ -1186,6 +1185,7 @@ def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None, notifier
                 dbname=db_config["dbname"],
                 user=db_config["user"],
                 password=db_config["password"],
+                connect_timeout=10,
             )
             conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
 
@@ -1196,7 +1196,7 @@ def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None, notifier
                      db_label, CHANNEL_SCHEMA_CREATE, CHANNEL_SCHEMA_DROP)
             log.info("[%s] Väntar på schema-händelser...", db_label)
 
-            # Ladda schenanamnsmönster från konfigurationstabellerna
+            # Ladda schemanamnsmönster från konfigurationstabellerna
             _load_schema_pattern(cur)
 
             # Startavstämning – körs en gång vid uppstart
