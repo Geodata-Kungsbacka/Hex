@@ -751,7 +751,7 @@ def _load_schema_pattern(cur):
 
         if not skyddsnivaer or not kategorier:
             log.warning(
-                "Schenanamnsmönster: konfigurationstabellerna är tomma – "
+                "Schemanamnsmönster: konfigurationstabellerna är tomma – "
                 "behåller nuvarande mönster '%s'",
                 SCHEMA_PATTERN.pattern,
             )
@@ -763,7 +763,7 @@ def _load_schema_pattern(cur):
 
         with _schema_pattern_lock:
             SCHEMA_PATTERN = pattern
-        log.info("Schenanamnsmönster uppdaterat från DB: %s", pattern.pattern)
+        log.info("Schemanamnsmönster uppdaterat från DB: %s", pattern.pattern)
 
     except Exception as e:
         log.warning(
