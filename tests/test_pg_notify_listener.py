@@ -197,14 +197,18 @@ class TestHandlerLogicWithMockGeoServer(unittest.TestCase):
     hex_role_credentials-tabell.
     """
 
-    def _make_gs_mock(self, workspace_ok=True, datastore_ok=True):
+    def _make_gs_mock(self, workspace_ok=True, datastore_ok=True, role_ok=True, acl_ok=True):
         """Returnerar en GeoServerClient-mock med konfigurerbart utfall."""
         gs = MagicMock()
         gs.workspace_exists.return_value = False
         gs.create_workspace.return_value = workspace_ok
         gs.datastore_exists.return_value = False
         gs.create_pg_datastore.return_value = datastore_ok
+        gs.create_gs_role.return_value = role_ok
+        gs.create_workspace_acl.return_value = acl_ok
         gs.delete_workspace.return_value = True
+        gs.delete_workspace_acl.return_value = True
+        gs.delete_gs_role.return_value = True
         return gs
 
     def _make_pg_conn_mock(self):
@@ -215,7 +219,7 @@ class TestHandlerLogicWithMockGeoServer(unittest.TestCase):
     # 2. Schema CREATE-hanterare
     # ------------------------------------------------------------------
     def test_create_handler_calls_workspace_and_datastore(self):
-        """Lyckad väg: workspace + direkt PG-datastore skapas för ett giltigt sk0-schema."""
+        """Lyckad väg: alla fyra steg utförs för ett giltigt sk0-schema."""
         gs = self._make_gs_mock()
         mock_conn = self._make_pg_conn_mock()
 
@@ -236,6 +240,10 @@ class TestHandlerLogicWithMockGeoServer(unittest.TestCase):
             pg_user=TEST_ROLE_NAME,
             pg_password=TEST_ROLE_PASSWORD,
         )
+        self.assertEqual(gs.create_gs_role.call_count, 2)
+        gs.create_gs_role.assert_any_call(f"r_{VALID_CREATE_SCHEMA}")
+        gs.create_gs_role.assert_any_call(f"w_{VALID_CREATE_SCHEMA}")
+        gs.create_workspace_acl.assert_called_once_with(VALID_CREATE_SCHEMA)
 
     def test_create_handler_rejects_invalid_schema(self):
         """Schemanamn som inte matchar regex hoppas tyst över."""
@@ -288,7 +296,7 @@ class TestHandlerLogicWithMockGeoServer(unittest.TestCase):
         gs.create_workspace.assert_called_once_with(VALID_DROP_SCHEMA)
 
     def test_create_handler_datastore_failure(self):
-        """Om datastore-skapande misslyckas returneras False."""
+        """Om datastore-skapande misslyckas avbryts flödet innan roller skapas."""
         gs = self._make_gs_mock(datastore_ok=False)
         mock_conn = self._make_pg_conn_mock()
 
@@ -298,17 +306,51 @@ class TestHandlerLogicWithMockGeoServer(unittest.TestCase):
             )
         self.assertFalse(result)
         gs.create_workspace.assert_called_once()
+        gs.create_gs_role.assert_not_called()
+        gs.create_workspace_acl.assert_not_called()
+
+    def test_create_handler_role_failure_aborts(self):
+        """Om GeoServer-roll inte kan skapas avbryts flödet innan ACL sätts."""
+        gs = self._make_gs_mock(role_ok=False)
+        mock_conn = self._make_pg_conn_mock()
+
+        with patch.object(gl, "_fetch_role_credentials", return_value=(TEST_ROLE_NAME, TEST_ROLE_PASSWORD)):
+            result = gl.handle_schema_notification(
+                VALID_CREATE_SCHEMA, DB_CONFIG, mock_conn, gs
+            )
+        self.assertFalse(result)
+        gs.create_workspace.assert_called_once()
+        gs.create_pg_datastore.assert_called_once()
+        gs.create_workspace_acl.assert_not_called()
+
+    def test_create_handler_acl_failure_aborts(self):
+        """Om ACL-regler inte kan skapas returneras False."""
+        gs = self._make_gs_mock(acl_ok=False)
+        mock_conn = self._make_pg_conn_mock()
+
+        with patch.object(gl, "_fetch_role_credentials", return_value=(TEST_ROLE_NAME, TEST_ROLE_PASSWORD)):
+            result = gl.handle_schema_notification(
+                VALID_CREATE_SCHEMA, DB_CONFIG, mock_conn, gs
+            )
+        self.assertFalse(result)
+        gs.create_workspace.assert_called_once()
+        gs.create_pg_datastore.assert_called_once()
+        self.assertEqual(gs.create_gs_role.call_count, 2)
 
     # ------------------------------------------------------------------
     # 3. Schema DROP-hanterare
     # ------------------------------------------------------------------
     def test_drop_handler_calls_delete_workspace(self):
-        """Lyckad väg: delete_workspace anropas för ett giltigt schema."""
+        """Lyckad väg: ACL-regler, workspace och roller tas bort i rätt ordning."""
         gs = self._make_gs_mock()
         result = gl.handle_schema_removal_notification(VALID_DROP_SCHEMA, gs)
 
         self.assertTrue(result)
+        gs.delete_workspace_acl.assert_called_once_with(VALID_DROP_SCHEMA)
         gs.delete_workspace.assert_called_once_with(VALID_DROP_SCHEMA)
+        self.assertEqual(gs.delete_gs_role.call_count, 2)
+        gs.delete_gs_role.assert_any_call(f"r_{VALID_DROP_SCHEMA}")
+        gs.delete_gs_role.assert_any_call(f"w_{VALID_DROP_SCHEMA}")
 
     def test_drop_handler_rejects_invalid_schema(self):
         """Ogiltiga schemanamn avvisas innan GeoServer kontaktas."""
@@ -318,11 +360,13 @@ class TestHandlerLogicWithMockGeoServer(unittest.TestCase):
         gs.delete_workspace.assert_not_called()
 
     def test_drop_handler_returns_false_on_geoserver_failure(self):
-        """Hanteraren returnerar False när GeoServer-borttagning misslyckas."""
+        """Hanteraren returnerar False när workspace-borttagning misslyckas; roller rensas inte."""
         gs = self._make_gs_mock()
         gs.delete_workspace.return_value = False
         result = gl.handle_schema_removal_notification(VALID_DROP_SCHEMA, gs)
         self.assertFalse(result)
+        gs.delete_workspace_acl.assert_called_once_with(VALID_DROP_SCHEMA)
+        gs.delete_gs_role.assert_not_called()
 
 
 class TestListenLoopIntegration(unittest.TestCase):
@@ -351,7 +395,11 @@ class TestListenLoopIntegration(unittest.TestCase):
         gs.create_workspace.return_value = True
         gs.datastore_exists.return_value = False
         gs.create_pg_datastore.return_value = True
+        gs.create_gs_role.return_value = True
+        gs.create_workspace_acl.return_value = True
         gs.delete_workspace.return_value = True
+        gs.delete_workspace_acl.return_value = True
+        gs.delete_gs_role.return_value = True
         return gs
 
     def test_listen_loop_picks_up_create_notification(self):
