@@ -346,7 +346,7 @@ class EmailNotifier:
 # =============================================================================
 
 class GeoServerClient:
-    """Klient for GeoServer REST API."""
+    """Klient för GeoServer REST API."""
 
     # Timeout i sekunder för enskilda HTTP-anrop
     REQUEST_TIMEOUT = 30
@@ -533,62 +533,6 @@ class GeoServerClient:
             "GET", f"{self.rest_url}/workspaces/{workspace}/datastores/{name}.json"
         )
         return resp.status_code == 200
-
-    def create_jndi_datastore(self, workspace, store_name, jndi_name, schema_name):
-        """Skapar en JNDI PostGIS-datastore i GeoServer.
-
-        Args:
-            workspace: Workspace-namn
-            store_name: Datastore-namn (samma som schema)
-            jndi_name: JNDI-kopplingsnamn (t.ex. java:comp/env/jdbc/server.db)
-            schema_name: PostgreSQL-schemanamn att exponera
-        """
-        if self.datastore_exists(workspace, store_name):
-            log.info("  Datastore '%s' finns redan i workspace '%s' - hoppar över", store_name, workspace)
-            return True
-
-        payload = {
-            "dataStore": {
-                "name": store_name,
-                "type": "PostGIS (JNDI)",
-                "enabled": True,
-                "connectionParameters": {
-                    "entry": [
-                        {"@key": "dbtype", "$": "postgis"},
-                        {"@key": "jndiReferenceName", "$": jndi_name},
-                        {"@key": "schema", "$": schema_name},
-                        {"@key": "Expose primary keys", "$": "true"},
-                        {"@key": "fetch size", "$": "1000"},
-                        {"@key": "Loose bbox", "$": "true"},
-                        {"@key": "Estimated extends", "$": "true"},
-                        {"@key": "encode functions", "$": "true"},
-                    ]
-                },
-            }
-        }
-
-        if self.dry_run:
-            log.info("  [DRY-RUN] Skulle skapa JNDI-datastore: %s", store_name)
-            log.info("  [DRY-RUN] POST %s/workspaces/%s/datastores", self.rest_url, workspace)
-            log.info("  [DRY-RUN] JNDI: %s", jndi_name)
-            log.info("  [DRY-RUN] Schema: %s", schema_name)
-            return True
-
-        resp = self._request_with_retry(
-            "POST", f"{self.rest_url}/workspaces/{workspace}/datastores", json=payload
-        )
-
-        if resp.status_code == 201:
-            log.info("  Datastore '%s' skapad med JNDI '%s'", store_name, jndi_name)
-            return True
-        else:
-            log.error(
-                "  Misslyckades att skapa datastore '%s': %d %s",
-                store_name,
-                resp.status_code,
-                resp.text,
-            )
-            return False
 
     def create_pg_datastore(self, workspace, store_name, host, port, dbname, schema_name, pg_user, pg_password):
         """Skapar en direkt PostGIS-datastore i GeoServer.
@@ -853,12 +797,12 @@ def _fetch_role_credentials(conn, schema_name):
     """
     role_name = f"r_{schema_name}"
     try:
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT rolname, password FROM public.hex_role_credentials WHERE rolname = %s",
-            (role_name,),
-        )
-        row = cur.fetchone()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT rolname, password FROM public.hex_role_credentials WHERE rolname = %s",
+                (role_name,),
+            )
+            row = cur.fetchone()
         if row:
             return row[0], row[1]
         return None, None
@@ -905,7 +849,7 @@ def handle_schema_notification(schema_name, db_config, pg_conn, gs_client, db_la
         db_label:    Databasnamn för logg-prefix
     """
     tag = _db_tag(db_label)
-    log.info("%sMottog notifiering for schema: %s", tag, schema_name)
+    log.info("%sMottog notifiering för schema: %s", tag, schema_name)
 
     if not _validate_schema_name(schema_name, tag):
         return False
@@ -968,7 +912,7 @@ def handle_schema_removal_notification(schema_name, gs_client, db_label=""):
     alla med NOTIFY-rättighet så schemanamnet måste kontrolleras.
     """
     tag = _db_tag(db_label)
-    log.info("%sMottog borttagningsnotifiering for schema: %s", tag, schema_name)
+    log.info("%sMottog borttagningsnotifiering för schema: %s", tag, schema_name)
 
     if not _validate_schema_name(schema_name, tag):
         return False
@@ -1153,7 +1097,7 @@ def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None, notifier
     """Huvudloop som lyssnar på pg_notify och hanterar notifieringar för en databas.
 
     Args:
-        db_config: Databaskonfiguration med host, port, dbname, user, password, jndi_mappings
+        db_config: Databaskonfiguration med host, port, dbname, user, password
         reconnect_delay: Sekunder att vänta innan återanslutning
         gs_client: GeoServerClient-instans
         stop_event: threading.Event som signalerar att loopen ska avslutas
@@ -1219,18 +1163,24 @@ def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None, notifier
 
                     try:
                         if notify.channel == CHANNEL_SCHEMA_DROP:
-                            handle_schema_removal_notification(
+                            ok = handle_schema_removal_notification(
                                 schema_name,
                                 gs_client,
                                 db_label=db_label,
                             )
                         else:
-                            handle_schema_notification(
+                            ok = handle_schema_notification(
                                 schema_name,
                                 db_config,
                                 conn,
                                 gs_client,
                                 db_label=db_label,
+                            )
+                        if not ok:
+                            log.warning(
+                                "[%s] Hantering av schema '%s' misslyckades - "
+                                "se tidigare loggposter för detaljer",
+                                db_label, schema_name,
                             )
                     except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
                         # Transienta fel - alla retry i _request_with_retry är förbrukade.
