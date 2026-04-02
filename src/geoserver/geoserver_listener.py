@@ -851,6 +851,13 @@ def handle_schema_notification(schema_name, db_config, pg_conn, gs_client, db_la
     tag = _db_tag(db_label)
     log.info("%sMottog notifiering för schema: %s", tag, schema_name)
 
+    # Ladda om mönstret innan validering så att ändringar i
+    # standardiserade_skyddsnivaer (t.ex. publiceras_geoserver = true för ett
+    # nytt prefix) slår igenom utan omstart av tjänsten.
+    cur = pg_conn.cursor()
+    _load_schema_pattern(cur)
+    cur.close()
+
     if not _validate_schema_name(schema_name, tag):
         return False
 

@@ -255,6 +255,37 @@ class TestHandlerLogicWithMockGeoServer(unittest.TestCase):
         self.assertFalse(result)
         gs.create_workspace.assert_not_called()
 
+    def test_create_handler_accepts_new_prefix_after_runtime_config_change(self):
+        """
+        Regression: skx_kba_test publiceras inte om SCHEMA_PATTERN inte
+        uppdaterats sedan tjänsten startade. handle_schema_notification ska
+        ladda om mönstret från DB via pg_conn.cursor() innan validering så
+        att ett nytt prefix (skx) accepteras utan omstart.
+        """
+        gs = self._make_gs_mock()
+
+        # Cursor-mock vars fetchall returnerar skx som publicerbart prefix
+        cur_mock = MagicMock()
+        cur_mock.fetchall.side_effect = [
+            [("sk0",), ("sk1",), ("skx",)],   # standardiserade_skyddsnivaer
+            [("ext",), ("kba",), ("sys",)],    # standardiserade_datakategorier
+        ]
+        mock_conn = MagicMock()
+        mock_conn.cursor.return_value = cur_mock
+
+        original_pattern = gl.SCHEMA_PATTERN
+        try:
+            with patch.object(gl, "_fetch_role_credentials",
+                              return_value=("r_skx_kba_test", "pw")):
+                result = gl.handle_schema_notification(
+                    "skx_kba_test", DB_CONFIG, mock_conn, gs
+                )
+        finally:
+            gl.SCHEMA_PATTERN = original_pattern
+
+        self.assertTrue(result, "skx_kba_test ska accepteras när mönstret laddats om från DB")
+        gs.create_workspace.assert_called_once_with("skx_kba_test")
+
     def test_create_handler_missing_credentials(self):
         """Schema utan autentiseringsuppgifter i hex_role_credentials hoppas över."""
         gs = self._make_gs_mock()
