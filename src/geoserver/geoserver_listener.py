@@ -676,6 +676,11 @@ class GeoServerClient:
         if resp.status_code in (200, 201):
             log.info("  ACL-regler skapade för workspace '%s'", workspace)
             return True
+        elif resp.status_code == 409 or (
+            resp.status_code == 404 and "already exists" in resp.text
+        ):
+            log.info("  ACL-regler för workspace '%s' finns redan - hoppar över", workspace)
+            return True
         else:
             log.error(
                 "  Misslyckades att skapa ACL-regler för workspace '%s': %d %s",

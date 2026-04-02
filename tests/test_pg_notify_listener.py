@@ -692,6 +692,74 @@ class TestCreateGsRole(unittest.TestCase):
             self.assertFalse(client.create_gs_role("r_sk0_kba_test"))
 
 
+class TestCreateWorkspaceAcl(unittest.TestCase):
+    """
+    Enhetstester för GeoServerClient.create_workspace_acl – verifierar att
+    409 och GeoServer-specifikt 404 "already exists" behandlas som idempotent
+    framgång (samma mönster som create_gs_role).
+    """
+
+    def _make_client(self):
+        return gl.GeoServerClient(
+            base_url="http://geoserver.example.com",
+            user="admin",
+            password="secret",
+        )
+
+    def _mock_response(self, status_code, text=""):
+        resp = MagicMock()
+        resp.status_code = status_code
+        resp.text = text
+        return resp
+
+    def test_create_acl_success_201(self):
+        """201 → regler skapade, returnerar True."""
+        client = self._make_client()
+        with patch.object(client, "_request_with_retry",
+                          return_value=self._mock_response(201)):
+            self.assertTrue(client.create_workspace_acl("sk0_kba_test"))
+
+    def test_create_acl_success_200(self):
+        """200 → regler skapade (vissa GeoServer-versioner), returnerar True."""
+        client = self._make_client()
+        with patch.object(client, "_request_with_retry",
+                          return_value=self._mock_response(200)):
+            self.assertTrue(client.create_workspace_acl("sk0_kba_test"))
+
+    def test_create_acl_409_already_exists(self):
+        """409 → reglerna finns redan, returnerar True (idempotent)."""
+        client = self._make_client()
+        with patch.object(client, "_request_with_retry",
+                          return_value=self._mock_response(409)):
+            self.assertTrue(client.create_workspace_acl("sk0_kba_test"))
+
+    def test_create_acl_404_already_exists_geoserver_quirk(self):
+        """
+        Regression: GeoServer kan returnera 404 med 'already exists' i kroppen
+        om ACL-reglerna lämnades kvar efter en manuell workspace-borttagning.
+        Ska behandlas som 409, inte som fel.
+        """
+        client = self._make_client()
+        body = "Rule sk0_kba_test.*.r already exists"
+        with patch.object(client, "_request_with_retry",
+                          return_value=self._mock_response(404, body)):
+            self.assertTrue(client.create_workspace_acl("sk0_kba_test"))
+
+    def test_create_acl_404_genuine_failure(self):
+        """404 utan 'already exists' är ett riktigt fel → False."""
+        client = self._make_client()
+        with patch.object(client, "_request_with_retry",
+                          return_value=self._mock_response(404, "Not Found")):
+            self.assertFalse(client.create_workspace_acl("sk0_kba_test"))
+
+    def test_create_acl_server_error(self):
+        """500 → logg ERROR, returnerar False."""
+        client = self._make_client()
+        with patch.object(client, "_request_with_retry",
+                          return_value=self._mock_response(500, "Internal Server Error")):
+            self.assertFalse(client.create_workspace_acl("sk0_kba_test"))
+
+
 class TestCreatePgDatastore(unittest.TestCase):
     """
     Enhetstester för GeoServerClient.create_pg_datastore som verifierar att
