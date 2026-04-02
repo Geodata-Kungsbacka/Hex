@@ -390,6 +390,37 @@ class TestHandlerLogicWithMockGeoServer(unittest.TestCase):
         self.assertFalse(result)
         gs.delete_workspace.assert_not_called()
 
+    def test_drop_handler_accepts_new_prefix_after_runtime_config_change(self):
+        """
+        Regression: DROP-notifiering för skx_kba_test avvisas om SCHEMA_PATTERN
+        är inaktuellt (t.ex. överskrivit av en annan DB-tråd utan skx).
+        handle_schema_removal_notification ska ladda om mönstret via pg_conn
+        innan validering.
+        """
+        gs = self._make_gs_mock()
+
+        cur_mock = MagicMock()
+        cur_mock.fetchall.side_effect = [
+            [("sk0",), ("sk1",), ("skx",)],   # standardiserade_skyddsnivaer
+            [("ext",), ("kba",), ("sys",)],    # standardiserade_datakategorier
+        ]
+        mock_conn = MagicMock()
+        mock_conn.cursor.return_value = cur_mock
+
+        original_pattern = gl.SCHEMA_PATTERN
+        try:
+            # Sätt ett inaktuellt mönster som saknar skx (simulerar överskrivning
+            # från en annan DB-tråd)
+            gl.SCHEMA_PATTERN = __import__("re").compile(r"^(sk0|sk1)_(ext|kba|sys)_.+$")
+            result = gl.handle_schema_removal_notification(
+                "skx_kba_test", gs, pg_conn=mock_conn
+            )
+        finally:
+            gl.SCHEMA_PATTERN = original_pattern
+
+        self.assertTrue(result, "skx_kba_test ska accepteras när mönstret laddats om från DB")
+        gs.delete_workspace.assert_called_once_with("skx_kba_test")
+
     def test_drop_handler_returns_false_on_geoserver_failure(self):
         """Hanteraren returnerar False när workspace-borttagning misslyckas; roller rensas inte."""
         gs = self._make_gs_mock()
@@ -595,6 +626,70 @@ class TestCreateWorkspaceNamespaceUri(unittest.TestCase):
 
         self.assertTrue(result)
         self.assertEqual(len(mock_req.call_args_list), 1)
+
+
+class TestCreateGsRole(unittest.TestCase):
+    """
+    Enhetstester för GeoServerClient.create_gs_role – verifierar hantering av
+    lyckad skapning, 409 Conflict och GeoServer-specifikt 404 "already exists".
+    """
+
+    def _make_client(self):
+        return gl.GeoServerClient(
+            base_url="http://geoserver.example.com",
+            user="admin",
+            password="secret",
+        )
+
+    def _mock_response(self, status_code, text=""):
+        resp = MagicMock()
+        resp.status_code = status_code
+        resp.text = text
+        return resp
+
+    def test_create_role_success(self):
+        """201 → roll skapad, returnerar True."""
+        client = self._make_client()
+        with patch.object(client, "_request_with_retry",
+                          return_value=self._mock_response(201)):
+            self.assertTrue(client.create_gs_role("r_sk0_kba_test"))
+
+    def test_create_role_409_already_exists(self):
+        """409 → rollen finns redan, returnerar True (idempotent)."""
+        client = self._make_client()
+        with patch.object(client, "_request_with_retry",
+                          return_value=self._mock_response(409)):
+            self.assertTrue(client.create_gs_role("r_sk0_kba_test"))
+
+    def test_create_role_404_already_exists_geoserver_quirk(self):
+        """
+        Regression: GeoServer 2.27.x returnerar 404 med 'already exists' i
+        svarstexten när rollen redan finns (t.ex. efter manuell workspace-borttagning
+        utan att ta bort rollerna). Ska behandlas som 409, inte som fel.
+        """
+        client = self._make_client()
+        body = (
+            "<!doctype html><html><body>"
+            "<p><b>Message</b> The role r_skx_kba_test11 already exists</p>"
+            "</body></html>"
+        )
+        with patch.object(client, "_request_with_retry",
+                          return_value=self._mock_response(404, body)):
+            self.assertTrue(client.create_gs_role("r_skx_kba_test11"))
+
+    def test_create_role_404_genuine_not_found(self):
+        """404 utan 'already exists' i svarstexten är ett riktigt fel → False."""
+        client = self._make_client()
+        with patch.object(client, "_request_with_retry",
+                          return_value=self._mock_response(404, "Not Found")):
+            self.assertFalse(client.create_gs_role("r_sk0_kba_test"))
+
+    def test_create_role_server_error(self):
+        """500 → logg ERROR, returnerar False."""
+        client = self._make_client()
+        with patch.object(client, "_request_with_retry",
+                          return_value=self._mock_response(500, "Internal Server Error")):
+            self.assertFalse(client.create_gs_role("r_sk0_kba_test"))
 
 
 class TestCreatePgDatastore(unittest.TestCase):

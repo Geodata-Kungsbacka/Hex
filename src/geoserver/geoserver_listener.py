@@ -616,7 +616,9 @@ class GeoServerClient:
         if resp.status_code == 201:
             log.info("  GeoServer-roll '%s' skapad", role_name)
             return True
-        elif resp.status_code == 409:
+        elif resp.status_code == 409 or (
+            resp.status_code == 404 and "already exists" in resp.text
+        ):
             log.info("  GeoServer-roll '%s' finns redan - hoppar över", role_name)
             return True
         else:
@@ -911,15 +913,30 @@ def handle_schema_notification(schema_name, db_config, pg_conn, gs_client, db_la
     return True
 
 
-def handle_schema_removal_notification(schema_name, gs_client, db_label=""):
+def handle_schema_removal_notification(schema_name, gs_client, pg_conn=None, db_label=""):
     """Hanterar en notifiering om borttaget schema (kanal: CHANNEL_SCHEMA_DROP).
 
     Tar bort workspace (inkl. datastores och publicerade lager) i GeoServer.
     Samma validering som handle_schema_notification — kanalen är öppen för
     alla med NOTIFY-rättighet så schemanamnet måste kontrolleras.
+
+    Args:
+        schema_name: Schemanamnet från pg_notify-payloaden
+        gs_client:   GeoServerClient-instans
+        pg_conn:     Öppen psycopg2-anslutning för att ladda om SCHEMA_PATTERN
+                     från rätt databas. Om None används nuvarande globalt mönster.
+        db_label:    Databasnamn för logg-prefix
     """
     tag = _db_tag(db_label)
     log.info("%sMottog borttagningsnotifiering för schema: %s", tag, schema_name)
+
+    # Ladda om mönstret från rätt databas så att konfigurationsändringar och
+    # prefixskillnader mellan databaser (t.ex. skx bara i sk0-databasen) inte
+    # gör att DROP-notifieringar avvisas p.g.a. ett inaktuellt globalt mönster.
+    if pg_conn is not None:
+        cur = pg_conn.cursor()
+        _load_schema_pattern(cur)
+        cur.close()
 
     if not _validate_schema_name(schema_name, tag):
         return False
@@ -1231,6 +1248,7 @@ def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None, notifier
                             ok = handle_schema_removal_notification(
                                 schema_name,
                                 gs_client,
+                                pg_conn=conn,
                                 db_label=db_label,
                             )
                         else:
