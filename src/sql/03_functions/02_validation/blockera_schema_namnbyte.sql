@@ -64,13 +64,13 @@ BEGIN
                 E'[blockera_schema_namnbyte] ALTER SCHEMA ... RENAME TO är inte tillåtet i Hex.\n\n'
                 'Schemanamnet är identitetsnyckeln för ett helt ekosystem av beroenden:\n'
                 '  • GeoServer-workspace (namnges identiskt med schemat)\n'
-                '  • Databasroller r_% och w_% (härleds från schemanamnet)\n'
+                '  • Databasroller r_%% och w_%% (härleds från schemanamnet)\n'
                 '  • Autentiseringsuppgifter i hex_role_credentials\n'
                 '  • Schemanamn i hex_metadata (parent_schema)\n\n'
                 'Ett namnbyte river sönder alla dessa kopplingar utan möjlighet\n'
                 'till automatisk återställning.\n\n'
                 'Rätt tillvägagångssätt:\n'
-                '  1. DROP SCHEMA %I CASCADE   -- Hex städar upp roller och GeoServer\n'
+                '  1. DROP SCHEMA % CASCADE   -- Hex städar upp roller och GeoServer\n'
                 '  2. CREATE SCHEMA <nytt_namn>  -- Hex etablerar nytt ekosystem',
                 schema_namn;
         END LOOP;
