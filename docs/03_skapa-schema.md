@@ -102,3 +102,30 @@ Hex tar automatiskt bort alla tillhörande roller (de som är märkta med
 
 > **OBS:** `CASCADE` tar bort alla tabeller och objekt i schemat – använd med försiktighet.
 > GeoServer-workspace tas bort automatiskt, och tar med sig Store och Layers däri.
+
+---
+
+## Byta namn på ett schema – INTE TILLÅTET
+
+`ALTER SCHEMA ... RENAME TO` är blockerat av Hex och ger ett felmeddelande.
+
+**Varför?** Schemanamnet är identitetsnyckeln för ett helt ekosystem av beroenden som skapades när schemat anlades:
+
+| Beroende | Hur det påverkas av ett namnbyte |
+|---|---|
+| GeoServer-workspace | Namnges identiskt med schemat. Workspace blir föräldralös; lager försvinner från WMS/WFS. |
+| Databasroller `r_…` / `w_…` | Härleds från schemanamnet. Befintliga roller pekar på ett schema som inte finns; nya schemat saknar roller. |
+| `hex_role_credentials` | Autentiseringsuppgifter lagras med rollnamnet som nyckel. GeoServer-lyssnaren hittar inga uppgifter för det nya schemanamnet. |
+| `hex_metadata` | `parent_schema` lagras som text. Tabellerna tappar kopplingen till sina historiktabeller och triggar. |
+
+Eftersom skyddsnivå och datakategori dessutom är kodade i själva schemanamnet (`sk0_kba_bygg` → nivå `sk0`, kategori `kba`) går det inte heller att validera att ett nytt namn är konsistent med det befintliga innehållet.
+
+**Rätt tillvägagångssätt** om du behöver byta namn:
+
+```sql
+-- Steg 1: Ta bort det gamla schemat (Hex städar upp roller och GeoServer)
+DROP SCHEMA sk1_kba_gammalt CASCADE;
+
+-- Steg 2: Skapa schemat med det nya namnet (Hex etablerar nytt ekosystem)
+CREATE SCHEMA sk1_kba_nytt;
+```
