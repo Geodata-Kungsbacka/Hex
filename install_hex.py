@@ -59,6 +59,7 @@ INSTALL_ORDER = [
     "src/sql/03_functions/02_validation/validera_tabell.sql",
     "src/sql/03_functions/02_validation/validera_vynamn.sql",
     "src/sql/03_functions/02_validation/validera_schemanamn.sql",
+    "src/sql/03_functions/02_validation/blockera_schema_namnbyte.sql",
     "src/sql/03_functions/02_validation/validera_geometri.sql",
     "src/sql/03_functions/02_validation/forklara_geometrifel.sql",
     # Funktioner - Regler
@@ -94,6 +95,7 @@ INSTALL_ORDER = [
     "src/sql/04_triggers/hantera_standardiserade_roller_trigger.sql",
     "src/sql/04_triggers/hantera_borttagen_tabell_trigger.sql",
     "src/sql/04_triggers/validera_schemanamn_trigger.sql",
+    "src/sql/04_triggers/blockera_schema_namnbyte_trigger.sql",
     "src/sql/04_triggers/notifiera_geoserver_trigger.sql",
     "src/sql/04_triggers/notifiera_geoserver_borttagning_trigger.sql",
 ]
@@ -107,6 +109,7 @@ UNINSTALL_SQL = """
 DROP EVENT TRIGGER IF EXISTS notifiera_geoserver_borttagning_trigger;
 DROP EVENT TRIGGER IF EXISTS notifiera_geoserver_trigger;
 DROP EVENT TRIGGER IF EXISTS validera_schemanamn_trigger;
+DROP EVENT TRIGGER IF EXISTS blockera_schema_namnbyte_trigger;
 DROP EVENT TRIGGER IF EXISTS hantera_standardiserade_roller_trigger;
 DROP EVENT TRIGGER IF EXISTS ta_bort_schemaroller_trigger;
 DROP EVENT TRIGGER IF EXISTS hantera_ny_vy_trigger;
@@ -146,6 +149,7 @@ DROP FUNCTION IF EXISTS public.spara_tabellregler(text, text);
 DROP FUNCTION IF EXISTS public.forklara_geometrifel(geometry, float);
 DROP FUNCTION IF EXISTS public.validera_geometri(geometry, float) CASCADE;
 DROP FUNCTION IF EXISTS public.validera_schemanamn();
+DROP FUNCTION IF EXISTS public.blockera_schema_namnbyte();
 DROP FUNCTION IF EXISTS public.validera_vynamn(text, text);
 DROP FUNCTION IF EXISTS public.validera_tabell(text, text);
 
