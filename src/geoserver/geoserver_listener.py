@@ -657,6 +657,117 @@ class GeoServerClient:
             )
             return False
 
+    def create_gs_role(self, role_name):
+        """Skapar en GeoServer-roll om den inte redan finns.
+
+        Returnerar True om rollen skapades eller redan existerar.
+        """
+        if self.dry_run:
+            log.info("  [DRY-RUN] Skulle skapa GeoServer-roll: %s", role_name)
+            return True
+
+        resp = self._request_with_retry(
+            "POST", f"{self.rest_url}/security/roles/role/{role_name}"
+        )
+        if resp.status_code == 201:
+            log.info("  GeoServer-roll '%s' skapad", role_name)
+            return True
+        elif resp.status_code == 409:
+            log.info("  GeoServer-roll '%s' finns redan - hoppar över", role_name)
+            return True
+        else:
+            log.error(
+                "  Misslyckades att skapa GeoServer-roll '%s': %d %s",
+                role_name, resp.status_code, resp.text,
+            )
+            return False
+
+    def delete_gs_role(self, role_name):
+        """Tar bort en GeoServer-roll.
+
+        Returnerar True om rollen togs bort eller inte hittades (idempotent).
+        """
+        if self.dry_run:
+            log.info("  [DRY-RUN] Skulle ta bort GeoServer-roll: %s", role_name)
+            return True
+
+        resp = self._request_with_retry(
+            "DELETE", f"{self.rest_url}/security/roles/role/{role_name}"
+        )
+        if resp.status_code == 200:
+            log.info("  GeoServer-roll '%s' borttagen", role_name)
+            return True
+        elif resp.status_code == 404:
+            log.info("  GeoServer-roll '%s' hittades inte - inget att ta bort", role_name)
+            return True
+        else:
+            log.error(
+                "  Misslyckades att ta bort GeoServer-roll '%s': %d %s",
+                role_name, resp.status_code, resp.text,
+            )
+            return False
+
+    def create_workspace_acl(self, workspace):
+        """Skapar ACL-regler för en workspace.
+
+        Ger r_{workspace} läsrättighet och w_{workspace} skrivrättighet
+        till alla lager i workspace.
+        """
+        rules = {
+            f"{workspace}.*.r": f"r_{workspace}",
+            f"{workspace}.*.w": f"w_{workspace}",
+        }
+
+        if self.dry_run:
+            log.info("  [DRY-RUN] Skulle skapa ACL-regler för workspace '%s':", workspace)
+            for rule, role in rules.items():
+                log.info("  [DRY-RUN]   %s = %s", rule, role)
+            return True
+
+        resp = self._request_with_retry(
+            "POST", f"{self.rest_url}/security/acl/layers", json=rules
+        )
+        if resp.status_code in (200, 201):
+            log.info("  ACL-regler skapade för workspace '%s'", workspace)
+            return True
+        else:
+            log.error(
+                "  Misslyckades att skapa ACL-regler för workspace '%s': %d %s",
+                workspace, resp.status_code, resp.text,
+            )
+            return False
+
+    def delete_workspace_acl(self, workspace):
+        """Tar bort ACL-regler för en workspace.
+
+        Returnerar True om reglerna togs bort eller inte hittades (idempotent).
+        """
+        rules = [f"{workspace}.*.r", f"{workspace}.*.w"]
+        all_ok = True
+
+        if self.dry_run:
+            log.info("  [DRY-RUN] Skulle ta bort ACL-regler för workspace '%s':", workspace)
+            for rule in rules:
+                log.info("  [DRY-RUN]   %s", rule)
+            return True
+
+        for rule in rules:
+            resp = self._request_with_retry(
+                "DELETE", f"{self.rest_url}/security/acl/layers/{rule}"
+            )
+            if resp.status_code == 200:
+                log.info("  ACL-regel '%s' borttagen", rule)
+            elif resp.status_code == 404:
+                log.info("  ACL-regel '%s' hittades inte - inget att ta bort", rule)
+            else:
+                log.error(
+                    "  Misslyckades att ta bort ACL-regel '%s': %d %s",
+                    rule, resp.status_code, resp.text,
+                )
+                all_ok = False
+
+        return all_ok
+
 
 # =============================================================================
 # SCHEMA HANDLER
@@ -832,6 +943,19 @@ def handle_schema_notification(schema_name, db_config, pg_conn, gs_client, db_la
         log.error("%s  Avbryter - datastore kunde inte skapas", tag)
         return False
 
+    # 3. Skapa GeoServer-roller (r_ och w_) som speglar PostgreSQL-rollerna
+    log.info("%s  Steg 3: Skapar GeoServer-roller för '%s'...", tag, schema_name)
+    for gs_role in (f"r_{schema_name}", f"w_{schema_name}"):
+        if not gs_client.create_gs_role(gs_role):
+            log.error("%s  Avbryter - GeoServer-roll '%s' kunde inte skapas", tag, gs_role)
+            return False
+
+    # 4. Skapa ACL-regler så att rollerna får tillgång till workspace
+    log.info("%s  Steg 4: Skapar ACL-regler för '%s'...", tag, schema_name)
+    if not gs_client.create_workspace_acl(schema_name):
+        log.error("%s  Avbryter - ACL-regler kunde inte skapas", tag)
+        return False
+
     log.info("%s  Schema '%s' publicerat till GeoServer", tag, schema_name)
     return True
 
@@ -849,10 +973,20 @@ def handle_schema_removal_notification(schema_name, gs_client, db_label=""):
     if not _validate_schema_name(schema_name, tag):
         return False
 
-    log.info("%s  Tar bort workspace '%s' från GeoServer...", tag, schema_name)
+    # 1. Ta bort ACL-regler innan workspace raderas
+    log.info("%s  Steg 1: Tar bort ACL-regler för '%s'...", tag, schema_name)
+    gs_client.delete_workspace_acl(schema_name)
+
+    # 2. Ta bort workspace (kaskadraderar datastores och publicerade lager)
+    log.info("%s  Steg 2: Tar bort workspace '%s' från GeoServer...", tag, schema_name)
     if not gs_client.delete_workspace(schema_name):
         log.error("%s  Workspace '%s' kunde inte tas bort", tag, schema_name)
         return False
+
+    # 3. Ta bort GeoServer-rollerna
+    log.info("%s  Steg 3: Tar bort GeoServer-roller för '%s'...", tag, schema_name)
+    for gs_role in (f"r_{schema_name}", f"w_{schema_name}"):
+        gs_client.delete_gs_role(gs_role)
 
     log.info("%s  Schema '%s' avpublicerat från GeoServer", tag, schema_name)
     return True
