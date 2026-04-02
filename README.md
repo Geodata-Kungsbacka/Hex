@@ -35,6 +35,8 @@ Exempel på giltiga schemanamn (standardkonfiguration):
 - `sk2_sys_admin`
 - `skx_kba_testprojekt`
 
+**`ALTER SCHEMA ... RENAME TO` är blockerat.** Schemanamnet är identitetsnyckeln för GeoServer-workspace, databasroller (`r_`/`w_`), `hex_role_credentials` och `hex_metadata`. Ett namnbyte river sönder alla dessa kopplingar. Rätt tillvägagångssätt är `DROP SCHEMA CASCADE` (Hex städar upp) följt av `CREATE SCHEMA` med det nya namnet.
+
 #### Tabellnamn
 Systemet kräver specifika suffix baserat på geometrityp:
 - `_p` för punktgeometrier (POINT, MULTIPOINT)
@@ -165,6 +167,7 @@ src/sql/03_functions/02_validation/forklara_geometrifel.sql
 src/sql/03_functions/02_validation/validera_tabell.sql
 src/sql/03_functions/02_validation/validera_vynamn.sql
 src/sql/03_functions/02_validation/validera_schemanamn.sql
+src/sql/03_functions/02_validation/blockera_schema_namnbyte.sql
 
 -- 3.3 Regelhantering
 src/sql/03_functions/03_rules/spara_tabellregler.sql
@@ -197,6 +200,7 @@ src/sql/04_triggers/ta_bort_schemaroller_trigger.sql
 src/sql/04_triggers/hantera_standardiserade_roller_trigger.sql
 src/sql/04_triggers/hantera_borttagen_tabell_trigger.sql
 src/sql/04_triggers/validera_schemanamn_trigger.sql
+src/sql/04_triggers/blockera_schema_namnbyte_trigger.sql
 src/sql/04_triggers/notifiera_geoserver_trigger.sql
 src/sql/04_triggers/notifiera_geoserver_borttagning_trigger.sql
 ```
