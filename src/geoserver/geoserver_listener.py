@@ -86,8 +86,8 @@ def load_config():
     Miljövariabler som redan är satta har företräde framför .env-filen.
 
     Stödjer två format:
-    1. Nytt flerdatabas-format: HEX_DB_1_DBNAME, HEX_DB_1_JNDI_sk0 osv.
-    2. Gammalt enkeldatabas-format: HEX_PG_DBNAME, HEX_JNDI_sk0 osv.
+    1. Nytt flerdatabas-format: HEX_DB_1_DBNAME, HEX_DB_1_HOST osv.
+    2. Gammalt enkeldatabas-format: HEX_PG_DBNAME, HEX_PG_HOST osv.
     """
     # Försök ladda .env från samma katalog som skriptet
     env_path = Path(__file__).parent / ".env"

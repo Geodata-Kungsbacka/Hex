@@ -13,4 +13,4 @@ ALTER EVENT TRIGGER notifiera_geoserver_borttagning_trigger
 
 COMMENT ON EVENT TRIGGER notifiera_geoserver_borttagning_trigger
     IS 'Skickar pg_notify till GeoServer-lyssnaren när sk0/sk1-scheman tas bort.
-Lyssnaren tar automatiskt bort workspace och JNDI-datastore i GeoServer via REST API.';
+Lyssnaren tar automatiskt bort workspace och PostGIS-datastore i GeoServer via REST API.';

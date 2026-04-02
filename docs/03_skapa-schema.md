@@ -10,7 +10,7 @@ När ett schema skapas triggar Hex automatiskt:
 
 1. **Namnvalidering** – ogiltiga namn blockeras direkt.
 2. **Rollskapande** – läs- och skrivrättighetsroller skapas enligt konfigurationen i `standardiserade_roller`.
-3. **GeoServer-publicering** – för `sk0`- och `sk1`-scheman skickas en notifiering till GeoServer-lyssnaren som skapar en workspace och JNDI-datastore.
+3. **GeoServer-publicering** – för `sk0`- och `sk1`-scheman skickas en notifiering till GeoServer-lyssnaren som skapar en workspace och PostGIS-datastore.
 
 ---
 

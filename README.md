@@ -516,7 +516,7 @@ src/sql/04_triggers/notifiera_geoserver_borttagning_trigger.sql
 
 **Trigger**: Körs vid CREATE SCHEMA via `notifiera_geoserver_trigger`.
 
-**Mottagare**: Python-lyssnaren (`geoserver_listener.py`) som skapar workspace och JNDI-datastore i GeoServer.
+**Mottagare**: Python-lyssnaren (`geoserver_listener.py`) som skapar workspace och PostGIS-datastore i GeoServer.
 
 #### `notifiera_geoserver_borttagning()`
 **Syfte**: Skickar `pg_notify` till GeoServer-lyssnaren när scheman med `publiceras_geoserver = true` tas bort, så att motsvarande workspace rensas ut från GeoServer.
