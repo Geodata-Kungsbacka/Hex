@@ -795,7 +795,7 @@ flowchart TD
     subgraph PY["Python-lyssnaren (geoserver_listener.py)"]
         direction TB
         LL["listen_loop<br/>autocommit · LISTEN · 5 s select-timeout"]
-        LL --> |"kanal: geoserver_schema"| HSN["handle_schema_notification<br/>validerar ^sk01_ext/kba/sys_<br/>extraherar prefix sk0<br/>slår upp JNDI-mapping"]
+        LL --> |"kanal: geoserver_schema"| HSN["handle_schema_notification<br/>validerar ^sk01_ext/kba/sys_<br/>hämtar credentials från hex_role_credentials"]
         LL --> |"kanal: geoserver_schema_drop"| HRN["handle_schema_removal_notification<br/>validerar ^sk01_ext/kba/sys_<br/>tar bort workspace"]
         LL --> |"anslutning tappas"| REC["Väntar reconnect_delay<br/>återansluter"]
         REC --> EMAIL1["EmailNotifier<br/>skickar varning<br/>300 s cooldown"]
@@ -834,7 +834,7 @@ flowchart TD
 │    load_config()                                                    │
 │      ├── Miljövariabler eller .env-fil                              │
 │      ├── Stöd för flera databaser: HEX_DB_1_*, HEX_DB_2_* …       │
-│      └── Legacy-format: HEX_PG_*, HEX_JNDI_*                      │
+│      └── Legacy-format: HEX_PG_*                                   │
 │                                                                     │
 │    run_all_listeners()                                              │
 │      ├── En databas  → körs i huvudtråden                          │
@@ -852,12 +852,11 @@ flowchart TD
 │    │    → e-post om EmailNotifier är konfigurerad                  │
 │    └── Återkopplad → e-post om EmailNotifier är konfigurerad      │
 │                                                                     │
-│  handle_schema_notification('sk0_kba_bygg', jndi_map, gs_client)   │
+│  handle_schema_notification('sk0_kba_bygg', db_config, pg_conn,    │
+│                              gs_client)                             │
 │    ├── Validerar mönster: ^sk[01]_(ext|kba|sys)_.+$                │
-│    ├── Extraherar prefix: sk0                                       │
-│    ├── Slår upp JNDI: jndi_map['sk0']                              │
-│    │     = 'java:comp/env/jdbc/server.database'                    │
-│    └── → GeoServerClient.create_workspace() + create_jndi_datastore│
+│    ├── Hämtar credentials för r_sk0_kba_bygg ur hex_role_credentials│
+│    └── → GeoServerClient.create_workspace() + create_pg_datastore  │
 │                                                                     │
 │  handle_schema_removal_notification('sk0_kba_bygg', gs_client)     │
 │    ├── Validerar mönster: ^sk[01]_(ext|kba|sys)_.+$                │
@@ -886,9 +885,11 @@ flowchart TD
 │       404 = finns inte → skapa                                     │
 │                                                                     │
 │  4. POST /rest/workspaces/sk0_kba_bygg/datastores                  │
-│       PostGIS JNDI-konfiguration:                                  │
+│       Direkt PostGIS-konfiguration (credentials från               │
+│       hex_role_credentials för läsrollen r_sk0_kba_bygg):          │
 │         dbtype:             postgis                                 │
-│         jndiReferenceName:  java:comp/env/jdbc/server.database     │
+│         host/port/database: från db_config                         │
+│         user/passwd:        r_sk0_kba_bygg + autogenererat lösen   │
 │         schema:             sk0_kba_bygg                           │
 │         Expose primary keys: true                                   │
 │         fetch size:         1000                                    │

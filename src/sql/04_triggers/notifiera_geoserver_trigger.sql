@@ -13,4 +13,4 @@ ALTER EVENT TRIGGER notifiera_geoserver_trigger
 
 COMMENT ON EVENT TRIGGER notifiera_geoserver_trigger
     IS 'Skickar pg_notify till GeoServer-lyssnaren nar nya sk0/sk1-scheman skapas.
-Lyssnaren skapar automatiskt workspace och JNDI-datastore i GeoServer.';
+Lyssnaren skapar automatiskt workspace och PostGIS-datastore i GeoServer.';
