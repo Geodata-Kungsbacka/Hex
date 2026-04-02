@@ -936,19 +936,73 @@ def handle_schema_removal_notification(schema_name, gs_client, db_label=""):
     return True
 
 
-def _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label=""):
+def _fetch_publishable_schemas(db_config):
+    """Hämtar mängden publicerbara schemanamn från en databas.
+
+    Används av run_all_listeners för att bygga en samlad schema-mängd över
+    alla övervakade databaser, så att startavstämningens varplansvarning
+    inte slår falskt vid multi-databaskonfiguration.
+
+    Returnerar tom mängd vid anslutningsfel eller om tabellerna saknas.
+    """
+    try:
+        conn = psycopg2.connect(
+            host=db_config["host"],
+            port=db_config["port"],
+            dbname=db_config["dbname"],
+            user=db_config["user"],
+            password=db_config["password"],
+            connect_timeout=10,
+        )
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT nspname"
+                    " FROM pg_namespace"
+                    " WHERE EXISTS ("
+                    "   SELECT 1"
+                    "   FROM public.standardiserade_skyddsnivaer n,"
+                    "        public.standardiserade_datakategorier d"
+                    "   WHERE n.publiceras_geoserver = true"
+                    "     AND nspname ~ ('^' || n.prefix || '_' || d.prefix || '_')"
+                    " )"
+                )
+                return {row[0] for row in cur.fetchall()}
+        finally:
+            conn.close()
+    except Exception as e:
+        log.warning(
+            "Kunde inte hämta scheman från '%s' för startavstämning: %s",
+            db_config["dbname"], e,
+        )
+        return set()
+
+
+def _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label="", all_pg_schemas=None):
     """Startavstämning: skapar saknade GeoServer-workspaces för befintliga PG-scheman.
 
     Körs en gång vid uppstart (första lyckade anslutning), omedelbart efter att
     LISTEN-kommandona är utfärdade. Använder den befintliga db-cursorn så att
     ingen extra anslutning öppnas.
 
+    Args:
+        cur:            Öppen psycopg2-cursor (autocommit OK)
+        db_config:      Databaskonfiguration för denna databas
+        gs_client:      GeoServerClient-instans
+        db_label:       Logg-prefix
+        all_pg_schemas: Samlad mängd scheman från ALLA övervakade databaser,
+                        förbyggd av run_all_listeners. Används för att avgöra
+                        om en GeoServer-workspace verkligen är föräldralös eller
+                        om den tillhör en annan övervakad databas. Om None
+                        används endast denna databas scheman.
+
     Logik:
-      a) Hämtar sk0/sk1-scheman från information_schema.schemata.
+      a) Hämtar publicerbara scheman från denna databas (pg_namespace).
       b) Hämtar befintliga workspaces via GeoServer REST GET /rest/workspaces.json.
       c) Skapar workspace+datastore för varje PG-schema som saknas i GeoServer.
       d) Loggar INFO för varje skapad workspace.
-      e) Loggar WARNING för varje GeoServer-workspace som saknar PG-schema (ingen borttagning).
+      e) Loggar WARNING för varje GeoServer-workspace som saknar PG-schema i
+         SAMTLIGA övervakade databaser (ingen borttagning görs automatiskt).
       f) Alla fel loggas; funktionen avbryter aldrig LISTEN-loopen.
     """
     tag = _db_tag(db_label)
@@ -1026,11 +1080,13 @@ def _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label=""):
                 )
 
         # e) Workspaces i GeoServer utan motsvarande PG-schema – logga varning, gör inget
-        extra_in_gs = {ws for ws in gs_workspaces - pg_schemas if SCHEMA_PATTERN.match(ws)}
+        known_schemas = all_pg_schemas if all_pg_schemas is not None else pg_schemas
+        extra_in_gs = {ws for ws in gs_workspaces - known_schemas if SCHEMA_PATTERN.match(ws)}
         for ws_name in sorted(extra_in_gs):
             log.warning(
                 "%sStartavstämning: workspace '%s' finns i GeoServer men "
-                "PG-schemat saknas – kräver manuell DBA-granskning",
+                "PG-schemat saknas i samtliga övervakade databaser – "
+                "kräver manuell DBA-granskning",
                 tag, ws_name,
             )
 
@@ -1093,16 +1149,18 @@ def _dispatch_notification_error(channel, db_label, schema_name, error, notifier
         if notifier:
             notifier.notify_schema_failure(schema_name, db_label, error)
 
-def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None, notifier=None):
+def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None, notifier=None, all_pg_schemas=None):
     """Huvudloop som lyssnar på pg_notify och hanterar notifieringar för en databas.
 
     Args:
-        db_config: Databaskonfiguration med host, port, dbname, user, password
+        db_config:      Databaskonfiguration med host, port, dbname, user, password
         reconnect_delay: Sekunder att vänta innan återanslutning
-        gs_client: GeoServerClient-instans
-        stop_event: threading.Event som signalerar att loopen ska avslutas
-                    (används av Windows-tjänsten för graceful shutdown)
-        notifier: EmailNotifier-instans (eller None om e-post ej konfigurerats)
+        gs_client:      GeoServerClient-instans
+        stop_event:     threading.Event som signalerar att loopen ska avslutas
+                        (används av Windows-tjänsten för graceful shutdown)
+        notifier:       EmailNotifier-instans (eller None om e-post ej konfigurerats)
+        all_pg_schemas: Samlad schema-mängd från alla övervakade databaser,
+                        förbyggd av run_all_listeners för korrekt orphan-kontroll.
     """
     db_label = db_config["dbname"]
     was_disconnected = False  # Sparar om vi tappat anslutning för återhämtningsnotifiering
@@ -1136,7 +1194,7 @@ def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None, notifier
 
             # Startavstämning – körs en gång vid uppstart
             if not _reconciliation_done:
-                _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label)
+                _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label, all_pg_schemas)
                 _reconciliation_done = True
 
             # Skicka återhämtningsnotifiering om vi tappat anslutning tidigare
@@ -1227,6 +1285,13 @@ def run_all_listeners(config, dry_run=False, stop_event=None):
     databases = config["databases"]
     notifier = EmailNotifier(config["smtp"])
 
+    # Bygg en samlad schema-mängd över alla databaser för korrekt orphan-kontroll
+    # i startavstämningen. Varje enskild databas-tråd jämför annars bara mot sina
+    # egna scheman och larmar falskt om workspaces som tillhör en annan databas.
+    all_pg_schemas = set()
+    for db_config in databases:
+        all_pg_schemas |= _fetch_publishable_schemas(db_config)
+
     if len(databases) == 1:
         # En databas - kör direkt utan extra tråd
         gs_client = GeoServerClient(
@@ -1235,7 +1300,7 @@ def run_all_listeners(config, dry_run=False, stop_event=None):
             password=config["gs_password"],
             dry_run=dry_run,
         )
-        listen_loop(databases[0], config["reconnect_delay"], gs_client, stop_event, notifier)
+        listen_loop(databases[0], config["reconnect_delay"], gs_client, stop_event, notifier, all_pg_schemas)
         return
 
     # Flera databaser - en tråd per databas
@@ -1250,7 +1315,7 @@ def run_all_listeners(config, dry_run=False, stop_event=None):
         )
         t = threading.Thread(
             target=listen_loop,
-            args=(db_config, config["reconnect_delay"], gs_client, stop_event, notifier),
+            args=(db_config, config["reconnect_delay"], gs_client, stop_event, notifier, all_pg_schemas),
             name=f"listener-{db_config['dbname']}",
             daemon=True,
         )
