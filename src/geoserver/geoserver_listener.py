@@ -957,16 +957,16 @@ def _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label=""):
     try:
         # a) Hämta publicerbara scheman från PostgreSQL – styrt av konfigurationstabellerna
         cur.execute(
-            "SELECT schema_name"
-            " FROM information_schema.schemata"
+            "SELECT nspname"
+            " FROM pg_namespace"
             " WHERE EXISTS ("
             "   SELECT 1"
             "   FROM public.standardiserade_skyddsnivaer n,"
             "        public.standardiserade_datakategorier d"
             "   WHERE n.publiceras_geoserver = true"
-            "     AND schema_name ~ ('^' || n.prefix || '_' || d.prefix || '_')"
+            "     AND nspname ~ ('^' || n.prefix || '_' || d.prefix || '_')"
             " )"
-            " ORDER BY schema_name"
+            " ORDER BY nspname"
         )
         pg_schemas = {row[0] for row in cur.fetchall()}
         log.info(
