@@ -3,7 +3,6 @@ CREATE TABLE IF NOT EXISTS public.standardiserade_roller (
     rollnamn        text    NOT NULL,
     rolltyp         text    NOT NULL CHECK (rolltyp IN ('read', 'write')),
     schema_uttryck  text    NOT NULL DEFAULT 'IS NOT NULL',
-    global_roll     boolean DEFAULT false,
     ta_bort_med_schema boolean DEFAULT true,
     with_login      boolean DEFAULT false,
     beskrivning     text,

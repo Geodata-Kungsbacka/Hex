@@ -4,6 +4,7 @@ CREATE TABLE IF NOT EXISTS public.standardiserade_datakategorier (
     gid integer NOT NULL GENERATED ALWAYS AS IDENTITY,
     prefix text NOT NULL,
     beskrivning text,
+    validera_geometri boolean NOT NULL DEFAULT false,
 
     CONSTRAINT standardiserade_datakategorier_pkey PRIMARY KEY (gid),
     CONSTRAINT standardiserade_datakategorier_prefix_key UNIQUE (prefix),
@@ -23,12 +24,16 @@ Lägg till en ny rad här för att registrera en ny datakategori.';
 COMMENT ON COLUMN public.standardiserade_datakategorier.prefix
     IS 'Kortprefixet som ingår i schemanamnet, t.ex. "ext", "kba", "sys". Måste matcha ^[a-z][a-z0-9]*$.';
 
+COMMENT ON COLUMN public.standardiserade_datakategorier.validera_geometri
+    IS 'Sant om tabeller i scheman med denna datakategori ska få geometrivalidering (CHECK-constraint + trigger).
+Påverkar hantera_ny_tabell(), hantera_kolumntillagg() och reparera_rad_triggers().';
+
 INSERT INTO public.standardiserade_datakategorier
-    (prefix, beskrivning)
+    (prefix, beskrivning, validera_geometri)
 VALUES
-    ('ext', 'Externa datakällor (t.ex. FME-inläsning, regionala register)'),
-    ('kba', 'Interna kommunala datakällor (manuell redigering, ärendedata)'),
-    ('sys', 'Systemdata och administration');
+    ('ext', 'Externa datakällor (t.ex. FME-inläsning, regionala register)', false),
+    ('kba', 'Interna kommunala datakällor (manuell redigering, ärendedata)', true),
+    ('sys', 'Systemdata och administration',                                 false);
 
 -- Trigger functions run as SECURITY INVOKER, so the calling user needs SELECT on this table.
 GRANT SELECT ON public.standardiserade_datakategorier TO PUBLIC;

@@ -93,14 +93,19 @@ BEGIN
 
     -- -------------------------------------------------------------------------
     -- 2. hex_kontrollera_geom
-    --    _kba_-scheman med en kolumn 'geom' av PostGIS geometry-typ.
+    --    Scheman vars datakategori har validera_geometri = true i
+    --    standardiserade_datakategorier, med en kolumn 'geom' av PostGIS geometry-typ.
     -- -------------------------------------------------------------------------
     FOR r IN
         SELECT n.nspname AS s, c.relname AS t
         FROM   pg_class     c
         JOIN   pg_namespace n ON n.oid = c.relnamespace
         WHERE  c.relkind = 'r'
-          AND  n.nspname ~ '^sk[0-9]+_kba_'
+          AND  EXISTS (
+                   SELECT 1 FROM public.standardiserade_datakategorier d
+                   WHERE  d.validera_geometri = true
+                     AND  n.nspname ~ ('^sk[a-z0-9]+_' || d.prefix || '_')
+               )
           AND  EXISTS (
                    SELECT 1
                    FROM   pg_attribute a

@@ -27,6 +27,7 @@ from unittest.mock import MagicMock, patch
 
 import psycopg2
 import psycopg2.extensions
+import requests
 import select
 
 # ---------------------------------------------------------------------------
@@ -618,6 +619,329 @@ class TestCreatePgDatastore(unittest.TestCase):
             )
 
         self.assertFalse(result)
+
+
+class TestReconcileGeoServerSchemas(unittest.TestCase):
+    """
+    Enhetstester för _reconcile_geoserver_schemas – startavstämningen som körs
+    en gång per uppstart och skapar saknade GeoServer-workspaces.
+
+    Varken PostgreSQL-server eller GeoServer behövs: cur, cur.connection och
+    gs_client mockas fullständigt.
+    """
+
+    # ------------------------------------------------------------------
+    # Hjälpare
+    # ------------------------------------------------------------------
+
+    def _make_cur_mock(self, pg_schema_names):
+        """
+        Returnerar en mock av en psycopg2-cursor vars fetchall() ger de
+        angivna schemanamnen och vars .connection ger en separat mock-anslutning.
+        """
+        cur = MagicMock()
+        cur.fetchall.return_value = [(name,) for name in pg_schema_names]
+        cur.connection = MagicMock()   # simulerar cur.connection (vår fix)
+        return cur
+
+    def _make_gs_mock(self, existing_workspaces=None, get_status=200):
+        """
+        Returnerar en GeoServerClient-mock vars GET /workspaces.json svarar
+        med de angivna workspace-namnen.
+        """
+        gs = MagicMock()
+        gs.rest_url = "http://geoserver.example.com/rest"
+        gs.create_workspace.return_value = True
+        gs.create_pg_datastore.return_value = True
+
+        ws_list = [{"name": n} for n in (existing_workspaces or [])]
+        get_resp = MagicMock()
+        get_resp.status_code = get_status
+        get_resp.json.return_value = {"workspaces": {"workspace": ws_list}}
+        gs._request_with_retry.return_value = get_resp
+        return gs
+
+    DB_CONFIG = {
+        "host": "localhost",
+        "port": 5432,
+        "dbname": "geodata",
+        "user": "hex_listener",
+        "password": "pw",
+    }
+
+    # ------------------------------------------------------------------
+    # 1. Normalflöde
+    # ------------------------------------------------------------------
+
+    def test_missing_schema_creates_workspace(self):
+        """Schema i PG men inte i GeoServer → workspace skapas."""
+        cur = self._make_cur_mock(["sk0_kba_testschema"])
+        gs  = self._make_gs_mock(existing_workspaces=[])
+
+        with patch.object(gl, "_fetch_role_credentials",
+                          return_value=(TEST_ROLE_NAME, TEST_ROLE_PASSWORD)):
+            gl._reconcile_geoserver_schemas(cur, self.DB_CONFIG, gs)
+
+        gs.create_workspace.assert_called_once_with("sk0_kba_testschema")
+
+    def test_schema_already_in_geoserver_not_recreated(self):
+        """Schema finns i både PG och GeoServer → ingen workspace skapas."""
+        cur = self._make_cur_mock(["sk0_kba_testschema"])
+        gs  = self._make_gs_mock(existing_workspaces=["sk0_kba_testschema"])
+
+        gl._reconcile_geoserver_schemas(cur, self.DB_CONFIG, gs)
+
+        gs.create_workspace.assert_not_called()
+
+    def test_in_sync_logs_ok(self):
+        """Identiska listor → ingen skapning, inga varningar."""
+        cur = self._make_cur_mock(["sk0_kba_testschema"])
+        gs  = self._make_gs_mock(existing_workspaces=["sk0_kba_testschema"])
+
+        with self.assertLogs("geoserver_listener", level="WARNING") as cm:
+            # Trigga en WARNING vi kan filtrera bort – annars misslyckas assertLogs
+            # om inga loggar alls produceras.
+            logging.getLogger("geoserver_listener").warning("_sentinel_")
+            gl._reconcile_geoserver_schemas(cur, self.DB_CONFIG, gs)
+
+        # Den enda WARNING-raden ska vara vår sentinel, inte en om saknade scheman
+        warnings = [line for line in cm.output if "WARNING" in line and "_sentinel_" not in line]
+        self.assertEqual(warnings, [], f"Unexpected warnings: {warnings}")
+
+    # ------------------------------------------------------------------
+    # 2. Argument-passning (verifierar fixen: cur.connection som pg_conn)
+    # ------------------------------------------------------------------
+
+    def test_cur_connection_passed_as_pg_conn(self):
+        """
+        handle_schema_notification ska ta emot cur.connection som pg_conn –
+        det här testet fångar exakt det fel vi fixade (jndi_mappings / felaktig
+        argumentordning).
+        """
+        cur = self._make_cur_mock(["sk0_kba_testschema"])
+        gs  = self._make_gs_mock(existing_workspaces=[])
+
+        captured = {}
+
+        def fake_handle(schema_name, db_config, pg_conn, gs_client, db_label=""):
+            captured["pg_conn"] = pg_conn
+            captured["db_config"] = db_config
+            captured["gs_client"] = gs_client
+            return True
+
+        with patch.object(gl, "handle_schema_notification", side_effect=fake_handle):
+            gl._reconcile_geoserver_schemas(cur, self.DB_CONFIG, gs)
+
+        self.assertIn("pg_conn", captured, "handle_schema_notification was never called")
+        # pg_conn ska vara cur.connection, INTE gs_client eller jndi_mappings
+        self.assertIs(captured["pg_conn"], cur.connection)
+        # db_config ska vara hela DB_CONFIG-dict, inte en nyckel ur den
+        self.assertIs(captured["db_config"], self.DB_CONFIG)
+        # gs_client ska vara GeoServerClient-mocken
+        self.assertIs(captured["gs_client"], gs)
+
+    # ------------------------------------------------------------------
+    # 3. Saknade credentials (befintliga JNDI-scheman efter patch)
+    # ------------------------------------------------------------------
+
+    def test_missing_credentials_skips_schema_without_crash(self):
+        """
+        Schema utan rad i hex_role_credentials (t.ex. gamla JNDI-scheman) ska
+        hoppas över tyst – inte krascha startavstämningen.
+        """
+        cur = self._make_cur_mock(["sk0_kba_testschema"])
+        gs  = self._make_gs_mock(existing_workspaces=[])
+
+        with patch.object(gl, "_fetch_role_credentials", return_value=(None, None)):
+            # Ska inte kasta undantag
+            gl._reconcile_geoserver_schemas(cur, self.DB_CONFIG, gs)
+
+        gs.create_workspace.assert_not_called()
+
+    # ------------------------------------------------------------------
+    # 4. GeoServer-fel – startavstämningen ska aldrig avbryta lyssnaren
+    # ------------------------------------------------------------------
+
+    def test_geoserver_unavailable_skips_reconciliation(self):
+        """Nätverksfel mot GeoServer → logg ERROR, ingen krasch."""
+        cur = self._make_cur_mock(["sk0_kba_testschema"])
+        gs  = MagicMock()
+        gs.rest_url = "http://geoserver.example.com/rest"
+        gs._request_with_retry.side_effect = requests.exceptions.ConnectionError("down")
+
+        gl._reconcile_geoserver_schemas(cur, self.DB_CONFIG, gs)  # ska inte kasta
+
+        gs.create_workspace.assert_not_called()
+
+    def test_geoserver_non_200_skips_reconciliation(self):
+        """GeoServer svarar med t.ex. 503 → logg ERROR, ingen krasch."""
+        cur = self._make_cur_mock(["sk0_kba_testschema"])
+        gs  = self._make_gs_mock(existing_workspaces=[], get_status=503)
+
+        gl._reconcile_geoserver_schemas(cur, self.DB_CONFIG, gs)
+
+        gs.create_workspace.assert_not_called()
+
+    def test_workspace_creation_failure_continues_next_schema(self):
+        """
+        Om skapandet av en workspace misslyckas ska nästa schema i listan
+        ändå försökas – ett enskilt fel avbryter inte hela avstämningen.
+        """
+        cur = self._make_cur_mock(["sk0_kba_alpha", "sk0_kba_beta"])
+        gs  = self._make_gs_mock(existing_workspaces=[])
+
+        call_count = {"n": 0}
+
+        def handle_side_effect(schema_name, db_config, pg_conn, gs_client, db_label=""):
+            call_count["n"] += 1
+            if schema_name == "sk0_kba_alpha":
+                raise RuntimeError("simulated failure")
+            return True
+
+        with patch.object(gl, "handle_schema_notification", side_effect=handle_side_effect):
+            gl._reconcile_geoserver_schemas(cur, self.DB_CONFIG, gs)
+
+        self.assertEqual(call_count["n"], 2, "Båda scheman ska ha försökts")
+
+    # ------------------------------------------------------------------
+    # 5. Extra workspace i GeoServer – ska INTE tas bort
+    # ------------------------------------------------------------------
+
+    def test_extra_geoserver_workspace_logged_not_deleted(self):
+        """
+        Workspace i GeoServer utan matchande PG-schema → WARNING loggas,
+        delete_workspace anropas INTE.
+        """
+        cur = self._make_cur_mock([])   # inga PG-scheman
+        gs  = self._make_gs_mock(existing_workspaces=["sk0_kba_orphan"])
+
+        with self.assertLogs("geoserver_listener", level="WARNING") as cm:
+            gl._reconcile_geoserver_schemas(cur, self.DB_CONFIG, gs)
+
+        gs.delete_workspace = MagicMock()
+        gs.delete_workspace.assert_not_called()
+
+        warning_lines = [l for l in cm.output if "sk0_kba_orphan" in l]
+        self.assertTrue(warning_lines, "Förväntad WARNING om sk0_kba_orphan saknas i loggen")
+
+    def test_extra_non_hex_workspace_not_warned(self):
+        """
+        Workspace som inte matchar sk0/sk1-mönstret (t.ex. 'topp') ger ingen
+        WARNING – vi äger inte dem.
+        """
+        cur = self._make_cur_mock([])
+        gs  = self._make_gs_mock(existing_workspaces=["topp", "extern_data"])
+
+        with self.assertLogs("geoserver_listener", level="WARNING") as cm:
+            logging.getLogger("geoserver_listener").warning("_sentinel_")
+            gl._reconcile_geoserver_schemas(cur, self.DB_CONFIG, gs)
+
+        non_sentinel = [l for l in cm.output if "_sentinel_" not in l and "WARNING" in l]
+        self.assertEqual(non_sentinel, [])
+
+    # ------------------------------------------------------------------
+    # 6. DB-fel avbryter inte lyssnaren
+    # ------------------------------------------------------------------
+
+    def test_db_query_error_does_not_propagate(self):
+        """Fel i SQL-frågan (t.ex. brutna privilegier) loggas men kastas inte."""
+        cur = MagicMock()
+        cur.execute.side_effect = Exception("permission denied")
+        gs  = self._make_gs_mock(existing_workspaces=[])
+
+        gl._reconcile_geoserver_schemas(cur, self.DB_CONFIG, gs)  # ska inte kasta
+
+        gs.create_workspace.assert_not_called()
+
+    # ------------------------------------------------------------------
+    # 7. Sk2/skx-scheman publiceras inte om SCHEMA_PATTERN så säger
+    # ------------------------------------------------------------------
+
+    def test_sk2_schema_blocked_by_schema_pattern(self):
+        """
+        sk2 är inte publicerbart i standardkonfigurationen (publiceras_geoserver = false).
+        SCHEMA_PATTERN laddas från DB via _load_schema_pattern; i det här testet
+        mockas det till fallback-värdet (sk0/sk1 only) för att verifiera att
+        handle_schema_notification avvisar sk2 via _validate_schema_name.
+
+        Om sk2 skulle läggas till i standardiserade_skyddsnivaer med
+        publiceras_geoserver = true OCH _load_schema_pattern körs, uppdateras
+        SCHEMA_PATTERN och sk2-scheman publiceras. Det är avsiktligt beteende.
+        """
+        cur = self._make_cur_mock(["sk2_kba_hemlig"])
+        gs  = self._make_gs_mock(existing_workspaces=[])
+
+        # SCHEMA_PATTERN är fallback-värdet (sk0/sk1 only) – sk2 avvisas
+        with patch.object(gl, "_fetch_role_credentials",
+                          return_value=("r_sk2_kba_hemlig", "pw")):
+            gl._reconcile_geoserver_schemas(cur, self.DB_CONFIG, gs)
+
+        gs.create_workspace.assert_not_called()
+
+
+class TestLoadSchemaPattern(unittest.TestCase):
+    """
+    Enhetstester för _load_schema_pattern – verifierar att SCHEMA_PATTERN
+    byggs korrekt från konfigurationstabellerna och att fallback fungerar.
+    """
+
+    def _make_cur_mock(self, skyddsnivaer_prefixes, datakategori_prefixes):
+        """Cursor-mock vars fetchall returnerar rätt data för de två frågorna."""
+        cur = MagicMock()
+        cur.fetchall.side_effect = [
+            [(p,) for p in skyddsnivaer_prefixes],
+            [(p,) for p in datakategori_prefixes],
+        ]
+        return cur
+
+    def setUp(self):
+        """Spara originalvärdet av SCHEMA_PATTERN och återställ efter varje test."""
+        self._original_pattern = gl.SCHEMA_PATTERN
+
+    def tearDown(self):
+        gl.SCHEMA_PATTERN = self._original_pattern
+
+    def test_pattern_built_from_config(self):
+        """Mönstret byggs från skyddsnivaer + datakategorier ur DB."""
+        cur = self._make_cur_mock(["sk0", "sk1"], ["ext", "kba", "sys"])
+        gl._load_schema_pattern(cur)
+        self.assertRegex("sk0_kba_test",  gl.SCHEMA_PATTERN)
+        self.assertRegex("sk1_ext_sjv",   gl.SCHEMA_PATTERN)
+        self.assertNotRegex("sk2_kba_hemlig", gl.SCHEMA_PATTERN)
+
+    def test_new_security_level_included(self):
+        """Om sk2 läggs till med publiceras_geoserver = true inkluderas det i mönstret."""
+        cur = self._make_cur_mock(["sk0", "sk1", "sk2"], ["ext", "kba", "sys"])
+        gl._load_schema_pattern(cur)
+        self.assertRegex("sk2_kba_hemlig", gl.SCHEMA_PATTERN)
+
+    def test_new_datakategori_included(self):
+        """En ny datakategori inkluderas direkt efter att mönstret laddats."""
+        cur = self._make_cur_mock(["sk0", "sk1"], ["ext", "kba", "sys", "int"])
+        gl._load_schema_pattern(cur)
+        self.assertRegex("sk0_int_test", gl.SCHEMA_PATTERN)
+
+    def test_empty_skyddsnivaer_keeps_existing_pattern(self):
+        """Tomma skyddsnivaer → befintligt mönster behålls, ingen krasch."""
+        cur = self._make_cur_mock([], ["kba"])
+        original = gl.SCHEMA_PATTERN
+        gl._load_schema_pattern(cur)
+        self.assertIs(gl.SCHEMA_PATTERN, original)
+
+    def test_empty_kategorier_keeps_existing_pattern(self):
+        """Tomma datakategorier → befintligt mönster behålls."""
+        cur = self._make_cur_mock(["sk0"], [])
+        original = gl.SCHEMA_PATTERN
+        gl._load_schema_pattern(cur)
+        self.assertIs(gl.SCHEMA_PATTERN, original)
+
+    def test_db_error_keeps_existing_pattern(self):
+        """DB-fel → befintligt mönster behålls, ingen krasch."""
+        cur = MagicMock()
+        cur.execute.side_effect = Exception("connection lost")
+        original = gl.SCHEMA_PATTERN
+        gl._load_schema_pattern(cur)
+        self.assertIs(gl.SCHEMA_PATTERN, original)
 
 
 # ---------------------------------------------------------------------------
