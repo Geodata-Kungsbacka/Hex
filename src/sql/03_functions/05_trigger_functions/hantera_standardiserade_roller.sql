@@ -80,6 +80,12 @@ BEGIN
                             EXECUTE format('CREATE ROLE %I WITH LOGIN PASSWORD %L',
                                 slutligt_rollnamn, generated_password);
 
+                            -- Ge rollen CONNECT-rättighet på aktuell databas.
+                            -- Utan detta kan rollen inte ansluta om PUBLIC:s CONNECT-rättighet
+                            -- har återkallats (vilket är standard i produktionsmiljö).
+                            EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I',
+                                current_database(), slutligt_rollnamn);
+
                             -- Spara lösenord för GeoServer-lyssnaren
                             INSERT INTO hex_role_credentials(rolname, password)
                             VALUES (slutligt_rollnamn, generated_password)
