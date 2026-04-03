@@ -310,11 +310,12 @@ COMMENT ON FUNCTION public.system_owner()
             )
             rows = cur.fetchall()
             conn.commit()
-            created = [(s, t, tr) for s, t, tr, a in rows if a == "skapad"]
+            created = [(s, t, tr, a) for s, t, tr, a in rows if a not in ("redan finns",)]
             if created:
-                for s, t, tr in created:
-                    print(f"  ✓ {s}.{t} → {tr}")
-                print(f"  {len(created)} trigger(s) återkopplade.")
+                for s, t, tr, a in created:
+                    prefix = f"{s}." if s and s != "-" else ""
+                    print(f"  ✓ {prefix}{t} → {tr} ({a})")
+                print(f"  {len(created)} åtgärd(er) genomförda.")
             else:
                 print("  Inga triggers behövde återkopplas.")
         except Exception as repair_err:
