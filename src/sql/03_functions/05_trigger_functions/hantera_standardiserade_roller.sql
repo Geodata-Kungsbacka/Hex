@@ -80,6 +80,12 @@ BEGIN
                             EXECUTE format('CREATE ROLE %I WITH LOGIN PASSWORD %L',
                                 slutligt_rollnamn, generated_password);
 
+                            -- Ge rollen CONNECT-rättighet på aktuell databas.
+                            -- Utan detta kan rollen inte ansluta om PUBLIC:s CONNECT-rättighet
+                            -- har återkallats (vilket är standard i produktionsmiljö).
+                            EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I',
+                                current_database(), slutligt_rollnamn);
+
                             -- Spara lösenord för GeoServer-lyssnaren
                             INSERT INTO hex_role_credentials(rolname, password)
                             VALUES (slutligt_rollnamn, generated_password)
@@ -91,6 +97,12 @@ BEGIN
                         ELSE
                             EXECUTE format('CREATE ROLE %I WITH NOLOGIN', slutligt_rollnamn);
                             RAISE NOTICE '[hantera_standardiserade_roller]   ✓ Skapade NOLOGIN-roll: %', slutligt_rollnamn;
+                        END IF;
+
+                        -- Lägg till i hex_geoserver_roller så att pg_hba.conf kan matcha
+                        -- alla systemanvändare via +hex_geoserver_roller
+                        IF rollkonfiguration.with_login THEN
+                            EXECUTE format('GRANT hex_geoserver_roller TO %I', slutligt_rollnamn);
                         END IF;
 
                         -- Ge ägarrollen ADMIN OPTION så den kan hantera denna roll
