@@ -99,6 +99,12 @@ BEGIN
                             RAISE NOTICE '[hantera_standardiserade_roller]   ✓ Skapade NOLOGIN-roll: %', slutligt_rollnamn;
                         END IF;
 
+                        -- Lägg till i hex_geoserver_roller så att pg_hba.conf kan matcha
+                        -- alla systemanvändare via +hex_geoserver_roller
+                        IF rollkonfiguration.with_login THEN
+                            EXECUTE format('GRANT hex_geoserver_roller TO %I', slutligt_rollnamn);
+                        END IF;
+
                         -- Ge ägarrollen ADMIN OPTION så den kan hantera denna roll
                         EXECUTE format('GRANT %I TO %I', slutligt_rollnamn, system_owner());
                         antal_roller := antal_roller + 1;
