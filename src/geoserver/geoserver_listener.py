@@ -19,7 +19,9 @@ Processen lyssnar på två PostgreSQL-kanaler och hanterar schema-händelser aut
        som inte längre existerar.
 
 Båda kanalerna hanterar enbart scheman vars skyddsnivå har publiceras_geoserver = true
-i tabellen standardiserade_skyddsnivaer (standardkonfiguration: sk0 och sk1).
+i tabellen standardiserade_skyddsnivaer. Standardkonfigurationen publicerar sk0 och sk1;
+övriga prefix (sk2, skx m.fl.) kan aktiveras genom att sätta publiceras_geoserver = true
+för respektive rad. Mönstret laddas om dynamiskt vid varje notifiering.
 
 Stödjer flera databaser - en lyssnartråd per databas.
 Konfiguration laddas från miljövariabler eller .env-fil.
