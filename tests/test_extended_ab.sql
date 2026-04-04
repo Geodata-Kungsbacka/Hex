@@ -41,9 +41,9 @@ DROP SCHEMA IF EXISTS sk0_ext_ab_temp CASCADE;
 DELETE FROM standardiserade_roller WHERE rollnamn IN ('r_sk0_global', 'r_sk1_global');
 DROP ROLE IF EXISTS r_sk0_global;
 DROP ROLE IF EXISTS r_sk1_global;
-INSERT INTO standardiserade_roller (rollnamn, rolltyp, schema_uttryck, global_roll, ta_bort_med_schema, with_login, beskrivning) VALUES
-    ('r_sk0_global', 'read', 'LIKE ''sk0_%''', true, false, false, 'Global read role for sk0'),
-    ('r_sk1_global', 'read', 'LIKE ''sk1_%''', true, false, false, 'Global read role for sk1');
+INSERT INTO standardiserade_roller (rollnamn, rolltyp, schema_uttryck, ta_bort_med_schema, with_login, beskrivning) VALUES
+    ('r_sk0_global', 'read', 'LIKE ''sk0_%''', false, false, 'Global read role for sk0'),
+    ('r_sk1_global', 'read', 'LIKE ''sk1_%''', false, false, 'Global read role for sk1');
 
 -- Create a sk0 schema to trigger r_sk0_global; drop it immediately (role persists since ta_bort_med_schema=false)
 CREATE SCHEMA sk0_ext_ab_temp;
@@ -251,28 +251,16 @@ BEGIN
     END IF;
 END $$;
 
--- Login role for sk2: check the first suffix from standardiserade_roller dynamically
+-- A4d: r_sk2_ext_test should be a LOGIN role (with_login=true on r_{schema} row)
 DO $$
-DECLARE
-    first_suffix text;
-    login_role   text;
 BEGIN
-    SELECT login_roller[1] INTO first_suffix
-    FROM standardiserade_roller
-    WHERE rollnamn = 'r_{schema}' AND schema_uttryck = 'LIKE ''sk2_%''';
-
-    IF first_suffix IS NULL THEN
-        RAISE WARNING 'TEST A4d FAILED: No r_{schema} row for sk2 found in standardiserade_roller';
-        RETURN;
-    END IF;
-
-    login_role := 'r_sk2_ext_test' || first_suffix;
-
-    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = login_role) THEN
-        RAISE NOTICE 'TEST A4d PASSED: Login role % created (suffix from standardiserade_roller: %)',
-            login_role, first_suffix;
+    IF EXISTS (
+        SELECT 1 FROM pg_roles
+        WHERE rolname = 'r_sk2_ext_test' AND rolcanlogin = true
+    ) THEN
+        RAISE NOTICE 'TEST A4d PASSED: Login role r_sk2_ext_test created with LOGIN';
     ELSE
-        RAISE WARNING 'TEST A4d FAILED: Missing login role % (suffix: %)', login_role, first_suffix;
+        RAISE WARNING 'TEST A4d FAILED: r_sk2_ext_test missing or not a LOGIN role';
     END IF;
 END $$;
 

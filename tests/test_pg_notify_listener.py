@@ -264,14 +264,17 @@ class TestHandlerLogicWithMockGeoServer(unittest.TestCase):
         """
         gs = self._make_gs_mock()
 
-        # Cursor-mock vars fetchall returnerar skx som publicerbart prefix
+        # Cursor-mock vars fetchall returnerar skx som publicerbart prefix.
+        # handle_schema_notification använder "with pg_conn.cursor() as cur:" –
+        # context manager-protokollet kallar __enter__() på det cursor()
+        # returnerar, så vi måste koppla __enter__.return_value till cur_mock.
         cur_mock = MagicMock()
         cur_mock.fetchall.side_effect = [
             [("sk0",), ("sk1",), ("skx",)],   # standardiserade_skyddsnivaer
             [("ext",), ("kba",), ("sys",)],    # standardiserade_datakategorier
         ]
         mock_conn = MagicMock()
-        mock_conn.cursor.return_value = cur_mock
+        mock_conn.cursor.return_value.__enter__.return_value = cur_mock
 
         original_pattern = gl.SCHEMA_PATTERN
         try:

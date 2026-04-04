@@ -16,4 +16,9 @@ COMMENT ON TABLE public.hex_role_credentials
 
 -- Begränsa åtkomst: enbart postgres/gis_admin skriver, hex_listener läser
 REVOKE ALL ON public.hex_role_credentials FROM PUBLIC;
-GRANT SELECT ON public.hex_role_credentials TO hex_listener;
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'hex_listener') THEN
+        EXECUTE 'GRANT SELECT ON public.hex_role_credentials TO hex_listener';
+    END IF;
+END$$;
