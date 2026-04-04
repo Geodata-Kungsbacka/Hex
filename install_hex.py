@@ -37,6 +37,7 @@ OWNER_ROLE = "gis_admin"
 INSTALL_ORDER = [
     # Konfiguration
     "src/sql/00_config/hex_geoserver_roller.sql",
+    "src/sql/00_config/hex_schema_regex.sql",
     # Typer
     "src/sql/01_types/geom_info.sql",
     "src/sql/01_types/kolumnkonfig.sql",
@@ -160,6 +161,7 @@ DROP FUNCTION IF EXISTS public.hamta_kolumnstandard(text, text, geom_info);
 DROP FUNCTION IF EXISTS public.hamta_geometri_definition(text, text);
 
 -- Konfigurationsfunktioner
+DROP FUNCTION IF EXISTS public.hex_schema_regex();
 DROP FUNCTION IF EXISTS public.system_owner();
 DROP ROLE IF EXISTS hex_geoserver_roller;
 
@@ -310,11 +312,12 @@ COMMENT ON FUNCTION public.system_owner()
             )
             rows = cur.fetchall()
             conn.commit()
-            created = [(s, t, tr) for s, t, tr, a in rows if a == "skapad"]
+            created = [(s, t, tr, a) for s, t, tr, a in rows if a not in ("redan finns",)]
             if created:
-                for s, t, tr in created:
-                    print(f"  ✓ {s}.{t} → {tr}")
-                print(f"  {len(created)} trigger(s) återkopplade.")
+                for s, t, tr, a in created:
+                    prefix = f"{s}." if s and s != "-" else ""
+                    print(f"  ✓ {prefix}{t} → {tr} ({a})")
+                print(f"  {len(created)} åtgärd(er) genomförda.")
             else:
                 print("  Inga triggers behövde återkopplas.")
         except Exception as repair_err:

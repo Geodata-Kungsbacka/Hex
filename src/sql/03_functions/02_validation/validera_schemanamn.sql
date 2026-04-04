@@ -105,7 +105,6 @@ BEGIN
             RAISE EXCEPTION
                 E'[validera_schemanamn] Ogiltigt schemanamn: "%"\n'
                 'Schemanamn måste följa mönstret: <skyddsnivå>_<datakategori>_<namn>\n'
-                'Skyddsnivå: sk[0-2] (sk0, sk1, sk2) eller skx\n\n'
                 'Giltiga skyddsnivåer: %\n'
                 'Giltiga datakategorier: %\n\n'
                 'OBS: Undvik a, a och o i schemanamn - använd vanliga ASCII-bokstäver.\n\n'
