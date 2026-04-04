@@ -1,16 +1,34 @@
 # Hantera GeoServer-lyssnaren
 
 **Gäller:** Windows-tjänsten `HexGeoServerListener` som automatiskt publicerar
-nya `sk0`- och `sk1`-scheman till GeoServer.
+nya scheman till GeoServer.
 
 ---
 
 ## Bakgrund
 
-När ett `sk0`- eller `sk1`-schema skapas skickar Hex en `pg_notify`. En
-Python-process lyssnar på dessa notifieringar och skapar automatiskt en
-**workspace** och en direkt **PostGIS-datastore** i GeoServer med samma namn som schemat.
+När ett schema skapas skickar Hex en `pg_notify`. En Python-process lyssnar
+på dessa notifieringar och skapar automatiskt en **workspace** och en direkt
+**PostGIS-datastore** i GeoServer med samma namn som schemat.
 Datastore-autentiseringen hämtas från tabellen `hex_role_credentials` (läsrollen `r_{schema}`).
+
+Vilka skyddsnivåer som publiceras styrs av kolumnen `publiceras_geoserver` i
+tabellen `standardiserade_skyddsnivaer` — standard är `sk0` och `sk1`.
+Ändra tabellen för att justera vilka prefix som publiceras:
+
+```sql
+-- Aktivera publicering för sk2
+UPDATE standardiserade_skyddsnivaer
+SET publiceras_geoserver = true
+WHERE prefix = 'sk2';
+
+-- Kontrollera aktuell konfiguration
+SELECT prefix, beskrivning, publiceras_geoserver
+FROM standardiserade_skyddsnivaer
+ORDER BY prefix;
+```
+
+Lyssnaren laddar om mönstret dynamiskt vid varje notifiering — ingen omstart krävs.
 
 Processen körs som en Windows-tjänst och startar automatiskt med servern.
 
