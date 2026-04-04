@@ -37,7 +37,6 @@ OWNER_ROLE = "gis_admin"
 INSTALL_ORDER = [
     # Konfiguration
     "src/sql/00_config/hex_geoserver_roller.sql",
-    "src/sql/00_config/hex_schema_regex.sql",
     # Typer
     "src/sql/01_types/geom_info.sql",
     "src/sql/01_types/kolumnkonfig.sql",
@@ -45,6 +44,8 @@ INSTALL_ORDER = [
     "src/sql/01_types/tabellregler.sql",
     # Tabeller
     "src/sql/02_tables/standardiserade_skyddsnivaer.sql",
+    # hex_schema_regex() läser standardiserade_skyddsnivaer – måste skapas efter tabellen
+    "src/sql/00_config/hex_schema_regex.sql",
     "src/sql/02_tables/standardiserade_datakategorier.sql",
     "src/sql/02_tables/standardiserade_kolumner.sql",
     "src/sql/02_tables/standardiserade_roller.sql",
