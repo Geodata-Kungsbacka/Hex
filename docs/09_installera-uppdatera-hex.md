@@ -85,14 +85,16 @@ python install_hex.py --uninstall  # Ta bort befintlig installation
 python install_hex.py              # Installera om med ny version
 ```
 
-> **OBS:** Avinstallationen tar bort konfigurationstabellerna
-> (`standardiserade_kolumner`, `standardiserade_roller`, `hex_systemanvandare`).
-> Säkerhetskopiera eventuella anpassningar **innan** du kör `--uninstall`:
+> **OBS:** Avinstallationen tar bort **alla** Hex-tabeller, inklusive
+> alla konfigurationstabeller med anpassade inställningar. Säkerhetskopiera
+> eventuella anpassningar **innan** du kör `--uninstall`:
 > ```sql
 > -- Exportera anpassningar innan avinstallation
 > SELECT * FROM standardiserade_kolumner ORDER BY ordinal_position;
 > SELECT * FROM standardiserade_roller ORDER BY rollnamn;
+> SELECT * FROM standardiserade_datakategorier ORDER BY prefix;
 > SELECT * FROM hex_systemanvandare;
+> SELECT * FROM hex_grupprattigheter ORDER BY ad_grupproll;
 > ```
 
 ---
