@@ -37,6 +37,7 @@ OWNER_ROLE = "gis_admin"
 INSTALL_ORDER = [
     # Konfiguration
     "src/sql/00_config/hex_geoserver_roller.sql",
+    "src/sql/00_config/hex_schema_regex.sql",
     # Typer
     "src/sql/01_types/geom_info.sql",
     "src/sql/01_types/kolumnkonfig.sql",
@@ -160,6 +161,7 @@ DROP FUNCTION IF EXISTS public.hamta_kolumnstandard(text, text, geom_info);
 DROP FUNCTION IF EXISTS public.hamta_geometri_definition(text, text);
 
 -- Konfigurationsfunktioner
+DROP FUNCTION IF EXISTS public.hex_schema_regex();
 DROP FUNCTION IF EXISTS public.system_owner();
 DROP ROLE IF EXISTS hex_geoserver_roller;
 

@@ -515,7 +515,7 @@ BEGIN
                AND EXISTS (
                    SELECT 1 FROM public.standardiserade_datakategorier d
                    WHERE d.validera_geometri = true
-                     AND schema_namn ~ ('^sk[a-z0-9]+_' || d.prefix || '_')
+                     AND schema_namn ~ (public.hex_schema_regex() || d.prefix || '_')
                )
             THEN
                 DECLARE
@@ -656,7 +656,7 @@ BEGIN
                 IF EXISTS (
                     SELECT 1 FROM public.standardiserade_datakategorier d
                     WHERE d.validera_geometri = true
-                      AND schema_namn ~ ('^sk[a-z0-9]+_' || d.prefix || '_')
+                      AND schema_namn ~ (public.hex_schema_regex() || d.prefix || '_')
                 ) THEN
                     DECLARE
                         constraint_namn text := 'validera_geom_' || tabell_namn;
