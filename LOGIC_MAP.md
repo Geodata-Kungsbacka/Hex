@@ -86,18 +86,15 @@ Definierar vilka roller som automatiskt skapas för nya scheman.
 | `rollnamn` | Rollnamnsmall, `{schema}` ersätts med schemanamn |
 | `rolltyp` | `read` eller `write` |
 | `schema_uttryck` | SQL-filter — rollen skapas bara om schemanamnet matchar |
-| `global_roll` | `true` = rollen är global och tas **inte** bort med schemat |
-| `ta_bort_med_schema` | `false` för globala roller |
-| `login_roller` | Array med suffix/prefix för LOGIN-roller. Standardvärde: `['_pub']` (en inloggningsroll per gruproll, för publiceringstjänster). Roller skapas baserat på innehållet i denna kolumn — inga appnamn är hårdkodade. |
+| `ta_bort_med_schema` | `true` = rollen tas bort när schemat droppas |
+| `with_login` | `true` = rollen skapas med LOGIN och autogenererat lösenord (sparas i `hex_role_credentials`). `false` = NOLOGIN (ren behörighetsgrupp). |
 
 **Fördefinierade roller:**
 
-| Rollnamn | Typ | Matchar | Global | LOGIN-varianter |
+| Rollnamn | Typ | Matchar | Tas bort med schema | with_login |
 |---|---|---|---|---|
-| `r_sk0_global` | read | `LIKE 'sk0_%'` | ja | `r_sk0_global_pub` |
-| `r_sk1_global` | read | `LIKE 'sk1_%'` | ja | `r_sk1_global_pub` |
-| `r_{schema}` | read | `LIKE 'sk2_%'` | nej | `r_{schema}_pub` |
-| `w_{schema}` | write | IS NOT NULL (alla) | nej | `w_{schema}_pub` |
+| `r_{schema}` | read | IS NOT NULL (alla) | ja | ja |
+| `w_{schema}` | write | IS NOT NULL (alla) | ja | ja |
 
 ---
 
@@ -157,16 +154,16 @@ flowchart TD
     START(["CREATE SCHEMA sk0_kba_bygg"])
     START --> VS["validera_schemanamn<br/>trigger 1"]
     VS --> |"ogiltigt namn"| ERRV(["EXCEPTION + rollback"])
-    VS --> |"giltigt: ^sk012_ext/kba/sys_"| HSR
+    VS --> |"giltigt: mönster från konfigurationstabeller"| HSR
 
     HSR["hantera_standardiserade_roller<br/>trigger 2 — SECURITY DEFINER"]
     HSR --> LOOP["Evaluera schema_uttryck<br/>för varje rad i standardiserade_roller"]
-    LOOP --> |matchar| GRP["CREATE ROLE grupproll NOLOGIN"]
-    GRP --> TRR["tilldela_rollrattigheter<br/>GRANT USAGE + SELECT / DML"]
-    TRR --> LGN["CREATE ROLE loginroll LOGIN<br/>en per post i login_roller"]
-    LGN --> LGRANT["GRANT grupproll TO loginroll<br/>→ ärver behörigheter"]
+    LOOP --> |"matchar (with_login=true)"| LOGIN["CREATE ROLE rollnamn WITH LOGIN<br/>lösenord → hex_role_credentials<br/>GRANT CONNECT ON DATABASE<br/>GRANT hex_geoserver_roller TO rollnamn"]
+    LOOP --> |"matchar (with_login=false)"| NOLOGIN["CREATE ROLE rollnamn NOLOGIN"]
+    LOGIN --> TRR["tilldela_rollrattigheter<br/>GRANT USAGE + SELECT / DML"]
+    NOLOGIN --> TRR
 
-    LGRANT --> NG["notifiera_geoserver<br/>trigger 3"]
+    TRR --> NG["notifiera_geoserver<br/>trigger 3"]
     NG --> |"prefix = sk0 / sk1"| NOTIFY["pg_notify<br/>geoserver_schema<br/>sk0_kba_bygg"]
     NG --> |"sk2 / systemschema"| SKIP(["hoppar över"])
     NOTIFY -.-> GS(["GeoServer-lyssnaren<br/>se avsnitt 9"])
@@ -187,8 +184,12 @@ Tre eventutlösare körs i ordning vid `DDL_COMMAND_END`:
 ```
 validera_schemanamn()
   ├── Hoppar över: public, information_schema, pg_*
-  ├── Kontrollerar mönster: ^sk[012]_(ext|kba|sys)_.+$
+  ├── Bygger mönster dynamiskt från konfigurationstabellerna:
+  │     standardiserade_skyddsnivaer  → prefix-del  (t.ex. sk0|sk1|sk2|skx)
+  │     standardiserade_datakategorier → kategori-del (t.ex. ext|kba|sys)
+  │     Resultat: ^(sk0|sk1|sk2|skx)_(ext|kba|sys)_.+$
   │     sk0 / sk1 / sk2  = säkerhetsnivå (0=öppen, 1=kommunal, 2=skyddad)
+  │     skx              = okänd / oklassificerad (endast GIS-administratörer)
   │     ext              = extern datakälla (bulkladdad, t.ex. via FME)
   │     kba              = kommunens egna data (manuellt redigerat)
   │     sys              = systemdata
@@ -208,31 +209,33 @@ hantera_standardiserade_roller()
   ├── Hoppar över systemscheman
   ├── För varje rad i standardiserade_roller:
   │     ├── Evaluerar schema_uttryck mot schemanamnet
-  │     │     Exempel: 'LIKE ''sk0_%''' → matchar sk0_kba_bygg, inte sk2_kba_mark
+  │     │     Exempel: 'IS NOT NULL' → matchar alla scheman
   │     └── Om matchar:
-  │           ├── Skapar NOLOGIN-grupprollen (t.ex. r_sk0_global, w_sk0_kba_bygg)
-  │           │     CREATE ROLE <rollnamn> WITH NOLOGIN
-  │           │     GRANT <rollnamn> TO system_owner() WITH ADMIN OPTION
+  │           ├── with_login = true:
+  │           │     ├── Genererar lösenord: gen_random_bytes(18) → base64
+  │           │     ├── CREATE ROLE <rollnamn> WITH LOGIN PASSWORD <lösenord>
+  │           │     ├── GRANT CONNECT ON DATABASE till rollen
+  │           │     ├── Sparar till hex_role_credentials (för GeoServer-lyssnaren)
+  │           │     └── GRANT hex_geoserver_roller TO <rollnamn>
+  │           │           (tillåter pg_hba.conf att matcha via +hex_geoserver_roller)
   │           │
-  │           ├── → tilldela_rollrattigheter(schema, roll, typ)
-  │           │       ├── GRANT USAGE ON SCHEMA (alla rolltyper)
-  │           │       ├── read:  GRANT SELECT ON ALL TABLES
-  │           │       │          ALTER DEFAULT PRIVILEGES … GRANT SELECT
-  │           │       └── write: GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES
-  │           │                  ALTER DEFAULT PRIVILEGES … GRANT SELECT, INSERT, UPDATE, DELETE
-  │           │     (DEFAULT PRIVILEGES säkerställer att framtida tabeller
-  │           │      också får rätt behörigheter automatiskt)
+  │           ├── with_login = false:
+  │           │     └── CREATE ROLE <rollnamn> WITH NOLOGIN
   │           │
-  │           └── För varje post i login_roller-arrayen (standardvärde: ['_pub']):
-  │                 ├── Suffix (_pub) → r_sk0_global_pub
-  │                 ├── Prefix (pub_) → pub_r_sk0_global
-  │                 ├── CREATE ROLE <loginrollnamn> WITH LOGIN
-  │                 └── GRANT <grupproll> TO <loginroll>  (ärver behörigheter)
+  │           ├── GRANT <rollnamn> TO system_owner() WITH ADMIN OPTION
+  │           │
+  │           └── → tilldela_rollrattigheter(schema, roll, typ)
+  │                   ├── GRANT USAGE ON SCHEMA (alla rolltyper)
+  │                   ├── read:  GRANT SELECT ON ALL TABLES
+  │                   │          ALTER DEFAULT PRIVILEGES … GRANT SELECT
+  │                   └── write: GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES
+  │                              ALTER DEFAULT PRIVILEGES … GRANT SELECT, INSERT, UPDATE, DELETE
+  │                 (DEFAULT PRIVILEGES säkerställer att framtida tabeller
+  │                  också får rätt behörigheter automatiskt)
   │
   └── Resultat för sk0_kba_bygg:
-        NOLOGIN: r_sk0_global, w_sk0_kba_bygg
-        LOGIN:   r_sk0_global_pub,
-                 w_sk0_kba_bygg_pub
+        LOGIN: r_sk0_kba_bygg (lösenord → hex_role_credentials)
+               w_sk0_kba_bygg (lösenord → hex_role_credentials)
 ```
 
 ---
@@ -703,19 +706,16 @@ flowchart TD
     TBS_T --> SYS{"Systemschema?"}
     SYS --> |ja| SKIP(["hoppar över"])
     SYS --> |nej| LOOP["För varje rad i standardiserade_roller<br/>där ta_bort_med_schema = true"]
-    LOOP --> GLOBAL{"global_roll = true?"}
-    GLOBAL --> |ja| KEEP(["Roll bevaras<br/>t.ex. r_sk0_global"])
-    GLOBAL --> |nej| LOGIN["För varje loginroll i login_roller:<br/>REASSIGN OWNED TO postgres<br/>DROP OWNED<br/>DROP ROLE loginroll"]
-    LOGIN --> GROUP["REASSIGN OWNED TO postgres<br/>DROP OWNED<br/>DROP ROLE grupproll"]
-    GROUP --> DONE_ROLES(["Roller borttagna ✓"])
+    LOOP --> DROPROL["REASSIGN OWNED BY roll TO postgres<br/>DROP OWNED BY roll<br/>DROP ROLE roll<br/>DELETE från hex_role_credentials"]
+    DROPROL --> DONE_ROLES(["Roller borttagna ✓"])
 
     NGB_T --> SYS2{"Systemschema?"}
     SYS2 --> |ja| SKIP2(["hoppar över"])
     SYS2 --> |nej| GS_CHK["Kontrollera prefix mot<br/>standardiserade_skyddsnivaer<br/>publiceras_geoserver = true"]
     GS_CHK --> |"sk2 / ej GeoServer-publicerat"| SKIP3(["hoppar över"])
     GS_CHK --> |"sk0 / sk1"| NOTIFY["pg_notify<br/>geoserver_schema_drop<br/>sk0_kba_bygg"]
-    NOTIFY -.->|"Python-lyssnaren tar emot"| GS(["GeoServer REST API<br/>DELETE /workspaces/sk0_kba_bygg?recurse=true"])
-    GS --> DONE_GS(["Workspace borttagen ✓"])
+    NOTIFY -.->|"Python-lyssnaren tar emot"| GS(["GeoServer REST API<br/>DELETE ACL-regler<br/>DELETE /workspaces/sk0_kba_bygg?recurse=true<br/>DELETE GeoServer-roller r_ och w_"])
+    GS --> DONE_GS(["Workspace + roller + ACL borttagna ✓"])
 ```
 
 ```sql
@@ -737,20 +737,11 @@ ta_bort_schemaroller()
   └── För varje rad i standardiserade_roller där ta_bort_med_schema = true:
         ├── Bygger rollnamn: ersätter {schema} med faktiskt schemanamn
         │
-        ├── Tar bort LOGIN-roller FÖRST (måste göras före grupprollen):
-        │     För varje post i login_roller:
-        │       ├── Bygger login-rollnamn (suffix/prefix-variant)
-        │       ├── REASSIGN OWNED BY <loginroll> TO postgres
-        │       ├── DROP OWNED BY <loginroll>
-        │       └── DROP ROLE <loginroll>
-        │
-        ├── Tar bort NOLOGIN-grupprollen:
-        │     ├── REASSIGN OWNED BY <grupproll> TO postgres
-        │     ├── DROP OWNED BY <grupproll>
-        │     └── DROP ROLE <grupproll>
-        │
-        └── Globala roller (global_roll = true) berörs INTE
-              r_sk0_global och r_sk1_global överlever DROP SCHEMA
+        ├── REASSIGN OWNED BY <roll> TO postgres
+        ├── DROP OWNED BY <roll>
+        ├── DROP ROLE <roll>
+        └── DELETE FROM hex_role_credentials WHERE rolname = <roll>
+              (rensar sparade autentiseringsuppgifter för LOGIN-roller)
 ```
 
 ---
@@ -767,8 +758,10 @@ notifiera_geoserver_borttagning()
   ├── Om prefix = sk0 eller sk1 (publiceras_geoserver = true):
   │     pg_notify('geoserver_schema_drop', 'sk0_kba_bygg')
   │       → Python-lyssnaren tar emot och kör:
+  │         DELETE ACL-regler (sk0_kba_bygg.*.r och sk0_kba_bygg.*.w)
   │         DELETE /rest/workspaces/sk0_kba_bygg?recurse=true
   │         (tar bort workspace + alla datastores + publicerade lager)
+  │         DELETE GeoServer-roller r_sk0_kba_bygg och w_sk0_kba_bygg
   └── Icke-kritisk: om notifieringen misslyckas rullas inte DROP SCHEMA tillbaka
         → se avsnitt 9 för vad som händer i Python-lyssnaren
 ```
@@ -795,8 +788,8 @@ flowchart TD
     subgraph PY["Python-lyssnaren (geoserver_listener.py)"]
         direction TB
         LL["listen_loop<br/>autocommit · LISTEN · 5 s select-timeout"]
-        LL --> |"kanal: geoserver_schema"| HSN["handle_schema_notification<br/>validerar ^sk01_ext/kba/sys_<br/>hämtar credentials från hex_role_credentials"]
-        LL --> |"kanal: geoserver_schema_drop"| HRN["handle_schema_removal_notification<br/>validerar ^sk01_ext/kba/sys_<br/>tar bort workspace"]
+        LL --> |"kanal: geoserver_schema"| HSN["handle_schema_notification<br/>laddar mönster från DB<br/>hämtar credentials från hex_role_credentials"]
+        LL --> |"kanal: geoserver_schema_drop"| HRN["handle_schema_removal_notification<br/>laddar mönster från DB"]
         LL --> |"anslutning tappas"| REC["Väntar reconnect_delay<br/>återansluter"]
         REC --> EMAIL1["EmailNotifier<br/>skickar varning<br/>300 s cooldown"]
         EMAIL1 --> LL
@@ -808,8 +801,8 @@ flowchart TD
 
     subgraph REST["GeoServerClient (HTTP Basic Auth)"]
         direction TB
-        GS_CREATE["POST /rest/workspaces<br/>POST /rest/.../datastores<br/>→ 201 Created ✓"]
-        GS_DELETE["DELETE /rest/workspaces/{namn}?recurse=true<br/>200 = borttagen · 404 = fanns inte (ok)<br/>→ workspace + datastores + lager raderade ✓"]
+        GS_CREATE["1. POST /rest/workspaces<br/>2. POST /rest/.../datastores<br/>3. POST /rest/security/roles/role/r_{schema}<br/>   POST /rest/security/roles/role/w_{schema}<br/>4. POST /rest/security/acl/layers<br/>→ workspace + datastore + roller + ACL ✓"]
+        GS_DELETE["1. DELETE /rest/security/acl/layers/{regler}<br/>2. DELETE /rest/workspaces/{namn}?recurse=true<br/>   200 = borttagen · 404 = fanns inte (ok)<br/>3. DELETE /rest/security/roles/role/r_{schema}<br/>   DELETE /rest/security/roles/role/w_{schema}<br/>→ workspace + datastores + lager + roller + ACL raderade ✓"]
     end
 
     GS_CREATE --> |"nätverksfel"| RETRY["Retry 3 ggr<br/>2 s · 5 s · 10 s"]
@@ -854,13 +847,25 @@ flowchart TD
 │                                                                     │
 │  handle_schema_notification('sk0_kba_bygg', db_config, pg_conn,    │
 │                              gs_client)                             │
-│    ├── Validerar mönster: ^sk[01]_(ext|kba|sys)_.+$                │
+│    ├── Laddar mönster från standardiserade_skyddsnivaer /           │
+│    │     standardiserade_datakategorier (dynamiskt, utan omstart)  │
 │    ├── Hämtar credentials för r_sk0_kba_bygg ur hex_role_credentials│
-│    └── → GeoServerClient.create_workspace() + create_pg_datastore  │
+│    ├── → GeoServerClient.create_workspace()                         │
+│    ├── → GeoServerClient.create_pg_datastore()                     │
+│    ├── → GeoServerClient.create_gs_role('r_sk0_kba_bygg')          │
+│    │       POST /rest/security/roles/role/{roll} → 201 Created     │
+│    ├── → GeoServerClient.create_gs_role('w_sk0_kba_bygg')          │
+│    └── → GeoServerClient.create_workspace_acl()                    │
+│             sk0_kba_bygg.*.r = r_sk0_kba_bygg                      │
+│             sk0_kba_bygg.*.w = w_sk0_kba_bygg                      │
 │                                                                     │
 │  handle_schema_removal_notification('sk0_kba_bygg', gs_client)     │
-│    ├── Validerar mönster: ^sk[01]_(ext|kba|sys)_.+$                │
-│    └── → GeoServerClient.delete_workspace()                        │
+│    ├── Laddar mönster från standardiserade_skyddsnivaer /           │
+│    │     standardiserade_datakategorier (dynamiskt, utan omstart)  │
+│    ├── → GeoServerClient.delete_workspace_acl()                    │
+│    ├── → GeoServerClient.delete_workspace()                        │
+│    ├── → GeoServerClient.delete_gs_role('r_sk0_kba_bygg')          │
+│    └── → GeoServerClient.delete_gs_role('w_sk0_kba_bygg')          │
 │                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
                                    │
@@ -898,12 +903,31 @@ flowchart TD
 │         encode functions:   true                                    │
 │       → 201 Created                                                 │
 │                                                                     │
+│  5. POST /rest/security/roles/role/r_sk0_kba_bygg                  │
+│       Skapar GeoServer-roll som speglar PostgreSQL-rollen           │
+│       201 = skapad · 409 = finns redan (ok)                        │
+│     POST /rest/security/roles/role/w_sk0_kba_bygg                  │
+│       → GeoServer-roller r_ och w_ skapade ✓                       │
+│                                                                     │
+│  6. POST /rest/security/acl/layers                                  │
+│       {"sk0_kba_bygg.*.r": "r_sk0_kba_bygg",                       │
+│        "sk0_kba_bygg.*.w": "w_sk0_kba_bygg"}                       │
+│       → Läsrollen får läsrättighet, skrivroll skrivrättighet ✓     │
+│                                                                     │
 │  BORTTAGNING (handle_schema_removal_notification):                  │
 │                                                                     │
-│  1. DELETE /rest/workspaces/sk0_kba_bygg?recurse=true              │
+│  1. DELETE /rest/security/acl/layers/sk0_kba_bygg.*.r              │
+│     DELETE /rest/security/acl/layers/sk0_kba_bygg.*.w              │
+│       200 = borttagen · 404 = fanns inte (ok)                      │
+│                                                                     │
+│  2. DELETE /rest/workspaces/sk0_kba_bygg?recurse=true              │
 │       200 = borttagen (inkl. datastores och publicerade lager)     │
 │       404 = workspace fanns inte → behandlas som framgång (ok)     │
 │       övrigt → misslyckas, EmailNotifier skickar varning           │
+│                                                                     │
+│  3. DELETE /rest/security/roles/role/r_sk0_kba_bygg                │
+│     DELETE /rest/security/roles/role/w_sk0_kba_bygg                │
+│       200 = borttagen · 404 = fanns inte (ok)                      │
 │                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
 
