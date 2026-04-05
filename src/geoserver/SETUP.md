@@ -263,6 +263,34 @@ GRANT SELECT ON public.hex_role_credentials TO hex_listener;
 > **OBS:** Om du kör Hex-installern (`install_hex.py`) sätts denna rättighet
 > automatiskt av `hex_role_credentials.sql` och behöver inte läggas till manuellt.
 
+### pg_hba.conf — tillåt anslutningar
+
+PostgreSQL tillåter inte nätverksanslutningar förrän det finns en matchande post i
+`pg_hba.conf`. Två typer av roller behöver sådana poster:
+
+**1. `hex_listener`** — Python-lyssnaren som prenumererar på `pg_notify`.
+
+**2. `r_<schema>`-roller** — skapas automatiskt av `hantera_standardiserade_roller()`
+vid varje `CREATE SCHEMA`. GeoServer använder dessa roller för direktanslutning till
+varje PostGIS-datastore. Eftersom rollnamnen varierar är den enklaste lösningen en
+post som täcker alla roller från GeoServers IP-adress:
+
+```
+# pg_hba.conf  (vanligtvis C:\Program Files\PostgreSQL\<version>\data\pg_hba.conf)
+# TYPE  DATABASE  USER          ADDRESS         METHOD
+host    all       hex_listener  127.0.0.1/32    scram-sha-256
+host    all       all           127.0.0.1/32    scram-sha-256
+```
+
+> Den andra raden täcker de dynamiskt skapade `r_*`-rollerna. Om GeoServer och
+> PostgreSQL körs på **olika servrar** ersätter du `127.0.0.1/32` med GeoServer-
+> serverns faktiska IP-adress eller CIDR-block, t.ex. `10.0.1.50/32`.
+
+Ladda om konfigurationen utan omstart:
+```sql
+SELECT pg_reload_conf();
+```
+
 > **Loopback-adresser och `localhost` på Windows Server**
 >
 > Använd alltid den **literala IP-adressen** i stället för hostnamnet `localhost`
