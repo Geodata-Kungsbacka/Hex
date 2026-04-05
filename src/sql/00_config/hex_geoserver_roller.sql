@@ -1,3 +1,5 @@
+SET client_encoding TO 'UTF8';
+
 /******************************************************************************
  * Skapar grupprollen hex_geoserver_roller.
  *
@@ -19,7 +21,7 @@ BEGIN
 END$$;
 
 COMMENT ON ROLE hex_geoserver_roller IS
-    'Group role for all Hex-created login roles (r_* and w_*). '
-    'Has no permissions of its own. Used as an authentication target in '
-    'pg_hba.conf (+hex_geoserver_roller) to allow connections for all '
-    'dynamically created roles without listing each one individually.';
+    'Gruproll för alla Hex-skapade inloggningsroller (r_* och w_*). '
+    'Har inga egna rättigheter. Används som autentiseringsmål i '
+    'pg_hba.conf (+hex_geoserver_roller) för att tillåta uppkopplingar '
+    'utan att lista varje roll individuellt.';
