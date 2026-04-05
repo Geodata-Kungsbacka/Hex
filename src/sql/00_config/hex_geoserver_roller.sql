@@ -1,5 +1,3 @@
-SET client_encoding TO 'UTF8';
-
 /******************************************************************************
  * Skapar grupprollen hex_geoserver_roller.
  *
