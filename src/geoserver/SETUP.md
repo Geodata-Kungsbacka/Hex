@@ -272,21 +272,24 @@ PostgreSQL tillåter inte nätverksanslutningar förrän det finns en matchande 
 
 **2. `r_<schema>`-roller** — skapas automatiskt av `hantera_standardiserade_roller()`
 vid varje `CREATE SCHEMA`. GeoServer använder dessa roller för direktanslutning till
-varje PostGIS-datastore. Eftersom rollnamnen varierar är den enklaste lösningen en
-post som täcker alla roller från GeoServers IP-adress:
+varje PostGIS-datastore.
+
+Alla dynamiskt skapade `r_*`- och `w_*`-roller läggs automatiskt till i
+grupprollen **`hex_geoserver_roller`**. Rollen har inga egna rättigheter — den
+fungerar enbart som autentiseringsmål i `pg_hba.conf`. Det innebär att en
+`pg_hba.conf`-post kan referera till `+hex_geoserver_roller` för att täcka
+alla Hex-skapade roller utan att lista dem individuellt:
 
 ```
-# pg_hba.conf  (vanligtvis C:\Program Files\PostgreSQL\<version>\data\pg_hba.conf)
-# TYPE  DATABASE  USER          ADDRESS         METHOD
-host    all       hex_listener  127.0.0.1/32    scram-sha-256
-host    all       all           127.0.0.1/32    scram-sha-256
+# Exempel — hur exakt du konfigurerar detta är upp till DBA:n
+host  geodata_sk0  hex_listener        127.0.0.1/32  scram-sha-256
+host  geodata_sk0  +hex_geoserver_roller  127.0.0.1/32  scram-sha-256
 ```
 
-> Den andra raden täcker de dynamiskt skapade `r_*`-rollerna. Om GeoServer och
-> PostgreSQL körs på **olika servrar** ersätter du `127.0.0.1/32` med GeoServer-
-> serverns faktiska IP-adress eller CIDR-block, t.ex. `10.0.1.50/32`.
-
+Det är upp till DBA:n att bestämma lämpligt scope (vilka databaser, vilken
+adress/CIDR, vilken autentiseringsmetod) utifrån organisationens säkerhetspolicy.
 Ladda om konfigurationen utan omstart:
+
 ```sql
 SELECT pg_reload_conf();
 ```
