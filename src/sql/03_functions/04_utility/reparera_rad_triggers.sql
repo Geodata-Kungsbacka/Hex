@@ -18,7 +18,7 @@ AS $BODY$
  * Schemaprefix hämtas dynamiskt från standardiserade_skyddsnivaer, så att
  * egna prefix (t.ex. sc1, sk3) fungerar utan kodändringar.
  *
- * Hanterar sex åtgärdstyper:
+ * Hanterar sju åtgärdstyper:
  *
  *   hex_tvinga_gid       BEFORE INSERT på alla Hex-tabeller med en gid
  *                        IDENTITY-kolumn. Förhindrar att klienter (t.ex. QGIS)
@@ -37,6 +37,16 @@ AS $BODY$
  *                        Identifieras via triggerfunktioner (trg_fn_%_qa) som
  *                        lever i respektive Hex-schema och överlever en
  *                        oinstallation av Hex.
+ *
+ *   login-konvertering   Konverterar NOLOGIN-roller till LOGIN-roller med
+ *                        autogenererade lösenord och fyller i
+ *                        hex_role_credentials. Hanterar scheman skapade med
+ *                        äldre JNDI-baserad konfiguration där rollerna
+ *                        skapades som NOLOGIN-grupper utan lösenord.
+ *                        Idempotent – LOGIN-roller med sparade lösenord rörs
+ *                        inte. Obs: endast roller definierade i
+ *                        standardiserade_roller hanteras; anpassade roller
+ *                        utanför konfigurationen fångas inte.
  *
  *   hex_geoserver_roller Säkerställer att alla Hex-skapade LOGIN-roller
  *   (rollmedlemskap)     (lagrade i hex_role_credentials) är medlemmar i
@@ -57,8 +67,9 @@ DECLARE
     trig_exists   boolean;
     tabell        text;
     matchar       boolean;
-    rollnamn_full text;
-    schema_regex  text;
+    rollnamn_full      text;
+    schema_regex       text;
+    generated_password text;
 BEGIN
     -- Bygg regex från standardiserade_skyddsnivaer en gång.
     -- Alla schemanamnkontroller i denna funktion använder denna variabel
@@ -296,7 +307,103 @@ BEGIN
     END LOOP;
 
     -- -------------------------------------------------------------------------
-    -- 5. hex_geoserver_roller rollmedlemskap
+    -- 5. login-konvertering
+    --    Scheman skapade med äldre JNDI-baserad Hex-konfiguration har roller
+    --    som NOLOGIN-grupper utan lösenord och utan post i hex_role_credentials.
+    --    Denna sektion konverterar sådana roller till LOGIN-roller med
+    --    autogenererade lösenord och fyller i tabellen.
+    --
+    --    Tre fall hanteras:
+    --      a) Rollen saknas helt            → CREATE ROLE ... LOGIN PASSWORD
+    --      b) Rollen är NOLOGIN             → ALTER ROLE ... LOGIN PASSWORD
+    --      c) Rollen är LOGIN utan lösenord → ALTER ROLE ... PASSWORD (backfill)
+    --
+    --    Idempotent – LOGIN-roller med sparade lösenord rörs inte.
+    --    Obs: enbart roller definierade i standardiserade_roller hanteras.
+    -- -------------------------------------------------------------------------
+    FOR r IN
+        SELECT DISTINCT n.nspname AS s
+        FROM   pg_namespace n
+        WHERE  n.nspname ~ schema_regex
+        ORDER BY n.nspname
+    LOOP
+        FOR rol IN
+            SELECT rollnamn, rolltyp, schema_uttryck
+            FROM   public.standardiserade_roller
+            WHERE  with_login = true
+            ORDER BY gid
+        LOOP
+            BEGIN
+                EXECUTE format('SELECT %L %s', r.s, rol.schema_uttryck)
+                    INTO matchar;
+            EXCEPTION WHEN OTHERS THEN
+                matchar := false;
+            END;
+
+            CONTINUE WHEN NOT matchar;
+
+            rollnamn_full := replace(rol.rollnamn, '{schema}', r.s);
+
+            schema_namn  := r.s;
+            tabell_namn  := rollnamn_full;
+            trigger_namn := 'login-konvertering';
+
+            IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = rollnamn_full) THEN
+                -- Fall a: rollen saknas helt – skapa som LOGIN med lösenord
+                generated_password := encode(gen_random_bytes(18), 'base64');
+                EXECUTE format('CREATE ROLE %I WITH LOGIN PASSWORD %L',
+                    rollnamn_full, generated_password);
+                EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I',
+                    current_database(), rollnamn_full);
+                INSERT INTO public.hex_role_credentials (rolname, password)
+                VALUES (rollnamn_full, generated_password)
+                ON CONFLICT (rolname) DO UPDATE
+                    SET password   = EXCLUDED.password,
+                        created_at = now();
+                EXECUTE format('GRANT hex_geoserver_roller TO %I', rollnamn_full);
+                EXECUTE format('GRANT %I TO %I', rollnamn_full, system_owner());
+                PERFORM tilldela_rollrattigheter(r.s, rollnamn_full, rol.rolltyp);
+                atgard := 'skapad';
+
+            ELSIF EXISTS (
+                SELECT 1 FROM pg_roles
+                WHERE  rolname = rollnamn_full AND NOT rolcanlogin
+            ) THEN
+                -- Fall b: rollen finns som NOLOGIN (gammal JNDI) – konvertera
+                generated_password := encode(gen_random_bytes(18), 'base64');
+                EXECUTE format('ALTER ROLE %I WITH LOGIN PASSWORD %L',
+                    rollnamn_full, generated_password);
+                EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I',
+                    current_database(), rollnamn_full);
+                INSERT INTO public.hex_role_credentials (rolname, password)
+                VALUES (rollnamn_full, generated_password)
+                ON CONFLICT (rolname) DO UPDATE
+                    SET password   = EXCLUDED.password,
+                        created_at = now();
+                EXECUTE format('GRANT hex_geoserver_roller TO %I', rollnamn_full);
+                atgard := 'konverterad till LOGIN';
+
+            ELSIF NOT EXISTS (
+                SELECT 1 FROM public.hex_role_credentials WHERE rolname = rollnamn_full
+            ) THEN
+                -- Fall c: rollen är LOGIN men saknar post i hex_role_credentials
+                generated_password := encode(gen_random_bytes(18), 'base64');
+                EXECUTE format('ALTER ROLE %I WITH PASSWORD %L',
+                    rollnamn_full, generated_password);
+                INSERT INTO public.hex_role_credentials (rolname, password)
+                VALUES (rollnamn_full, generated_password);
+                atgard := 'lösenord backfyllt';
+
+            ELSE
+                atgard := 'redan LOGIN';
+            END IF;
+
+            RETURN NEXT;
+        END LOOP;
+    END LOOP;
+
+    -- -------------------------------------------------------------------------
+    -- 6. hex_geoserver_roller rollmedlemskap
     --    Alla Hex-skapade LOGIN-roller (lagrade i hex_role_credentials) ska
     --    vara medlemmar i hex_geoserver_roller för pg_hba.conf-matchning.
     -- -------------------------------------------------------------------------
@@ -327,7 +434,7 @@ BEGIN
     END LOOP;
 
     -- -------------------------------------------------------------------------
-    -- 6. Schemabehörigheter
+    -- 7. Schemabehörigheter
     --    Speglar logiken i hantera_standardiserade_roller: utvärderar
     --    schema_uttryck från standardiserade_roller för varje Hex-schema och
     --    kör tilldela_rollrattigheter på matchande roller som existerar.
@@ -377,8 +484,9 @@ ALTER FUNCTION public.reparera_rad_triggers()
 
 COMMENT ON FUNCTION public.reparera_rad_triggers()
     IS 'Återkopplar saknade rad-nivå-triggers (hex_tvinga_gid, hex_kontrollera_geom,
-hex_ta_bort_dummy, trg_<tabell>_qa), säkerställer hex_geoserver_roller-medlemskap för
-alla Hex-skapade LOGIN-roller, och reparerar schemabehörigheter enligt
+hex_ta_bort_dummy, trg_<tabell>_qa), konverterar NOLOGIN-roller till LOGIN-roller med
+autogenererade lösenord (för JNDI-migrering), säkerställer hex_geoserver_roller-
+medlemskap för alla Hex-skapade LOGIN-roller, och reparerar schemabehörigheter enligt
 standardiserade_roller. Schemaprefix hämtas från standardiserade_skyddsnivaer –
 egna prefix fungerar utan kodändringar. Idempotent. Anropas automatiskt av
 installeraren efter varje installation/uppgradering.';
