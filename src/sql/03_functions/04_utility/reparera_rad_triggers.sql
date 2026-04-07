@@ -18,7 +18,7 @@ AS $BODY$
  * Schemaprefix hämtas dynamiskt från standardiserade_skyddsnivaer, så att
  * egna prefix (t.ex. sc1, sk3) fungerar utan kodändringar.
  *
- * Hanterar sju åtgärdstyper:
+ * Hanterar åtta åtgärdstyper:
  *
  *   hex_tvinga_gid       BEFORE INSERT på alla Hex-tabeller med en gid
  *                        IDENTITY-kolumn. Förhindrar att klienter (t.ex. QGIS)
@@ -56,6 +56,16 @@ AS $BODY$
  *                        roller enligt standardiserade_roller. Idempotent –
  *                        säkerställer att GRANT och DEFAULT PRIVILEGES är
  *                        korrekta oavsett när tabeller skapades relativt schemat.
+ *
+ *   geoserver_notifiering Skickar pg_notify('geoserver_schema', schema) för
+ *                        scheman vars prefix har publiceras_geoserver = true
+ *                        och som har autentiseringsuppgifter i
+ *                        hex_role_credentials. Lyssnaren är idempotent
+ *                        (skapar inte om redan existerande workspaces/stores),
+ *                        så det är säkert att alltid skicka notifieringen.
+ *                        Täcker scheman skapade före ett prefix fick
+ *                        publiceras_geoserver = true, eller scheman som
+ *                        missades vid den ursprungliga CREATE SCHEMA.
  *
  * Funktionen är idempotent – befintliga triggers och rättigheter rörs inte
  * i onödan. Returnerar en rad per undersökt åtgärd med resultatet
@@ -476,6 +486,41 @@ BEGIN
             RETURN NEXT;
         END LOOP;
     END LOOP;
+
+    -- -------------------------------------------------------------------------
+    -- 8. geoserver_notifiering
+    --    Skickar pg_notify('geoserver_schema', schema) för alla Hex-scheman
+    --    vars prefix har publiceras_geoserver = true och som har poster i
+    --    hex_role_credentials (dvs. lyssnaren kan faktiskt sätta upp datastore).
+    --
+    --    Täcker tre scenarier:
+    --      a) Schema skapades med JNDI – notifiering skickades aldrig
+    --      b) Prefix fick publiceras_geoserver = true efter att schemat skapats
+    --      c) Lyssnaren var nere när schemat skapades och missade notifieringen
+    --
+    --    Lyssnaren är idempotent (create_workspace_acl hanterar "already exists"),
+    --    så det är säkert att alltid skicka notifieringen.
+    -- -------------------------------------------------------------------------
+    FOR r IN
+        SELECT DISTINCT n.nspname AS s
+        FROM   pg_namespace n
+        JOIN   public.standardiserade_skyddsnivaer ssn
+               ON n.nspname LIKE ssn.prefix || '_%'
+              AND ssn.publiceras_geoserver = true
+        WHERE  EXISTS (
+                   SELECT 1 FROM public.hex_role_credentials
+                   WHERE rolname = 'r_' || n.nspname
+               )
+        ORDER BY n.nspname
+    LOOP
+        PERFORM pg_notify('geoserver_schema', r.s);
+
+        schema_namn  := r.s;
+        tabell_namn  := '-';
+        trigger_namn := 'geoserver_notifiering';
+        atgard       := 'notifiering skickad';
+        RETURN NEXT;
+    END LOOP;
 END;
 $BODY$;
 
@@ -486,7 +531,8 @@ COMMENT ON FUNCTION public.reparera_rad_triggers()
     IS 'Återkopplar saknade rad-nivå-triggers (hex_tvinga_gid, hex_kontrollera_geom,
 hex_ta_bort_dummy, trg_<tabell>_qa), konverterar NOLOGIN-roller till LOGIN-roller med
 autogenererade lösenord (för JNDI-migrering), säkerställer hex_geoserver_roller-
-medlemskap för alla Hex-skapade LOGIN-roller, och reparerar schemabehörigheter enligt
-standardiserade_roller. Schemaprefix hämtas från standardiserade_skyddsnivaer –
-egna prefix fungerar utan kodändringar. Idempotent. Anropas automatiskt av
-installeraren efter varje installation/uppgradering.';
+medlemskap för alla Hex-skapade LOGIN-roller, reparerar schemabehörigheter enligt
+standardiserade_roller, och skickar pg_notify till GeoServer-lyssnaren för scheman
+vars prefix har publiceras_geoserver = true. Schemaprefix hämtas från
+standardiserade_skyddsnivaer – egna prefix fungerar utan kodändringar.
+Idempotent. Anropas automatiskt av installeraren efter varje installation/uppgradering.';
