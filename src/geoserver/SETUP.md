@@ -263,6 +263,37 @@ GRANT SELECT ON public.hex_role_credentials TO hex_listener;
 > **OBS:** Om du kör Hex-installern (`install_hex.py`) sätts denna rättighet
 > automatiskt av `hex_role_credentials.sql` och behöver inte läggas till manuellt.
 
+### pg_hba.conf — tillåt anslutningar
+
+PostgreSQL tillåter inte nätverksanslutningar förrän det finns en matchande post i
+`pg_hba.conf`. Två typer av roller behöver sådana poster:
+
+**1. `hex_listener`** — Python-lyssnaren som prenumererar på `pg_notify`.
+
+**2. `r_<schema>`-roller** — skapas automatiskt av `hantera_standardiserade_roller()`
+vid varje `CREATE SCHEMA`. GeoServer använder dessa roller för direktanslutning till
+varje PostGIS-datastore.
+
+Alla dynamiskt skapade `r_*`- och `w_*`-roller läggs automatiskt till i
+grupprollen **`hex_geoserver_roller`**. Rollen har inga egna rättigheter — den
+fungerar enbart som autentiseringsmål i `pg_hba.conf`. Det innebär att en
+`pg_hba.conf`-post kan referera till `+hex_geoserver_roller` för att täcka
+alla Hex-skapade roller utan att lista dem individuellt:
+
+```
+# Exempel — hur exakt du konfigurerar detta är upp till DBA:n
+host  geodata_sk0  hex_listener        127.0.0.1/32  scram-sha-256
+host  geodata_sk0  +hex_geoserver_roller  127.0.0.1/32  scram-sha-256
+```
+
+Det är upp till DBA:n att bestämma lämpligt scope (vilka databaser, vilken
+adress/CIDR, vilken autentiseringsmetod) utifrån organisationens säkerhetspolicy.
+Ladda om konfigurationen utan omstart:
+
+```sql
+SELECT pg_reload_conf();
+```
+
 > **Loopback-adresser och `localhost` på Windows Server**
 >
 > Använd alltid den **literala IP-adressen** i stället för hostnamnet `localhost`

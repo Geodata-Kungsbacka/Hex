@@ -19,7 +19,7 @@ BEGIN
 END$$;
 
 COMMENT ON ROLE hex_geoserver_roller IS
-    'Gruproll för alla Hex-skapade systemanvändare (r_* och w_*). '
-    'Har inga egna rättigheter. Används som autentiseringsmarkör i '
+    'Gruproll för alla Hex-skapade inloggningsroller (r_* och w_*). '
+    'Har inga egna rättigheter. Används som autentiseringsmål i '
     'pg_hba.conf (+hex_geoserver_roller) för att tillåta uppkopplingar '
     'utan att lista varje roll individuellt.';
