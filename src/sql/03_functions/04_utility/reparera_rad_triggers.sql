@@ -18,7 +18,11 @@ AS $BODY$
  * Schemaprefix hämtas dynamiskt från standardiserade_skyddsnivaer, så att
  * egna prefix (t.ex. sc1, sk3) fungerar utan kodändringar.
  *
- * Hanterar åtta åtgärdstyper:
+ * Hanterar nio åtgärdstyper:
+ *
+ *   schemamigrering      Uppgraderar hex_role_credentials och standardiserade_roller
+ *                        till aktuellt schema idempotent (ADD COLUMN IF NOT EXISTS).
+ *                        Körs alltid först.
  *
  *   hex_tvinga_gid       BEFORE INSERT på alla Hex-tabeller med en gid
  *                        IDENTITY-kolumn. Förhindrar att klienter (t.ex. QGIS)
@@ -38,49 +42,54 @@ AS $BODY$
  *                        lever i respektive Hex-schema och överlever en
  *                        oinstallation av Hex.
  *
- *   login-konvertering   Konverterar NOLOGIN-roller till LOGIN-roller med
- *                        autogenererade lösenord och fyller i
- *                        hex_role_credentials. Hanterar scheman skapade med
- *                        äldre JNDI-baserad konfiguration där rollerna
- *                        skapades som NOLOGIN-grupper utan lösenord.
- *                        Idempotent – LOGIN-roller med sparade lösenord rörs
- *                        inte. Obs: endast roller definierade i
- *                        standardiserade_roller hanteras; anpassade roller
- *                        utanför konfigurationen fångas inte.
+ *   rollstruktur         Verifierar och reparerar alla fyra roller per schema:
+ *                          r_{schema}    NOLOGIN behörighetsgrupp (läs)
+ *                          w_{schema}    NOLOGIN behörighetsgrupp (skriv)
+ *                          gs_r_{schema} LOGIN GeoServer läs-tjänstekonto
+ *                          gs_w_{schema} LOGIN GeoServer skriv-tjänstekonto
+ *                        Hanterar migrering från äldre installationer där r_*/w_*
+ *                        skapades som LOGIN-roller (konverteras till NOLOGIN och
+ *                        gs_*-konton skapas). Idempotent.
  *
- *   hex_geoserver_roller Säkerställer att alla Hex-skapade LOGIN-roller
- *   (rollmedlemskap)     (lagrade i hex_role_credentials) är medlemmar i
- *                        hex_geoserver_roller för pg_hba.conf-matchning.
+ *   hex_geoserver_roller Säkerställer att gs_*-roller (rolcanlogin=true i
+ *   (rollmedlemskap)     hex_role_credentials) är i hex_geoserver_roller.
+ *                        Tar bort NOLOGIN-roller som felaktigt hamnat där.
  *
- *   schemabehörigheter   Kör tilldela_rollrattigheter för alla scheman och
- *                        roller enligt standardiserade_roller. Idempotent –
- *                        säkerställer att GRANT och DEFAULT PRIVILEGES är
- *                        korrekta oavsett när tabeller skapades relativt schemat.
+ *   schemabehörigheter   Kör tilldela_rollrattigheter för NOLOGIN-roller och
+ *                        säkerställer GRANT arvs_fran för gs_*-roller.
+ *                        Idempotent.
  *
  *   geoserver_notifiering Skickar pg_notify('geoserver_schema', schema) för
  *                        scheman vars prefix har publiceras_geoserver = true
- *                        och som har autentiseringsuppgifter i
- *                        hex_role_credentials. Lyssnaren är idempotent
- *                        (skapar inte om redan existerande workspaces/stores),
- *                        så det är säkert att alltid skicka notifieringen.
- *                        Täcker scheman skapade före ett prefix fick
- *                        publiceras_geoserver = true, eller scheman som
- *                        missades vid den ursprungliga CREATE SCHEMA.
+ *                        och som har gs_r_-uppgifter i hex_role_credentials.
+ *                        Lyssnaren är idempotent, så det är säkert att alltid
+ *                        skicka notifieringen.
  *
  * Funktionen är idempotent – befintliga triggers och rättigheter rörs inte
  * i onödan. Returnerar en rad per undersökt åtgärd med resultatet
  * 'skapad'/'beviljad'/'uppdaterade' eller 'redan finns'.
  ******************************************************************************/
 DECLARE
-    r             record;
-    rol           record;
-    trig_exists   boolean;
-    tabell        text;
-    matchar       boolean;
+    r                  record;
+    rol                record;
+    trig_exists        boolean;
+    tabell             text;
+    matchar            boolean;
     rollnamn_full      text;
+    arvs_rollnamn      text;
     schema_regex       text;
     generated_password text;
 BEGIN
+    -- -------------------------------------------------------------------------
+    -- 0. Schemamigrering
+    --    Uppgraderar tabellscheman från äldre Hex-installationer idempotent.
+    --    ALTER TABLE ... ADD COLUMN IF NOT EXISTS och DROP NOT NULL är no-ops
+    --    om kolumnen redan har rätt definition.
+    -- -------------------------------------------------------------------------
+    EXECUTE 'ALTER TABLE public.hex_role_credentials ALTER COLUMN password DROP NOT NULL';
+    EXECUTE 'ALTER TABLE public.hex_role_credentials ADD COLUMN IF NOT EXISTS rolcanlogin boolean NOT NULL DEFAULT true';
+    EXECUTE 'ALTER TABLE public.standardiserade_roller ADD COLUMN IF NOT EXISTS arvs_fran text DEFAULT NULL';
+
     -- Bygg regex från standardiserade_skyddsnivaer en gång.
     -- Alla schemanamnkontroller i denna funktion använder denna variabel
     -- så att egna prefix fungerar utan kodändringar.
@@ -317,19 +326,25 @@ BEGIN
     END LOOP;
 
     -- -------------------------------------------------------------------------
-    -- 5. login-konvertering
-    --    Scheman skapade med äldre JNDI-baserad Hex-konfiguration har roller
-    --    som NOLOGIN-grupper utan lösenord och utan post i hex_role_credentials.
-    --    Denna sektion konverterar sådana roller till LOGIN-roller med
-    --    autogenererade lösenord och fyller i tabellen.
+    -- 5. rollstruktur
+    --    Verifierar och reparerar alla fyra roller per schema enligt
+    --    standardiserade_roller. Hanterar både nyinstallationer och migrering
+    --    från äldre konfigurationer (r_*/w_* som LOGIN → NOLOGIN).
     --
-    --    Tre fall hanteras:
-    --      a) Rollen saknas helt            → CREATE ROLE ... LOGIN PASSWORD
-    --      b) Rollen är NOLOGIN             → ALTER ROLE ... LOGIN PASSWORD
-    --      c) Rollen är LOGIN utan lösenord → ALTER ROLE ... PASSWORD (backfill)
+    --    NOLOGIN-roller (with_login=false, t.ex. r_*, w_*):
+    --      a) Saknas helt              → CREATE NOLOGIN, behörigheter, hex_role_credentials
+    --      b) Är LOGIN (gammal config) → ALTER NOLOGIN, REVOKE hex_geoserver_roller,
+    --                                    uppdatera hex_role_credentials
+    --      c) Finns som NOLOGIN        → säkerställ hex_role_credentials-post
     --
-    --    Idempotent – LOGIN-roller med sparade lösenord rörs inte.
-    --    Obs: enbart roller definierade i standardiserade_roller hanteras.
+    --    LOGIN-roller med arvs_fran (with_login=true, t.ex. gs_r_*, gs_w_*):
+    --      a) Saknas helt              → CREATE LOGIN, lösenord, hex_geoserver_roller,
+    --                                    GRANT arvs_fran, hex_role_credentials
+    --      b) LOGIN, saknar credentials → backfyll lösenord i hex_role_credentials
+    --      c) Allt korrekt             → 'redan korrekt'
+    --
+    --    Alltid säkerställs: behörigheter (NOLOGIN), arvs_fran-grant (LOGIN),
+    --    hex_role_credentials-post, system_owner-grant (NOLOGIN).
     -- -------------------------------------------------------------------------
     FOR r IN
         SELECT DISTINCT n.nspname AS s
@@ -338,9 +353,8 @@ BEGIN
         ORDER BY n.nspname
     LOOP
         FOR rol IN
-            SELECT rollnamn, rolltyp, schema_uttryck
+            SELECT rollnamn, rolltyp, schema_uttryck, with_login, arvs_fran
             FROM   public.standardiserade_roller
-            WHERE  with_login = true
             ORDER BY gid
         LOOP
             BEGIN
@@ -353,59 +367,171 @@ BEGIN
             CONTINUE WHEN NOT matchar;
 
             rollnamn_full := replace(rol.rollnamn, '{schema}', r.s);
+            schema_namn   := r.s;
+            tabell_namn   := rollnamn_full;
+            trigger_namn  := 'rollstruktur';
 
-            schema_namn  := r.s;
-            tabell_namn  := rollnamn_full;
-            trigger_namn := 'login-konvertering';
+            IF NOT rol.with_login THEN
+                -- -------------------------------------------------------
+                -- NOLOGIN behörighetsgrupp (r_*, w_*)
+                -- -------------------------------------------------------
+                IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = rollnamn_full) THEN
+                    -- Fall a: saknas helt
+                    EXECUTE format('CREATE ROLE %I WITH NOLOGIN', rollnamn_full);
+                    INSERT INTO public.hex_role_credentials (rolname, password, rolcanlogin)
+                    VALUES (rollnamn_full, NULL, false)
+                    ON CONFLICT (rolname) DO UPDATE
+                        SET rolcanlogin = false, password = NULL, created_at = now();
+                    EXECUTE format('GRANT %I TO %I', rollnamn_full, system_owner());
+                    PERFORM tilldela_rollrattigheter(r.s, rollnamn_full, rol.rolltyp);
+                    atgard := 'NOLOGIN-grupp skapad';
 
-            IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = rollnamn_full) THEN
-                -- Fall a: rollen saknas helt – skapa som LOGIN med lösenord
-                generated_password := encode(gen_random_bytes(18), 'base64');
-                EXECUTE format('CREATE ROLE %I WITH LOGIN PASSWORD %L',
-                    rollnamn_full, generated_password);
-                EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I',
-                    current_database(), rollnamn_full);
-                INSERT INTO public.hex_role_credentials (rolname, password)
-                VALUES (rollnamn_full, generated_password)
-                ON CONFLICT (rolname) DO UPDATE
-                    SET password   = EXCLUDED.password,
-                        created_at = now();
-                EXECUTE format('GRANT hex_geoserver_roller TO %I', rollnamn_full);
-                EXECUTE format('GRANT %I TO %I', rollnamn_full, system_owner());
-                PERFORM tilldela_rollrattigheter(r.s, rollnamn_full, rol.rolltyp);
-                atgard := 'skapad';
+                ELSIF EXISTS (
+                    SELECT 1 FROM pg_roles WHERE rolname = rollnamn_full AND rolcanlogin
+                ) THEN
+                    -- Fall b: var LOGIN (gammal config) – migrera till NOLOGIN
+                    EXECUTE format('ALTER ROLE %I WITH NOLOGIN', rollnamn_full);
+                    -- Ta bort från hex_geoserver_roller om den hamnat där
+                    IF EXISTS (
+                        SELECT 1 FROM pg_auth_members am
+                        JOIN pg_roles grp ON grp.oid = am.roleid
+                        JOIN pg_roles mem ON mem.oid = am.member
+                        WHERE grp.rolname = 'hex_geoserver_roller'
+                          AND mem.rolname = rollnamn_full
+                    ) THEN
+                        EXECUTE format('REVOKE hex_geoserver_roller FROM %I', rollnamn_full);
+                    END IF;
+                    -- Uppdatera hex_role_credentials
+                    INSERT INTO public.hex_role_credentials (rolname, password, rolcanlogin)
+                    VALUES (rollnamn_full, NULL, false)
+                    ON CONFLICT (rolname) DO UPDATE
+                        SET rolcanlogin = false, password = NULL, created_at = now();
+                    -- Säkerställ system_owner-grant
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_auth_members am
+                        JOIN pg_roles grp ON grp.oid = am.roleid
+                        JOIN pg_roles mem ON mem.oid = am.member
+                        WHERE grp.rolname = rollnamn_full
+                          AND mem.rolname = system_owner()
+                    ) THEN
+                        EXECUTE format('GRANT %I TO %I', rollnamn_full, system_owner());
+                    END IF;
+                    PERFORM tilldela_rollrattigheter(r.s, rollnamn_full, rol.rolltyp);
+                    atgard := 'LOGIN→NOLOGIN migrerad';
 
-            ELSIF EXISTS (
-                SELECT 1 FROM pg_roles
-                WHERE  rolname = rollnamn_full AND NOT rolcanlogin
-            ) THEN
-                -- Fall b: rollen finns som NOLOGIN (gammal JNDI) – konvertera
-                generated_password := encode(gen_random_bytes(18), 'base64');
-                EXECUTE format('ALTER ROLE %I WITH LOGIN PASSWORD %L',
-                    rollnamn_full, generated_password);
-                EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I',
-                    current_database(), rollnamn_full);
-                INSERT INTO public.hex_role_credentials (rolname, password)
-                VALUES (rollnamn_full, generated_password)
-                ON CONFLICT (rolname) DO UPDATE
-                    SET password   = EXCLUDED.password,
-                        created_at = now();
-                EXECUTE format('GRANT hex_geoserver_roller TO %I', rollnamn_full);
-                atgard := 'konverterad till LOGIN';
-
-            ELSIF NOT EXISTS (
-                SELECT 1 FROM public.hex_role_credentials WHERE rolname = rollnamn_full
-            ) THEN
-                -- Fall c: rollen är LOGIN men saknar post i hex_role_credentials
-                generated_password := encode(gen_random_bytes(18), 'base64');
-                EXECUTE format('ALTER ROLE %I WITH PASSWORD %L',
-                    rollnamn_full, generated_password);
-                INSERT INTO public.hex_role_credentials (rolname, password)
-                VALUES (rollnamn_full, generated_password);
-                atgard := 'lösenord backfyllt';
+                ELSE
+                    -- Fall c: finns som NOLOGIN – säkerställ hex_role_credentials
+                    INSERT INTO public.hex_role_credentials (rolname, password, rolcanlogin)
+                    VALUES (rollnamn_full, NULL, false)
+                    ON CONFLICT (rolname) DO UPDATE
+                        SET rolcanlogin = false, password = NULL;
+                    -- Säkerställ system_owner-grant
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_auth_members am
+                        JOIN pg_roles grp ON grp.oid = am.roleid
+                        JOIN pg_roles mem ON mem.oid = am.member
+                        WHERE grp.rolname = rollnamn_full
+                          AND mem.rolname = system_owner()
+                    ) THEN
+                        EXECUTE format('GRANT %I TO %I', rollnamn_full, system_owner());
+                    END IF;
+                    PERFORM tilldela_rollrattigheter(r.s, rollnamn_full, rol.rolltyp);
+                    atgard := 'redan NOLOGIN';
+                END IF;
 
             ELSE
-                atgard := 'redan LOGIN';
+                -- -------------------------------------------------------
+                -- LOGIN tjänstekonto med arvs_fran (gs_r_*, gs_w_*)
+                -- -------------------------------------------------------
+                IF rol.arvs_fran IS NOT NULL THEN
+                    arvs_rollnamn := replace(rol.arvs_fran, '{schema}', r.s);
+                ELSE
+                    arvs_rollnamn := NULL;
+                END IF;
+
+                IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = rollnamn_full) THEN
+                    -- Fall a: saknas helt
+                    generated_password := encode(gen_random_bytes(18), 'base64');
+                    EXECUTE format('CREATE ROLE %I WITH LOGIN PASSWORD %L',
+                        rollnamn_full, generated_password);
+                    EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I',
+                        current_database(), rollnamn_full);
+                    EXECUTE format('GRANT hex_geoserver_roller TO %I', rollnamn_full);
+                    IF arvs_rollnamn IS NOT NULL AND EXISTS (
+                        SELECT 1 FROM pg_roles WHERE rolname = arvs_rollnamn
+                    ) THEN
+                        EXECUTE format('GRANT %I TO %I', arvs_rollnamn, rollnamn_full);
+                    END IF;
+                    INSERT INTO public.hex_role_credentials (rolname, password, rolcanlogin)
+                    VALUES (rollnamn_full, generated_password, true)
+                    ON CONFLICT (rolname) DO UPDATE
+                        SET password = EXCLUDED.password, rolcanlogin = true, created_at = now();
+                    atgard := 'LOGIN-tjänstekonto skapad';
+
+                ELSIF NOT EXISTS (
+                    SELECT 1 FROM public.hex_role_credentials
+                    WHERE rolname = rollnamn_full AND rolcanlogin = true
+                ) THEN
+                    -- Fall b: finns som LOGIN men saknar credentials – backfyll
+                    generated_password := encode(gen_random_bytes(18), 'base64');
+                    EXECUTE format('ALTER ROLE %I WITH PASSWORD %L',
+                        rollnamn_full, generated_password);
+                    INSERT INTO public.hex_role_credentials (rolname, password, rolcanlogin)
+                    VALUES (rollnamn_full, generated_password, true)
+                    ON CONFLICT (rolname) DO UPDATE
+                        SET password = EXCLUDED.password, rolcanlogin = true, created_at = now();
+                    -- Säkerställ hex_geoserver_roller
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_auth_members am
+                        JOIN pg_roles grp ON grp.oid = am.roleid
+                        JOIN pg_roles mem ON mem.oid = am.member
+                        WHERE grp.rolname = 'hex_geoserver_roller'
+                          AND mem.rolname = rollnamn_full
+                    ) THEN
+                        EXECUTE format('GRANT hex_geoserver_roller TO %I', rollnamn_full);
+                    END IF;
+                    -- Säkerställ arvs_fran
+                    IF arvs_rollnamn IS NOT NULL AND EXISTS (
+                        SELECT 1 FROM pg_roles WHERE rolname = arvs_rollnamn
+                    ) THEN
+                        IF NOT EXISTS (
+                            SELECT 1 FROM pg_auth_members am
+                            JOIN pg_roles grp ON grp.oid = am.roleid
+                            JOIN pg_roles mem ON mem.oid = am.member
+                            WHERE grp.rolname = arvs_rollnamn
+                              AND mem.rolname = rollnamn_full
+                        ) THEN
+                            EXECUTE format('GRANT %I TO %I', arvs_rollnamn, rollnamn_full);
+                        END IF;
+                    END IF;
+                    atgard := 'lösenord backfyllt';
+
+                ELSE
+                    -- Fall c: allt korrekt – säkerställ ändå hex_geoserver_roller och arvs_fran
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_auth_members am
+                        JOIN pg_roles grp ON grp.oid = am.roleid
+                        JOIN pg_roles mem ON mem.oid = am.member
+                        WHERE grp.rolname = 'hex_geoserver_roller'
+                          AND mem.rolname = rollnamn_full
+                    ) THEN
+                        EXECUTE format('GRANT hex_geoserver_roller TO %I', rollnamn_full);
+                    END IF;
+                    IF arvs_rollnamn IS NOT NULL AND EXISTS (
+                        SELECT 1 FROM pg_roles WHERE rolname = arvs_rollnamn
+                    ) THEN
+                        IF NOT EXISTS (
+                            SELECT 1 FROM pg_auth_members am
+                            JOIN pg_roles grp ON grp.oid = am.roleid
+                            JOIN pg_roles mem ON mem.oid = am.member
+                            WHERE grp.rolname = arvs_rollnamn
+                              AND mem.rolname = rollnamn_full
+                        ) THEN
+                            EXECUTE format('GRANT %I TO %I', arvs_rollnamn, rollnamn_full);
+                        END IF;
+                    END IF;
+                    atgard := 'redan korrekt';
+                END IF;
             END IF;
 
             RETURN NEXT;
@@ -414,12 +540,16 @@ BEGIN
 
     -- -------------------------------------------------------------------------
     -- 6. hex_geoserver_roller rollmedlemskap
-    --    Alla Hex-skapade LOGIN-roller (lagrade i hex_role_credentials) ska
-    --    vara medlemmar i hex_geoserver_roller för pg_hba.conf-matchning.
+    --    Säkerställer att gs_*-roller (rolcanlogin=true) är i hex_geoserver_roller.
+    --    Tar också bort NOLOGIN-roller (rolcanlogin=false) som felaktigt hamnat
+    --    i hex_geoserver_roller – förekommer vid migrering från äldre config.
     -- -------------------------------------------------------------------------
+
+    -- 6a. Lägg till saknade LOGIN-roller
     FOR r IN
         SELECT rolname AS s
         FROM   public.hex_role_credentials
+        WHERE  rolcanlogin = true
         ORDER BY rolname
     LOOP
         schema_namn  := '-';
@@ -443,13 +573,33 @@ BEGIN
         RETURN NEXT;
     END LOOP;
 
+    -- 6b. Ta bort NOLOGIN-roller som felaktigt finns i hex_geoserver_roller
+    FOR r IN
+        SELECT hrc.rolname AS s
+        FROM   public.hex_role_credentials hrc
+        WHERE  hrc.rolcanlogin = false
+          AND  EXISTS (
+                   SELECT 1 FROM pg_auth_members am
+                   JOIN pg_roles grp ON grp.oid = am.roleid
+                   JOIN pg_roles mem ON mem.oid = am.member
+                   WHERE grp.rolname = 'hex_geoserver_roller'
+                     AND mem.rolname = hrc.rolname
+               )
+        ORDER BY hrc.rolname
+    LOOP
+        EXECUTE format('REVOKE hex_geoserver_roller FROM %I', r.s);
+        schema_namn  := '-';
+        tabell_namn  := r.s;
+        trigger_namn := 'hex_geoserver_roller (rollmedlemskap)';
+        atgard       := 'NOLOGIN-roll borttagen ur hex_geoserver_roller';
+        RETURN NEXT;
+    END LOOP;
+
     -- -------------------------------------------------------------------------
     -- 7. Schemabehörigheter
-    --    Speglar logiken i hantera_standardiserade_roller: utvärderar
-    --    schema_uttryck från standardiserade_roller för varje Hex-schema och
-    --    kör tilldela_rollrattigheter på matchande roller som existerar.
-    --    Idempotent – säkerställer att GRANT SELECT ON ALL TABLES och
-    --    DEFAULT PRIVILEGES är korrekta oavsett när tabeller skapades.
+    --    För NOLOGIN-roller: kör tilldela_rollrattigheter (idempotent).
+    --    För LOGIN-roller med arvs_fran: säkerställ GRANT arvs_fran TO roll
+    --    i stället för direkta grants – gs_*-roller ärver via gruppmedlemskap.
     -- -------------------------------------------------------------------------
     FOR r IN
         SELECT DISTINCT n.nspname AS s
@@ -458,7 +608,7 @@ BEGIN
         ORDER BY n.nspname
     LOOP
         FOR rol IN
-            SELECT rollnamn, rolltyp, schema_uttryck
+            SELECT rollnamn, rolltyp, schema_uttryck, with_login, arvs_fran
             FROM   public.standardiserade_roller
             ORDER BY gid
         LOOP
@@ -477,12 +627,37 @@ BEGIN
                 SELECT 1 FROM pg_roles WHERE rolname = rollnamn_full
             );
 
-            PERFORM tilldela_rollrattigheter(r.s, rollnamn_full, rol.rolltyp);
-
             schema_namn  := r.s;
             tabell_namn  := rollnamn_full;
             trigger_namn := 'schemabehörigheter';
-            atgard       := 'uppdaterade';
+
+            IF NOT rol.with_login THEN
+                -- NOLOGIN-roll: direkta schemabehörigheter
+                PERFORM tilldela_rollrattigheter(r.s, rollnamn_full, rol.rolltyp);
+                atgard := 'behörigheter uppdaterade';
+            ELSE
+                -- LOGIN-tjänstekonto: säkerställ arvs_fran-grant
+                IF rol.arvs_fran IS NOT NULL THEN
+                    arvs_rollnamn := replace(rol.arvs_fran, '{schema}', r.s);
+                    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = arvs_rollnamn)
+                    AND NOT EXISTS (
+                        SELECT 1 FROM pg_auth_members am
+                        JOIN pg_roles grp ON grp.oid = am.roleid
+                        JOIN pg_roles mem ON mem.oid = am.member
+                        WHERE grp.rolname = arvs_rollnamn
+                          AND mem.rolname = rollnamn_full
+                    ) THEN
+                        EXECUTE format('GRANT %I TO %I', arvs_rollnamn, rollnamn_full);
+                        atgard := 'arvs_fran-grant tillagd';
+                    ELSE
+                        atgard := 'arvs_fran redan beviljad';
+                    END IF;
+                ELSE
+                    PERFORM tilldela_rollrattigheter(r.s, rollnamn_full, rol.rolltyp);
+                    atgard := 'behörigheter uppdaterade';
+                END IF;
+            END IF;
+
             RETURN NEXT;
         END LOOP;
     END LOOP;
@@ -490,16 +665,15 @@ BEGIN
     -- -------------------------------------------------------------------------
     -- 8. geoserver_notifiering
     --    Skickar pg_notify('geoserver_schema', schema) för alla Hex-scheman
-    --    vars prefix har publiceras_geoserver = true och som har poster i
-    --    hex_role_credentials (dvs. lyssnaren kan faktiskt sätta upp datastore).
+    --    vars prefix har publiceras_geoserver = true och som har gs_r_-uppgifter
+    --    i hex_role_credentials (dvs. lyssnaren kan sätta upp datastore).
     --
     --    Täcker tre scenarier:
-    --      a) Schema skapades med JNDI – notifiering skickades aldrig
+    --      a) Schema skapades med äldre config – notifiering skickades aldrig
     --      b) Prefix fick publiceras_geoserver = true efter att schemat skapats
     --      c) Lyssnaren var nere när schemat skapades och missade notifieringen
     --
-    --    Lyssnaren är idempotent (create_workspace_acl hanterar "already exists"),
-    --    så det är säkert att alltid skicka notifieringen.
+    --    Lyssnaren är idempotent, så det är säkert att alltid skicka notifieringen.
     -- -------------------------------------------------------------------------
     FOR r IN
         SELECT DISTINCT n.nspname AS s
@@ -509,7 +683,8 @@ BEGIN
               AND ssn.publiceras_geoserver = true
         WHERE  EXISTS (
                    SELECT 1 FROM public.hex_role_credentials
-                   WHERE rolname = 'r_' || n.nspname
+                   WHERE  rolname     = 'gs_r_' || n.nspname
+                     AND  rolcanlogin = true
                )
         ORDER BY n.nspname
     LOOP
@@ -528,11 +703,19 @@ ALTER FUNCTION public.reparera_rad_triggers()
     OWNER TO postgres;
 
 COMMENT ON FUNCTION public.reparera_rad_triggers()
-    IS 'Återkopplar saknade rad-nivå-triggers (hex_tvinga_gid, hex_kontrollera_geom,
-hex_ta_bort_dummy, trg_<tabell>_qa), konverterar NOLOGIN-roller till LOGIN-roller med
-autogenererade lösenord (för JNDI-migrering), säkerställer hex_geoserver_roller-
-medlemskap för alla Hex-skapade LOGIN-roller, reparerar schemabehörigheter enligt
-standardiserade_roller, och skickar pg_notify till GeoServer-lyssnaren för scheman
-vars prefix har publiceras_geoserver = true. Schemaprefix hämtas från
-standardiserade_skyddsnivaer – egna prefix fungerar utan kodändringar.
-Idempotent. Anropas automatiskt av installeraren efter varje installation/uppgradering.';
+    IS 'Reparerar och verifierar hela Hex-strukturen för alla scheman.
+Uppgraderar tabellscheman (hex_role_credentials, standardiserade_roller) idempotent.
+Återkopplar saknade rad-nivå-triggers (hex_tvinga_gid, hex_kontrollera_geom,
+hex_ta_bort_dummy, trg_<tabell>_qa).
+Verifierar och reparerar alla fyra roller per schema:
+  r_{schema}/w_{schema}       NOLOGIN behörighetsgrupper – tilldelas AD-användare
+  gs_r_{schema}/gs_w_{schema} LOGIN GeoServer-tjänstekonton – i hex_geoserver_roller
+Hanterar migrering från äldre config (r_*/w_* som LOGIN → NOLOGIN, skapar gs_*).
+Säkerställer hex_geoserver_roller-medlemskap (enbart gs_*) och tar bort
+NOLOGIN-roller som felaktigt hamnat där.
+Reparerar schemabehörigheter (NOLOGIN: tilldela_rollrattigheter,
+LOGIN: GRANT arvs_fran).
+Skickar pg_notify för GeoServer-publicering (gs_r_-uppgifter krävs).
+Schemaprefix hämtas från standardiserade_skyddsnivaer – egna prefix fungerar
+utan kodändringar. Idempotent. Anropas av installeraren efter varje
+installation/uppgradering.';

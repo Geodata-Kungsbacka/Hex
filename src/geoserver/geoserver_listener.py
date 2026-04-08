@@ -804,7 +804,7 @@ def _fetch_role_credentials(conn, schema_name):
     Returns:
         (rolname, password) tuple, eller (None, None) om ej hittad.
     """
-    role_name = f"r_{schema_name}"
+    role_name = f"gs_r_{schema_name}"
     try:
         with conn.cursor() as cur:
             cur.execute(
@@ -873,7 +873,7 @@ def handle_schema_notification(schema_name, db_config, pg_conn, gs_client, db_la
     role_name, password = _fetch_role_credentials(pg_conn, schema_name)
     if not role_name:
         log.error(
-            "%sIngen autentiseringsuppgifter hittades för 'r_%s' i hex_role_credentials - "
+            "%sIngen autentiseringsuppgifter hittades för 'gs_r_%s' i hex_role_credentials - "
             "hoppar över schema '%s'",
             tag, schema_name, schema_name,
         )
