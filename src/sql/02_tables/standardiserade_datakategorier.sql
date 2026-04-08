@@ -26,7 +26,7 @@ COMMENT ON COLUMN public.standardiserade_datakategorier.prefix
 
 COMMENT ON COLUMN public.standardiserade_datakategorier.validera_geometri
     IS 'Sant om tabeller i scheman med denna datakategori ska få geometrivalidering (CHECK-constraint + trigger).
-Påverkar hantera_ny_tabell(), hantera_kolumntillagg() och reparera_rad_triggers().';
+Påverkar hantera_ny_tabell(), hantera_kolumntillagg() och underhall_hex().';
 
 INSERT INTO public.standardiserade_datakategorier
     (prefix, beskrivning, validera_geometri)

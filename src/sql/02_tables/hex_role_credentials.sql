@@ -20,7 +20,7 @@ COMMENT ON TABLE public.hex_role_credentials
     Skrivs av hantera_standardiserade_roller() vid CREATE SCHEMA.
     Läses av hex_listener för att konfigurera direktanslutningar i GeoServer
     (enbart rader med rolcanlogin=true och rolnamn som matchar gs_r_{schema}).
-    Används också av reparera_rad_triggers() som källa för rollverifiering.';
+    Används också av underhall_hex() som källa för rollverifiering.';
 
 COMMENT ON COLUMN public.hex_role_credentials.rolcanlogin
     IS 'true för LOGIN-roller med lösenord (gs_r_*, gs_w_*).
