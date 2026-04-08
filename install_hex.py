@@ -222,6 +222,7 @@ def uninstall():
     print("=" * 60)
 
     conn = psycopg2.connect(**DB_CONFIG)
+    conn.set_client_encoding('UTF8')
     cur = conn.cursor()
 
     try:
@@ -249,6 +250,7 @@ def install(base_path="."):
     print("=" * 60)
 
     conn = psycopg2.connect(**DB_CONFIG)
+    conn.set_client_encoding('UTF8')
     cur = conn.cursor()
 
     installed = 0
