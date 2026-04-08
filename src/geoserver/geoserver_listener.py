@@ -677,6 +677,15 @@ class GeoServerClient:
         if resp.status_code == 201:
             log.info("  Datastore '%s' skapad (direkt PG, användare: %s)", store_name, pg_user)
             return True
+        elif resp.status_code in (409, 500) and "already exists" in resp.text:
+            log.warning(
+                "  Datastore '%s' existerar redan men kunde inte läsas (troligen bruten konfiguration)"
+                " – försöker uppdatera med nya uppgifter...",
+                store_name,
+            )
+            return self._update_pg_datastore(
+                workspace, store_name, host, port, dbname, schema_name, pg_user, pg_password
+            )
         else:
             log.error(
                 "  Misslyckades att skapa datastore '%s': %d %s",
