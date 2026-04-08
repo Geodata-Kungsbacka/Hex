@@ -47,7 +47,7 @@ AS $BODY$
  *                          w_{schema}    NOLOGIN behörighetsgrupp (skriv)
  *                          gs_r_{schema} LOGIN GeoServer läs-tjänstekonto
  *                          gs_w_{schema} LOGIN GeoServer skriv-tjänstekonto
- *                        Hanterar migrering från äldre installationer där r_*/w_*
+ *                        Hanterar migrering från äldre installationer där r_- och w_-roller
  *                        skapades som LOGIN-roller (konverteras till NOLOGIN och
  *                        gs_*-konton skapas). Idempotent.
  *

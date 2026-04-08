@@ -37,7 +37,7 @@ AS $BODY$
  * SEPARATION AV AD-ANVÄNDARE OCH TJÄNSTEKONTON:
  *   Eftersom r_* och w_* är NOLOGIN och INTE ingår i hex_geoserver_roller
  *   kan de fritt tilldelas AD-användare utan att störa pg_hba.conf-logiken.
- *   Transitiv gruppmedlemskap via r_*/w_* når aldrig hex_geoserver_roller.
+ *   Transitiv gruppmedlemskap via r_- och w_-grupper når aldrig hex_geoserver_roller.
  *
  * TRIGGER: Körs automatiskt vid CREATE SCHEMA
  ******************************************************************************/
