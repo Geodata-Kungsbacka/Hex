@@ -887,7 +887,7 @@ def _db_tag(db_label):
 def _fetch_role_credentials(conn, schema_name):
     """Hämtar autentiseringsuppgifter för läsrollen för ett schema.
 
-    Slår upp r_{schema_name} i hex_role_credentials.
+    Slår upp gs_r_{schema_name} i hex_role_credentials.
 
     Args:
         conn:        psycopg2-anslutning till databasen (AUTOCOMMIT OK)
@@ -1032,9 +1032,8 @@ def handle_schema_removal_notification(schema_name, gs_client, pg_conn=None, db_
     # prefixskillnader mellan databaser (t.ex. skx bara i sk0-databasen) inte
     # gör att DROP-notifieringar avvisas p.g.a. ett inaktuellt globalt mönster.
     if pg_conn is not None:
-        cur = pg_conn.cursor()
-        _load_schema_pattern(cur)
-        cur.close()
+        with pg_conn.cursor() as cur:
+            _load_schema_pattern(cur)
 
     if not _validate_schema_name(schema_name, tag):
         return False
@@ -1286,7 +1285,6 @@ def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None, notifier
     """
     db_label = db_config["dbname"]
     was_disconnected = False  # Sparar om vi tappat anslutning för återhämtningsnotifiering
-    _reconciliation_done = False  # Startavstämning körs en gång per uppstart
 
     while not (stop_event and stop_event.is_set()):
         conn = None
@@ -1315,10 +1313,9 @@ def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None, notifier
             # Ladda schemanamnsmönster från konfigurationstabellerna
             _load_schema_pattern(cur)
 
-            # Startavstämning – körs en gång vid uppstart
-            if not _reconciliation_done:
-                _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label, all_pg_schemas)
-                _reconciliation_done = True
+            # Startavstämning – körs vid varje (åter)anslutning för att fånga upp
+            # scheman som skapades medan lyssnaren var nere.
+            _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label, all_pg_schemas)
 
             # Skicka återhämtningsnotifiering om vi tappat anslutning tidigare
             if was_disconnected and notifier:
