@@ -1,4 +1,4 @@
-CREATE OR REPLACE FUNCTION public.reparera_rad_triggers()
+CREATE OR REPLACE FUNCTION public.underhall_hex()
     RETURNS TABLE (
         schema_namn  text,
         tabell_namn  text,
@@ -699,10 +699,14 @@ BEGIN
 END;
 $BODY$;
 
-ALTER FUNCTION public.reparera_rad_triggers()
+ALTER FUNCTION public.underhall_hex()
     OWNER TO postgres;
 
-COMMENT ON FUNCTION public.reparera_rad_triggers()
+-- Bakåtkompatibelt alias: ta bort gamla funktionen om den finns kvar sedan
+-- en tidigare installation (kan ha ett annat returschema och kraschar annars).
+DROP FUNCTION IF EXISTS public.reparera_rad_triggers();
+
+COMMENT ON FUNCTION public.underhall_hex()
     IS 'Reparerar och verifierar hela Hex-strukturen för alla scheman.
 Uppgraderar tabellscheman (hex_role_credentials, standardiserade_roller) idempotent.
 Återkopplar saknade rad-nivå-triggers (hex_tvinga_gid, hex_kontrollera_geom,

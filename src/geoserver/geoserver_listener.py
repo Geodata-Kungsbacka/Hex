@@ -536,8 +536,82 @@ class GeoServerClient:
         )
         return resp.status_code == 200
 
+    def _get_datastore_user(self, workspace, store_name):
+        """Hämtar nuvarande pg_user från en befintlig datastore, eller None om ej hittad."""
+        resp = self._request_with_retry(
+            "GET", f"{self.rest_url}/workspaces/{workspace}/datastores/{store_name}.json"
+        )
+        if resp.status_code != 200:
+            return None
+        entries = (
+            resp.json()
+            .get("dataStore", {})
+            .get("connectionParameters", {})
+            .get("entry", [])
+        )
+        for entry in entries:
+            if entry.get("@key") == "user":
+                return entry.get("$")
+        return None
+
+    def _update_pg_datastore(self, workspace, store_name, host, port, dbname, schema_name, pg_user, pg_password):
+        """Uppdaterar en befintlig PostGIS-datastore med nya autentiseringsuppgifter (PUT)."""
+        payload = {
+            "dataStore": {
+                "name": store_name,
+                "type": "PostGIS",
+                "enabled": True,
+                "connectionParameters": {
+                    "entry": [
+                        {"@key": "dbtype",               "$": "postgis"},
+                        {"@key": "host",                 "$": host},
+                        {"@key": "port",                 "$": str(port)},
+                        {"@key": "database",             "$": dbname},
+                        {"@key": "schema",               "$": schema_name},
+                        {"@key": "user",                 "$": pg_user},
+                        {"@key": "passwd",               "$": pg_password},
+                        {"@key": "Expose primary keys",  "$": "true"},
+                        {"@key": "fetch size",           "$": "1000"},
+                        {"@key": "Loose bbox",           "$": "true"},
+                        {"@key": "Estimated extends",    "$": "true"},
+                        {"@key": "encode functions",     "$": "true"},
+                        {"@key": "validate connections", "$": "true"},
+                        {"@key": "max connections",      "$": "10"},
+                        {"@key": "min connections",      "$": "1"},
+                    ]
+                },
+            }
+        }
+
+        if self.dry_run:
+            log.info("  [DRY-RUN] Skulle uppdatera PG-datastore: %s", store_name)
+            log.info("  [DRY-RUN] PUT %s/workspaces/%s/datastores/%s.json", self.rest_url, workspace, store_name)
+            log.info("  [DRY-RUN] Ny användare: %s", pg_user)
+            return True
+
+        resp = self._request_with_retry(
+            "PUT",
+            f"{self.rest_url}/workspaces/{workspace}/datastores/{store_name}.json",
+            json=payload,
+        )
+        if resp.status_code in (200, 201):
+            log.info("  Datastore '%s' uppdaterad (ny användare: %s)", store_name, pg_user)
+            return True
+        else:
+            log.error(
+                "  Misslyckades att uppdatera datastore '%s': %d %s",
+                store_name,
+                resp.status_code,
+                resp.text,
+            )
+            return False
+
     def create_pg_datastore(self, workspace, store_name, host, port, dbname, schema_name, pg_user, pg_password):
-        """Skapar en direkt PostGIS-datastore i GeoServer.
+        """Skapar eller uppdaterar en PostGIS-datastore i GeoServer.
+
+        Skapar en ny datastore om den inte finns. Om datastore redan existerar
+        men är konfigurerad med en annan PostgreSQL-användare (t.ex. gammal r_*
+        som migrerats till gs_r_*) uppdateras den via PUT med nya uppgifter.
 
         Args:
             workspace:   Workspace-namn
@@ -546,12 +620,21 @@ class GeoServerClient:
             port:        PostgreSQL-port
             dbname:      Databasnamn
             schema_name: PostgreSQL-schemanamn att exponera
-            pg_user:     PostgreSQL-användare (läsrollen för schemat)
+            pg_user:     PostgreSQL-användare (gs_r_-rollen för schemat)
             pg_password: Lösenord för pg_user
         """
-        if self.datastore_exists(workspace, store_name):
-            log.info("  Datastore '%s' finns redan i workspace '%s' - hoppar över", store_name, workspace)
-            return True
+        existing_user = self._get_datastore_user(workspace, store_name)
+
+        if existing_user is not None:
+            if existing_user == pg_user:
+                log.info("  Datastore '%s' finns redan i workspace '%s' - hoppar över", store_name, workspace)
+                return True
+            else:
+                log.info(
+                    "  Datastore '%s' använder gammal användare '%s', uppdaterar till '%s'",
+                    store_name, existing_user, pg_user,
+                )
+                return self._update_pg_datastore(workspace, store_name, host, port, dbname, schema_name, pg_user, pg_password)
 
         payload = {
             "dataStore": {

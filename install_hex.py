@@ -78,7 +78,7 @@ INSTALL_ORDER = [
     "src/sql/03_functions/04_utility/tilldela_rollrattigheter.sql",
     "src/sql/03_functions/04_utility/tillampa_grupprattigheter.sql",
     "src/sql/03_functions/04_utility/tvinga_gid_fran_sekvens.sql",
-    "src/sql/03_functions/04_utility/reparera_rad_triggers.sql",
+    "src/sql/03_functions/04_utility/underhall_hex.sql",
     # Funktioner - Triggerfunktioner
     "src/sql/03_functions/05_trigger_functions/ta_bort_dummy_rad.sql",
     "src/sql/03_functions/04_utility/lagg_till_dummy_geometri.sql",
@@ -137,6 +137,7 @@ DROP FUNCTION IF EXISTS public.tillämpa_grupprattigheter();
 DROP FUNCTION IF EXISTS public.lagg_till_dummy_geometri(text, text, geom_info);
 DROP FUNCTION IF EXISTS public.ta_bort_dummy_rad() CASCADE;
 DROP FUNCTION IF EXISTS public.tvinga_gid_fran_sekvens() CASCADE;
+DROP FUNCTION IF EXISTS public.underhall_hex();
 DROP FUNCTION IF EXISTS public.reparera_rad_triggers();
 DROP FUNCTION IF EXISTS public.tilldela_rollrattigheter(text, text, text);
 DROP FUNCTION IF EXISTS public.skapa_historik_qa(text, text);
@@ -303,13 +304,14 @@ COMMENT ON FUNCTION public.system_owner()
         print(f"Installerade {installed} komponenter.")
         print("=" * 60)
 
-        # Reparera rad-triggers på befintliga tabeller (separat steg så att
-        # ett fel här aldrig rullar tillbaka huvudinstallationen).
-        print("Reparerar rad-triggers på befintliga tabeller...")
+        # Underhåll: verifiera och reparera triggers, roller och behörigheter
+        # på befintliga tabeller och scheman (separat steg så att ett fel här
+        # aldrig rullar tillbaka huvudinstallationen).
+        print("Underhåller Hex-struktur (triggers, roller, behörigheter)...")
         try:
             cur.execute(
                 "SELECT schema_namn, tabell_namn, trigger_namn, atgard"
-                " FROM public.reparera_rad_triggers()"
+                " FROM public.underhall_hex()"
             )
             rows = cur.fetchall()
             conn.commit()
@@ -320,11 +322,11 @@ COMMENT ON FUNCTION public.system_owner()
                     print(f"  ✓ {prefix}{t} → {tr} ({a})")
                 print(f"  {len(created)} åtgärd(er) genomförda.")
             else:
-                print("  Inga triggers behövde återkopplas.")
+                print("  Inga åtgärder behövdes.")
         except Exception as repair_err:
             conn.rollback()
-            print(f"  Varning: trigger-reparation misslyckades: {repair_err}")
-            print("  Hex är installerat. Kör SELECT * FROM public.reparera_rad_triggers() manuellt.")
+            print(f"  Varning: underhåll misslyckades: {repair_err}")
+            print("  Hex är installerat. Kör SELECT * FROM public.underhall_hex() manuellt.")
 
         print("+++Anthill Inside+++")
         

@@ -65,6 +65,7 @@ DROP FUNCTION IF EXISTS public.tillämpa_grupprattigheter();
 DROP FUNCTION IF EXISTS public.lagg_till_dummy_geometri(text, text, geom_info);
 DROP FUNCTION IF EXISTS public.ta_bort_dummy_rad() CASCADE;
 DROP FUNCTION IF EXISTS public.tvinga_gid_fran_sekvens() CASCADE;
+DROP FUNCTION IF EXISTS public.underhall_hex();
 DROP FUNCTION IF EXISTS public.reparera_rad_triggers();
 DROP FUNCTION IF EXISTS public.tilldela_rollrattigheter(text, text, text);
 DROP FUNCTION IF EXISTS public.skapa_historik_qa(text, text);
