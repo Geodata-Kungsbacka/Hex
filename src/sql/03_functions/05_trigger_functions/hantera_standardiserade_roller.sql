@@ -158,6 +158,19 @@ BEGIN
                         -- (t.ex. om tabeller skapades innan rollen fick rättigheter)
                         IF NOT rollkonfiguration.with_login THEN
                             PERFORM tilldela_rollrattigheter(schema_namn, slutligt_rollnamn, rollkonfiguration.rolltyp);
+                        ELSE
+                            -- Säkerställ att befintlig LOGIN-roll är i hex_geoserver_roller
+                            -- (kan saknas om rollen överlevde en avinstallation eller skapades manuellt)
+                            IF NOT EXISTS (
+                                SELECT 1 FROM pg_auth_members am
+                                JOIN pg_roles grp ON grp.oid = am.roleid
+                                JOIN pg_roles mem ON mem.oid = am.member
+                                WHERE grp.rolname = 'hex_geoserver_roller'
+                                  AND mem.rolname = slutligt_rollnamn
+                            ) THEN
+                                EXECUTE format('GRANT hex_geoserver_roller TO %I', slutligt_rollnamn);
+                                RAISE NOTICE '[hantera_standardiserade_roller]   ✓ Lade till befintlig LOGIN-roll i hex_geoserver_roller: %', slutligt_rollnamn;
+                            END IF;
                         END IF;
                     END IF;
                 ELSE
