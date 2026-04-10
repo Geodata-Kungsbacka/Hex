@@ -165,7 +165,9 @@ DROP FUNCTION IF EXISTS public.hamta_geometri_definition(text, text);
 -- Konfigurationsfunktioner
 DROP FUNCTION IF EXISTS public.hex_schema_regex();
 DROP FUNCTION IF EXISTS public.system_owner();
-DROP ROLE IF EXISTS hex_geoserver_roller;
+-- OBS: hex_geoserver_roller tas INTE bort här. Rollen är kluster-nivå och delas
+-- av alla databaser som kör Hex. Om du avinstallerar Hex från alla databaser och
+-- vill ta bort rollen helt, kör manuellt: DROP ROLE hex_geoserver_roller;
 
 -- Tabeller
 DROP TABLE IF EXISTS public.hex_role_credentials;
