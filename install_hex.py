@@ -2,8 +2,8 @@
 """
 Hex Installer - kör SQL-filer i beroendeordning
 Användning:
-    python install_hex.py              # Installera
-    python install_hex.py --uninstall  # Ta bort alla Hex-objekt
+    python install_hex.py              # Installera alla konfigurerade databaser
+    python install_hex.py --uninstall  # Ta bort alla Hex-objekt från alla databaser
 """
 
 import argparse
@@ -15,20 +15,30 @@ from pathlib import Path
 # CONFIGURATION
 # =============================================================================
 
-# Databasanslutning
-# OBS - måste köras som postgres för att skapa event-triggers
-DB_CONFIG = {
-    "host": "localhost",
-    "port": 5432,
-    "dbname": "hex_test",
-    "user": "postgres",
-    "password": "testpass",
-    "client_encoding": "UTF8",
-}
+# Lista med databaser att installera Hex i.
+# OBS - anslutningen måste köras som postgres för att skapa event-triggers.
+#
+# Varje post är ett dict med psycopg2-anslutningsparametrar plus:
+#   owner_role: ägarroll för alla skapade objekt (typer, tabeller, funktioner, triggers)
+#               Sätt till None för att använda den anslutande användaren som ägare.
+#
+# Exempel för tre sk-databaser:
+# DATABASES = [
+#     {"host": "localhost", "port": 5432, "dbname": "geodata_sk0", "user": "postgres", "password": "...", "owner_role": "gis_admin"},
+#     {"host": "localhost", "port": 5432, "dbname": "geodata_sk1", "user": "postgres", "password": "...", "owner_role": "gis_admin"},
+#     {"host": "localhost", "port": 5432, "dbname": "geodata_sk2", "user": "postgres", "password": "...", "owner_role": "gis_admin"},
+# ]
 
-# Ägarroll för alla skapade objekt (typer, tabeller, funktioner, triggers)
-# Sätt till None för att använda den anslutande användaren som ägare
-OWNER_ROLE = "gis_admin"
+DATABASES = [
+    {
+        "host": "localhost",
+        "port": 5432,
+        "dbname": "hex_test",
+        "user": "postgres",
+        "password": "testpass",
+        "owner_role": "gis_admin",
+    },
+]
 
 # =============================================================================
 # INSTALL ORDER
@@ -190,10 +200,20 @@ DROP TYPE IF EXISTS public.geom_info;
 """
 
 # =============================================================================
-# INSTALLATION
+# HELPERS
 # =============================================================================
 
-def process_sql(sql: str) -> str:
+def _conn_params(db: dict) -> dict:
+    """Returnerar psycopg2-anslutningsparametrar (exkluderar owner_role)."""
+    return {k: v for k, v in db.items() if k != "owner_role"}
+
+
+def _label(db: dict) -> str:
+    """Kort etikett för utskrift: dbname@host."""
+    return f"{db['dbname']}@{db['host']}"
+
+
+def process_sql(sql: str, owner_role: str | None) -> str:
     """Bearbetar SQL-innehåll - ersätter eller tar bort OWNER TO-satser.
 
     Event-triggers måste ägas av en superuser och behåller därför postgres-ägande.
@@ -206,24 +226,26 @@ def process_sql(sql: str) -> str:
         # Behåll postgres-ägande för superuser-beroende objekt
         return sql
 
-    if not OWNER_ROLE:
+    if not owner_role:
         # Ta bort OWNER TO-rader helt
         lines = [line for line in sql.split('\n') if 'OWNER TO' not in line.upper()]
         return '\n'.join(lines)
 
     # Ersätt alla OWNER TO med konfigurerad roll
-    return re.sub(r'OWNER TO \w+', f'OWNER TO {OWNER_ROLE}', sql, flags=re.IGNORECASE)
+    return re.sub(r'OWNER TO \w+', f'OWNER TO {owner_role}', sql, flags=re.IGNORECASE)
 
 
-def uninstall():
-    """Tar bort alla Hex-komponenter från databasen."""
+# =============================================================================
+# INSTALLATION
+# =============================================================================
+
+def uninstall(db: dict):
+    """Tar bort alla Hex-komponenter från en databas."""
     print("=" * 60)
-    print("Hex Avinstallation")
-    print("=" * 60)
-    print(f"Databas: {DB_CONFIG['dbname']}@{DB_CONFIG['host']}")
+    print(f"Hex Avinstallation - {_label(db)}")
     print("=" * 60)
 
-    conn = psycopg2.connect(**DB_CONFIG)
+    conn = psycopg2.connect(**_conn_params(db))
     conn.set_client_encoding('UTF8')
     cur = conn.cursor()
 
@@ -242,16 +264,16 @@ def uninstall():
         conn.close()
 
 
-def install(base_path="."):
-    """Installerar alla Hex-komponenter till databasen."""
+def install(db: dict, base_path="."):
+    """Installerar alla Hex-komponenter till en databas."""
+    owner_role = db.get("owner_role")
+
     print("=" * 60)
-    print("Hex Installation")
-    print("=" * 60)
-    print(f"Databas: {DB_CONFIG['dbname']}@{DB_CONFIG['host']}")
-    print(f"Ägarroll: {OWNER_ROLE or '(anslutande användare)'}")
+    print(f"Hex Installation - {_label(db)}")
+    print(f"Ägarroll: {owner_role or '(anslutande användare)'}")
     print("=" * 60)
 
-    conn = psycopg2.connect(**DB_CONFIG)
+    conn = psycopg2.connect(**_conn_params(db))
     conn.set_client_encoding('UTF8')
     cur = conn.cursor()
 
@@ -267,11 +289,11 @@ def install(base_path="."):
         print("Kontrollerar pgcrypto-tillägget...")
         cur.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto")
 
-        # Validera att OWNER_ROLE existerar om angiven
-        owner_role = OWNER_ROLE or 'postgres'
-        cur.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (owner_role,))
+        # Validera att owner_role existerar om angiven
+        effective_owner = owner_role or 'postgres'
+        cur.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (effective_owner,))
         if not cur.fetchone():
-            raise ValueError(f"OWNER_ROLE '{owner_role}' finns inte i databasen")
+            raise ValueError(f"owner_role '{effective_owner}' finns inte i databasen")
 
         # Skapa system_owner()-funktionen dynamiskt
         system_owner_sql = f"""
@@ -280,7 +302,7 @@ CREATE OR REPLACE FUNCTION public.system_owner()
     LANGUAGE 'sql'
     IMMUTABLE
 AS $BODY$
-    SELECT '{owner_role}'::text;
+    SELECT '{effective_owner}'::text;
 $BODY$;
 
 ALTER FUNCTION public.system_owner() OWNER TO postgres;
@@ -291,17 +313,17 @@ COMMENT ON FUNCTION public.system_owner()
         print("Installerar system_owner()...")
         cur.execute(system_owner_sql)
         installed += 1
-        
+
         for sql_file in INSTALL_ORDER:
             path = Path(base_path) / sql_file
             if not path.exists():
                 raise FileNotFoundError(f"Saknas: {sql_file}")
 
             print(f"Installerar {path.name}...")
-            sql = process_sql(path.read_text(encoding='utf-8'))
+            sql = process_sql(path.read_text(encoding='utf-8'), owner_role)
             cur.execute(sql)
             installed += 1
-        
+
         # Commit bara om allt lyckas
         conn.commit()
         print("=" * 60)
@@ -333,7 +355,7 @@ COMMENT ON FUNCTION public.system_owner()
             print("  Hex är installerat. Kör SELECT * FROM public.underhall_hex() manuellt.")
 
         print("+++Anthill Inside+++")
-        
+
     except Exception as e:
         conn.rollback()
         print(f"MISSLYCKADES: {e}")
@@ -345,14 +367,39 @@ COMMENT ON FUNCTION public.system_owner()
         conn.close()
 
 
+# =============================================================================
+# ENTRYPOINT
+# =============================================================================
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Hex Installation")
     parser.add_argument("--uninstall", action="store_true", help="Ta bort alla Hex-objekt")
     args = parser.parse_args()
-    
-    if args.uninstall:
-        uninstall()
-    else:
-        install()
 
+    action = uninstall if args.uninstall else install
+    action_name = "Avinstallation" if args.uninstall else "Installation"
 
+    succeeded = []
+    failed = []
+
+    for db in DATABASES:
+        try:
+            action(db)
+            succeeded.append(_label(db))
+        except Exception:
+            failed.append(_label(db))
+
+    if len(DATABASES) > 1:
+        print()
+        print("=" * 60)
+        print(f"Sammanfattning - {action_name}")
+        print("=" * 60)
+        for label in succeeded:
+            print(f"  OK:       {label}")
+        for label in failed:
+            print(f"  MISSLYCKADES: {label}")
+        print(f"  {len(succeeded)}/{len(DATABASES)} databaser lyckades.")
+        print("=" * 60)
+
+    if failed:
+        raise SystemExit(1)
