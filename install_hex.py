@@ -9,6 +9,7 @@ Användning:
 import argparse
 import re
 import psycopg2
+from psycopg2 import sql as pgsql
 from pathlib import Path
 
 # =============================================================================
@@ -190,6 +191,192 @@ DROP TYPE IF EXISTS public.geom_info;
 """
 
 # =============================================================================
+# INSTÄLLNINGSBEVARANDE (för --upgrade)
+# =============================================================================
+
+# Tabeller med förvalda rader som användaren kan anpassa.
+# key       – naturlig nyckel som identifierar en rad unikt (matchar UNIQUE-constraint).
+# data_cols – kolumner som ska återställas (utöver nyckeln) vid en uppgradering.
+#             Rader vars nyckel inte längre finns i de nya förvalda raderna (dvs.
+#             användarens egna tillagda rader) återinfogas i sin helhet.
+PRESERVE_CONFIG = {
+    'standardiserade_skyddsnivaer': {
+        'key':       'prefix',
+        'data_cols': ['beskrivning', 'publiceras_geoserver'],
+    },
+    'standardiserade_datakategorier': {
+        'key':       'prefix',
+        'data_cols': ['beskrivning', 'validera_geometri'],
+    },
+    'standardiserade_kolumner': {
+        'key':       'kolumnnamn',
+        'data_cols': ['ordinal_position', 'datatyp', 'default_varde',
+                      'schema_uttryck', 'historik_qa', 'beskrivning'],
+    },
+    'standardiserade_roller': {
+        'key':       'rollnamn',
+        'data_cols': ['rolltyp', 'schema_uttryck', 'ta_bort_med_schema',
+                      'with_login', 'arvs_fran', 'beskrivning'],
+    },
+}
+
+# Tabeller som enbart innehåller användardata (inga systemförval).
+# Alla rader återinfogas vid uppgradering med ON CONFLICT DO NOTHING.
+# Kolumner med automatiska värden (skapad, id, …) ingår inte.
+PRESERVE_USER_DATA = {
+    'hex_systemanvandare':  ['anvandare', 'beskrivning'],
+    'hex_grupprattigheter': ['ad_grupproll', 'hex_roll', 'beskrivning'],
+    'hex_role_credentials': ['rolname', 'password', 'rolcanlogin'],
+}
+
+
+def _table_exists(cur, table: str) -> bool:
+    cur.execute(
+        "SELECT 1 FROM information_schema.tables "
+        "WHERE table_schema = 'public' AND table_name = %s",
+        (table,),
+    )
+    return cur.fetchone() is not None
+
+
+def _table_columns(cur, table: str) -> set:
+    cur.execute(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_schema = 'public' AND table_name = %s",
+        (table,),
+    )
+    return {row[0] for row in cur.fetchall()}
+
+
+def snapshot_settings(cur) -> dict:
+    """Läser alla konfigurerbara tabeller och sparar dem i minnet.
+
+    Returnerar ett dict:
+      { tabell: { 'columns': [...], 'rows': [...] } }
+
+    Anropas *innan* avinstallation. Strukturella skillnader (tillagda/borttagna
+    kolumner i en ny version) hanteras automatiskt i restore_settings().
+    """
+    snapshot = {}
+    all_tables = list(PRESERVE_CONFIG.keys()) + list(PRESERVE_USER_DATA.keys())
+
+    for table in all_tables:
+        if not _table_exists(cur, table):
+            print(f"  {table}: saknas, hoppar över")
+            continue
+        cur.execute(pgsql.SQL("SELECT * FROM public.{}").format(pgsql.Identifier(table)))
+        cols = [desc[0] for desc in cur.description]
+        rows = cur.fetchall()
+        snapshot[table] = {'columns': cols, 'rows': rows}
+        print(f"  {table}: {len(rows)} rad(er) sparad(e)")
+
+    return snapshot
+
+
+def restore_settings(cur, snapshot: dict) -> None:
+    """Återställer sparade inställningar efter en ny installation.
+
+    Strategi per tabell:
+    • PRESERVE_CONFIG  – UPDATE befintliga rader (matcha på nyckelkolumn),
+                         INSERT rader som inte finns i de nya förvalda raderna.
+    • PRESERVE_USER_DATA – INSERT alla sparade rader med ON CONFLICT DO NOTHING.
+
+    Kolumner som inte finns i *både* snapshot och den nya tabellen hoppas över,
+    vilket gör återställningen tolerant mot strukturförändringar mellan versioner.
+    """
+    # --- Konfigurationstabeller ---
+    for table, cfg in PRESERVE_CONFIG.items():
+        if table not in snapshot:
+            continue
+
+        saved      = snapshot[table]
+        old_cols   = saved['columns']
+        key_col    = cfg['key']
+        new_cols   = _table_columns(cur, table)
+
+        # Begränsa till kolumner som finns i bägge versioner
+        restorable = [c for c in cfg['data_cols'] if c in new_cols and c in old_cols]
+
+        if key_col not in old_cols or not restorable:
+            print(f"  {table}: inga återställbara kolumner, hoppar över")
+            continue
+
+        key_idx  = old_cols.index(key_col)
+        col_idxs = {c: old_cols.index(c) for c in restorable}
+
+        updated = inserted = 0
+        for row in saved['rows']:
+            key_val  = row[key_idx]
+            data     = {c: row[i] for c, i in col_idxs.items()}
+            set_vals = list(data.values()) + [key_val]
+
+            cur.execute(
+                pgsql.SQL("UPDATE public.{tbl} SET {sets} WHERE {key} = %s").format(
+                    tbl=pgsql.Identifier(table),
+                    sets=pgsql.SQL(', ').join(
+                        pgsql.SQL("{} = %s").format(pgsql.Identifier(c)) for c in data
+                    ),
+                    key=pgsql.Identifier(key_col),
+                ),
+                set_vals,
+            )
+
+            if cur.rowcount == 0:
+                # Raden finns inte bland de nya förvalda raderna → användarens egna rad
+                ins_cols = [key_col] + list(data.keys())
+                ins_vals = [key_val] + list(data.values())
+                cur.execute(
+                    pgsql.SQL(
+                        "INSERT INTO public.{tbl} ({cols}) VALUES ({phs}) "
+                        "ON CONFLICT DO NOTHING"
+                    ).format(
+                        tbl=pgsql.Identifier(table),
+                        cols=pgsql.SQL(', ').join(map(pgsql.Identifier, ins_cols)),
+                        phs=pgsql.SQL(', ').join(pgsql.Placeholder() * len(ins_vals)),
+                    ),
+                    ins_vals,
+                )
+                inserted += 1
+            else:
+                updated += 1
+
+        print(f"  {table}: {updated} uppdaterad(e), {inserted} infogad(e)")
+
+    # --- Användardatatabeller ---
+    for table, restore_cols in PRESERVE_USER_DATA.items():
+        if table not in snapshot:
+            continue
+
+        saved    = snapshot[table]
+        old_cols = saved['columns']
+        new_cols = _table_columns(cur, table)
+        actual   = [c for c in restore_cols if c in new_cols and c in old_cols]
+
+        if not actual:
+            print(f"  {table}: inga återställbara kolumner, hoppar över")
+            continue
+
+        col_idxs = [old_cols.index(c) for c in actual]
+        inserted = 0
+        for row in saved['rows']:
+            vals = [row[i] for i in col_idxs]
+            cur.execute(
+                pgsql.SQL(
+                    "INSERT INTO public.{tbl} ({cols}) VALUES ({phs}) "
+                    "ON CONFLICT DO NOTHING"
+                ).format(
+                    tbl=pgsql.Identifier(table),
+                    cols=pgsql.SQL(', ').join(map(pgsql.Identifier, actual)),
+                    phs=pgsql.SQL(', ').join(pgsql.Placeholder() * len(vals)),
+                ),
+                vals,
+            )
+            inserted += cur.rowcount
+
+        print(f"  {table}: {inserted} rad(er) återställd(er)")
+
+
+# =============================================================================
 # INSTALLATION
 # =============================================================================
 
@@ -345,13 +532,79 @@ COMMENT ON FUNCTION public.system_owner()
         conn.close()
 
 
+def upgrade(base_path="."):
+    """Uppgraderar Hex med bevarade inställningar.
+
+    Steg:
+      1. Läs och spara alla konfigurerbara tabeller i minnet.
+      2. Kör full avinstallation (tar bort allt).
+      3. Kör ny installation (skapar allt från grunden med förvalda värden).
+      4. Återställ sparade inställningar ovanpå de nya förvalda värdena.
+
+    Använd detta istället för --uninstall + install när du vill bevara
+    anpassade inställningar (t.ex. publiceras_geoserver, schema_uttryck)
+    efter en versionsuppdatering av Hex.
+    """
+    print("=" * 60)
+    print("Hex Uppgradering (bevarar inställningar)")
+    print("=" * 60)
+    print(f"Databas: {DB_CONFIG['dbname']}@{DB_CONFIG['host']}")
+    print("=" * 60)
+
+    # Steg 1: Spara inställningar
+    print("Steg 1: Sparar inställningar...")
+    conn = psycopg2.connect(**DB_CONFIG)
+    conn.set_client_encoding('UTF8')
+    cur = conn.cursor()
+    try:
+        snapshot = snapshot_settings(cur)
+    finally:
+        cur.close()
+        conn.close()
+
+    # Steg 2: Avinstallera
+    print("\nSteg 2: Avinstallerar...")
+    uninstall()
+
+    # Steg 3: Installera
+    print("\nSteg 3: Installerar...")
+    install(base_path)
+
+    # Steg 4: Återställ inställningar
+    print("\nSteg 4: Återställer inställningar...")
+    conn = psycopg2.connect(**DB_CONFIG)
+    conn.set_client_encoding('UTF8')
+    cur = conn.cursor()
+    try:
+        restore_settings(cur, snapshot)
+        conn.commit()
+        print("=" * 60)
+        print("Uppgradering klar – inställningar återställda.")
+        print("=" * 60)
+    except Exception as e:
+        conn.rollback()
+        print(f"MISSLYCKADES vid återställning av inställningar: {e}")
+        print("Hex är installerat med förvalda värden. Återställ inställningar manuellt.")
+        raise
+    finally:
+        cur.close()
+        conn.close()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Hex Installation")
     parser.add_argument("--uninstall", action="store_true", help="Ta bort alla Hex-objekt")
+    parser.add_argument(
+        "--upgrade",
+        action="store_true",
+        help="Uppgradera Hex: spara inställningar, avinstallera, installera, återställ",
+    )
     args = parser.parse_args()
-    
+
     if args.uninstall:
         uninstall()
+    elif args.upgrade:
+        upgrade()
     else:
         install()
 

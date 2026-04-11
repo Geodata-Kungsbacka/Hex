@@ -33,7 +33,8 @@ INSERT INTO public.standardiserade_datakategorier
 VALUES
     ('ext', 'Externa datakällor (t.ex. FME-inläsning, regionala register)', false),
     ('kba', 'Interna kommunala datakällor (manuell redigering, ärendedata)', true),
-    ('sys', 'Systemdata och administration',                                 false);
+    ('sys', 'Systemdata och administration',                                 false)
+ON CONFLICT (prefix) DO NOTHING;
 
 -- Trigger functions run as SECURITY INVOKER, so the calling user needs SELECT on this table.
 GRANT SELECT ON public.standardiserade_datakategorier TO PUBLIC;

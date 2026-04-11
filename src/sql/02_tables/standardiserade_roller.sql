@@ -8,8 +8,20 @@ CREATE TABLE IF NOT EXISTS public.standardiserade_roller (
     arvs_fran       text    DEFAULT NULL,
     beskrivning     text,
 
-    CONSTRAINT standardiserade_roller_pkey PRIMARY KEY (gid)
+    CONSTRAINT standardiserade_roller_pkey PRIMARY KEY (gid),
+    CONSTRAINT standardiserade_roller_rollnamn_key UNIQUE (rollnamn)
 );
+
+-- Lägg till unik begränsning på rollnamn för befintliga installationer
+-- (CREATE TABLE IF NOT EXISTS hoppar över constraint-definitionen om tabellen redan finns).
+DO $$
+BEGIN
+    ALTER TABLE public.standardiserade_roller
+        ADD CONSTRAINT standardiserade_roller_rollnamn_key UNIQUE (rollnamn);
+EXCEPTION
+    WHEN duplicate_object THEN NULL;  -- constraint finns redan, inget att göra
+END;
+$$;
 
 ALTER TABLE public.standardiserade_roller
     OWNER TO postgres;
@@ -36,7 +48,8 @@ INSERT INTO standardiserade_roller (rollnamn, rolltyp, schema_uttryck, with_logi
     ('r_{schema}',    'read',  'IS NOT NULL', false, NULL,          'Läsbehörighetsgrupp – tilldelas AD-användare och AD-grupper'),
     ('w_{schema}',    'write', 'IS NOT NULL', false, NULL,          'Skrivbehörighetsgrupp – tilldelas AD-användare och AD-grupper'),
     ('gs_r_{schema}', 'read',  'IS NOT NULL', true,  'r_{schema}',  'GeoServer läs-tjänstekonto – ärver behörigheter från r_{schema}'),
-    ('gs_w_{schema}', 'write', 'IS NOT NULL', true,  'w_{schema}',  'GeoServer skriv-tjänstekonto – ärver behörigheter från w_{schema}');
+    ('gs_w_{schema}', 'write', 'IS NOT NULL', true,  'w_{schema}',  'GeoServer skriv-tjänstekonto – ärver behörigheter från w_{schema}')
+ON CONFLICT (rollnamn) DO NOTHING;
 
 -- Any database user who creates tables needs to read these configuration tables,
 -- since the trigger functions (hantera_ny_tabell, hantera_kolumntillagg) run
