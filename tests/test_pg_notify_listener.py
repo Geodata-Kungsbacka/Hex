@@ -589,12 +589,13 @@ class TestCreateWorkspaceNamespaceUri(unittest.TestCase):
         self.assertEqual(method, "PUT")
         self.assertIn("/namespaces/sk0_ext_sjv", url)
 
-        # Verify the URI in the payload is a proper https URI, not "http://sk0_ext_sjv"
+        # Verify the URI is not GeoServer's auto-generated "http://<name>" form
         ns_payload = calls[2][1]["json"]
         uri = ns_payload["namespace"]["uri"]
-        self.assertTrue(uri.startswith("https://"), f"Expected https URI, got: {uri}")
-        self.assertNotEqual(uri, "http://sk0_ext_sjv")
         self.assertIn("sk0_ext_sjv", uri)
+        self.assertNotEqual(uri, "http://sk0_ext_sjv")
+        # Default namespace_uri_base = base_url ("http://geoserver.example.com")
+        self.assertEqual(uri, "http://geoserver.example.com/sk0_ext_sjv")
 
     def test_namespace_put_failure_still_returns_true(self):
         """Misslyckad namespace-uppdatering ska inte hindra workspace från att rapporteras som skapad."""
@@ -630,7 +631,8 @@ class TestCreateWorkspaceNamespaceUri(unittest.TestCase):
         ns_resp = MagicMock()
         ns_resp.status_code = 200
         ns_resp.json.return_value = {
-            "namespace": {"prefix": "sk0_ext_sjv", "uri": "https://geoserver.kungsbacka.se/sk0_ext_sjv"}
+            # Default namespace_uri_base = base_url = "http://geoserver.example.com"
+            "namespace": {"prefix": "sk0_ext_sjv", "uri": "http://geoserver.example.com/sk0_ext_sjv"}
         }
 
         with patch.object(client, "_request_with_retry", side_effect=[
@@ -653,7 +655,8 @@ class TestCreateWorkspaceNamespaceUri(unittest.TestCase):
         ns_resp = MagicMock()
         ns_resp.status_code = 200
         ns_resp.json.return_value = {
-            "namespace": {"prefix": "sk0_ext_sjv", "uri": "http://sk0_ext_sjv"}  # fel: http, inte https
+            # GeoServer's auto-generated URI: no host, just the name → wrong format
+            "namespace": {"prefix": "sk0_ext_sjv", "uri": "http://sk0_ext_sjv"}
         }
 
         with patch.object(client, "_request_with_retry", side_effect=[
@@ -666,12 +669,13 @@ class TestCreateWorkspaceNamespaceUri(unittest.TestCase):
         self.assertTrue(result)
         calls = mock_req.call_args_list
         self.assertEqual(len(calls), 3)
-        # Third call must be PUT to namespaces with correct URI
+        # Third call must be PUT to namespaces with the correct namespace_uri_base URI
         method, url = calls[2][0][0], calls[2][0][1]
         self.assertEqual(method, "PUT")
         self.assertIn("/namespaces/sk0_ext_sjv", url)
         ns_payload = calls[2][1]["json"]
-        self.assertEqual(ns_payload["namespace"]["uri"], "https://geoserver.kungsbacka.se/sk0_ext_sjv")
+        # Default namespace_uri_base = base_url = "http://geoserver.example.com"
+        self.assertEqual(ns_payload["namespace"]["uri"], "http://geoserver.example.com/sk0_ext_sjv")
 
 
 class TestCreateGsRole(unittest.TestCase):

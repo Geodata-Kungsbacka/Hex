@@ -110,6 +110,10 @@ def load_config():
         "gs_url": os.environ.get("HEX_GS_URL", "http://localhost:8080/geoserver"),
         "gs_user": os.environ.get("HEX_GS_USER", ""),
         "gs_password": os.environ.get("HEX_GS_PASSWORD", ""),
+        # Namespace-URI-bas för GeoServer-workspaces.
+        # Standard: GeoServer-URL:en (ger t.ex. http://geoserver.example.com/sk0_kba_test).
+        # Sätt HEX_GS_NAMESPACE_BASE för ett eget prefix, t.ex. https://gis.min-org.se
+        "gs_namespace_base": os.environ.get("HEX_GS_NAMESPACE_BASE", ""),
         # Reconnect
         "reconnect_delay": int(os.environ.get("HEX_RECONNECT_DELAY", "5")),
         # Databaser
@@ -357,11 +361,13 @@ class GeoServerClient:
     MAX_RETRIES = 3
     RETRY_BACKOFF = [2, 5, 10]  # Sekunder mellan försök
 
-    def __init__(self, base_url, user, password, dry_run=False):
+    def __init__(self, base_url, user, password, dry_run=False, namespace_uri_base=""):
         self.base_url = base_url.rstrip("/")
         self.rest_url = f"{self.base_url}/rest"
         self.auth = HTTPBasicAuth(user, password)
         self.dry_run = dry_run
+        # Bas-URI för namespace-identifierare; standard är GeoServer-URL:en.
+        self.namespace_uri_base = (namespace_uri_base or self.base_url).rstrip("/")
         self.session = requests.Session()
         self.session.auth = self.auth
         self.session.headers.update({
@@ -458,7 +464,7 @@ class GeoServerClient:
             log.info("  [DRY-RUN] Skulle skapa workspace: %s", name)
             log.info("  [DRY-RUN] POST %s/workspaces", self.rest_url)
             log.info("  [DRY-RUN] Payload: %s", json.dumps(payload))
-            ns_payload = {"namespace": {"prefix": name, "uri": f"https://geoserver.kungsbacka.se/{name}"}}
+            ns_payload = {"namespace": {"prefix": name, "uri": f"{self.namespace_uri_base}/{name}"}}
             log.info("  [DRY-RUN] Skulle sätta namespace URI: PUT %s/namespaces/%s", self.rest_url, name)
             log.info("  [DRY-RUN] Namespace payload: %s", json.dumps(ns_payload))
             return True
@@ -480,7 +486,7 @@ class GeoServerClient:
 
         # GeoServer auto-generates the namespace URI as "http://<name>" which is
         # not a valid URI. Update it to a proper URI after workspace creation.
-        ns_payload = {"namespace": {"prefix": name, "uri": f"https://geoserver.kungsbacka.se/{name}"}}
+        ns_payload = {"namespace": {"prefix": name, "uri": f"{self.namespace_uri_base}/{name}"}}
         ns_resp = self._request_with_retry(
             "PUT", f"{self.rest_url}/namespaces/{name}", json=ns_payload
         )
@@ -549,11 +555,11 @@ class GeoServerClient:
     def _ensure_namespace_uri(self, name):
         """Verifierar och korrigerar namespace-URI för en befintlig workspace.
 
-        Förväntat format: https://geoserver.kungsbacka.se/{name}
+        Förväntat format: {self.namespace_uri_base}/{name}
         Om URI:n avviker loggas en WARNING och en PUT skickas för att korrigera.
         Fel loggas men kastas aldrig — metoden är alltid icke-fatal.
         """
-        expected_uri = f"https://geoserver.kungsbacka.se/{name}"
+        expected_uri = f"{self.namespace_uri_base}/{name}"
         current_uri = self.get_namespace_uri(name)
 
         if current_uri is None:
@@ -1456,8 +1462,9 @@ def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None, notifier
             _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label, all_pg_schemas)
 
             # Skicka återhämtningsnotifiering om vi tappat anslutning tidigare
-            if was_disconnected and notifier:
-                notifier.notify_pg_reconnected(db_label)
+            if was_disconnected:
+                if notifier:
+                    notifier.notify_pg_reconnected(db_label)
                 was_disconnected = False
 
             while not (stop_event and stop_event.is_set()):
@@ -1558,6 +1565,7 @@ def run_all_listeners(config, dry_run=False, stop_event=None):
             user=config["gs_user"],
             password=config["gs_password"],
             dry_run=dry_run,
+            namespace_uri_base=config.get("gs_namespace_base", ""),
         )
         listen_loop(databases[0], config["reconnect_delay"], gs_client, stop_event, notifier, all_pg_schemas)
         return
@@ -1571,6 +1579,7 @@ def run_all_listeners(config, dry_run=False, stop_event=None):
             user=config["gs_user"],
             password=config["gs_password"],
             dry_run=dry_run,
+            namespace_uri_base=config.get("gs_namespace_base", ""),
         )
         t = threading.Thread(
             target=listen_loop,
@@ -1639,6 +1648,7 @@ def main():
         user=config["gs_user"],
         password=config["gs_password"],
         dry_run=args.dry_run,
+        namespace_uri_base=config.get("gs_namespace_base", ""),
     )
 
     if not gs_client.test_connection():
