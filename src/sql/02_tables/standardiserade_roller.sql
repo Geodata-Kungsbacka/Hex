@@ -19,7 +19,7 @@ BEGIN
     ALTER TABLE public.standardiserade_roller
         ADD CONSTRAINT standardiserade_roller_rollnamn_key UNIQUE (rollnamn);
 EXCEPTION
-    WHEN duplicate_object THEN NULL;  -- constraint finns redan, inget att göra
+    WHEN duplicate_table THEN NULL;  -- constraint/index redan finns, inget att göra
 END;
 $$;
 
