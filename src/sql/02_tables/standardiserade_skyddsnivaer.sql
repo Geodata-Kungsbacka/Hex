@@ -33,7 +33,8 @@ VALUES
     ('sk0', 'Öppen publik data',                                       true),
     ('sk1', 'Kommunal data med begränsad åtkomst',                     true),
     ('sk2', 'Begränsad känslig data',                                  false),
-    ('skx', 'Okänd / oklassificerad data (endast GIS-administratörer)', false);
+    ('skx', 'Okänd / oklassificerad data (endast GIS-administratörer)', false)
+ON CONFLICT (prefix) DO NOTHING;
 
 -- Trigger functions (hantera_ny_tabell, validera_schemanamn, notifiera_geoserver) run as
 -- SECURITY INVOKER, so the calling user needs SELECT on this table.

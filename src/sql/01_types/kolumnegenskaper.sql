@@ -2,13 +2,19 @@
 
 -- DROP TYPE IF EXISTS public.kolumnegenskaper;
 
-CREATE TYPE public.kolumnegenskaper AS
-(
-	default_defs text[],
-	notnull_defs text[],
-	check_defs text[],
-	identity_defs text[]
-);
+DO $$
+BEGIN
+    CREATE TYPE public.kolumnegenskaper AS
+    (
+        default_defs text[],
+        notnull_defs text[],
+        check_defs text[],
+        identity_defs text[]
+    );
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END;
+$$;
 
 ALTER TYPE public.kolumnegenskaper
     OWNER TO postgres;
