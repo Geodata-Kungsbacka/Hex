@@ -448,7 +448,8 @@ class GeoServerClient:
     def create_workspace(self, name):
         """Skapar en workspace i GeoServer."""
         if self.workspace_exists(name):
-            log.info("  Workspace '%s' finns redan - hoppar över skapande", name)
+            self._ensure_namespace_uri(name)
+            log.info("  Workspace '%s' finns redan", name)
             return True
 
         payload = {"workspace": {"name": name}}
@@ -535,6 +536,57 @@ class GeoServerClient:
             "GET", f"{self.rest_url}/workspaces/{workspace}/datastores/{name}.json"
         )
         return resp.status_code == 200
+
+    def get_namespace_uri(self, name):
+        """Hämtar namespace-URI för en workspace, eller None om ej hittad."""
+        resp = self._request_with_retry(
+            "GET", f"{self.rest_url}/namespaces/{name}.json"
+        )
+        if resp.status_code != 200:
+            return None
+        return resp.json().get("namespace", {}).get("uri")
+
+    def _ensure_namespace_uri(self, name):
+        """Verifierar och korrigerar namespace-URI för en befintlig workspace.
+
+        Förväntat format: https://geoserver.kungsbacka.se/{name}
+        Om URI:n avviker loggas en WARNING och en PUT skickas för att korrigera.
+        Fel loggas men kastas aldrig — metoden är alltid icke-fatal.
+        """
+        expected_uri = f"https://geoserver.kungsbacka.se/{name}"
+        current_uri = self.get_namespace_uri(name)
+
+        if current_uri is None:
+            log.warning(
+                "  Kunde inte kontrollera namespace URI för workspace '%s'", name
+            )
+            return
+
+        if current_uri == expected_uri:
+            return
+
+        if self.dry_run:
+            log.info(
+                "  [DRY-RUN] Workspace '%s': namespace URI är '%s', förväntas '%s' – skulle korrigera",
+                name, current_uri, expected_uri,
+            )
+            return
+
+        log.warning(
+            "  Workspace '%s': namespace URI är '%s', förväntas '%s' – korrigerar...",
+            name, current_uri, expected_uri,
+        )
+        ns_payload = {"namespace": {"prefix": name, "uri": expected_uri}}
+        resp = self._request_with_retry(
+            "PUT", f"{self.rest_url}/namespaces/{name}", json=ns_payload
+        )
+        if resp.status_code == 200:
+            log.info("  Namespace URI korrigerad för '%s'", name)
+        else:
+            log.warning(
+                "  Kunde inte korrigera namespace URI för '%s': %d %s",
+                name, resp.status_code, resp.text,
+            )
 
     def _get_datastore_user(self, workspace, store_name):
         """Hämtar nuvarande pg_user från en befintlig datastore, eller None om ej hittad."""
@@ -775,8 +827,8 @@ class GeoServerClient:
         elif resp.status_code == 409 or (
             resp.status_code == 404 and "already exists" in resp.text
         ):
-            log.info("  ACL-regler för workspace '%s' finns redan - hoppar över", workspace)
-            return True
+            # Minst en regel finns redan – verifiera att värdena stämmer och korrigera vid behov
+            return self._ensure_acl_rules(workspace, rules)
         else:
             log.error(
                 "  Misslyckades att skapa ACL-regler för workspace '%s': %d %s",
@@ -810,6 +862,83 @@ class GeoServerClient:
                 log.error(
                     "  Misslyckades att ta bort ACL-regel '%s': %d %s",
                     rule, resp.status_code, resp.text,
+                )
+                all_ok = False
+
+        return all_ok
+
+    def get_acl_rules(self):
+        """Hämtar alla ACL-regler för lager.
+
+        Returnerar en dict {regelnyckeln: rollnamn} eller None vid fel.
+        Exempel: {"sk0_kba_foo.*.r": "r_sk0_kba_foo", "sk0_kba_foo.*.w": "w_sk0_kba_foo"}
+        """
+        resp = self._request_with_retry(
+            "GET", f"{self.rest_url}/security/acl/layers.json"
+        )
+        if resp.status_code != 200:
+            return None
+        return resp.json()
+
+    def _ensure_acl_rules(self, workspace, expected_rules):
+        """Verifierar och korrigerar ACL-regler mot förväntat utfall.
+
+        Anropas av create_workspace_acl när POST returnerar 409 (minst en regel
+        finns redan). Hämtar nuvarande regler via GET, jämför mot expected_rules
+        och korrigerar avvikande eller saknade regler.
+
+        Args:
+            workspace:      Workspace-namn (används bara för loggning).
+            expected_rules: Dict {regelnyckeln: förväntad_roll}.
+
+        Returns:
+            True om alla förväntade regler är korrekta (eller korrigerades), annars False.
+        """
+        all_rules = self.get_acl_rules()
+        if all_rules is None:
+            log.error(
+                "  Kunde inte hämta ACL-regler för att verifiera workspace '%s'", workspace
+            )
+            return False
+
+        all_ok = True
+
+        for rule_key, expected_role in expected_rules.items():
+            current_role = all_rules.get(rule_key)
+
+            if current_role == expected_role:
+                log.info("  ACL-regel '%s' är korrekt – hoppar över", rule_key)
+                continue
+
+            if current_role is not None:
+                # Felaktig roll – ta bort gammal regel, skapa ny
+                log.warning(
+                    "  ACL-regel '%s': är '%s', förväntas '%s' – korrigerar...",
+                    rule_key, current_role, expected_role,
+                )
+                del_resp = self._request_with_retry(
+                    "DELETE", f"{self.rest_url}/security/acl/layers/{rule_key}"
+                )
+                if del_resp.status_code not in (200, 404):
+                    log.error(
+                        "  Misslyckades att ta bort felaktig ACL-regel '%s': %d %s",
+                        rule_key, del_resp.status_code, del_resp.text,
+                    )
+                    all_ok = False
+                    continue
+            else:
+                log.info("  ACL-regel '%s' saknas – skapar...", rule_key)
+
+            post_resp = self._request_with_retry(
+                "POST", f"{self.rest_url}/security/acl/layers",
+                json={rule_key: expected_role},
+            )
+            if post_resp.status_code in (200, 201):
+                log.info("  ACL-regel '%s' = '%s' skapad/korrigerad", rule_key, expected_role)
+            else:
+                log.error(
+                    "  Misslyckades att skapa ACL-regel '%s': %d %s",
+                    rule_key, post_resp.status_code, post_resp.text,
                 )
                 all_ok = False
 
