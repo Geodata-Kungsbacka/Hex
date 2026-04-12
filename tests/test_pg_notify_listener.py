@@ -402,13 +402,16 @@ class TestHandlerLogicWithMockGeoServer(unittest.TestCase):
         """
         gs = self._make_gs_mock()
 
+        # handle_schema_removal_notification uses "with pg_conn.cursor() as cur:" so
+        # the context manager protocol calls __enter__() on cursor()'s return value.
+        # We must wire __enter__.return_value to cur_mock, not cursor.return_value itself.
         cur_mock = MagicMock()
         cur_mock.fetchall.side_effect = [
             [("sk0",), ("sk1",), ("skx",)],   # standardiserade_skyddsnivaer
             [("ext",), ("kba",), ("sys",)],    # standardiserade_datakategorier
         ]
         mock_conn = MagicMock()
-        mock_conn.cursor.return_value = cur_mock
+        mock_conn.cursor.return_value.__enter__.return_value = cur_mock
 
         original_pattern = gl.SCHEMA_PATTERN
         try:
