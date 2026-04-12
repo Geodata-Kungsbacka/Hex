@@ -1,6 +1,6 @@
 -- Event Trigger: blockera_schema_namnbyte_trigger on database
 
--- DROP EVENT TRIGGER IF EXISTS blockera_schema_namnbyte_trigger;
+DROP EVENT TRIGGER IF EXISTS blockera_schema_namnbyte_trigger;
 
 CREATE EVENT TRIGGER blockera_schema_namnbyte_trigger ON ddl_command_end
     WHEN TAG IN ('ALTER SCHEMA')
