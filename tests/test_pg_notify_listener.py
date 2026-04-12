@@ -411,6 +411,8 @@ class TestHandlerLogicWithMockGeoServer(unittest.TestCase):
             [("ext",), ("kba",), ("sys",)],    # standardiserade_datakategorier
         ]
         mock_conn = MagicMock()
+        # handle_schema_removal_notification uses "with pg_conn.cursor() as cur:"
+        # so __enter__.return_value must be the configured cursor mock.
         mock_conn.cursor.return_value.__enter__.return_value = cur_mock
 
         original_pattern = gl.SCHEMA_PATTERN
@@ -587,12 +589,13 @@ class TestCreateWorkspaceNamespaceUri(unittest.TestCase):
         self.assertEqual(method, "PUT")
         self.assertIn("/namespaces/sk0_ext_sjv", url)
 
-        # Verify the URI in the payload is a proper https URI, not "http://sk0_ext_sjv"
+        # Verify the URI is not GeoServer's auto-generated "http://<name>" form
         ns_payload = calls[2][1]["json"]
         uri = ns_payload["namespace"]["uri"]
-        self.assertTrue(uri.startswith("https://"), f"Expected https URI, got: {uri}")
-        self.assertNotEqual(uri, "http://sk0_ext_sjv")
         self.assertIn("sk0_ext_sjv", uri)
+        self.assertNotEqual(uri, "http://sk0_ext_sjv")
+        # Default namespace_uri_base = base_url ("http://geoserver.example.com")
+        self.assertEqual(uri, "http://geoserver.example.com/sk0_ext_sjv")
 
     def test_namespace_put_failure_still_returns_true(self):
         """Misslyckad namespace-uppdatering ska inte hindra workspace från att rapporteras som skapad."""
@@ -621,17 +624,58 @@ class TestCreateWorkspaceNamespaceUri(unittest.TestCase):
         # Only 2 calls: workspace_exists + POST; no PUT
         self.assertEqual(len(mock_req.call_args_list), 2)
 
-    def test_existing_workspace_skips_all_calls(self):
-        """Om workspace redan finns ska varken POST eller PUT anropas."""
+    def test_existing_workspace_correct_namespace_skips_write(self):
+        """Workspace finns med korrekt namespace URI → GET-kontroll, ingen POST/PUT."""
         client = self._make_client()
+
+        ns_resp = MagicMock()
+        ns_resp.status_code = 200
+        ns_resp.json.return_value = {
+            # Default namespace_uri_base = base_url = "http://geoserver.example.com"
+            "namespace": {"prefix": "sk0_ext_sjv", "uri": "http://geoserver.example.com/sk0_ext_sjv"}
+        }
 
         with patch.object(client, "_request_with_retry", side_effect=[
             self._mock_response(200),  # workspace_exists -> 200 = exists
+            ns_resp,                   # get_namespace_uri -> correct URI
         ]) as mock_req:
             result = client.create_workspace("sk0_ext_sjv")
 
         self.assertTrue(result)
-        self.assertEqual(len(mock_req.call_args_list), 1)
+        calls = mock_req.call_args_list
+        self.assertEqual(len(calls), 2)
+        # Second call must be GET to namespaces
+        self.assertEqual(calls[1][0][0], "GET")
+        self.assertIn("/namespaces/sk0_ext_sjv", calls[1][0][1])
+
+    def test_existing_workspace_wrong_namespace_is_repaired(self):
+        """Workspace finns med fel namespace URI (t.ex. GeoServers auto-genererade) → korrigeras via PUT."""
+        client = self._make_client()
+
+        ns_resp = MagicMock()
+        ns_resp.status_code = 200
+        ns_resp.json.return_value = {
+            # GeoServer's auto-generated URI: no host, just the name → wrong format
+            "namespace": {"prefix": "sk0_ext_sjv", "uri": "http://sk0_ext_sjv"}
+        }
+
+        with patch.object(client, "_request_with_retry", side_effect=[
+            self._mock_response(200),  # workspace_exists -> 200 = exists
+            ns_resp,                   # get_namespace_uri -> wrong URI
+            self._mock_response(200),  # PUT /namespaces -> 200 success
+        ]) as mock_req:
+            result = client.create_workspace("sk0_ext_sjv")
+
+        self.assertTrue(result)
+        calls = mock_req.call_args_list
+        self.assertEqual(len(calls), 3)
+        # Third call must be PUT to namespaces with the correct namespace_uri_base URI
+        method, url = calls[2][0][0], calls[2][0][1]
+        self.assertEqual(method, "PUT")
+        self.assertIn("/namespaces/sk0_ext_sjv", url)
+        ns_payload = calls[2][1]["json"]
+        # Default namespace_uri_base = base_url = "http://geoserver.example.com"
+        self.assertEqual(ns_payload["namespace"]["uri"], "http://geoserver.example.com/sk0_ext_sjv")
 
 
 class TestCreateGsRole(unittest.TestCase):
@@ -732,24 +776,68 @@ class TestCreateWorkspaceAcl(unittest.TestCase):
                           return_value=self._mock_response(200)):
             self.assertTrue(client.create_workspace_acl("sk0_kba_test"))
 
-    def test_create_acl_409_already_exists(self):
-        """409 → reglerna finns redan, returnerar True (idempotent)."""
+    def test_create_acl_409_rules_already_correct(self):
+        """409 → GET visar att reglerna redan har rätt roll → returnerar True utan skrivning."""
         client = self._make_client()
+        correct_rules = {
+            "sk0_kba_test.*.r": "r_sk0_kba_test",
+            "sk0_kba_test.*.w": "w_sk0_kba_test",
+        }
         with patch.object(client, "_request_with_retry",
                           return_value=self._mock_response(409)):
-            self.assertTrue(client.create_workspace_acl("sk0_kba_test"))
+            with patch.object(client, "get_acl_rules", return_value=correct_rules):
+                self.assertTrue(client.create_workspace_acl("sk0_kba_test"))
+
+    def test_create_acl_409_wrong_role_is_repaired(self):
+        """
+        409 → GET visar felaktig roll → DELETE gammal + POST ny regel.
+
+        Exempel: regeln pekar på ROLE_AUTHENTICATED istället för r_sk0_kba_test.
+        Utan den här reparationen skulle GeoServer fortsätta använda fel roll.
+        """
+        client = self._make_client()
+        wrong_rules = {
+            "sk0_kba_test.*.r": "ROLE_AUTHENTICATED",  # fel roll
+            "sk0_kba_test.*.w": "w_sk0_kba_test",      # korrekt
+        }
+        with patch.object(client, "_request_with_retry",
+                          return_value=self._mock_response(409)):
+            with patch.object(client, "get_acl_rules", return_value=wrong_rules):
+                with patch.object(client, "_request_with_retry") as mock_req:
+                    mock_req.side_effect = [
+                        self._mock_response(200),   # DELETE gammal regel
+                        self._mock_response(201),   # POST ny korrekt regel
+                    ]
+                    result = client._ensure_acl_rules("sk0_kba_test", {
+                        "sk0_kba_test.*.r": "r_sk0_kba_test",
+                        "sk0_kba_test.*.w": "w_sk0_kba_test",
+                    })
+
+        self.assertTrue(result)
+        calls = mock_req.call_args_list
+        # DELETE för felaktig regel
+        self.assertEqual(calls[0][0][0], "DELETE")
+        self.assertIn("sk0_kba_test.*.r", calls[0][0][1])
+        # POST med korrekt roll
+        self.assertEqual(calls[1][0][0], "POST")
+        self.assertEqual(calls[1][1]["json"], {"sk0_kba_test.*.r": "r_sk0_kba_test"})
 
     def test_create_acl_404_already_exists_geoserver_quirk(self):
         """
         Regression: GeoServer kan returnera 404 med 'already exists' i kroppen
         om ACL-reglerna lämnades kvar efter en manuell workspace-borttagning.
-        Ska behandlas som 409, inte som fel.
+        Ska behandlas som 409 och trigga verify-and-repair.
         """
         client = self._make_client()
         body = "Rule sk0_kba_test.*.r already exists"
+        correct_rules = {
+            "sk0_kba_test.*.r": "r_sk0_kba_test",
+            "sk0_kba_test.*.w": "w_sk0_kba_test",
+        }
         with patch.object(client, "_request_with_retry",
                           return_value=self._mock_response(404, body)):
-            self.assertTrue(client.create_workspace_acl("sk0_kba_test"))
+            with patch.object(client, "get_acl_rules", return_value=correct_rules):
+                self.assertTrue(client.create_workspace_acl("sk0_kba_test"))
 
     def test_create_acl_404_genuine_failure(self):
         """404 utan 'already exists' är ett riktigt fel → False."""
@@ -994,25 +1082,41 @@ class TestReconcileGeoServerSchemas(unittest.TestCase):
 
         gs.create_workspace.assert_called_once_with("sk0_kba_testschema")
 
-    def test_schema_already_in_geoserver_not_recreated(self):
-        """Schema finns i både PG och GeoServer → ingen workspace skapas."""
+    def test_existing_schema_refreshes_datastore_credentials(self):
+        """
+        Schema finns i både PG och GeoServer → workspace skapas inte igen men
+        create_pg_datastore anropas för att uppdatera lösenordet.
+
+        Förut hoppades befintliga scheman över helt under startavstämning.
+        Nu körs handle_schema_notification för alla scheman (idempotent) så att
+        lösenordsändringar efter ominstallation slår igenom vid omstart av tjänsten.
+        """
         cur = self._make_cur_mock(["sk0_kba_testschema"])
         gs  = self._make_gs_mock(existing_workspaces=["sk0_kba_testschema"])
 
-        gl._reconcile_geoserver_schemas(cur, self.DB_CONFIG, gs)
+        with patch.object(gl, "_fetch_role_credentials",
+                          return_value=(TEST_ROLE_NAME, TEST_ROLE_PASSWORD)):
+            gl._reconcile_geoserver_schemas(cur, self.DB_CONFIG, gs)
 
-        gs.create_workspace.assert_not_called()
+        # create_workspace anropas (idempotent – den verkliga implementationen
+        # kontrollerar att workspace finns innan den försöker skapa)
+        gs.create_workspace.assert_called_once_with("sk0_kba_testschema")
+        # create_pg_datastore anropas alltid för att synka lösenordet
+        gs.create_pg_datastore.assert_called_once()
 
     def test_in_sync_logs_ok(self):
-        """Identiska listor → ingen skapning, inga varningar."""
+        """Identiska listor → ingen skapning, inga varningar om saknade/extra scheman."""
         cur = self._make_cur_mock(["sk0_kba_testschema"])
         gs  = self._make_gs_mock(existing_workspaces=["sk0_kba_testschema"])
 
-        with self.assertLogs("geoserver_listener", level="WARNING") as cm:
-            # Trigga en WARNING vi kan filtrera bort – annars misslyckas assertLogs
-            # om inga loggar alls produceras.
-            logging.getLogger("geoserver_listener").warning("_sentinel_")
-            gl._reconcile_geoserver_schemas(cur, self.DB_CONFIG, gs)
+        # Mocka handle_schema_notification för att isolera reconcilieringslogiken
+        # från interna varningar (t.ex. _load_schema_pattern med tom mock-cursor).
+        with patch.object(gl, "handle_schema_notification", return_value=True):
+            with self.assertLogs("geoserver_listener", level="WARNING") as cm:
+                # Trigga en WARNING vi kan filtrera bort – annars misslyckas assertLogs
+                # om inga loggar alls produceras.
+                logging.getLogger("geoserver_listener").warning("_sentinel_")
+                gl._reconcile_geoserver_schemas(cur, self.DB_CONFIG, gs)
 
         # Den enda WARNING-raden ska vara vår sentinel, inte en om saknade scheman
         warnings = [line for line in cm.output if "WARNING" in line and "_sentinel_" not in line]

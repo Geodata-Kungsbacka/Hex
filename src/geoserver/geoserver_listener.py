@@ -110,6 +110,10 @@ def load_config():
         "gs_url": os.environ.get("HEX_GS_URL", "http://localhost:8080/geoserver"),
         "gs_user": os.environ.get("HEX_GS_USER", ""),
         "gs_password": os.environ.get("HEX_GS_PASSWORD", ""),
+        # Namespace-URI-bas för GeoServer-workspaces.
+        # Standard: GeoServer-URL:en (ger t.ex. http://geoserver.example.com/sk0_kba_test).
+        # Sätt HEX_GS_NAMESPACE_BASE för ett eget prefix, t.ex. https://gis.min-org.se
+        "gs_namespace_base": os.environ.get("HEX_GS_NAMESPACE_BASE", ""),
         # Reconnect
         "reconnect_delay": int(os.environ.get("HEX_RECONNECT_DELAY", "5")),
         # Databaser
@@ -357,11 +361,13 @@ class GeoServerClient:
     MAX_RETRIES = 3
     RETRY_BACKOFF = [2, 5, 10]  # Sekunder mellan försök
 
-    def __init__(self, base_url, user, password, dry_run=False):
+    def __init__(self, base_url, user, password, dry_run=False, namespace_uri_base=""):
         self.base_url = base_url.rstrip("/")
         self.rest_url = f"{self.base_url}/rest"
         self.auth = HTTPBasicAuth(user, password)
         self.dry_run = dry_run
+        # Bas-URI för namespace-identifierare; standard är GeoServer-URL:en.
+        self.namespace_uri_base = (namespace_uri_base or self.base_url).rstrip("/")
         self.session = requests.Session()
         self.session.auth = self.auth
         self.session.headers.update({
@@ -448,7 +454,8 @@ class GeoServerClient:
     def create_workspace(self, name):
         """Skapar en workspace i GeoServer."""
         if self.workspace_exists(name):
-            log.info("  Workspace '%s' finns redan - hoppar över skapande", name)
+            self._ensure_namespace_uri(name)
+            log.info("  Workspace '%s' finns redan", name)
             return True
 
         payload = {"workspace": {"name": name}}
@@ -457,7 +464,7 @@ class GeoServerClient:
             log.info("  [DRY-RUN] Skulle skapa workspace: %s", name)
             log.info("  [DRY-RUN] POST %s/workspaces", self.rest_url)
             log.info("  [DRY-RUN] Payload: %s", json.dumps(payload))
-            ns_payload = {"namespace": {"prefix": name, "uri": f"https://geoserver.kungsbacka.se/{name}"}}
+            ns_payload = {"namespace": {"prefix": name, "uri": f"{self.namespace_uri_base}/{name}"}}
             log.info("  [DRY-RUN] Skulle sätta namespace URI: PUT %s/namespaces/%s", self.rest_url, name)
             log.info("  [DRY-RUN] Namespace payload: %s", json.dumps(ns_payload))
             return True
@@ -479,7 +486,7 @@ class GeoServerClient:
 
         # GeoServer auto-generates the namespace URI as "http://<name>" which is
         # not a valid URI. Update it to a proper URI after workspace creation.
-        ns_payload = {"namespace": {"prefix": name, "uri": f"https://geoserver.kungsbacka.se/{name}"}}
+        ns_payload = {"namespace": {"prefix": name, "uri": f"{self.namespace_uri_base}/{name}"}}
         ns_resp = self._request_with_retry(
             "PUT", f"{self.rest_url}/namespaces/{name}", json=ns_payload
         )
@@ -535,6 +542,57 @@ class GeoServerClient:
             "GET", f"{self.rest_url}/workspaces/{workspace}/datastores/{name}.json"
         )
         return resp.status_code == 200
+
+    def get_namespace_uri(self, name):
+        """Hämtar namespace-URI för en workspace, eller None om ej hittad."""
+        resp = self._request_with_retry(
+            "GET", f"{self.rest_url}/namespaces/{name}.json"
+        )
+        if resp.status_code != 200:
+            return None
+        return resp.json().get("namespace", {}).get("uri")
+
+    def _ensure_namespace_uri(self, name):
+        """Verifierar och korrigerar namespace-URI för en befintlig workspace.
+
+        Förväntat format: {self.namespace_uri_base}/{name}
+        Om URI:n avviker loggas en WARNING och en PUT skickas för att korrigera.
+        Fel loggas men kastas aldrig — metoden är alltid icke-fatal.
+        """
+        expected_uri = f"{self.namespace_uri_base}/{name}"
+        current_uri = self.get_namespace_uri(name)
+
+        if current_uri is None:
+            log.warning(
+                "  Kunde inte kontrollera namespace URI för workspace '%s'", name
+            )
+            return
+
+        if current_uri == expected_uri:
+            return
+
+        if self.dry_run:
+            log.info(
+                "  [DRY-RUN] Workspace '%s': namespace URI är '%s', förväntas '%s' – skulle korrigera",
+                name, current_uri, expected_uri,
+            )
+            return
+
+        log.warning(
+            "  Workspace '%s': namespace URI är '%s', förväntas '%s' – korrigerar...",
+            name, current_uri, expected_uri,
+        )
+        ns_payload = {"namespace": {"prefix": name, "uri": expected_uri}}
+        resp = self._request_with_retry(
+            "PUT", f"{self.rest_url}/namespaces/{name}", json=ns_payload
+        )
+        if resp.status_code == 200:
+            log.info("  Namespace URI korrigerad för '%s'", name)
+        else:
+            log.warning(
+                "  Kunde inte korrigera namespace URI för '%s': %d %s",
+                name, resp.status_code, resp.text,
+            )
 
     def _get_datastore_user(self, workspace, store_name):
         """Hämtar nuvarande pg_user från en befintlig datastore, eller None om ej hittad."""
@@ -775,8 +833,8 @@ class GeoServerClient:
         elif resp.status_code == 409 or (
             resp.status_code == 404 and "already exists" in resp.text
         ):
-            log.info("  ACL-regler för workspace '%s' finns redan - hoppar över", workspace)
-            return True
+            # Minst en regel finns redan – verifiera att värdena stämmer och korrigera vid behov
+            return self._ensure_acl_rules(workspace, rules)
         else:
             log.error(
                 "  Misslyckades att skapa ACL-regler för workspace '%s': %d %s",
@@ -810,6 +868,83 @@ class GeoServerClient:
                 log.error(
                     "  Misslyckades att ta bort ACL-regel '%s': %d %s",
                     rule, resp.status_code, resp.text,
+                )
+                all_ok = False
+
+        return all_ok
+
+    def get_acl_rules(self):
+        """Hämtar alla ACL-regler för lager.
+
+        Returnerar en dict {regelnyckeln: rollnamn} eller None vid fel.
+        Exempel: {"sk0_kba_foo.*.r": "r_sk0_kba_foo", "sk0_kba_foo.*.w": "w_sk0_kba_foo"}
+        """
+        resp = self._request_with_retry(
+            "GET", f"{self.rest_url}/security/acl/layers.json"
+        )
+        if resp.status_code != 200:
+            return None
+        return resp.json()
+
+    def _ensure_acl_rules(self, workspace, expected_rules):
+        """Verifierar och korrigerar ACL-regler mot förväntat utfall.
+
+        Anropas av create_workspace_acl när POST returnerar 409 (minst en regel
+        finns redan). Hämtar nuvarande regler via GET, jämför mot expected_rules
+        och korrigerar avvikande eller saknade regler.
+
+        Args:
+            workspace:      Workspace-namn (används bara för loggning).
+            expected_rules: Dict {regelnyckeln: förväntad_roll}.
+
+        Returns:
+            True om alla förväntade regler är korrekta (eller korrigerades), annars False.
+        """
+        all_rules = self.get_acl_rules()
+        if all_rules is None:
+            log.error(
+                "  Kunde inte hämta ACL-regler för att verifiera workspace '%s'", workspace
+            )
+            return False
+
+        all_ok = True
+
+        for rule_key, expected_role in expected_rules.items():
+            current_role = all_rules.get(rule_key)
+
+            if current_role == expected_role:
+                log.info("  ACL-regel '%s' är korrekt – hoppar över", rule_key)
+                continue
+
+            if current_role is not None:
+                # Felaktig roll – ta bort gammal regel, skapa ny
+                log.warning(
+                    "  ACL-regel '%s': är '%s', förväntas '%s' – korrigerar...",
+                    rule_key, current_role, expected_role,
+                )
+                del_resp = self._request_with_retry(
+                    "DELETE", f"{self.rest_url}/security/acl/layers/{rule_key}"
+                )
+                if del_resp.status_code not in (200, 404):
+                    log.error(
+                        "  Misslyckades att ta bort felaktig ACL-regel '%s': %d %s",
+                        rule_key, del_resp.status_code, del_resp.text,
+                    )
+                    all_ok = False
+                    continue
+            else:
+                log.info("  ACL-regel '%s' saknas – skapar...", rule_key)
+
+            post_resp = self._request_with_retry(
+                "POST", f"{self.rest_url}/security/acl/layers",
+                json={rule_key: expected_role},
+            )
+            if post_resp.status_code in (200, 201):
+                log.info("  ACL-regel '%s' = '%s' skapad/korrigerad", rule_key, expected_role)
+            else:
+                log.error(
+                    "  Misslyckades att skapa ACL-regel '%s': %d %s",
+                    rule_key, post_resp.status_code, post_resp.text,
                 )
                 all_ok = False
 
@@ -1122,8 +1257,11 @@ def _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label="", all_pg_
     Logik:
       a) Hämtar publicerbara scheman från denna databas (pg_namespace).
       b) Hämtar befintliga workspaces via GeoServer REST GET /rest/workspaces.json.
-      c) Skapar workspace+datastore för varje PG-schema som saknas i GeoServer.
-      d) Loggar INFO för varje skapad workspace.
+      c) Kör handle_schema_notification för ALLA PG-scheman (inte bara saknade).
+         Saknade workspaces skapas; befintliga datastores uppdateras alltid med
+         aktuella autentiseringsuppgifter från hex_role_credentials (så att
+         lösenordsändringar efter ominstallation slår igenom vid omstart).
+      d) Loggar INFO för varje nyskapad workspace.
       e) Loggar WARNING för varje GeoServer-workspace som saknar PG-schema i
          SAMTLIGA övervakade databaser (ingen borttagning görs automatiskt).
       f) Alla fel loggas; funktionen avbryter aldrig LISTEN-loopen.
@@ -1179,9 +1317,13 @@ def _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label="", all_pg_
             tag, len(gs_workspaces),
         )
 
-        # c) Scheman i PG som saknas i GeoServer – skapa dem
+        # c) Alla scheman: skapa saknade workspaces och uppdatera autentiseringsuppgifter
+        #    för befintliga. handle_schema_notification är idempotent (skapar bara om
+        #    något saknas, PUT:ar alltid nya credentials till befintliga datastores).
+        #    Detta säkerställer att lösenordsändringar (t.ex. 'lösenord backfyllt' efter
+        #    ominstallation) slår igenom automatiskt vid omstart av tjänsten.
         missing_in_gs = pg_schemas - gs_workspaces
-        for schema_name in sorted(missing_in_gs):
+        for schema_name in sorted(pg_schemas):
             try:
                 ok = handle_schema_notification(
                     schema_name,
@@ -1190,15 +1332,15 @@ def _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label="", all_pg_
                     gs_client,
                     db_label=db_label,
                 )
-                # d) Logga varje skapad workspace
-                if ok:
+                # d) Logga nyligen skapade workspaces (befintliga uppdateras tyst)
+                if ok and schema_name in missing_in_gs:
                     log.info(
                         "%sStartavstämning: skapat saknat GeoServer-workspace '%s'",
                         tag, schema_name,
                     )
             except Exception as e:
                 log.error(
-                    "%sStartavstämning: fel vid skapande av workspace '%s': %s",
+                    "%sStartavstämning: fel vid hantering av workspace '%s': %s",
                     tag, schema_name, e,
                 )
 
@@ -1320,8 +1462,9 @@ def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None, notifier
             _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label, all_pg_schemas)
 
             # Skicka återhämtningsnotifiering om vi tappat anslutning tidigare
-            if was_disconnected and notifier:
-                notifier.notify_pg_reconnected(db_label)
+            if was_disconnected:
+                if notifier:
+                    notifier.notify_pg_reconnected(db_label)
                 was_disconnected = False
 
             while not (stop_event and stop_event.is_set()):
@@ -1422,6 +1565,7 @@ def run_all_listeners(config, dry_run=False, stop_event=None):
             user=config["gs_user"],
             password=config["gs_password"],
             dry_run=dry_run,
+            namespace_uri_base=config.get("gs_namespace_base", ""),
         )
         listen_loop(databases[0], config["reconnect_delay"], gs_client, stop_event, notifier, all_pg_schemas)
         return
@@ -1435,6 +1579,7 @@ def run_all_listeners(config, dry_run=False, stop_event=None):
             user=config["gs_user"],
             password=config["gs_password"],
             dry_run=dry_run,
+            namespace_uri_base=config.get("gs_namespace_base", ""),
         )
         t = threading.Thread(
             target=listen_loop,
@@ -1503,6 +1648,7 @@ def main():
         user=config["gs_user"],
         password=config["gs_password"],
         dry_run=args.dry_run,
+        namespace_uri_base=config.get("gs_namespace_base", ""),
     )
 
     if not gs_client.test_connection():
