@@ -994,25 +994,41 @@ class TestReconcileGeoServerSchemas(unittest.TestCase):
 
         gs.create_workspace.assert_called_once_with("sk0_kba_testschema")
 
-    def test_schema_already_in_geoserver_not_recreated(self):
-        """Schema finns i både PG och GeoServer → ingen workspace skapas."""
+    def test_existing_schema_refreshes_datastore_credentials(self):
+        """
+        Schema finns i både PG och GeoServer → workspace skapas inte igen men
+        create_pg_datastore anropas för att uppdatera lösenordet.
+
+        Förut hoppades befintliga scheman över helt under startavstämning.
+        Nu körs handle_schema_notification för alla scheman (idempotent) så att
+        lösenordsändringar efter ominstallation slår igenom vid omstart av tjänsten.
+        """
         cur = self._make_cur_mock(["sk0_kba_testschema"])
         gs  = self._make_gs_mock(existing_workspaces=["sk0_kba_testschema"])
 
-        gl._reconcile_geoserver_schemas(cur, self.DB_CONFIG, gs)
+        with patch.object(gl, "_fetch_role_credentials",
+                          return_value=(TEST_ROLE_NAME, TEST_ROLE_PASSWORD)):
+            gl._reconcile_geoserver_schemas(cur, self.DB_CONFIG, gs)
 
-        gs.create_workspace.assert_not_called()
+        # create_workspace anropas (idempotent – den verkliga implementationen
+        # kontrollerar att workspace finns innan den försöker skapa)
+        gs.create_workspace.assert_called_once_with("sk0_kba_testschema")
+        # create_pg_datastore anropas alltid för att synka lösenordet
+        gs.create_pg_datastore.assert_called_once()
 
     def test_in_sync_logs_ok(self):
-        """Identiska listor → ingen skapning, inga varningar."""
+        """Identiska listor → ingen skapning, inga varningar om saknade/extra scheman."""
         cur = self._make_cur_mock(["sk0_kba_testschema"])
         gs  = self._make_gs_mock(existing_workspaces=["sk0_kba_testschema"])
 
-        with self.assertLogs("geoserver_listener", level="WARNING") as cm:
-            # Trigga en WARNING vi kan filtrera bort – annars misslyckas assertLogs
-            # om inga loggar alls produceras.
-            logging.getLogger("geoserver_listener").warning("_sentinel_")
-            gl._reconcile_geoserver_schemas(cur, self.DB_CONFIG, gs)
+        # Mocka handle_schema_notification för att isolera reconcilieringslogiken
+        # från interna varningar (t.ex. _load_schema_pattern med tom mock-cursor).
+        with patch.object(gl, "handle_schema_notification", return_value=True):
+            with self.assertLogs("geoserver_listener", level="WARNING") as cm:
+                # Trigga en WARNING vi kan filtrera bort – annars misslyckas assertLogs
+                # om inga loggar alls produceras.
+                logging.getLogger("geoserver_listener").warning("_sentinel_")
+                gl._reconcile_geoserver_schemas(cur, self.DB_CONFIG, gs)
 
         # Den enda WARNING-raden ska vara vår sentinel, inte en om saknade scheman
         warnings = [line for line in cm.output if "WARNING" in line and "_sentinel_" not in line]

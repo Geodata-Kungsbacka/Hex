@@ -1122,8 +1122,11 @@ def _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label="", all_pg_
     Logik:
       a) Hämtar publicerbara scheman från denna databas (pg_namespace).
       b) Hämtar befintliga workspaces via GeoServer REST GET /rest/workspaces.json.
-      c) Skapar workspace+datastore för varje PG-schema som saknas i GeoServer.
-      d) Loggar INFO för varje skapad workspace.
+      c) Kör handle_schema_notification för ALLA PG-scheman (inte bara saknade).
+         Saknade workspaces skapas; befintliga datastores uppdateras alltid med
+         aktuella autentiseringsuppgifter från hex_role_credentials (så att
+         lösenordsändringar efter ominstallation slår igenom vid omstart).
+      d) Loggar INFO för varje nyskapad workspace.
       e) Loggar WARNING för varje GeoServer-workspace som saknar PG-schema i
          SAMTLIGA övervakade databaser (ingen borttagning görs automatiskt).
       f) Alla fel loggas; funktionen avbryter aldrig LISTEN-loopen.
@@ -1179,9 +1182,13 @@ def _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label="", all_pg_
             tag, len(gs_workspaces),
         )
 
-        # c) Scheman i PG som saknas i GeoServer – skapa dem
+        # c) Alla scheman: skapa saknade workspaces och uppdatera autentiseringsuppgifter
+        #    för befintliga. handle_schema_notification är idempotent (skapar bara om
+        #    något saknas, PUT:ar alltid nya credentials till befintliga datastores).
+        #    Detta säkerställer att lösenordsändringar (t.ex. 'lösenord backfyllt' efter
+        #    ominstallation) slår igenom automatiskt vid omstart av tjänsten.
         missing_in_gs = pg_schemas - gs_workspaces
-        for schema_name in sorted(missing_in_gs):
+        for schema_name in sorted(pg_schemas):
             try:
                 ok = handle_schema_notification(
                     schema_name,
@@ -1190,15 +1197,15 @@ def _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label="", all_pg_
                     gs_client,
                     db_label=db_label,
                 )
-                # d) Logga varje skapad workspace
-                if ok:
+                # d) Logga nyligen skapade workspaces (befintliga uppdateras tyst)
+                if ok and schema_name in missing_in_gs:
                     log.info(
                         "%sStartavstämning: skapat saknat GeoServer-workspace '%s'",
                         tag, schema_name,
                     )
             except Exception as e:
                 log.error(
-                    "%sStartavstämning: fel vid skapande av workspace '%s': %s",
+                    "%sStartavstämning: fel vid hantering av workspace '%s': %s",
                     tag, schema_name, e,
                 )
 
