@@ -251,16 +251,16 @@ BEGIN
     END IF;
 END $$;
 
--- A4d: r_sk2_ext_test should be a LOGIN role (with_login=true on r_{schema} row)
+-- A4d: gs_r_sk2_ext_test should be a LOGIN role (with_login=true on gs_r_{schema} row)
 DO $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM pg_roles
-        WHERE rolname = 'r_sk2_ext_test' AND rolcanlogin = true
+        WHERE rolname = 'gs_r_sk2_ext_test' AND rolcanlogin = true
     ) THEN
-        RAISE NOTICE 'TEST A4d PASSED: Login role r_sk2_ext_test created with LOGIN';
+        RAISE NOTICE 'TEST A4d PASSED: Login role gs_r_sk2_ext_test created with LOGIN';
     ELSE
-        RAISE WARNING 'TEST A4d FAILED: r_sk2_ext_test missing or not a LOGIN role';
+        RAISE WARNING 'TEST A4d FAILED: gs_r_sk2_ext_test missing or not a LOGIN role';
     END IF;
 END $$;
 
