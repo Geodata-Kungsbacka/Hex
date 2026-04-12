@@ -767,7 +767,16 @@ class TestCreatePgDatastore(unittest.TestCase):
     """
     Enhetstester för GeoServerClient.create_pg_datastore som verifierar att
     direkta PostgreSQL-anslutningsparametrar skickas korrekt till GeoServer.
+
+    Täcker specifikt regressionsfallet (lösenordsförnyelse efter ominstallation):
+    när en datastore redan finns med SAMMA pg_user men ett förnyat lösenord
+    (underhall_hex 'lösenord backfyllt') ska ett PUT skickas – inte hoppas över.
     """
+
+    WORKSPACE   = "sk0_kba_testschema"
+    STORE       = "sk0_kba_testschema"
+    PG_USER     = "gs_r_sk0_kba_testschema"
+    PG_PASSWORD = "brand_new_password_after_reinstall"
 
     def _make_client(self):
         return gl.GeoServerClient(
@@ -776,27 +785,85 @@ class TestCreatePgDatastore(unittest.TestCase):
             password="secret",
         )
 
-    def _mock_response(self, status_code):
+    def _mock_response(self, status_code, text=""):
         resp = MagicMock()
         resp.status_code = status_code
-        resp.text = ""
+        resp.text = text
         return resp
 
+    def _call_create(self, client):
+        return client.create_pg_datastore(
+            workspace=self.WORKSPACE,
+            store_name=self.STORE,
+            host="db-host",
+            port=5432,
+            dbname="geodata_sk0_oppen",
+            schema_name=self.WORKSPACE,
+            pg_user=self.PG_USER,
+            pg_password=self.PG_PASSWORD,
+        )
+
+    # ------------------------------------------------------------------
+    # Regression: befintlig datastore med SAMMA användare – ska alltid PUT
+    # ------------------------------------------------------------------
+    def test_existing_store_same_user_refreshes_password(self):
+        """
+        Regression: befintlig datastore med samma pg_user ska ändå PUT:as
+        med det nya lösenordet.
+
+        Simulerar 'before state' efter ominstallation: underhall_hex har
+        genererat ett nytt lösenord ('lösenord backfyllt') men GeoServer
+        har fortfarande det gamla. Utan denna fix returnerades True direkt
+        och GeoServer fick aldrig det nya lösenordet → 'null'-fel vid
+        listning av lager.
+        """
+        client = self._make_client()
+
+        with patch.object(client, "_get_datastore_user", return_value=self.PG_USER):
+            with patch.object(client, "_update_pg_datastore", return_value=True) as mock_put:
+                result = self._call_create(client)
+
+        self.assertTrue(result)
+        mock_put.assert_called_once_with(
+            self.WORKSPACE, self.STORE,
+            "db-host", 5432, "geodata_sk0_oppen",
+            self.WORKSPACE, self.PG_USER, self.PG_PASSWORD,
+        )
+
+    def test_existing_store_different_user_updates_via_put(self):
+        """Befintlig datastore med annan pg_user (r_* → gs_r_* migration) → PUT."""
+        client = self._make_client()
+        old_user = f"r_{self.WORKSPACE}"
+
+        with patch.object(client, "_get_datastore_user", return_value=old_user):
+            with patch.object(client, "_update_pg_datastore", return_value=True) as mock_put:
+                result = self._call_create(client)
+
+        self.assertTrue(result)
+        mock_put.assert_called_once_with(
+            self.WORKSPACE, self.STORE,
+            "db-host", 5432, "geodata_sk0_oppen",
+            self.WORKSPACE, self.PG_USER, self.PG_PASSWORD,
+        )
+
+    # ------------------------------------------------------------------
+    # Ny datastore (finns inte sedan tidigare) – POST
+    # ------------------------------------------------------------------
     def test_create_pg_datastore_success(self):
         """Lyckad skapning av direkt PG-datastore returnerar True."""
         client = self._make_client()
 
         with patch.object(client, "_request_with_retry", side_effect=[
-            self._mock_response(404),  # datastore_exists -> 404
-            self._mock_response(201),  # POST /datastores -> 201
+            self._mock_response(404),  # _get_datastore_user → 404 = finns inte
+            self._mock_response(201),  # POST /datastores → 201
         ]) as mock_req:
             result = client.create_pg_datastore(
-                workspace="sk0_kba_testschema",
-                store_name="sk0_kba_testschema",
+                workspace=self.WORKSPACE,
+                store_name=self.STORE,
                 host="localhost",
                 port=5432,
                 dbname="geodata",
-                schema_name="sk0_kba_testschema",
+                schema_name=self.WORKSPACE,
                 pg_user="r_sk0_kba_testschema",
                 pg_password="secret",
             )
@@ -819,51 +886,46 @@ class TestCreatePgDatastore(unittest.TestCase):
         self.assertEqual(entries["host"], "localhost")
         self.assertEqual(entries["port"], "5432")
         self.assertEqual(entries["database"], "geodata")
-        self.assertEqual(entries["schema"], "sk0_kba_testschema")
+        self.assertEqual(entries["schema"], self.WORKSPACE)
         self.assertEqual(entries["user"], "r_sk0_kba_testschema")
         self.assertEqual(entries["passwd"], "secret")
-
-    def test_create_pg_datastore_already_exists(self):
-        """Om datastore redan finns returneras True utan att skapa."""
-        client = self._make_client()
-
-        with patch.object(client, "_request_with_retry", side_effect=[
-            self._mock_response(200),  # datastore_exists -> 200 = exists
-        ]) as mock_req:
-            result = client.create_pg_datastore(
-                workspace="sk0_kba_testschema",
-                store_name="sk0_kba_testschema",
-                host="localhost",
-                port=5432,
-                dbname="geodata",
-                schema_name="sk0_kba_testschema",
-                pg_user="r_sk0_kba_testschema",
-                pg_password="secret",
-            )
-
-        self.assertTrue(result)
-        self.assertEqual(len(mock_req.call_args_list), 1)
 
     def test_create_pg_datastore_failure(self):
         """Om GeoServer returnerar fel vid POST returneras False."""
         client = self._make_client()
 
         with patch.object(client, "_request_with_retry", side_effect=[
-            self._mock_response(404),  # datastore_exists
-            self._mock_response(500),  # POST -> failure
+            self._mock_response(404),  # _get_datastore_user → finns inte
+            self._mock_response(500),  # POST → failure
         ]):
             result = client.create_pg_datastore(
-                workspace="sk0_kba_testschema",
-                store_name="sk0_kba_testschema",
+                workspace=self.WORKSPACE,
+                store_name=self.STORE,
                 host="localhost",
                 port=5432,
                 dbname="geodata",
-                schema_name="sk0_kba_testschema",
+                schema_name=self.WORKSPACE,
                 pg_user="r_sk0_kba_testschema",
                 pg_password="secret",
             )
 
         self.assertFalse(result)
+
+    def test_post_conflict_falls_back_to_put(self):
+        """
+        POST 409/500 'already exists' (datastore finns men _get_datastore_user
+        misslyckades att läsa) ska falla tillbaka till _update_pg_datastore.
+        """
+        client = self._make_client()
+
+        with patch.object(client, "_get_datastore_user", return_value=None):
+            with patch.object(client, "_request_with_retry",
+                              return_value=self._mock_response(409, "already exists")):
+                with patch.object(client, "_update_pg_datastore", return_value=True) as mock_put:
+                    result = self._call_create(client)
+
+        self.assertTrue(result)
+        mock_put.assert_called_once()
 
 
 class TestReconcileGeoServerSchemas(unittest.TestCase):

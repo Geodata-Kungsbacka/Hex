@@ -610,8 +610,8 @@ class GeoServerClient:
         """Skapar eller uppdaterar en PostGIS-datastore i GeoServer.
 
         Skapar en ny datastore om den inte finns. Om datastore redan existerar
-        men är konfigurerad med en annan PostgreSQL-användare (t.ex. gammal r_*
-        som migrerats till gs_r_*) uppdateras den via PUT med nya uppgifter.
+        uppdateras den alltid via PUT med aktuella uppgifter från hex_role_credentials,
+        så att lösenordsändringar (t.ex. efter ominstallation) slår igenom.
 
         Args:
             workspace:   Workspace-namn
@@ -626,15 +626,17 @@ class GeoServerClient:
         existing_user = self._get_datastore_user(workspace, store_name)
 
         if existing_user is not None:
-            if existing_user == pg_user:
-                log.info("  Datastore '%s' finns redan i workspace '%s' - hoppar över", store_name, workspace)
-                return True
-            else:
+            if existing_user != pg_user:
                 log.info(
                     "  Datastore '%s' använder gammal användare '%s', uppdaterar till '%s'",
                     store_name, existing_user, pg_user,
                 )
-                return self._update_pg_datastore(workspace, store_name, host, port, dbname, schema_name, pg_user, pg_password)
+            else:
+                log.info(
+                    "  Datastore '%s' finns redan i workspace '%s' - uppdaterar autentiseringsuppgifter",
+                    store_name, workspace,
+                )
+            return self._update_pg_datastore(workspace, store_name, host, port, dbname, schema_name, pg_user, pg_password)
 
         payload = {
             "dataStore": {
