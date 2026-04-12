@@ -9,6 +9,7 @@ Användning:
 import argparse
 import re
 import psycopg2
+from psycopg2 import sql as pgsql
 from pathlib import Path
 
 # =============================================================================
@@ -200,8 +201,60 @@ DROP TYPE IF EXISTS public.geom_info;
 """
 
 # =============================================================================
+# PRESERVE CONFIG — tables with default rows the user can customise.
+# key: natural unique column; restore: data columns to carry across upgrade.
+# =============================================================================
+
+PRESERVE_CONFIG = {
+    "standardiserade_skyddsnivaer": {
+        "key": "prefix",
+        "restore": ["beskrivning", "publiceras_geoserver"],
+    },
+    "standardiserade_datakategorier": {
+        "key": "prefix",
+        "restore": ["beskrivning", "validera_geometri"],
+    },
+    "standardiserade_kolumner": {
+        "key": "kolumnnamn",
+        "restore": ["ordinal_position", "datatyp", "default_varde", "schema_uttryck", "historik_qa", "beskrivning"],
+    },
+    "standardiserade_roller": {
+        "key": "rollnamn",
+        "restore": ["rolltyp", "schema_uttryck", "ta_bort_med_schema", "with_login", "arvs_fran", "beskrivning"],
+    },
+}
+
+# Purely user-managed tables — no system defaults; fully re-inserted on upgrade.
+# id/skapad/created_at etc. are left to regenerate automatically.
+PRESERVE_USER_DATA = {
+    "hex_systemanvandare": ["anvandare", "beskrivning"],
+    "hex_grupprattigheter": ["ad_grupproll", "hex_roll", "beskrivning"],
+    "hex_role_credentials": ["rolname", "password", "rolcanlogin"],
+}
+
+# =============================================================================
 # HELPERS
 # =============================================================================
+
+def _table_exists(cur, table: str) -> bool:
+    """Returnerar True om tabellen finns i public-schemat."""
+    cur.execute(
+        "SELECT 1 FROM information_schema.tables"
+        " WHERE table_schema = 'public' AND table_name = %s",
+        (table,),
+    )
+    return cur.fetchone() is not None
+
+
+def _table_columns(cur, table: str) -> set:
+    """Returnerar mängden kolumnnamn för en tabell i public-schemat."""
+    cur.execute(
+        "SELECT column_name FROM information_schema.columns"
+        " WHERE table_schema = 'public' AND table_name = %s",
+        (table,),
+    )
+    return {row[0] for row in cur.fetchall()}
+
 
 def _conn_params(db: dict) -> dict:
     """Returnerar psycopg2-anslutningsparametrar (exkluderar owner_role)."""
@@ -233,6 +286,185 @@ def process_sql(sql: str, owner_role: str | None) -> str:
 
     # Ersätt alla OWNER TO med konfigurerad roll
     return re.sub(r'OWNER TO \w+', f'OWNER TO {owner_role}', sql, flags=re.IGNORECASE)
+
+
+# =============================================================================
+# UPGRADE HELPERS
+# =============================================================================
+
+def snapshot_settings(cur) -> dict:
+    """Läser alla rader från PRESERVE_*-tabeller innan avinstallation."""
+    snapshot = {}
+
+    for table, cfg in PRESERVE_CONFIG.items():
+        if not _table_exists(cur, table):
+            continue
+        cols = _table_columns(cur, table)
+        key = cfg["key"]
+        restore_cols = [c for c in cfg["restore"] if c in cols]
+        all_cols = [key] + restore_cols
+        cur.execute(
+            pgsql.SQL("SELECT {} FROM public.{}").format(
+                pgsql.SQL(", ").join(pgsql.Identifier(c) for c in all_cols),
+                pgsql.Identifier(table),
+            )
+        )
+        snapshot[table] = {"rows": cur.fetchall(), "cols": all_cols}
+
+    for table, user_cols in PRESERVE_USER_DATA.items():
+        if not _table_exists(cur, table):
+            continue
+        cols = _table_columns(cur, table)
+        available_cols = [c for c in user_cols if c in cols]
+        if not available_cols:
+            continue
+        cur.execute(
+            pgsql.SQL("SELECT {} FROM public.{}").format(
+                pgsql.SQL(", ").join(pgsql.Identifier(c) for c in available_cols),
+                pgsql.Identifier(table),
+            )
+        )
+        snapshot[table] = {"rows": cur.fetchall(), "cols": available_cols}
+
+    return snapshot
+
+
+def restore_settings(cur, snapshot: dict):
+    """Återställer rader från snapshot efter en ny installation.
+
+    PRESERVE_CONFIG: UPDATEar rader som matchar naturlig nyckel;
+                     INSERTar rader som inte längre finns i nya defaults (användartillagda).
+    PRESERVE_USER_DATA: INSERTar alla sparade rader med ON CONFLICT DO NOTHING.
+    Strukturell difftolerens: återställer bara kolumner som finns i både snapshot och ny tabell.
+    """
+    for table, cfg in PRESERVE_CONFIG.items():
+        if table not in snapshot:
+            continue
+        data = snapshot[table]
+        if not data["rows"]:
+            continue
+        if not _table_exists(cur, table):
+            continue
+
+        new_cols = _table_columns(cur, table)
+        key_col = cfg["key"]
+        old_cols = data["cols"]
+
+        # Only work with columns present in both snapshot and new schema
+        restorable_cols = [c for c in old_cols if c in new_cols]
+        if key_col not in restorable_cols:
+            continue
+        restore_cols = [c for c in restorable_cols if c != key_col]
+
+        for row in data["rows"]:
+            row_dict = dict(zip(old_cols, row))
+            key_val = row_dict[key_col]
+
+            if restore_cols:
+                params = {c: row_dict[c] for c in restore_cols}
+                params[key_col] = key_val
+                cur.execute(
+                    pgsql.SQL("UPDATE public.{} SET {} WHERE {} = {}").format(
+                        pgsql.Identifier(table),
+                        pgsql.SQL(", ").join(
+                            pgsql.SQL("{} = {}").format(
+                                pgsql.Identifier(c), pgsql.Placeholder(c)
+                            )
+                            for c in restore_cols
+                        ),
+                        pgsql.Identifier(key_col),
+                        pgsql.Placeholder(key_col),
+                    ),
+                    params,
+                )
+
+            if cur.rowcount == 0:
+                # User-added row — insert it back
+                insert_cols = restorable_cols
+                insert_params = {c: row_dict[c] for c in insert_cols}
+                cur.execute(
+                    pgsql.SQL(
+                        "INSERT INTO public.{} ({}) VALUES ({}) ON CONFLICT ({}) DO NOTHING"
+                    ).format(
+                        pgsql.Identifier(table),
+                        pgsql.SQL(", ").join(pgsql.Identifier(c) for c in insert_cols),
+                        pgsql.SQL(", ").join(pgsql.Placeholder(c) for c in insert_cols),
+                        pgsql.Identifier(key_col),
+                    ),
+                    insert_params,
+                )
+
+    for table, user_cols in PRESERVE_USER_DATA.items():
+        if table not in snapshot:
+            continue
+        data = snapshot[table]
+        if not data["rows"]:
+            continue
+        if not _table_exists(cur, table):
+            continue
+
+        new_cols = _table_columns(cur, table)
+        old_cols = data["cols"]
+        restorable_cols = [c for c in old_cols if c in new_cols]
+        if not restorable_cols:
+            continue
+
+        for row in data["rows"]:
+            row_dict = dict(zip(old_cols, row))
+            insert_params = {c: row_dict[c] for c in restorable_cols if c in row_dict}
+            if not insert_params:
+                continue
+            cur.execute(
+                pgsql.SQL(
+                    "INSERT INTO public.{} ({}) VALUES ({}) ON CONFLICT DO NOTHING"
+                ).format(
+                    pgsql.Identifier(table),
+                    pgsql.SQL(", ").join(pgsql.Identifier(c) for c in insert_params),
+                    pgsql.SQL(", ").join(pgsql.Placeholder(c) for c in insert_params),
+                ),
+                insert_params,
+            )
+
+
+def upgrade(db: dict, base_path="."):
+    """Sparar inställningar, avinstallerar, installerar om och återställer inställningar."""
+    print("=" * 60)
+    print(f"Hex Uppgradering - {_label(db)}")
+    print("=" * 60)
+
+    # Snapshot before uninstall
+    conn = psycopg2.connect(**_conn_params(db))
+    conn.set_client_encoding('UTF8')
+    cur = conn.cursor()
+    try:
+        print("Sparar inställningar...")
+        snapshot = snapshot_settings(cur)
+        total = sum(len(d["rows"]) for d in snapshot.values())
+        print(f"  {total} rad(er) sparade från {len(snapshot)} tabell(er).")
+    finally:
+        cur.close()
+        conn.close()
+
+    uninstall(db)
+    install(db, base_path)
+
+    # Restore in a fresh connection
+    conn = psycopg2.connect(**_conn_params(db))
+    conn.set_client_encoding('UTF8')
+    cur = conn.cursor()
+    try:
+        print("Återställer inställningar...")
+        restore_settings(cur, snapshot)
+        conn.commit()
+        print("Uppgradering klar.")
+        print("+++Upgrade Complete+++")
+    except Exception as e:
+        conn.rollback()
+        print(f"MISSLYCKADES vid återställning: {e}")
+        raise
+    finally:
+        cur.close()
+        conn.close()
 
 
 # =============================================================================
@@ -374,10 +606,18 @@ COMMENT ON FUNCTION public.system_owner()
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Hex Installation")
     parser.add_argument("--uninstall", action="store_true", help="Ta bort alla Hex-objekt")
+    parser.add_argument("--upgrade", action="store_true", help="Spara inställningar, avinstallera, installera om och återställ")
     args = parser.parse_args()
 
-    action = uninstall if args.uninstall else install
-    action_name = "Avinstallation" if args.uninstall else "Installation"
+    if args.uninstall:
+        action_name = "Avinstallation"
+        def action(db): return uninstall(db)
+    elif args.upgrade:
+        action_name = "Uppgradering"
+        def action(db): return upgrade(db)
+    else:
+        action_name = "Installation"
+        def action(db): return install(db)
 
     succeeded = []
     failed = []

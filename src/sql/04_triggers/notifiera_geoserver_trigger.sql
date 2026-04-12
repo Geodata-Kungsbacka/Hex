@@ -2,7 +2,7 @@
 
 -- Event Trigger: notifiera_geoserver_trigger on database
 
--- DROP EVENT TRIGGER IF EXISTS notifiera_geoserver_trigger;
+DROP EVENT TRIGGER IF EXISTS notifiera_geoserver_trigger;
 
 CREATE EVENT TRIGGER notifiera_geoserver_trigger ON DDL_COMMAND_END
     WHEN TAG IN ('CREATE SCHEMA')
