@@ -622,6 +622,7 @@ class GeoServerClient:
                 "connectionParameters": {
                     "entry": [
                         {"@key": "dbtype",               "$": "postgis"},
+                        {"@key": "namespace",            "$": f"{self.namespace_uri_base}/{workspace}"},
                         {"@key": "host",                 "$": host},
                         {"@key": "port",                 "$": str(port)},
                         {"@key": "database",             "$": dbname},
@@ -704,6 +705,7 @@ class GeoServerClient:
                 "connectionParameters": {
                     "entry": [
                         {"@key": "dbtype",              "$": "postgis"},
+                        {"@key": "namespace",           "$": f"{self.namespace_uri_base}/{workspace}"},
                         {"@key": "host",                "$": host},
                         {"@key": "port",                "$": str(port)},
                         {"@key": "database",            "$": dbname},
