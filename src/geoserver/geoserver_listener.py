@@ -1372,9 +1372,24 @@ def _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label="", all_pg_
                     tag, schema_name, e,
                 )
 
-        # e) Workspaces i GeoServer utan motsvarande PG-schema – logga varning, gör inget
+        # e) Workspaces i GeoServer utan motsvarande PG-schema – logga varning, gör inget.
+        #    I multi-DB-läge (all_pg_schemas angiven) begränsas varningar till de prefix
+        #    som denna databas faktiskt hanterar, så att varje äkta föräldralös workspace
+        #    bara rapporteras av rätt databas (sk0_oppen → sk0_*, skx_utveckling → skx_*).
+        #    Databaser utan egna scheman hoppas över helt i multi-DB-läge.
         known_schemas = all_pg_schemas if all_pg_schemas is not None else pg_schemas
-        extra_in_gs = {ws for ws in gs_workspaces - known_schemas if SCHEMA_PATTERN.match(ws)}
+        own_prefixes = {name.split("_")[0] for name in pg_schemas}
+        if own_prefixes:
+            extra_in_gs = {
+                ws for ws in gs_workspaces - known_schemas
+                if SCHEMA_PATTERN.match(ws) and ws.split("_")[0] in own_prefixes
+            }
+        elif all_pg_schemas is None:
+            # Enskild databas utan egna scheman: rapportera alla matchande föräldralösa
+            extra_in_gs = {ws for ws in gs_workspaces - known_schemas if SCHEMA_PATTERN.match(ws)}
+        else:
+            # Multi-DB utan egna scheman: denna databas äger inga prefix – hoppa över
+            extra_in_gs = set()
         for ws_name in sorted(extra_in_gs):
             log.warning(
                 "%sStartavstämning: workspace '%s' finns i GeoServer men "
@@ -1399,7 +1414,7 @@ def _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label="", all_pg_
 # POSTGRESQL LISTENER
 # =============================================================================
 
-def _periodic_reconcile_loop(db_config, gs_client, stop_event, interval_seconds, db_label=""):
+def _periodic_reconcile_loop(db_config, gs_client, stop_event, interval_seconds, db_label="", all_pg_schemas=None):
     """Periodisk avstämning som kör _reconcile_geoserver_schemas på ett fast intervall.
 
     Öppnar en egen kortlivad PG-anslutning per körning, oberoende av
@@ -1411,6 +1426,7 @@ def _periodic_reconcile_loop(db_config, gs_client, stop_event, interval_seconds,
         stop_event:       threading.Event – sätts vid graceful shutdown.
         interval_seconds: Sekunder mellan körningar.
         db_label:         Logg-prefix.
+        all_pg_schemas:   Samlad schema-mängd från alla övervakade databaser (se run_all_listeners).
     """
     tag = _db_tag(db_label)
     log.info(
@@ -1432,7 +1448,7 @@ def _periodic_reconcile_loop(db_config, gs_client, stop_event, interval_seconds,
             conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
             try:
                 with conn.cursor() as cur:
-                    _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label)
+                    _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label, all_pg_schemas)
             finally:
                 conn.close()
         except psycopg2.OperationalError as e:
@@ -1519,7 +1535,7 @@ def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None, notifier
     if reconcile_interval > 0:
         t = threading.Thread(
             target=_periodic_reconcile_loop,
-            args=(db_config, gs_client, stop_event, reconcile_interval, db_label),
+            args=(db_config, gs_client, stop_event, reconcile_interval, db_label, all_pg_schemas),
             name=f"reconcile-{db_label}",
             daemon=True,
         )
