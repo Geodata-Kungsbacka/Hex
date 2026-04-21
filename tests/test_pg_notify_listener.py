@@ -1593,7 +1593,7 @@ class TestPeriodicReconcileLoop(unittest.TestCase):
         stop = threading.Event()
         periodic_called = threading.Event()
 
-        def fake_periodic(db_config, gs_client, stop_event, interval_seconds, db_label=""):
+        def fake_periodic(db_config, gs_client, stop_event, interval_seconds, db_label="", all_pg_schemas=None):
             periodic_called.set()
             stop_event.wait()
 
