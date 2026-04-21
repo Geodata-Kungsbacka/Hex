@@ -208,7 +208,7 @@ DROP TYPE IF EXISTS public.geom_info;
 PRESERVE_CONFIG = {
     "standardiserade_skyddsnivaer": {
         "key": "prefix",
-        "restore": ["beskrivning", "publiceras_geoserver"],
+        "restore": ["beskrivning", "publiceras_geoserver", "anonym_las"],
     },
     "standardiserade_datakategorier": {
         "key": "prefix",

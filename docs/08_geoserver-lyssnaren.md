@@ -21,14 +21,29 @@ tabellen `standardiserade_skyddsnivaer` — standard är `sk0` och `sk1`.
 UPDATE standardiserade_skyddsnivaer
 SET publiceras_geoserver = true
 WHERE prefix = 'sk2';
+```
+
+Huruvida publicerade lager är läsbara utan inloggning styrs av kolumnen `anonym_las`.
+När den är `true` läggs `ROLE_ANONYMOUS` till i GeoServers ACL-läsregel för alla
+workspaces med det prefixet, vilket tillåter anonyma WMS/WFS-anrop (t.ex. från Hajk).
+Standard är `true` för `sk0` (öppen publik data) och `false` för övriga prefix.
+Förutsätter att åtkomst redan begränsas på nätverksnivå (t.ex. IP-vitlista i `web.xml`).
+
+```sql
+-- Tillåt anonym WMS/WFS-läsning för skx (utvecklingsdata)
+UPDATE standardiserade_skyddsnivaer
+SET anonym_las = true
+WHERE prefix = 'skx';
 
 -- Kontrollera aktuell konfiguration
-SELECT prefix, beskrivning, publiceras_geoserver
+SELECT prefix, beskrivning, publiceras_geoserver, anonym_las
 FROM standardiserade_skyddsnivaer
 ORDER BY prefix;
 ```
 
-Lyssnaren laddar om mönstret dynamiskt vid varje notifiering — ingen omstart krävs.
+Lyssnaren laddar `anonym_las` per schema vid varje notifiering — ingen omstart krävs
+för att nya scheman ska få rätt regel. Befintliga workspaces uppdateras automatiskt
+vid nästa omstart av tjänsten (startavstämningen korrigerar avvikande ACL-regler).
 
 Processen körs som en Windows-tjänst och startar automatiskt med servern.
 
