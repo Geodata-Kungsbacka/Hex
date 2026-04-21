@@ -17,6 +17,7 @@ Användning:
     python3 tests/test_pg_notify_listener.py
 """
 
+import os
 import sys
 import threading
 import time
@@ -1340,6 +1341,7 @@ class TestReconcileGeoServerSchemas(unittest.TestCase):
     # 7. Sk2/skx-scheman publiceras inte om SCHEMA_PATTERN så säger
     # ------------------------------------------------------------------
 
+
     def test_sk2_schema_blocked_by_schema_pattern(self):
         """
         sk2 är inte publicerbart i standardkonfigurationen (publiceras_geoserver = false).
@@ -1425,6 +1427,223 @@ class TestLoadSchemaPattern(unittest.TestCase):
         original = gl.SCHEMA_PATTERN
         gl._load_schema_pattern(cur)
         self.assertIs(gl.SCHEMA_PATTERN, original)
+
+
+class TestPeriodicReconcileLoop(unittest.TestCase):
+    """
+    Enhetstester för _periodic_reconcile_loop – verifierar att periodisk
+    avstämning anropar _reconcile_geoserver_schemas, hanterar fel gracefully
+    och avslutar omedelbart när stop_event sätts.
+    """
+
+    DB_CONFIG = {
+        "host": "localhost",
+        "port": 5432,
+        "dbname": "geodata",
+        "user": "hex_listener",
+        "password": "pw",
+    }
+
+    def _make_conn_mock(self):
+        conn = MagicMock()
+        conn.cursor.return_value.__enter__.return_value = MagicMock()
+        return conn
+
+    def test_calls_reconcile_after_interval(self):
+        """Anropar _reconcile_geoserver_schemas efter interval_seconds."""
+        stop = threading.Event()
+        gs = MagicMock()
+        called = threading.Event()
+
+        def fake_reconcile(*args, **kwargs):
+            called.set()
+
+        with patch.object(gl, "_reconcile_geoserver_schemas", side_effect=fake_reconcile):
+            with patch("psycopg2.connect", return_value=self._make_conn_mock()):
+                t = threading.Thread(
+                    target=gl._periodic_reconcile_loop,
+                    args=(self.DB_CONFIG, gs, stop, 0.05, "test"),
+                    daemon=True,
+                )
+                t.start()
+                called.wait(timeout=3)
+                stop.set()
+                t.join(timeout=3)
+
+        self.assertTrue(called.is_set(), "_reconcile_geoserver_schemas anropades aldrig")
+
+    def test_stops_when_stop_event_set(self):
+        """stop_event redan satt → loop-body körs aldrig och tråden avslutas."""
+        stop = threading.Event()
+        stop.set()
+        gs = MagicMock()
+
+        with patch.object(gl, "_reconcile_geoserver_schemas") as mock_rec:
+            t = threading.Thread(
+                target=gl._periodic_reconcile_loop,
+                args=(self.DB_CONFIG, gs, stop, 60, "test"),
+                daemon=True,
+            )
+            t.start()
+            t.join(timeout=3)
+
+        mock_rec.assert_not_called()
+        self.assertFalse(t.is_alive())
+
+    def test_pg_connection_error_is_handled(self):
+        """OperationalError vid PG-anslutning loggas som WARNING – ingen krasch."""
+        stop = threading.Event()
+        gs = MagicMock()
+        attempt = {"n": 0}
+
+        def fail_connect(*args, **kwargs):
+            attempt["n"] += 1
+            if attempt["n"] >= 2:
+                stop.set()
+            raise psycopg2.OperationalError("connection refused")
+
+        with patch("psycopg2.connect", side_effect=fail_connect):
+            t = threading.Thread(
+                target=gl._periodic_reconcile_loop,
+                args=(self.DB_CONFIG, gs, stop, 0.05, "test"),
+                daemon=True,
+            )
+            t.start()
+            t.join(timeout=5)
+
+        self.assertFalse(t.is_alive())
+        self.assertGreaterEqual(attempt["n"], 1)
+
+    def test_unexpected_error_is_handled(self):
+        """RuntimeError under avstämning loggas som ERROR – tråden fortsätter och kraschar inte."""
+        stop = threading.Event()
+        gs = MagicMock()
+        call_count = {"n": 0}
+
+        def fail_reconcile(*args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] >= 2:
+                stop.set()
+            raise RuntimeError("unexpected")
+
+        with patch.object(gl, "_reconcile_geoserver_schemas", side_effect=fail_reconcile):
+            with patch("psycopg2.connect", return_value=self._make_conn_mock()):
+                t = threading.Thread(
+                    target=gl._periodic_reconcile_loop,
+                    args=(self.DB_CONFIG, gs, stop, 0.05, "test"),
+                    daemon=True,
+                )
+                t.start()
+                t.join(timeout=5)
+
+        self.assertFalse(t.is_alive())
+        self.assertGreaterEqual(call_count["n"], 1)
+
+    def test_opens_own_pg_connection(self):
+        """Öppnar en egen kortlivad PG-anslutning per körning med rätt parametrar."""
+        stop = threading.Event()
+        gs = MagicMock()
+        called = threading.Event()
+
+        with patch.object(gl, "_reconcile_geoserver_schemas", side_effect=lambda *a, **k: called.set()):
+            with patch("psycopg2.connect", return_value=self._make_conn_mock()) as mock_connect:
+                t = threading.Thread(
+                    target=gl._periodic_reconcile_loop,
+                    args=(self.DB_CONFIG, gs, stop, 0.05, "test"),
+                    daemon=True,
+                )
+                t.start()
+                called.wait(timeout=3)
+                stop.set()
+                t.join(timeout=3)
+
+        mock_connect.assert_called_with(
+            host=self.DB_CONFIG["host"],
+            port=self.DB_CONFIG["port"],
+            dbname=self.DB_CONFIG["dbname"],
+            user=self.DB_CONFIG["user"],
+            password=self.DB_CONFIG["password"],
+            connect_timeout=10,
+        )
+
+    def test_reconcile_interval_zero_does_not_spawn_thread(self):
+        """listen_loop med reconcile_interval=0 startar ingen reconcile-bakgrundstråd."""
+        gs = MagicMock()
+        stop = threading.Event()
+        stop.set()  # Avsluta listen_loop omedelbart utan PG-anslutning
+
+        with patch.object(gl, "_periodic_reconcile_loop") as mock_periodic:
+            gl.listen_loop(
+                DB_CONFIG,
+                reconnect_delay=1,
+                gs_client=gs,
+                stop_event=stop,
+                reconcile_interval=0,
+            )
+
+        mock_periodic.assert_not_called()
+
+    def test_reconcile_interval_positive_spawns_thread(self):
+        """listen_loop med reconcile_interval>0 startar _periodic_reconcile_loop som bakgrundstråd."""
+        gs = MagicMock()
+        gs.create_workspace.return_value = True
+        gs.create_pg_datastore.return_value = True
+        gs.create_gs_role.return_value = True
+        gs.create_workspace_acl.return_value = True
+        stop = threading.Event()
+        periodic_called = threading.Event()
+
+        def fake_periodic(db_config, gs_client, stop_event, interval_seconds, db_label=""):
+            periodic_called.set()
+            stop_event.wait()
+
+        with patch.object(gl, "_periodic_reconcile_loop", side_effect=fake_periodic):
+            with patch.object(gl, "_fetch_role_credentials",
+                              return_value=(TEST_ROLE_NAME, TEST_ROLE_PASSWORD)):
+                t = threading.Thread(
+                    target=gl.listen_loop,
+                    args=(DB_CONFIG, 1, gs, stop, None, None, 30),
+                    daemon=True,
+                )
+                t.start()
+                periodic_called.wait(timeout=3)
+                stop.set()
+                t.join(timeout=3)
+
+        self.assertTrue(periodic_called.is_set(), "_periodic_reconcile_loop startades aldrig")
+
+
+class TestLoadConfig(unittest.TestCase):
+    """
+    Enhetstester för load_config – verifierar att HEX_RECONCILE_INTERVAL
+    läses korrekt med standard och anpassade värden.
+    """
+
+    _MIN_ENV = {
+        "HEX_GS_USER": "admin",
+        "HEX_GS_PASSWORD": "secret",
+        "HEX_DB_1_DBNAME": "geodata",
+    }
+
+    def test_reconcile_interval_default(self):
+        """HEX_RECONCILE_INTERVAL ej satt → standard 900."""
+        with patch.dict(os.environ, self._MIN_ENV, clear=True):
+            config = gl.load_config()
+        self.assertEqual(config["reconcile_interval"], 900)
+
+    def test_reconcile_interval_custom(self):
+        """HEX_RECONCILE_INTERVAL=300 → 300."""
+        env = {**self._MIN_ENV, "HEX_RECONCILE_INTERVAL": "300"}
+        with patch.dict(os.environ, env, clear=True):
+            config = gl.load_config()
+        self.assertEqual(config["reconcile_interval"], 300)
+
+    def test_reconcile_interval_zero(self):
+        """HEX_RECONCILE_INTERVAL=0 → periodisk avstämning avaktiverad."""
+        env = {**self._MIN_ENV, "HEX_RECONCILE_INTERVAL": "0"}
+        with patch.dict(os.environ, env, clear=True):
+            config = gl.load_config()
+        self.assertEqual(config["reconcile_interval"], 0)
 
 
 # ---------------------------------------------------------------------------
