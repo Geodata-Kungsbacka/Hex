@@ -446,6 +446,27 @@ per databas om de skiljer sig från standardvärdena ovan (t.ex. `HEX_DB_2_HOST=
 > databas. Lösenorden genereras automatiskt av `hantera_standardiserade_roller()`
 > vid CREATE SCHEMA och kräver ingen manuell konfiguration.
 
+#### Periodisk avstämning (valfritt)
+
+Lyssnaren kör automatiskt en periodisk kontroll av GeoServer mot PostgreSQL. Om
+en workspace eller datastore saknas (t.ex. för att någon manuellt tagit bort dem)
+skapas de om automatiskt, och autentiseringsuppgifterna uppdateras alltid med
+aktuella värden från `hex_role_credentials`.
+
+Standardintervallet är **900 sekunder (15 minuter)**. Ändra eller avaktivera med:
+
+```env
+HEX_RECONCILE_INTERVAL=900   # sekunder mellan kontroller; 0 = avaktiverat
+```
+
+| Variabel | Standard | Beskrivning |
+|---|---|---|
+| `HEX_RECONCILE_INTERVAL` | `900` | Intervall i sekunder (0 avaktiverar) |
+
+> **OBS:** Periodisk avstämning skapar aldrig om publicerade lager (feature types)
+> – enbart workspaces, datastores, GeoServer-roller och ACL-regler. Lager måste
+> republiseras manuellt via GeoServer UI eller REST API.
+
 #### E-postnotifieringar (valfritt)
 
 Lyssnaren kan skicka e-post vid fel och återhämtning. Lägg till följande

@@ -116,6 +116,8 @@ def load_config():
         "gs_namespace_base": os.environ.get("HEX_GS_NAMESPACE_BASE", ""),
         # Reconnect
         "reconnect_delay": int(os.environ.get("HEX_RECONNECT_DELAY", "5")),
+        # Periodisk avstämning – intervall i sekunder (0 = avaktiverad)
+        "reconcile_interval": int(os.environ.get("HEX_RECONCILE_INTERVAL", "900")),
         # Databaser
         "databases": _parse_database_configs(),
         # E-post (valfritt - inaktivt om HEX_SMTP_TO inte är satt)
@@ -1237,11 +1239,10 @@ def _fetch_publishable_schemas(db_config):
 
 
 def _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label="", all_pg_schemas=None):
-    """Startavstämning: skapar saknade GeoServer-workspaces för befintliga PG-scheman.
+    """Avstämning: skapar saknade GeoServer-workspaces och datastores för befintliga PG-scheman.
 
-    Körs en gång vid uppstart (första lyckade anslutning), omedelbart efter att
-    LISTEN-kommandona är utfärdade. Använder den befintliga db-cursorn så att
-    ingen extra anslutning öppnas.
+    Körs vid uppstart och periodiskt (se _periodic_reconcile_loop). Använder den
+    anropandes cursor/anslutning så att ingen extra PG-anslutning öppnas.
 
     Args:
         cur:            Öppen psycopg2-cursor (autocommit OK)
@@ -1371,6 +1372,57 @@ def _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label="", all_pg_
 # POSTGRESQL LISTENER
 # =============================================================================
 
+def _periodic_reconcile_loop(db_config, gs_client, stop_event, interval_seconds, db_label=""):
+    """Periodisk avstämning som kör _reconcile_geoserver_schemas på ett fast intervall.
+
+    Öppnar en egen kortlivad PG-anslutning per körning, oberoende av
+    LISTEN-looopens anslutning. Avbryter omedelbart när stop_event sätts.
+
+    Args:
+        db_config:        Databaskonfiguration.
+        gs_client:        GeoServerClient-instans.
+        stop_event:       threading.Event – sätts vid graceful shutdown.
+        interval_seconds: Sekunder mellan körningar.
+        db_label:         Logg-prefix.
+    """
+    tag = _db_tag(db_label)
+    log.info(
+        "%sPeriodisk avstämning aktiv – körs var %d sekunder (%.0f min).",
+        tag, interval_seconds, interval_seconds / 60,
+    )
+
+    while not stop_event.wait(interval_seconds):
+        log.info("%sPeriodisk avstämning: startar kontroll...", tag)
+        try:
+            conn = psycopg2.connect(
+                host=db_config["host"],
+                port=db_config["port"],
+                dbname=db_config["dbname"],
+                user=db_config["user"],
+                password=db_config["password"],
+                connect_timeout=10,
+            )
+            conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
+            try:
+                with conn.cursor() as cur:
+                    _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label)
+            finally:
+                conn.close()
+        except psycopg2.OperationalError as e:
+            log.warning(
+                "%sPeriodisk avstämning: kan inte ansluta till PostgreSQL (%s)"
+                " – försöker igen om %d sekunder.",
+                tag, e, interval_seconds,
+            )
+        except Exception as e:
+            log.error(
+                "%sPeriodisk avstämning: oväntat fel: %s – försöker igen om %d sekunder.",
+                tag, e, interval_seconds,
+            )
+
+    log.info("%sPeriodisk avstämning avslutad.", tag)
+
+
 def _dispatch_notification_error(channel, db_label, schema_name, error, notifier, transient=False):
     """Centraliserad felhantering för schema-notifieringar.
 
@@ -1414,21 +1466,37 @@ def _dispatch_notification_error(channel, db_label, schema_name, error, notifier
         if notifier:
             notifier.notify_schema_failure(schema_name, db_label, error)
 
-def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None, notifier=None, all_pg_schemas=None):
+def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None, notifier=None, all_pg_schemas=None, reconcile_interval=0):
     """Huvudloop som lyssnar på pg_notify och hanterar notifieringar för en databas.
 
     Args:
-        db_config:      Databaskonfiguration med host, port, dbname, user, password
-        reconnect_delay: Sekunder att vänta innan återanslutning
-        gs_client:      GeoServerClient-instans
-        stop_event:     threading.Event som signalerar att loopen ska avslutas
-                        (används av Windows-tjänsten för graceful shutdown)
-        notifier:       EmailNotifier-instans (eller None om e-post ej konfigurerats)
-        all_pg_schemas: Samlad schema-mängd från alla övervakade databaser,
-                        förbyggd av run_all_listeners för korrekt orphan-kontroll.
+        db_config:          Databaskonfiguration med host, port, dbname, user, password
+        reconnect_delay:    Sekunder att vänta innan återanslutning
+        gs_client:          GeoServerClient-instans
+        stop_event:         threading.Event som signalerar att loopen ska avslutas
+                            (används av Windows-tjänsten för graceful shutdown)
+        notifier:           EmailNotifier-instans (eller None om e-post ej konfigurerats)
+        all_pg_schemas:     Samlad schema-mängd från alla övervakade databaser,
+                            förbyggd av run_all_listeners för korrekt orphan-kontroll.
+        reconcile_interval: Sekunder mellan periodiska avstämningar (0 = avaktiverat).
     """
     db_label = db_config["dbname"]
     was_disconnected = False  # Sparar om vi tappat anslutning för återhämtningsnotifiering
+
+    # Normalisera stop_event – _periodic_reconcile_loop kräver ett riktigt Event
+    if stop_event is None:
+        stop_event = threading.Event()
+
+    # Starta periodisk avstämning som bakgrundstråd om det är konfigurerat.
+    # Tråden startas en gång här och lever oberoende av reconnect-cykeln.
+    if reconcile_interval > 0:
+        t = threading.Thread(
+            target=_periodic_reconcile_loop,
+            args=(db_config, gs_client, stop_event, reconcile_interval, db_label),
+            name=f"reconcile-{db_label}",
+            daemon=True,
+        )
+        t.start()
 
     while not (stop_event and stop_event.is_set()):
         conn = None
@@ -1567,7 +1635,7 @@ def run_all_listeners(config, dry_run=False, stop_event=None):
             dry_run=dry_run,
             namespace_uri_base=config.get("gs_namespace_base", ""),
         )
-        listen_loop(databases[0], config["reconnect_delay"], gs_client, stop_event, notifier, all_pg_schemas)
+        listen_loop(databases[0], config["reconnect_delay"], gs_client, stop_event, notifier, all_pg_schemas, config.get("reconcile_interval", 0))
         return
 
     # Flera databaser - en tråd per databas
@@ -1583,7 +1651,7 @@ def run_all_listeners(config, dry_run=False, stop_event=None):
         )
         t = threading.Thread(
             target=listen_loop,
-            args=(db_config, config["reconnect_delay"], gs_client, stop_event, notifier, all_pg_schemas),
+            args=(db_config, config["reconnect_delay"], gs_client, stop_event, notifier, all_pg_schemas, config.get("reconcile_interval", 0)),
             name=f"listener-{db_config['dbname']}",
             daemon=True,
         )
