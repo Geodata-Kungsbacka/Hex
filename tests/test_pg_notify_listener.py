@@ -211,9 +211,20 @@ class TestHandlerLogicWithMockGeoServer(unittest.TestCase):
         gs.delete_gs_role.return_value = True
         return gs
 
-    def _make_pg_conn_mock(self):
-        """Returnerar en psycopg2-anslutnings-mock."""
-        return MagicMock()
+    def _make_pg_conn_mock(self, anonym_las=False):
+        """Returnerar en psycopg2-anslutnings-mock.
+
+        Cursor-mocken svarar konsekvent på de tre DB-anrop som
+        handle_schema_notification gör via pg_conn.cursor():
+          1. _load_schema_pattern   – fetchall x2 (returnerar []: behåller befintligt mönster)
+          2. _fetch_anonymous_read  – fetchone   (returnerar (anonym_las,))
+        """
+        cur_mock = MagicMock()
+        cur_mock.fetchall.return_value = []
+        cur_mock.fetchone.return_value = (anonym_las,)
+        mock_conn = MagicMock()
+        mock_conn.cursor.return_value.__enter__.return_value = cur_mock
+        return mock_conn
 
     # ------------------------------------------------------------------
     # 2. Schema CREATE-hanterare
@@ -243,7 +254,7 @@ class TestHandlerLogicWithMockGeoServer(unittest.TestCase):
         self.assertEqual(gs.create_gs_role.call_count, 2)
         gs.create_gs_role.assert_any_call(f"r_{VALID_CREATE_SCHEMA}")
         gs.create_gs_role.assert_any_call(f"w_{VALID_CREATE_SCHEMA}")
-        gs.create_workspace_acl.assert_called_once_with(VALID_CREATE_SCHEMA)
+        gs.create_workspace_acl.assert_called_once_with(VALID_CREATE_SCHEMA, anonymous_read=False)
 
     def test_create_handler_rejects_invalid_schema(self):
         """Schemanamn som inte matchar regex hoppas tyst över."""
@@ -273,6 +284,7 @@ class TestHandlerLogicWithMockGeoServer(unittest.TestCase):
             [("sk0",), ("sk1",), ("skx",)],   # standardiserade_skyddsnivaer
             [("ext",), ("kba",), ("sys",)],    # standardiserade_datakategorier
         ]
+        cur_mock.fetchone.return_value = (False,)   # anonym_las för skx
         mock_conn = MagicMock()
         mock_conn.cursor.return_value.__enter__.return_value = cur_mock
 
@@ -288,6 +300,19 @@ class TestHandlerLogicWithMockGeoServer(unittest.TestCase):
 
         self.assertTrue(result, "skx_kba_test ska accepteras när mönstret laddats om från DB")
         gs.create_workspace.assert_called_once_with("skx_kba_test")
+
+    def test_create_handler_passes_anonymous_read_true(self):
+        """När anonym_las=True i DB skickas anonymous_read=True till create_workspace_acl."""
+        gs = self._make_gs_mock()
+        mock_conn = self._make_pg_conn_mock(anonym_las=True)
+
+        with patch.object(gl, "_fetch_role_credentials", return_value=(TEST_ROLE_NAME, TEST_ROLE_PASSWORD)):
+            result = gl.handle_schema_notification(
+                VALID_CREATE_SCHEMA, DB_CONFIG, mock_conn, gs
+            )
+
+        self.assertTrue(result)
+        gs.create_workspace_acl.assert_called_once_with(VALID_CREATE_SCHEMA, anonymous_read=True)
 
     def test_create_handler_missing_credentials(self):
         """Schema utan autentiseringsuppgifter i hex_role_credentials hoppas över."""
@@ -852,6 +877,50 @@ class TestCreateWorkspaceAcl(unittest.TestCase):
         with patch.object(client, "_request_with_retry",
                           return_value=self._mock_response(500, "Internal Server Error")):
             self.assertFalse(client.create_workspace_acl("sk0_kba_test"))
+
+    def test_create_acl_anonymous_read_adds_role_anonymous(self):
+        """anonymous_read=True → läsregeln inkluderar ROLE_ANONYMOUS i POST-payloaden."""
+        client = self._make_client()
+        posted = {}
+
+        def capture_request(method, url, **kwargs):
+            if method == "POST":
+                posted.update(kwargs.get("json", {}))
+            return self._mock_response(201)
+
+        with patch.object(client, "_request_with_retry", side_effect=capture_request):
+            self.assertTrue(client.create_workspace_acl("skx_kba_fg", anonymous_read=True))
+
+        self.assertEqual(posted.get("skx_kba_fg.*.r"), "r_skx_kba_fg,ROLE_ANONYMOUS")
+        self.assertEqual(posted.get("skx_kba_fg.*.w"), "w_skx_kba_fg")
+
+    def test_create_acl_anonymous_read_false_omits_role_anonymous(self):
+        """anonymous_read=False (default) → läsregeln innehåller inte ROLE_ANONYMOUS."""
+        client = self._make_client()
+        posted = {}
+
+        def capture_request(method, url, **kwargs):
+            if method == "POST":
+                posted.update(kwargs.get("json", {}))
+            return self._mock_response(201)
+
+        with patch.object(client, "_request_with_retry", side_effect=capture_request):
+            self.assertTrue(client.create_workspace_acl("sk1_kba_test"))
+
+        self.assertEqual(posted.get("sk1_kba_test.*.r"), "r_sk1_kba_test")
+        self.assertNotIn("ROLE_ANONYMOUS", posted.get("sk1_kba_test.*.r", ""))
+
+    def test_create_acl_409_anonymous_read_rules_already_correct(self):
+        """409 med ROLE_ANONYMOUS i befintliga regler → korrekt, returnerar True utan skrivning."""
+        client = self._make_client()
+        correct_rules = {
+            "skx_kba_fg.*.r": "r_skx_kba_fg,ROLE_ANONYMOUS",
+            "skx_kba_fg.*.w": "w_skx_kba_fg",
+        }
+        with patch.object(client, "_request_with_retry",
+                          return_value=self._mock_response(409)):
+            with patch.object(client, "get_acl_rules", return_value=correct_rules):
+                self.assertTrue(client.create_workspace_acl("skx_kba_fg", anonymous_read=True))
 
 
 class TestCreatePgDatastore(unittest.TestCase):
