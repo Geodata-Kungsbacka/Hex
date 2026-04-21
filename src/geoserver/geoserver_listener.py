@@ -809,14 +809,17 @@ class GeoServerClient:
             )
             return False
 
-    def create_workspace_acl(self, workspace):
+    def create_workspace_acl(self, workspace, anonymous_read=False):
         """Skapar ACL-regler för en workspace.
 
         Ger r_{workspace} läsrättighet och w_{workspace} skrivrättighet
-        till alla lager i workspace.
+        till alla lager i workspace. Om anonymous_read är True läggs
+        ROLE_ANONYMOUS till i läsregeln så att oautentiserade anrop tillåts
+        (förutsätter att åtkomst begränsas på nätverksnivå, t.ex. IP-vitlista).
         """
+        read_role = f"r_{workspace},ROLE_ANONYMOUS" if anonymous_read else f"r_{workspace}"
         rules = {
-            f"{workspace}.*.r": f"r_{workspace}",
+            f"{workspace}.*.r": read_role,
             f"{workspace}.*.w": f"w_{workspace}",
         }
 
@@ -1075,6 +1078,27 @@ def _validate_schema_name(schema_name, tag):
     return True
 
 
+def _fetch_anonymous_read(conn, schema_name):
+    """Returnerar True om prefixet för schema_name har anonym_las aktiverat.
+
+    Slår upp standardiserade_skyddsnivaer.anonym_las för prefixet (första
+    segmentet i schemanamnet, t.ex. 'sk0' ur 'sk0_kba_fg'). Returnerar False
+    vid databasfel eller om prefixet inte hittas.
+    """
+    prefix = schema_name.split('_')[0]
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT anonym_las FROM public.standardiserade_skyddsnivaer"
+                " WHERE prefix = %s",
+                (prefix,),
+            )
+            row = cur.fetchone()
+            return bool(row[0]) if row else False
+    except Exception:
+        return False
+
+
 def handle_schema_notification(schema_name, db_config, pg_conn, gs_client, db_label=""):
     """Hanterar en notifiering om nytt schema (kanal: CHANNEL_SCHEMA_CREATE).
 
@@ -1141,8 +1165,9 @@ def handle_schema_notification(schema_name, db_config, pg_conn, gs_client, db_la
             return False
 
     # 4. Skapa ACL-regler så att rollerna får tillgång till workspace
+    anonymous_read = _fetch_anonymous_read(pg_conn, schema_name)
     log.info("%s  Steg 4: Skapar ACL-regler för '%s'...", tag, schema_name)
-    if not gs_client.create_workspace_acl(schema_name):
+    if not gs_client.create_workspace_acl(schema_name, anonymous_read=anonymous_read):
         log.error("%s  Avbryter - ACL-regler kunde inte skapas", tag)
         return False
 
