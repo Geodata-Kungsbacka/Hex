@@ -1626,10 +1626,10 @@ class TestLoadConfig(unittest.TestCase):
     }
 
     def test_reconcile_interval_default(self):
-        """HEX_RECONCILE_INTERVAL ej satt → standard 900."""
+        """HEX_RECONCILE_INTERVAL ej satt → standard 3600."""
         with patch.dict(os.environ, self._MIN_ENV, clear=True):
             config = gl.load_config()
-        self.assertEqual(config["reconcile_interval"], 900)
+        self.assertEqual(config["reconcile_interval"], 3600)
 
     def test_reconcile_interval_custom(self):
         """HEX_RECONCILE_INTERVAL=300 → 300."""

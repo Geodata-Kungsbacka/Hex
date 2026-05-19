@@ -117,7 +117,7 @@ def load_config():
         # Reconnect
         "reconnect_delay": int(os.environ.get("HEX_RECONNECT_DELAY", "5")),
         # Periodisk avstämning – intervall i sekunder (0 = avaktiverad)
-        "reconcile_interval": int(os.environ.get("HEX_RECONCILE_INTERVAL", "900")),
+        "reconcile_interval": int(os.environ.get("HEX_RECONCILE_INTERVAL", "3600")),
         # Databaser
         "databases": _parse_database_configs(),
         # E-post (valfritt - inaktivt om HEX_SMTP_TO inte är satt)
