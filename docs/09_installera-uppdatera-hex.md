@@ -89,6 +89,8 @@ Följande tabeller bevaras automatiskt vid `--upgrade`:
 - `standardiserade_datakategorier` — anpassade datakategorier
 - `standardiserade_skyddsnivaer` — anpassade skyddsnivåer
 - `hex_systemanvandare` — registrerade systemanvändare
+- `hex_grupprattigheter` — AD-grupp-till-Hex-roll-mappningar
+- `hex_role_credentials` — autogenererade lösenord för `gs_r_`/`gs_w_`-roller
 
 > **OBS:** `--upgrade` bevarar konfigurationsdata men tar bort och återskapar
 > alla Hex-funktioner, triggers och typer. Kör gärna en manuell säkerhetskopia

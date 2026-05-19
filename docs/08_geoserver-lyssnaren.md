@@ -103,6 +103,25 @@ Kontrollera loggen efteråt.
 
 ---
 
+## Periodisk avstämning (reconciliation)
+
+Lyssnaren kör automatiskt en periodisk avstämning mot GeoServer för att reparera
+avvikelser — t.ex. om en workspace eller datastore försvunnit, eller om ACL-regler
+är felaktiga. Samma logik körs alltid vid tjänstens uppstart.
+
+Intervallet styrs av miljövariabeln `HEX_RECONCILE_INTERVAL` (sekunder, standard `3600`).
+Sätt till `0` för att inaktivera periodisk avstämning (uppstartsavstämningen körs ändå):
+
+```env
+HEX_RECONCILE_INTERVAL=3600   # Kontrollera varje timme (standard)
+HEX_RECONCILE_INTERVAL=0      # Ingen periodisk avstämning
+```
+
+Vid varje avstämning jämförs GeoServers befintliga workspaces mot scheman i PostgreSQL
+och avvikande ACL-regler korrigeras. Eventuella fel loggas men stoppar inte lyssnaren.
+
+---
+
 ## Uppdatera konfigurationen (lösenord m.m.)
 
 Inställningarna finns i antingen en `.env`-fil i `src/geoserver/` eller
