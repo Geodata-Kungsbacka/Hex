@@ -88,13 +88,16 @@ Definierar vilka roller som automatiskt skapas för nya scheman.
 | `schema_uttryck` | SQL-filter — rollen skapas bara om schemanamnet matchar |
 | `ta_bort_med_schema` | `true` = rollen tas bort när schemat droppas |
 | `with_login` | `true` = rollen skapas med LOGIN och autogenererat lösenord (sparas i `hex_role_credentials`). `false` = NOLOGIN (ren behörighetsgrupp). |
+| `arvs_fran` | Om satt, ersätts `{schema}` och rollen beviljas `GRANT arvs_fran TO rollnamn` i stället för direkta schemabehörigheter via `tilldela_rollrattigheter`. Används för att hålla `gs_r_`/`gs_w_`-behörigheter synkroniserade med `r_`/`w_`. |
 
 **Fördefinierade roller:**
 
-| Rollnamn | Typ | Matchar | Tas bort med schema | with_login |
-|---|---|---|---|---|
-| `r_{schema}` | read | IS NOT NULL (alla) | ja | ja |
-| `w_{schema}` | write | IS NOT NULL (alla) | ja | ja |
+| Rollnamn | Typ | Matchar | with_login | arvs_fran | Tas bort med schema |
+|---|---|---|---|---|---|
+| `r_{schema}` | read | IS NOT NULL (alla) | nej (NOLOGIN) | — | ja |
+| `w_{schema}` | write | IS NOT NULL (alla) | nej (NOLOGIN) | — | ja |
+| `gs_r_{schema}` | read | IS NOT NULL (alla) | ja (LOGIN) | `r_{schema}` | ja |
+| `gs_w_{schema}` | write | IS NOT NULL (alla) | ja (LOGIN) | `w_{schema}` | ja |
 
 ---
 
@@ -160,7 +163,8 @@ flowchart TD
     HSR --> LOOP["Evaluera schema_uttryck<br/>för varje rad i standardiserade_roller"]
     LOOP --> |"matchar (with_login=true)"| LOGIN["CREATE ROLE rollnamn WITH LOGIN<br/>lösenord → hex_role_credentials<br/>GRANT CONNECT ON DATABASE<br/>GRANT hex_geoserver_roller TO rollnamn"]
     LOOP --> |"matchar (with_login=false)"| NOLOGIN["CREATE ROLE rollnamn NOLOGIN"]
-    LOGIN --> TRR["tilldela_rollrattigheter<br/>GRANT USAGE + SELECT / DML"]
+    LOGIN --> |"arvs_fran IS NOT NULL<br/>(gs_r_, gs_w_)"| ARV["GRANT arvs_fran TO rollnamn<br/>(ärver behörigheter från r_/w_-gruppen)"]
+    LOGIN --> |"arvs_fran IS NULL"| TRR["tilldela_rollrattigheter<br/>GRANT USAGE + SELECT / DML"]
     NOLOGIN --> TRR
 
     TRR --> NG["notifiera_geoserver<br/>trigger 3"]
@@ -211,31 +215,32 @@ hantera_standardiserade_roller()
   │     ├── Evaluerar schema_uttryck mot schemanamnet
   │     │     Exempel: 'IS NOT NULL' → matchar alla scheman
   │     └── Om matchar:
-  │           ├── with_login = true:
+  │           ├── with_login = true (gs_r_*, gs_w_*):
   │           │     ├── Genererar lösenord: gen_random_bytes(18) → base64
   │           │     ├── CREATE ROLE <rollnamn> WITH LOGIN PASSWORD <lösenord>
   │           │     ├── GRANT CONNECT ON DATABASE till rollen
   │           │     ├── Sparar till hex_role_credentials (för GeoServer-lyssnaren)
-  │           │     └── GRANT hex_geoserver_roller TO <rollnamn>
-  │           │           (tillåter pg_hba.conf att matcha via +hex_geoserver_roller)
+  │           │     ├── GRANT hex_geoserver_roller TO <rollnamn>
+  │           │     │     (tillåter pg_hba.conf att matcha via +hex_geoserver_roller)
+  │           │     └── Om arvs_fran IS NOT NULL:
+  │           │           GRANT <arvs_fran> TO <rollnamn>  (ärver behörigheter från r_/w_-gruppen)
+  │           │         Annars: tilldela_rollrattigheter(schema, roll, typ)
   │           │
-  │           ├── with_login = false:
-  │           │     └── CREATE ROLE <rollnamn> WITH NOLOGIN
-  │           │
-  │           ├── GRANT <rollnamn> TO system_owner() WITH ADMIN OPTION
-  │           │
-  │           └── → tilldela_rollrattigheter(schema, roll, typ)
-  │                   ├── GRANT USAGE ON SCHEMA (alla rolltyper)
-  │                   ├── read:  GRANT SELECT ON ALL TABLES
-  │                   │          ALTER DEFAULT PRIVILEGES … GRANT SELECT
-  │                   └── write: GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES
-  │                              ALTER DEFAULT PRIVILEGES … GRANT SELECT, INSERT, UPDATE, DELETE
-  │                 (DEFAULT PRIVILEGES säkerställer att framtida tabeller
-  │                  också får rätt behörigheter automatiskt)
+  │           ├── with_login = false (r_*, w_*):
+  │           │     ├── CREATE ROLE <rollnamn> WITH NOLOGIN
+  │           │     ├── GRANT <rollnamn> TO system_owner() WITH ADMIN OPTION
+  │           │     └── → tilldela_rollrattigheter(schema, roll, typ)
+  │           │               ├── GRANT USAGE ON SCHEMA
+  │           │               ├── read:  GRANT SELECT ON ALL TABLES
+  │           │               │          ALTER DEFAULT PRIVILEGES … GRANT SELECT
+  │           │               └── write: GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES
+  │           │                          ALTER DEFAULT PRIVILEGES … GRANT SELECT, INSERT, UPDATE, DELETE
   │
   └── Resultat för sk0_kba_bygg:
-        LOGIN: r_sk0_kba_bygg (lösenord → hex_role_credentials)
-               w_sk0_kba_bygg (lösenord → hex_role_credentials)
+        NOLOGIN: r_sk0_kba_bygg  (AD-behörighetsgrupp, läs)
+                 w_sk0_kba_bygg  (AD-behörighetsgrupp, skriv)
+        LOGIN:   gs_r_sk0_kba_bygg  (GeoServer läs-tjänstekonto → hex_role_credentials)
+                 gs_w_sk0_kba_bygg  (GeoServer skriv-tjänstekonto → hex_role_credentials)
 ```
 
 ---
@@ -294,7 +299,7 @@ flowchart TD
         direction TB
         GIST["Skapa GiST-index på geom<br/>alla scheman med geometri"]
         GIST --> GC{"schema matchar<br/>^sk0-2_kba_ ?"}
-        GC --> |ja| VC["ADD CHECK validera_geometri<br/>OGC · ej tom · ej dubbletter<br/>min area / längd"]
+        GC --> |ja| VC["ADD CHECK validera_geometri<br/>OGC · ej tom · ej exakta dubbletter<br/>inga kurvsegment"]
         GC --> |nej| HQA
         VC --> HQA["skapa_historik_qa"]
         HQA --> HQC{"historik_qa=true<br/>standardkolumn?"}
@@ -417,12 +422,11 @@ hantera_ny_tabell()
   │     ├── Gäller BARA scheman som matchar ^sk[0-2]_kba_
   │     │     (externt laddade _ext_-scheman valideras i FME, inte här)
   │     └── ADD CONSTRAINT … CHECK (validera_geometri(geom))
-  │                 → validera_geometri(geom, tolerans=0.001)
+  │                 → validera_geometri(geom)
   │                       ├── ST_IsValid()            — OGC-korrekt topologi
   │                       ├── NOT ST_IsEmpty()        — innehåller koordinater
-  │                       ├── Inga upprepade punkter  — ST_NPoints-jämförelse
-  │                       ├── Polygon: area > 1 mm²   — tolerans²
-  │                       └── Linje: längd > 1 mm     — tolerans
+  │                       ├── Inga exakta dubbletter  — ST_RemoveRepeatedPoints (nolltolerans)
+  │                       └── NOT ST_HasArc()         — inga kurvsegment
   │
   └── [10] SKAPA HISTORIK OCH QA (villkorligt)
         → skapa_historik_qa(schema, tabell)
@@ -849,7 +853,7 @@ flowchart TD
 │                              gs_client)                             │
 │    ├── Laddar mönster från standardiserade_skyddsnivaer /           │
 │    │     standardiserade_datakategorier (dynamiskt, utan omstart)  │
-│    ├── Hämtar credentials för r_sk0_kba_bygg ur hex_role_credentials│
+│    ├── Hämtar credentials för gs_r_sk0_kba_bygg ur hex_role_credentials│
 │    ├── → GeoServerClient.create_workspace()                         │
 │    ├── → GeoServerClient.create_pg_datastore()                     │
 │    ├── → GeoServerClient.create_gs_role('r_sk0_kba_bygg')          │
@@ -891,10 +895,10 @@ flowchart TD
 │                                                                     │
 │  4. POST /rest/workspaces/sk0_kba_bygg/datastores                  │
 │       Direkt PostGIS-konfiguration (credentials från               │
-│       hex_role_credentials för läsrollen r_sk0_kba_bygg):          │
+│       hex_role_credentials för gs_r_sk0_kba_bygg):                 │
 │         dbtype:             postgis                                 │
 │         host/port/database: från db_config                         │
-│         user/passwd:        r_sk0_kba_bygg + autogenererat lösen   │
+│         user/passwd:        gs_r_sk0_kba_bygg + autogenererat lösen│
 │         schema:             sk0_kba_bygg                           │
 │         Expose primary keys: true                                   │
 │         fetch size:         1000                                    │
@@ -989,7 +993,7 @@ det utlöser i sin tur nya eventutlösare. Tre flaggor förhindrar oändliga ked
 |---|---|---|
 | `validera_tabell(schema, tabell)` | `hantera_ny_tabell` | Kontrollerar namnkonvention och geometristruktur |
 | `validera_vynamn(schema, vy)` | `hantera_ny_vy` | Kontrollerar prefix och suffix |
-| `validera_geometri(geom, tolerans)` | CHECK-villkor på tabeller | OGC-validering + kvalitetskontroll |
+| `validera_geometri(geom)` | CHECK-villkor på tabeller | OGC-validering + kvalitetskontroll |
 
 ### Strukturfunktioner
 

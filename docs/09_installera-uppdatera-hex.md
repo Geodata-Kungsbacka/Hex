@@ -75,27 +75,26 @@ ORDER BY tablename;
 
 ## Uppdatera Hex till en ny version
 
-Eftersom installationsskriptet inte kan uppdatera befintliga datatyper
-(`CREATE TYPE` stöder inte `IF NOT EXISTS`) måste en uppdatering göras
-som avinstallation följt av ominstallation:
+Använd flaggan `--upgrade` som sparar dina anpassade inställningar, avinstallerar,
+installerar om med den nya versionen och återställer inställningarna automatiskt:
 
 ```bash
-git pull                           # Hämta senaste versionen
-python install_hex.py --uninstall  # Ta bort befintlig installation
-python install_hex.py              # Installera om med ny version
+git pull                          # Hämta senaste versionen
+python install_hex.py --upgrade   # Uppgradera med bevarade inställningar
 ```
 
-> **OBS:** Avinstallationen tar bort **alla** Hex-tabeller, inklusive
-> alla konfigurationstabeller med anpassade inställningar. Säkerhetskopiera
-> eventuella anpassningar **innan** du kör `--uninstall`:
-> ```sql
-> -- Exportera anpassningar innan avinstallation
-> SELECT * FROM standardiserade_kolumner ORDER BY ordinal_position;
-> SELECT * FROM standardiserade_roller ORDER BY rollnamn;
-> SELECT * FROM standardiserade_datakategorier ORDER BY prefix;
-> SELECT * FROM hex_systemanvandare;
-> SELECT * FROM hex_grupprattigheter ORDER BY ad_grupproll;
-> ```
+Följande tabeller bevaras automatiskt vid `--upgrade`:
+- `standardiserade_kolumner` — anpassade standardkolumner
+- `standardiserade_roller` — anpassade rollmallar
+- `standardiserade_datakategorier` — anpassade datakategorier
+- `standardiserade_skyddsnivaer` — anpassade skyddsnivåer
+- `hex_systemanvandare` — registrerade systemanvändare
+- `hex_grupprattigheter` — AD-grupp-till-Hex-roll-mappningar
+- `hex_role_credentials` — autogenererade lösenord för `gs_r_`/`gs_w_`-roller
+
+> **OBS:** `--upgrade` bevarar konfigurationsdata men tar bort och återskapar
+> alla Hex-funktioner, triggers och typer. Kör gärna en manuell säkerhetskopia
+> av databasen innan uppgradering i produktionsmiljö.
 
 ---
 

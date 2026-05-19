@@ -46,19 +46,23 @@ Systemet kräver specifika suffix baserat på geometrityp:
 - Tabeller utan geometri får inte använda dessa suffix
 
 ### 3. **Automatisk rollhantering**
-För varje nytt schema skapas automatiskt:
-- `r_schemanamn` - roll med läsrättigheter
-- `w_schemanamn` - roll med läs- och skrivrättigheter
+För varje nytt schema skapas automatiskt fyra roller:
+- `r_schemanamn` — NOLOGIN behörighetsgrupp med läsrättigheter (tilldelas AD-användare och AD-grupper)
+- `w_schemanamn` — NOLOGIN behörighetsgrupp med skrivrättigheter (tilldelas AD-användare och AD-grupper)
+- `gs_r_schemanamn` — LOGIN GeoServer-läs-tjänstekonto, ärver rättigheter från `r_`
+- `gs_w_schemanamn` — LOGIN GeoServer-skriv-tjänstekonto, ärver rättigheter från `w_`
+
+`gs_r_` och `gs_w_` får autogenererade lösenord sparade i `hex_role_credentials` och ingår i `hex_geoserver_roller` för pg_hba.conf-matchning. `r_` och `w_` är NOLOGIN och ingår aldrig i `hex_geoserver_roller`.
 
 ### 4. **Automatisk GeoServer-publicering och rensning**
 Lyssnaren hanterar två livscykelhändelser automatiskt via `pg_notify`:
 
 **Vid CREATE SCHEMA** (kanal `geoserver_schema`) — för sk0- och sk1-scheman:
 - Skapar en workspace i GeoServer med samma namn som schemat
-- Hämtar autentiseringsuppgifter för läsrollen (`r_{schema}`) från tabellen `hex_role_credentials`
+- Hämtar autentiseringsuppgifter för GeoServer-tjänstekontot (`gs_r_{schema}`) från tabellen `hex_role_credentials`
 - Skapar en direkt PostGIS-datastore i den workspace med dessa uppgifter
 
-Läsrollen skapas automatiskt av `hantera_standardiserade_roller()` vid CREATE SCHEMA och ett autogenererat lösenord sparas i `hex_role_credentials`. Ingen JNDI-konfiguration i Tomcat krävs.
+`gs_r_{schema}` skapas automatiskt av `hantera_standardiserade_roller()` vid CREATE SCHEMA med ett autogenererat lösenord sparat i `hex_role_credentials`. Ingen JNDI-konfiguration i Tomcat krävs.
 
 **Vid DROP SCHEMA** (kanal `geoserver_schema_drop`) — för sk0- och sk1-scheman:
 - Tar bort workspace från GeoServer med `recurse=true`, vilket raderar datastores och publicerade lager automatiskt
@@ -95,19 +99,16 @@ För scheman konfigurerade med QA-kolumner skapas:
 - Historiktabeller (`tabellnamn_h`) som loggar alla ändringar
 - Triggers som automatiskt uppdaterar `andrad_tidpunkt` och `andrad_av`
 
-#### `validera_geometri(geom, tolerans)`
+#### `validera_geometri(geom)`
 Validerar geometrikvalitet för _kba_-scheman (manuellt redigerade data).
 
 **Kontroller**:
 - ST_IsValid - geometrin följer OGC-specifikationen
 - NOT ST_IsEmpty - geometrin innehåller faktiska koordinater
-- Inga duplicerade punkter inom tolerans
-- Polygoner har rimlig area (> tolerans²)
-- Linjer har rimlig längd (> tolerans)
+- Inga exakta konsekutiva duplicerade punkter (ST_RemoveRepeatedPoints, nolltolerans)
+- NOT ST_HasArc - geometrin innehåller inga kurvsegment
 
 **Användning**: Används som CHECK constraint, appliceras automatiskt av `hantera_ny_tabell` för _kba_-scheman.
-
-**Parameter**: `tolerans` i meter (default 0.001 = 1mm för SWEREF99 TM).
 
 ## Installation
 
@@ -119,6 +120,7 @@ Validerar geometrikvalitet för _kba_-scheman (manuellt redigerade data).
 # - OWNER_ROLE (rollen som ska äga Hex-objekt och hantera roller)
 
 python install_hex.py              # Installera
+python install_hex.py --upgrade    # Uppgradera (bevarar inställningar)
 python install_hex.py --uninstall  # Avinstallera
 ```
 
@@ -308,11 +310,11 @@ src/sql/04_triggers/notifiera_geoserver_borttagning_trigger.sql
 #### `validera_schemanamn()`
 **Syfte**: Säkerställer att schemanamn följer Hex namngivningskonvention.
 
-**Mönster**: `sk[0-2]_(ext|kba|sys)_*`
+**Mönster**: byggs dynamiskt från `standardiserade_skyddsnivaer` och `standardiserade_datakategorier` (standardkonfiguration: `^(sk0|sk1|sk2|skx)_(ext|kba|sys)_.+$`)
 
 **Validering omfattar**:
-- Kontroll av säkerhetsnivå (sk0, sk1, sk2)
-- Kontroll av kategori (ext, kba, sys)
+- Kontroll av säkerhetsnivå (sk0, sk1, sk2, skx i standardkonfiguration)
+- Kontroll av kategori (ext, kba, sys i standardkonfiguration)
 - Krav på beskrivande suffix efter kategori
 
 **Undantag**: Systemscheman (`public`, `information_schema`, `pg_*`) valideras inte.
@@ -468,7 +470,7 @@ src/sql/04_triggers/notifiera_geoserver_borttagning_trigger.sql
 #### `validera_schemanamn()`
 **Syfte**: Validerar att nya scheman följer namngivningskonventionen.
 
-**Validering**: Kontrollerar att schemanamn matchar mönstret `sk[0-2]_(ext|kba|sys)_*`.
+**Validering**: Kontrollerar att schemanamn matchar ett mönster byggt dynamiskt från `standardiserade_skyddsnivaer` och `standardiserade_datakategorier`.
 
 **Trigger**: Körs vid CREATE SCHEMA - blockerar ogiltiga schemanamn.
 
@@ -666,37 +668,36 @@ Vilka roller som skapas när ett schema skapas styrs av tabellen `standardiserad
 
 ```sql
 -- Visa aktuell rollkonfiguration
-SELECT rollnamn, rolltyp, schema_uttryck, global_roll, ta_bort_med_schema
+SELECT rollnamn, rolltyp, schema_uttryck, with_login, arvs_fran, ta_bort_med_schema
 FROM standardiserade_roller
-ORDER BY rollnamn;
+ORDER BY gid;
 
--- Lägg till en schemaspecifik skriv-roll för sk2-scheman
+-- Lägg till ett extra GeoServer-skrivkonto för sk2-scheman
 INSERT INTO standardiserade_roller (
     rollnamn,
     rolltyp,
     schema_uttryck,
-    global_roll,
-    ta_bort_med_schema,
-    login_roller
+    with_login,
+    arvs_fran,
+    ta_bort_med_schema
 ) VALUES (
-    'w_{schema}',           -- {schema} ersätts med det faktiska schemanamnet
+    'gs_w_{schema}',        -- {schema} ersätts med det faktiska schemanamnet
     'write',
     'LIKE ''sk2_%''',       -- Matchar alla sk2-scheman
-    false,                  -- Schemaspecifik roll, inte global
-    true,                   -- Tas bort med schemat
-    ARRAY['_pub']               -- Skapar en login-roll med suffix _pub
+    true,                   -- LOGIN-tjänstekonto med autogenererat lösenord
+    'w_{schema}',           -- Ärver behörigheter från NOLOGIN-gruppen w_{schema}
+    true                    -- Tas bort när schemat droppas
 );
 ```
 
 Fördefinierade roller (installeras med Hex):
 
-| Roll | Typ | Matchar | Raderas med schema |
-|---|---|---|---|
-| `r_sk0_global` | read | `LIKE 'sk0_%'` | Nej (global) |
-| `r_sk1_global` | read | `LIKE 'sk1_%'` | Nej (global) |
-| `r_{schema}` | read | `LIKE 'sk2_%'` | Ja |
-| `r_{schema}` | read | `LIKE 'skx_%'` | Ja (inga login-roller) |
-| `w_{schema}` | write | Alla scheman | Ja |
+| Roll | Typ | Matchar | with_login | Ärver från | Raderas med schema |
+|---|---|---|---|---|---|
+| `r_{schema}` | read | IS NOT NULL (alla) | Nej (NOLOGIN) | — | Ja |
+| `w_{schema}` | write | IS NOT NULL (alla) | Nej (NOLOGIN) | — | Ja |
+| `gs_r_{schema}` | read | IS NOT NULL (alla) | Ja (LOGIN) | `r_{schema}` | Ja |
+| `gs_w_{schema}` | write | IS NOT NULL (alla) | Ja (LOGIN) | `w_{schema}` | Ja |
 
 > Se LOGIC_MAP.md avsnitt 2 (CREATE SCHEMA) för detaljerat flöde.
 
@@ -721,7 +722,7 @@ CREATE TABLE sk0_ext_test.test_tabell_p (
 ### Vanliga problem och lösningar
 
 **Problem**: Schema kan inte skapas  
-**Lösning**: Kontrollera att schemanamnet följer mönstret `sk[0-2]_(ext|kba|sys)_*`
+**Lösning**: Kontrollera att schemanamnet följer namnkonventionen — se giltiga prefix och kategorier i `standardiserade_skyddsnivaer` och `standardiserade_datakategorier` (t.ex. `sk0_kba_bygg`, `skx_ext_test`)
 
 **Problem**: Tabell skapas inte med standardkolumner  
 **Lösning**: Kontrollera att alla triggers är aktiverade och att schemat inte är 'public'
@@ -808,7 +809,7 @@ DROP FUNCTION IF EXISTS public.spara_kolumnegenskaper(text, text);
 DROP FUNCTION IF EXISTS public.spara_tabellregler(text, text);
 
 -- 5. Ta bort valideringsfunktioner
-DROP FUNCTION IF EXISTS public.validera_geometri(geometry, float) CASCADE;
+DROP FUNCTION IF EXISTS public.validera_geometri(geometry) CASCADE;
 DROP FUNCTION IF EXISTS public.validera_schemanamn();
 DROP FUNCTION IF EXISTS public.validera_vynamn(text, text);
 DROP FUNCTION IF EXISTS public.validera_tabell(text, text);
