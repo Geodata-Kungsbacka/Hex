@@ -294,7 +294,7 @@ flowchart TD
         direction TB
         GIST["Skapa GiST-index på geom<br/>alla scheman med geometri"]
         GIST --> GC{"schema matchar<br/>^sk0-2_kba_ ?"}
-        GC --> |ja| VC["ADD CHECK validera_geometri<br/>OGC · ej tom · ej dubbletter<br/>min area / längd"]
+        GC --> |ja| VC["ADD CHECK validera_geometri<br/>OGC · ej tom · ej exakta dubbletter<br/>inga kurvsegment"]
         GC --> |nej| HQA
         VC --> HQA["skapa_historik_qa"]
         HQA --> HQC{"historik_qa=true<br/>standardkolumn?"}
@@ -417,12 +417,11 @@ hantera_ny_tabell()
   │     ├── Gäller BARA scheman som matchar ^sk[0-2]_kba_
   │     │     (externt laddade _ext_-scheman valideras i FME, inte här)
   │     └── ADD CONSTRAINT … CHECK (validera_geometri(geom))
-  │                 → validera_geometri(geom, tolerans=0.001)
+  │                 → validera_geometri(geom)
   │                       ├── ST_IsValid()            — OGC-korrekt topologi
   │                       ├── NOT ST_IsEmpty()        — innehåller koordinater
-  │                       ├── Inga upprepade punkter  — ST_NPoints-jämförelse
-  │                       ├── Polygon: area > 1 mm²   — tolerans²
-  │                       └── Linje: längd > 1 mm     — tolerans
+  │                       ├── Inga exakta dubbletter  — ST_RemoveRepeatedPoints (nolltolerans)
+  │                       └── NOT ST_HasArc()         — inga kurvsegment
   │
   └── [10] SKAPA HISTORIK OCH QA (villkorligt)
         → skapa_historik_qa(schema, tabell)
@@ -989,7 +988,7 @@ det utlöser i sin tur nya eventutlösare. Tre flaggor förhindrar oändliga ked
 |---|---|---|
 | `validera_tabell(schema, tabell)` | `hantera_ny_tabell` | Kontrollerar namnkonvention och geometristruktur |
 | `validera_vynamn(schema, vy)` | `hantera_ny_vy` | Kontrollerar prefix och suffix |
-| `validera_geometri(geom, tolerans)` | CHECK-villkor på tabeller | OGC-validering + kvalitetskontroll |
+| `validera_geometri(geom)` | CHECK-villkor på tabeller | OGC-validering + kvalitetskontroll |
 
 ### Strukturfunktioner
 

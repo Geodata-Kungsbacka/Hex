@@ -3,6 +3,7 @@
 Hex Installer - kör SQL-filer i beroendeordning
 Användning:
     python install_hex.py              # Installera alla konfigurerade databaser
+    python install_hex.py --upgrade    # Uppgradera (bevarar inställningar, avinstallerar och installerar om)
     python install_hex.py --uninstall  # Ta bort alla Hex-objekt från alla databaser
 """
 
@@ -162,8 +163,8 @@ DROP FUNCTION IF EXISTS public.spara_kolumnegenskaper(text, text);
 DROP FUNCTION IF EXISTS public.spara_tabellregler(text, text);
 
 -- Valideringsfunktioner
-DROP FUNCTION IF EXISTS public.forklara_geometrifel(geometry, float);
-DROP FUNCTION IF EXISTS public.validera_geometri(geometry, float) CASCADE;
+DROP FUNCTION IF EXISTS public.forklara_geometrifel(geometry);
+DROP FUNCTION IF EXISTS public.validera_geometri(geometry) CASCADE;
 DROP FUNCTION IF EXISTS public.validera_schemanamn();
 DROP FUNCTION IF EXISTS public.blockera_schema_namnbyte();
 DROP FUNCTION IF EXISTS public.validera_vynamn(text, text);

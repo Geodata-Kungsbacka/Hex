@@ -95,19 +95,16 @@ För scheman konfigurerade med QA-kolumner skapas:
 - Historiktabeller (`tabellnamn_h`) som loggar alla ändringar
 - Triggers som automatiskt uppdaterar `andrad_tidpunkt` och `andrad_av`
 
-#### `validera_geometri(geom, tolerans)`
+#### `validera_geometri(geom)`
 Validerar geometrikvalitet för _kba_-scheman (manuellt redigerade data).
 
 **Kontroller**:
 - ST_IsValid - geometrin följer OGC-specifikationen
 - NOT ST_IsEmpty - geometrin innehåller faktiska koordinater
-- Inga duplicerade punkter inom tolerans
-- Polygoner har rimlig area (> tolerans²)
-- Linjer har rimlig längd (> tolerans)
+- Inga exakta konsekutiva duplicerade punkter (ST_RemoveRepeatedPoints, nolltolerans)
+- NOT ST_HasArc - geometrin innehåller inga kurvsegment
 
 **Användning**: Används som CHECK constraint, appliceras automatiskt av `hantera_ny_tabell` för _kba_-scheman.
-
-**Parameter**: `tolerans` i meter (default 0.001 = 1mm för SWEREF99 TM).
 
 ## Installation
 
@@ -119,6 +116,7 @@ Validerar geometrikvalitet för _kba_-scheman (manuellt redigerade data).
 # - OWNER_ROLE (rollen som ska äga Hex-objekt och hantera roller)
 
 python install_hex.py              # Installera
+python install_hex.py --upgrade    # Uppgradera (bevarar inställningar)
 python install_hex.py --uninstall  # Avinstallera
 ```
 
@@ -808,7 +806,7 @@ DROP FUNCTION IF EXISTS public.spara_kolumnegenskaper(text, text);
 DROP FUNCTION IF EXISTS public.spara_tabellregler(text, text);
 
 -- 5. Ta bort valideringsfunktioner
-DROP FUNCTION IF EXISTS public.validera_geometri(geometry, float) CASCADE;
+DROP FUNCTION IF EXISTS public.validera_geometri(geometry) CASCADE;
 DROP FUNCTION IF EXISTS public.validera_schemanamn();
 DROP FUNCTION IF EXISTS public.validera_vynamn(text, text);
 DROP FUNCTION IF EXISTS public.validera_tabell(text, text);
