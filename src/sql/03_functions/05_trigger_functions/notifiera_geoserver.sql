@@ -23,7 +23,8 @@ AS $BODY$
  *
  * Python-lyssnaren tar emot notifieringen och skapar:
  *   - Workspace i GeoServer med samma namn som schemat
- *   - JNDI-datastore i workspace med samma namn som schemat
+ *   - Direkt PostGIS-datastore i workspace med autentiseringsuppgifter
+ *     från tabellen hex_role_credentials (läsrollen r_{schema})
  *
  * TRIGGER: Kors automatiskt vid CREATE SCHEMA (efter validering och roller)
  ******************************************************************************/
@@ -90,4 +91,5 @@ COMMENT ON FUNCTION public.notifiera_geoserver()
     IS 'Event trigger-funktion som skickar pg_notify till GeoServer-lyssnaren vid CREATE SCHEMA.
 Publicerar scheman vars skyddsnivå har publiceras_geoserver = true i standardiserade_skyddsnivaer
 (standardkonfiguration: sk0 och sk1). Notifieringen används av en extern Python-process
-för att skapa workspace och datastore i GeoServer via REST API.';
+för att skapa workspace och direkt PostGIS-datastore i GeoServer via REST API.
+Datastore-autentiseringen hämtas från hex_role_credentials (läsrollen r_{schema}).';

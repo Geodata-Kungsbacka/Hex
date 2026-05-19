@@ -14,137 +14,184 @@ AS $BODY$
  * att roller kan skapas och hanteras korrekt oavsett vilken användare som
  * skapar schemat.
  *
- * FUNKTIONALITET:
- * 1. Läser konfiguration från standardiserade_roller-tabellen
- * 2. Evaluerar schema_uttryck för att avgöra vilka roller som ska skapas
- * 3. Skapar NOLOGIN-grupproller med rättigheter
- * 4. Skapar LOGIN-roller för specifika applikationer som ärver grupprollernas rättigheter
+ * ROLLSTRUKTUR (fyra roller per schema):
  *
- * ROLLSTRUKTUR:
- * - Grupproll (NOLOGIN): t.ex. r_sk0_global, w_sk1_kba_bygg
- * - LOGIN-roller: t.ex. r_sk0_global_pub, w_sk1_kba_bygg_pub
+ *   r_{schema}    NOLOGIN – läsbehörighetsgrupp.
+ *                 Tilldelas AD-användare och AD-grupper för direktåtkomst till databasen.
+ *                 Är INTE i hex_geoserver_roller. Sparas i hex_role_credentials
+ *                 med rolcanlogin=false och password=NULL.
+ *
+ *   w_{schema}    NOLOGIN – skrivbehörighetsgrupp.
+ *                 Tilldelas AD-användare och AD-grupper för direktåtkomst.
+ *                 Är INTE i hex_geoserver_roller.
+ *
+ *   gs_r_{schema} LOGIN – GeoServer läs-tjänstekonto.
+ *                 Ärver rättigheter från r_{schema} via GRANT.
+ *                 Är i hex_geoserver_roller för pg_hba.conf-matchning.
+ *                 Lösenord sparas i hex_role_credentials med rolcanlogin=true.
+ *
+ *   gs_w_{schema} LOGIN – GeoServer skriv-tjänstekonto.
+ *                 Ärver rättigheter från w_{schema} via GRANT.
+ *                 Är i hex_geoserver_roller för pg_hba.conf-matchning.
+ *
+ * SEPARATION AV AD-ANVÄNDARE OCH TJÄNSTEKONTON:
+ *   Eftersom r_* och w_* är NOLOGIN och INTE ingår i hex_geoserver_roller
+ *   kan de fritt tilldelas AD-användare utan att störa pg_hba.conf-logiken.
+ *   Transitiv gruppmedlemskap via r_- och w_-grupper når aldrig hex_geoserver_roller.
  *
  * TRIGGER: Körs automatiskt vid CREATE SCHEMA
  ******************************************************************************/
 DECLARE
-    kommando record;                 -- Information om CREATE SCHEMA-kommandot
-    schema_namn text;               -- Namnet på det nya schemat
-    rollkonfiguration record;       -- Konfiguration från standardiserade_roller
-    slutligt_rollnamn text;         -- Namnet på grupproll efter {schema}-ersättning
-    matchar boolean;                -- Om schema_uttryck matchar detta schema
-    antal_roller integer := 0;      -- Räknare för skapade roller
-    antal_login_roller integer := 0; -- Räknare för skapade LOGIN-roller
+    kommando            record;
+    schema_namn         text;
+    rollkonfiguration   record;
+    slutligt_rollnamn   text;
+    arvs_rollnamn       text;
+    matchar             boolean;
+    generated_password  text;
+    antal_roller        integer := 0;
 BEGIN
     RAISE NOTICE E'[hantera_standardiserade_roller] === START ===';
     RAISE NOTICE '[hantera_standardiserade_roller] Hanterar rollskapande för nya scheman';
-    
+
     -- Hantera alla CREATE SCHEMA-kommandon
     FOR kommando IN SELECT * FROM pg_event_trigger_ddl_commands()
     WHERE command_tag = 'CREATE SCHEMA'
     LOOP
         schema_namn := replace(split_part(kommando.object_identity, '.', 1), '"', '');
-        
+
         RAISE NOTICE E'[hantera_standardiserade_roller] ================';
         RAISE NOTICE '[hantera_standardiserade_roller] Bearbetar schema: %', schema_namn;
-        
+
         -- Hoppa över systemscheman
         IF schema_namn IN ('public', 'information_schema') OR schema_namn ~ '^pg_' THEN
             RAISE NOTICE '[hantera_standardiserade_roller] Hoppar över systemschema: %', schema_namn;
             CONTINUE;
         END IF;
-        
-        -- Loopa genom alla rollkonfigurationer
-        FOR rollkonfiguration IN 
+
+        -- Loopa genom alla rollkonfigurationer (i gid-ordning, r_/w_ skapas före gs_r_/gs_w_)
+        FOR rollkonfiguration IN
             SELECT * FROM standardiserade_roller ORDER BY gid
         LOOP
-            RAISE NOTICE '[hantera_standardiserade_roller] Testar rollkonfiguration: % (typ: %)', 
-                rollkonfiguration.rollnamn, rollkonfiguration.rolltyp;
-            
+            RAISE NOTICE '[hantera_standardiserade_roller] Testar rollkonfiguration: % (typ: %, login: %)',
+                rollkonfiguration.rollnamn, rollkonfiguration.rolltyp, rollkonfiguration.with_login;
+
             -- Testa om schema_uttryck matchar detta schema
             BEGIN
                 EXECUTE format('SELECT %L %s', schema_namn, rollkonfiguration.schema_uttryck) INTO matchar;
                 RAISE NOTICE '[hantera_standardiserade_roller]   Schema_uttryck "%" matchar: %',
                     rollkonfiguration.schema_uttryck, matchar;
-                
+
                 IF matchar THEN
                     -- Ersätt {schema} med faktiskt schemanamn
                     slutligt_rollnamn := replace(rollkonfiguration.rollnamn, '{schema}', schema_namn);
                     RAISE NOTICE '[hantera_standardiserade_roller]   Slutligt rollnamn: %', slutligt_rollnamn;
-                    
-                    -- 1. Skapa NOLOGIN-grupproll
+
                     IF NOT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = slutligt_rollnamn) THEN
-                        EXECUTE format('CREATE ROLE %I WITH NOLOGIN', slutligt_rollnamn);
-                        -- Ge ägarrollen ADMIN OPTION så den kan hantera denna roll
-                        EXECUTE format('GRANT %I TO %I', slutligt_rollnamn, system_owner());
-                        RAISE NOTICE '[hantera_standardiserade_roller]   ✓ Skapade grupproll (NOLOGIN): %', slutligt_rollnamn;
+
+                        IF rollkonfiguration.with_login THEN
+                            -- -------------------------------------------------------
+                            -- LOGIN-roll: GeoServer-tjänstekonto (gs_r_*, gs_w_*)
+                            -- -------------------------------------------------------
+                            generated_password := encode(gen_random_bytes(18), 'base64');
+                            EXECUTE format('CREATE ROLE %I WITH LOGIN PASSWORD %L',
+                                slutligt_rollnamn, generated_password);
+
+                            -- CONNECT-rättighet på aktuell databas
+                            EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I',
+                                current_database(), slutligt_rollnamn);
+
+                            -- Spara uppgifter i hex_role_credentials
+                            INSERT INTO hex_role_credentials(rolname, password, rolcanlogin)
+                            VALUES (slutligt_rollnamn, generated_password, true)
+                            ON CONFLICT (rolname) DO UPDATE
+                                SET password    = EXCLUDED.password,
+                                    rolcanlogin = true,
+                                    created_at  = now();
+
+                            -- Lägg till i hex_geoserver_roller för pg_hba.conf-matchning
+                            EXECUTE format('GRANT hex_geoserver_roller TO %I', slutligt_rollnamn);
+
+                            -- Ärv behörigheter från arvs_fran-rollen (r_* resp. w_*)
+                            -- i stället för direkta GRANT på schema – håller behörigheter synkroniserade
+                            IF rollkonfiguration.arvs_fran IS NOT NULL THEN
+                                arvs_rollnamn := replace(rollkonfiguration.arvs_fran, '{schema}', schema_namn);
+                                EXECUTE format('GRANT %I TO %I', arvs_rollnamn, slutligt_rollnamn);
+                                RAISE NOTICE '[hantera_standardiserade_roller]   ✓ Ärver behörigheter från: %', arvs_rollnamn;
+                            ELSE
+                                PERFORM tilldela_rollrattigheter(schema_namn, slutligt_rollnamn, rollkonfiguration.rolltyp);
+                            END IF;
+
+                            -- gs_*-roller tilldelas INTE system_owner – de är systeminterna
+                            -- och ska inte kunna vidaredelegeras manuellt
+                            RAISE NOTICE '[hantera_standardiserade_roller]   ✓ Skapade LOGIN-tjänstekonto: %', slutligt_rollnamn;
+
+                        ELSE
+                            -- -------------------------------------------------------
+                            -- NOLOGIN-roll: behörighetsgrupp (r_*, w_*)
+                            -- -------------------------------------------------------
+                            EXECUTE format('CREATE ROLE %I WITH NOLOGIN', slutligt_rollnamn);
+
+                            -- Registrera i hex_role_credentials utan lösenord
+                            INSERT INTO hex_role_credentials(rolname, password, rolcanlogin)
+                            VALUES (slutligt_rollnamn, NULL, false)
+                            ON CONFLICT (rolname) DO UPDATE
+                                SET rolcanlogin = false,
+                                    password    = NULL,
+                                    created_at  = now();
+
+                            -- Direkta schemabehörigheter på behörighetsgruppen
+                            PERFORM tilldela_rollrattigheter(schema_namn, slutligt_rollnamn, rollkonfiguration.rolltyp);
+
+                            -- Ge ägarrollen rättighet att tilldela denna grupp till AD-användare
+                            EXECUTE format('GRANT %I TO %I', slutligt_rollnamn, system_owner());
+
+                            RAISE NOTICE '[hantera_standardiserade_roller]   ✓ Skapade NOLOGIN-behörighetsgrupp: %', slutligt_rollnamn;
+                        END IF;
+
                         antal_roller := antal_roller + 1;
-                        
-                        -- Tilldela rättigheter till grupproll
-                        PERFORM tilldela_rollrattigheter(schema_namn, slutligt_rollnamn, rollkonfiguration.rolltyp);
+
                     ELSE
-                        RAISE NOTICE '[hantera_standardiserade_roller]   - Grupproll finns redan: %', slutligt_rollnamn;
-                        
-                        -- Tilldela rättigheter på detta schema även till befintlig roll
-                        PERFORM tilldela_rollrattigheter(schema_namn, slutligt_rollnamn, rollkonfiguration.rolltyp);
+                        RAISE NOTICE '[hantera_standardiserade_roller]   - Roll finns redan: %', slutligt_rollnamn;
+
+                        -- Säkerställ att befintlig NOLOGIN-roll ändå får rätt behörigheter
+                        -- (t.ex. om tabeller skapades innan rollen fick rättigheter)
+                        IF NOT rollkonfiguration.with_login THEN
+                            PERFORM tilldela_rollrattigheter(schema_namn, slutligt_rollnamn, rollkonfiguration.rolltyp);
+                        ELSE
+                            -- Säkerställ att befintlig LOGIN-roll är i hex_geoserver_roller
+                            -- (kan saknas om rollen överlevde en avinstallation eller skapades manuellt)
+                            IF NOT EXISTS (
+                                SELECT 1 FROM pg_auth_members am
+                                JOIN pg_roles grp ON grp.oid = am.roleid
+                                JOIN pg_roles mem ON mem.oid = am.member
+                                WHERE grp.rolname = 'hex_geoserver_roller'
+                                  AND mem.rolname = slutligt_rollnamn
+                            ) THEN
+                                EXECUTE format('GRANT hex_geoserver_roller TO %I', slutligt_rollnamn);
+                                RAISE NOTICE '[hantera_standardiserade_roller]   ✓ Lade till befintlig LOGIN-roll i hex_geoserver_roller: %', slutligt_rollnamn;
+                            END IF;
+                        END IF;
                     END IF;
-                    
-                    -- 2. Skapa LOGIN-roller baserat på login_roller-array
-                    FOR i IN 1..COALESCE(array_length(rollkonfiguration.login_roller, 1), 0) LOOP
-                        DECLARE
-                            login_definition text := rollkonfiguration.login_roller[i];
-                            login_rollnamn text;
-                        BEGIN
-                            -- Kontrollera om det är suffix (börjar med _) eller prefix (slutar med _)
-                            IF login_definition ~ '^_' THEN
-                                -- Suffix: r_sk0_global + _pub = r_sk0_global_pub
-                                login_rollnamn := slutligt_rollnamn || login_definition;
-                            ELSIF login_definition ~ '_$' THEN
-                                -- Prefix: pub_ + r_sk0_global = pub_r_sk0_global
-                                login_rollnamn := login_definition || slutligt_rollnamn;
-                            ELSE
-                                RAISE WARNING '[hantera_standardiserade_roller] LOGIN-roll "%" måste börja eller sluta med understreck', 
-                                    login_definition;
-                                CONTINUE;
-                            END IF;
-                            
-                            IF NOT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = login_rollnamn) THEN
-                                -- Skapa LOGIN-roll
-                                EXECUTE format('CREATE ROLE %I WITH LOGIN', login_rollnamn);
-                                -- Ge ägarrollen ADMIN OPTION så den kan hantera denna roll
-                                EXECUTE format('GRANT %I TO %I', login_rollnamn, system_owner());
-                                RAISE NOTICE '[hantera_standardiserade_roller]   ✓ Skapade LOGIN-roll: %', login_rollnamn;
-                                antal_login_roller := antal_login_roller + 1;
-                                
-                                -- Gör LOGIN-rollen medlem i grupproll (ärver alla rättigheter)
-                                EXECUTE format('GRANT %I TO %I', slutligt_rollnamn, login_rollnamn);
-                                RAISE NOTICE '[hantera_standardiserade_roller]   ✓ Tilldelade grupproll % till LOGIN-roll %', 
-                                    slutligt_rollnamn, login_rollnamn;
-                            ELSE
-                                RAISE NOTICE '[hantera_standardiserade_roller]   - LOGIN-roll finns redan: %', login_rollnamn;
-                            END IF;
-                        END;
-                    END LOOP;
                 ELSE
                     RAISE NOTICE '[hantera_standardiserade_roller]   - Schema_uttryck matchade inte, hoppar över';
                 END IF;
-                
+
             EXCEPTION
                 WHEN OTHERS THEN
-                    RAISE WARNING '[hantera_standardiserade_roller] Fel vid evaluering av schema_uttryck för roll %: %', 
+                    RAISE WARNING '[hantera_standardiserade_roller] Fel vid evaluering av schema_uttryck för roll %: %',
                         rollkonfiguration.rollnamn, SQLERRM;
             END;
         END LOOP;
-        
+
         -- Sammanfattning för detta schema
         RAISE NOTICE '[hantera_standardiserade_roller] Sammanfattning för schema %:', schema_namn;
-        RAISE NOTICE '[hantera_standardiserade_roller]   ‚» Grupproller skapade: %', antal_roller;
-        RAISE NOTICE '[hantera_standardiserade_roller]   ‚» LOGIN-roller skapade: %', antal_login_roller;
-        
+        RAISE NOTICE '[hantera_standardiserade_roller]   » Roller skapade: %', antal_roller;
+
         -- Återställ räknare för nästa schema
         antal_roller := 0;
-        antal_login_roller := 0;
     END LOOP;
-    
+
     RAISE NOTICE '[hantera_standardiserade_roller] === SLUT ===';
 
 EXCEPTION
@@ -162,6 +209,14 @@ ALTER FUNCTION public.hantera_standardiserade_roller()
     OWNER TO postgres;
 
 COMMENT ON FUNCTION public.hantera_standardiserade_roller()
-    IS 'Event trigger-funktion för automatisk rollskapande vid CREATE SCHEMA. 
-    Läser konfiguration från standardiserade_roller och skapar både NOLOGIN-grupproller 
-    och LOGIN-roller för specifika applikationer enligt schema_uttryck-matchning.';
+    IS 'Event trigger-funktion för automatisk rollskapande vid CREATE SCHEMA.
+    Skapar fyra roller per schema:
+      r_{schema}    NOLOGIN behörighetsgrupp (läs) – tilldelas AD-användare/grupper
+      w_{schema}    NOLOGIN behörighetsgrupp (skriv) – tilldelas AD-användare/grupper
+      gs_r_{schema} LOGIN GeoServer läs-tjänstekonto – ärver r_{schema}, i hex_geoserver_roller
+      gs_w_{schema} LOGIN GeoServer skriv-tjänstekonto – ärver w_{schema}, i hex_geoserver_roller
+    Alla fyra roller registreras i hex_role_credentials (LOGIN-roller med lösenord,
+    NOLOGIN-roller med password=NULL och rolcanlogin=false).
+    Separation av AD-användare och tjänstekonton: r_*/w_* ingår aldrig i
+    hex_geoserver_roller, vilket förhindrar transitiv pg_hba.conf-matchning för AD-konton.
+    Kräver pgcrypto-tillägget för lösenordsgenerering.';

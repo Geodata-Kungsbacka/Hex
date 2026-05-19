@@ -5,12 +5,16 @@ CREATE TABLE IF NOT EXISTS public.standardiserade_skyddsnivaer (
     prefix text NOT NULL,
     beskrivning text,
     publiceras_geoserver boolean NOT NULL DEFAULT false,
-    har_global_roll boolean NOT NULL DEFAULT false,
+    anonym_las boolean NOT NULL DEFAULT false,
 
     CONSTRAINT standardiserade_skyddsnivaer_pkey PRIMARY KEY (gid),
     CONSTRAINT standardiserade_skyddsnivaer_prefix_key UNIQUE (prefix),
     CONSTRAINT valid_skyddsniva_prefix CHECK (prefix ~ '^sk[a-z0-9]+$')
 );
+
+-- Safe for existing installations: adds the column without touching existing rows.
+ALTER TABLE public.standardiserade_skyddsnivaer
+    ADD COLUMN IF NOT EXISTS anonym_las boolean NOT NULL DEFAULT false;
 
 ALTER TABLE public.standardiserade_skyddsnivaer
     OWNER TO postgres;
@@ -27,16 +31,24 @@ COMMENT ON COLUMN public.standardiserade_skyddsnivaer.prefix
 COMMENT ON COLUMN public.standardiserade_skyddsnivaer.publiceras_geoserver
     IS 'Sant om scheman med detta prefix ska publiceras automatiskt till GeoServer via pg_notify.';
 
-COMMENT ON COLUMN public.standardiserade_skyddsnivaer.har_global_roll
-    IS 'Sant om en global läsroll (r_<prefix>_global) ska skapas för detta prefix. Se standardiserade_roller.';
+COMMENT ON COLUMN public.standardiserade_skyddsnivaer.anonym_las
+    IS 'Sant om WMS/WFS-lager i dessa scheman ska vara läsbara utan inloggning (ROLE_ANONYMOUS läggs till i GeoServer ACL-läsregeln). Förutsätter att åtkomst redan begränsas på nätverksnivå, t.ex. via IP-vitlista i web.xml.';
+
 
 INSERT INTO public.standardiserade_skyddsnivaer
-    (prefix, beskrivning, publiceras_geoserver, har_global_roll)
+    (prefix, beskrivning, publiceras_geoserver, anonym_las)
 VALUES
-    ('sk0', 'Öppen publik data',                                  true,  true),
-    ('sk1', 'Kommunal data med begränsad åtkomst',                true,  true),
-    ('sk2', 'Begränsad känslig data',                             false, false),
-    ('skx', 'Okänd / oklassificerad data (endast GIS-administratörer)', false, false);
+    ('sk0', 'Öppen publik data',                                        true,  true),
+    ('sk1', 'Kommunal data med begränsad åtkomst',                      true,  false),
+    ('sk2', 'Begränsad känslig data',                                   false, false),
+    ('skx', 'Okänd / oklassificerad data (endast GIS-administratörer)', false, false)
+ON CONFLICT (prefix) DO NOTHING;
+
+-- Migration for existing installations: sk0 is open public data and should
+-- allow anonymous WMS/WFS reads now that the anonym_las column exists.
+UPDATE public.standardiserade_skyddsnivaer
+    SET anonym_las = true
+    WHERE prefix = 'sk0' AND NOT anonym_las;
 
 -- Trigger functions (hantera_ny_tabell, validera_schemanamn, notifiera_geoserver) run as
 -- SECURITY INVOKER, so the calling user needs SELECT on this table.

@@ -1,6 +1,7 @@
+DROP FUNCTION IF EXISTS public.validera_geometri(geometry, float);
+
 CREATE OR REPLACE FUNCTION public.validera_geometri(
-    geom geometry, 
-    tolerans float DEFAULT 0.001
+    geom geometry
 )
     RETURNS boolean
     LANGUAGE 'plpgsql'
@@ -8,19 +9,15 @@ CREATE OR REPLACE FUNCTION public.validera_geometri(
 AS $BODY$
 /******************************************************************************
  * Validerar geometrins kvalitet för användning i _kba_-scheman.
- * 
+ *
  * Kontrollerar:
  * 1. ST_IsValid       - Geometrin följer OGC-specifikationen
  * 2. NOT ST_IsEmpty   - Geometrin innehåller faktiska koordinater
- * 3. Inga duplicerade - Inga upprepade punkter inom toleransen
- * 4. Area > tolerans^2 - Polygoner har rimlig area (ej degenererade)
- * 5. Längd > tolerans - Linjer har rimlig längd (ej degenererade)
- * 6. ST_IsSimple      - Linjer saknar självskärningar (figur-8, korsande segment)
- * 7. NOT ST_HasArc    - Geometrin innehåller inga kurvsegment (stöds ej i systemet)
+ * 3. Inga duplicerade - Inga exakt identiska konsekutiva punkter
+ * 4. NOT ST_HasArc    - Geometrin innehåller inga kurvsegment (stöds ej i systemet)
  *
  * PARAMETRAR:
- *   geom     - Geometri att validera
- *   tolerans - Tolerans i kartenheter (meter för SWEREF99 TM), default 0.001 (1mm)
+ *   geom - Geometri att validera
  *
  * RETURVÄRDE:
  *   true  - Geometrin uppfyller alla kvalitetskrav
@@ -36,35 +33,23 @@ AS $BODY$
  *   - NULL-geometrier hanteras av PostgreSQL:s CHECK-semantik (NULL = ok)
  ******************************************************************************/
 BEGIN
-    -- NULL-geometrier passerar (CHECK-semantik: NULL uppfyller constraint)
     IF geom IS NULL THEN
         RETURN true;
     END IF;
 
-    RETURN 
-        -- 1. OGC-valid geometri
+    RETURN
         ST_IsValid(geom)
-        -- 2. Inte tom geometri
         AND NOT ST_IsEmpty(geom)
-        -- 3. Inga duplicerade punkter (jämför antal punkter före/efter borttagning)
-        AND ST_NPoints(geom) = ST_NPoints(ST_RemoveRepeatedPoints(geom, tolerans))
-        -- 4. Polygoner måste ha rimlig area (> 1mm^2 med default-tolerans)
-        AND (ST_Dimension(geom) != 2 OR ST_Area(geom) > tolerans * tolerans)
-        -- 5. Linjer måste ha rimlig längd (> 1mm med default-tolerans)
-        AND (ST_Dimension(geom) != 1 OR ST_Length(geom) > tolerans)
-        -- 6. Linjer får inte skära sig själva (gäller ej polygoner – täcks av ST_IsValid)
-        AND (ST_Dimension(geom) != 1 OR ST_IsSimple(geom))
-        -- 7. Inga kurvsegment – CIRCULARSTRING m.m. stöds inte av systemet
+        AND ST_NPoints(geom) = ST_NPoints(ST_RemoveRepeatedPoints(geom))
         AND NOT ST_HasArc(geom);
 END;
 $BODY$;
 
-ALTER FUNCTION public.validera_geometri(geometry, float)
+ALTER FUNCTION public.validera_geometri(geometry)
     OWNER TO postgres;
 
-COMMENT ON FUNCTION public.validera_geometri(geometry, float)
+COMMENT ON FUNCTION public.validera_geometri(geometry)
     IS 'Validerar geometrikvalitet för _kba_-scheman. Kontrollerar OGC-validitet,
-icke-tomhet, inga duplicerade punkter, rimlig storlek (area/längd > tolerans),
-att linjer inte skär sig själva (ST_IsSimple), samt att geometrin inte innehåller
-kurvsegment (ST_HasArc). Tolerans i meter (default 0.001 = 1mm för SWEREF99 TM).
+icke-tomhet, inga exakta konsekutiva duplicerade punkter (ST_RemoveRepeatedPoints),
+samt att geometrin inte innehåller kurvsegment (ST_HasArc).
 Används som CHECK-constraint på tabeller med manuellt redigerade data.';

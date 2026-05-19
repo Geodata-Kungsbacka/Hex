@@ -10,10 +10,14 @@ GeoServer krävs inte: GeoServerClient ersätts med en mock som
 registrerar varje anrop. Testet använder en riktig PostgreSQL-anslutning
 så att den faktiska LISTEN/NOTIFY-mekaniken testas.
 
+Lyssnaren använder direkta PostgreSQL-anslutningar (inte JNDI): autentiseringsuppgifter
+för läsrollen hämtas från tabellen hex_role_credentials.
+
 Användning:
     python3 tests/test_pg_notify_listener.py
 """
 
+import os
 import sys
 import threading
 import time
@@ -24,6 +28,7 @@ from unittest.mock import MagicMock, patch
 
 import psycopg2
 import psycopg2.extensions
+import requests
 import select
 
 # ---------------------------------------------------------------------------
@@ -46,6 +51,11 @@ PG_PARAMS = {
     "password": "",
 }
 
+# db_config-format som används av handle_schema_notification och listen_loop
+DB_CONFIG = {
+    **PG_PARAMS,
+}
+
 CHANNEL_CREATE = gl.CHANNEL_SCHEMA_CREATE   # "geoserver_schema"
 CHANNEL_DROP   = gl.CHANNEL_SCHEMA_DROP     # "geoserver_schema_drop"
 
@@ -53,10 +63,9 @@ VALID_CREATE_SCHEMA = "sk0_kba_testschema"
 VALID_DROP_SCHEMA   = "sk1_ext_oldschema"
 INVALID_SCHEMA      = "public_not_a_valid_name"
 
-JNDI_MAPPINGS = {
-    "sk0": "java:comp/env/jdbc/server.testdb",
-    "sk1": "java:comp/env/jdbc/server.testdb",
-}
+# Testuppgifter för läsrollen som lagras i hex_role_credentials
+TEST_ROLE_NAME = f"r_{VALID_CREATE_SCHEMA}"
+TEST_ROLE_PASSWORD = "test_password_123"
 
 
 # ---------------------------------------------------------------------------
@@ -171,10 +180,11 @@ class TestPgNotifyRoundTrip(unittest.TestCase):
         _, payload = msgs[0]
         self.assertEqual(payload, INVALID_SCHEMA)
 
-        # Hanteraren måste avvisa det ogiltiga namnet
+        # Hanteraren måste avvisa det ogiltiga namnet (pg_conn mockas – nås inte)
         mock_gs = MagicMock()
+        mock_conn = MagicMock()
         result = gl.handle_schema_notification(
-            INVALID_SCHEMA, JNDI_MAPPINGS, mock_gs
+            INVALID_SCHEMA, DB_CONFIG, mock_conn, mock_gs
         )
         self.assertFalse(result)
         mock_gs.create_workspace.assert_not_called()
@@ -184,88 +194,223 @@ class TestHandlerLogicWithMockGeoServer(unittest.TestCase):
     """
     Enhetstester för handle_schema_notification och
     handle_schema_removal_notification med en mockad GeoServerClient.
-    PostgreSQL-anslutningen används enbart för NOTIFY; hanterarna körs
-    synkront i testtråden.
+    _fetch_role_credentials mockas för att undvika beroende av databasens
+    hex_role_credentials-tabell.
     """
 
-    def _make_gs_mock(self, workspace_ok=True, datastore_ok=True):
+    def _make_gs_mock(self, workspace_ok=True, datastore_ok=True, role_ok=True, acl_ok=True):
         """Returnerar en GeoServerClient-mock med konfigurerbart utfall."""
         gs = MagicMock()
         gs.workspace_exists.return_value = False
         gs.create_workspace.return_value = workspace_ok
         gs.datastore_exists.return_value = False
-        gs.create_jndi_datastore.return_value = datastore_ok
+        gs.create_pg_datastore.return_value = datastore_ok
+        gs.create_gs_role.return_value = role_ok
+        gs.create_workspace_acl.return_value = acl_ok
         gs.delete_workspace.return_value = True
+        gs.delete_workspace_acl.return_value = True
+        gs.delete_gs_role.return_value = True
         return gs
+
+    def _make_pg_conn_mock(self, anonym_las=False):
+        """Returnerar en psycopg2-anslutnings-mock.
+
+        Cursor-mocken svarar konsekvent på de tre DB-anrop som
+        handle_schema_notification gör via pg_conn.cursor():
+          1. _load_schema_pattern   – fetchall x2 (returnerar []: behåller befintligt mönster)
+          2. _fetch_anonymous_read  – fetchone   (returnerar (anonym_las,))
+        """
+        cur_mock = MagicMock()
+        cur_mock.fetchall.return_value = []
+        cur_mock.fetchone.return_value = (anonym_las,)
+        mock_conn = MagicMock()
+        mock_conn.cursor.return_value.__enter__.return_value = cur_mock
+        return mock_conn
 
     # ------------------------------------------------------------------
     # 2. Schema CREATE-hanterare
     # ------------------------------------------------------------------
     def test_create_handler_calls_workspace_and_datastore(self):
-        """Lyckad väg: workspace + datastore skapas för ett giltigt sk0-schema."""
+        """Lyckad väg: alla fyra steg utförs för ett giltigt sk0-schema."""
         gs = self._make_gs_mock()
-        result = gl.handle_schema_notification(
-            VALID_CREATE_SCHEMA, JNDI_MAPPINGS, gs
-        )
+        mock_conn = self._make_pg_conn_mock()
+
+        with patch.object(gl, "_fetch_role_credentials", return_value=(TEST_ROLE_NAME, TEST_ROLE_PASSWORD)):
+            result = gl.handle_schema_notification(
+                VALID_CREATE_SCHEMA, DB_CONFIG, mock_conn, gs
+            )
 
         self.assertTrue(result)
         gs.create_workspace.assert_called_once_with(VALID_CREATE_SCHEMA)
-        gs.create_jndi_datastore.assert_called_once_with(
-            VALID_CREATE_SCHEMA,
-            VALID_CREATE_SCHEMA,
-            JNDI_MAPPINGS["sk0"],
-            VALID_CREATE_SCHEMA,
+        gs.create_pg_datastore.assert_called_once_with(
+            workspace=VALID_CREATE_SCHEMA,
+            store_name=VALID_CREATE_SCHEMA,
+            host=DB_CONFIG["host"],
+            port=DB_CONFIG["port"],
+            dbname=DB_CONFIG["dbname"],
+            schema_name=VALID_CREATE_SCHEMA,
+            pg_user=TEST_ROLE_NAME,
+            pg_password=TEST_ROLE_PASSWORD,
         )
+        self.assertEqual(gs.create_gs_role.call_count, 2)
+        gs.create_gs_role.assert_any_call(f"r_{VALID_CREATE_SCHEMA}")
+        gs.create_gs_role.assert_any_call(f"w_{VALID_CREATE_SCHEMA}")
+        gs.create_workspace_acl.assert_called_once_with(VALID_CREATE_SCHEMA, anonymous_read=False)
 
     def test_create_handler_rejects_invalid_schema(self):
         """Schemanamn som inte matchar regex hoppas tyst över."""
         gs = self._make_gs_mock()
+        mock_conn = self._make_pg_conn_mock()
         result = gl.handle_schema_notification(
-            "public_bad", JNDI_MAPPINGS, gs
+            "public_bad", DB_CONFIG, mock_conn, gs
         )
         self.assertFalse(result)
         gs.create_workspace.assert_not_called()
 
-    def test_create_handler_missing_jndi_mapping(self):
-        """Schema utan matchande JNDI-koppling (t.ex. sk2_*) hoppas över."""
+    def test_create_handler_accepts_new_prefix_after_runtime_config_change(self):
+        """
+        Regression: skx_kba_test publiceras inte om SCHEMA_PATTERN inte
+        uppdaterats sedan tjänsten startade. handle_schema_notification ska
+        ladda om mönstret från DB via pg_conn.cursor() innan validering så
+        att ett nytt prefix (skx) accepteras utan omstart.
+        """
         gs = self._make_gs_mock()
-        # sk2 finns inte i JNDI_MAPPINGS
-        result = gl.handle_schema_notification(
-            "sk0_kba_missing", {"sk1": "java:comp/env/jdbc/db"}, gs
-        )
+
+        # Cursor-mock vars fetchall returnerar skx som publicerbart prefix.
+        # handle_schema_notification använder "with pg_conn.cursor() as cur:" –
+        # context manager-protokollet kallar __enter__() på det cursor()
+        # returnerar, så vi måste koppla __enter__.return_value till cur_mock.
+        cur_mock = MagicMock()
+        cur_mock.fetchall.side_effect = [
+            [("sk0",), ("sk1",), ("skx",)],   # standardiserade_skyddsnivaer
+            [("ext",), ("kba",), ("sys",)],    # standardiserade_datakategorier
+        ]
+        cur_mock.fetchone.return_value = (False,)   # anonym_las för skx
+        mock_conn = MagicMock()
+        mock_conn.cursor.return_value.__enter__.return_value = cur_mock
+
+        original_pattern = gl.SCHEMA_PATTERN
+        try:
+            with patch.object(gl, "_fetch_role_credentials",
+                              return_value=("r_skx_kba_test", "pw")):
+                result = gl.handle_schema_notification(
+                    "skx_kba_test", DB_CONFIG, mock_conn, gs
+                )
+        finally:
+            gl.SCHEMA_PATTERN = original_pattern
+
+        self.assertTrue(result, "skx_kba_test ska accepteras när mönstret laddats om från DB")
+        gs.create_workspace.assert_called_once_with("skx_kba_test")
+
+    def test_create_handler_passes_anonymous_read_true(self):
+        """När anonym_las=True i DB skickas anonymous_read=True till create_workspace_acl."""
+        gs = self._make_gs_mock()
+        mock_conn = self._make_pg_conn_mock(anonym_las=True)
+
+        with patch.object(gl, "_fetch_role_credentials", return_value=(TEST_ROLE_NAME, TEST_ROLE_PASSWORD)):
+            result = gl.handle_schema_notification(
+                VALID_CREATE_SCHEMA, DB_CONFIG, mock_conn, gs
+            )
+
+        self.assertTrue(result)
+        gs.create_workspace_acl.assert_called_once_with(VALID_CREATE_SCHEMA, anonymous_read=True)
+
+    def test_create_handler_missing_credentials(self):
+        """Schema utan autentiseringsuppgifter i hex_role_credentials hoppas över."""
+        gs = self._make_gs_mock()
+        mock_conn = self._make_pg_conn_mock()
+
+        with patch.object(gl, "_fetch_role_credentials", return_value=(None, None)):
+            result = gl.handle_schema_notification(
+                VALID_CREATE_SCHEMA, DB_CONFIG, mock_conn, gs
+            )
         self.assertFalse(result)
         gs.create_workspace.assert_not_called()
 
     def test_create_handler_workspace_failure_aborts(self):
         """Om workspace-skapande misslyckas hoppas datastore-steget över."""
         gs = self._make_gs_mock(workspace_ok=False)
-        result = gl.handle_schema_notification(
-            VALID_CREATE_SCHEMA, JNDI_MAPPINGS, gs
-        )
+        mock_conn = self._make_pg_conn_mock()
+
+        with patch.object(gl, "_fetch_role_credentials", return_value=(TEST_ROLE_NAME, TEST_ROLE_PASSWORD)):
+            result = gl.handle_schema_notification(
+                VALID_CREATE_SCHEMA, DB_CONFIG, mock_conn, gs
+            )
         self.assertFalse(result)
-        gs.create_jndi_datastore.assert_not_called()
+        gs.create_pg_datastore.assert_not_called()
 
     def test_create_handler_sk1_schema(self):
         """sk1-scheman hanteras identiskt med sk0-scheman."""
         gs = self._make_gs_mock()
-        result = gl.handle_schema_notification(
-            VALID_DROP_SCHEMA,   # "sk1_ext_oldschema"
-            JNDI_MAPPINGS,
-            gs,
-        )
+        mock_conn = self._make_pg_conn_mock()
+        sk1_role = f"r_{VALID_DROP_SCHEMA}"
+
+        with patch.object(gl, "_fetch_role_credentials", return_value=(sk1_role, TEST_ROLE_PASSWORD)):
+            result = gl.handle_schema_notification(
+                VALID_DROP_SCHEMA,   # "sk1_ext_oldschema"
+                DB_CONFIG,
+                mock_conn,
+                gs,
+            )
         self.assertTrue(result)
         gs.create_workspace.assert_called_once_with(VALID_DROP_SCHEMA)
+
+    def test_create_handler_datastore_failure(self):
+        """Om datastore-skapande misslyckas avbryts flödet innan roller skapas."""
+        gs = self._make_gs_mock(datastore_ok=False)
+        mock_conn = self._make_pg_conn_mock()
+
+        with patch.object(gl, "_fetch_role_credentials", return_value=(TEST_ROLE_NAME, TEST_ROLE_PASSWORD)):
+            result = gl.handle_schema_notification(
+                VALID_CREATE_SCHEMA, DB_CONFIG, mock_conn, gs
+            )
+        self.assertFalse(result)
+        gs.create_workspace.assert_called_once()
+        gs.create_gs_role.assert_not_called()
+        gs.create_workspace_acl.assert_not_called()
+
+    def test_create_handler_role_failure_aborts(self):
+        """Om GeoServer-roll inte kan skapas avbryts flödet innan ACL sätts."""
+        gs = self._make_gs_mock(role_ok=False)
+        mock_conn = self._make_pg_conn_mock()
+
+        with patch.object(gl, "_fetch_role_credentials", return_value=(TEST_ROLE_NAME, TEST_ROLE_PASSWORD)):
+            result = gl.handle_schema_notification(
+                VALID_CREATE_SCHEMA, DB_CONFIG, mock_conn, gs
+            )
+        self.assertFalse(result)
+        gs.create_workspace.assert_called_once()
+        gs.create_pg_datastore.assert_called_once()
+        gs.create_workspace_acl.assert_not_called()
+
+    def test_create_handler_acl_failure_aborts(self):
+        """Om ACL-regler inte kan skapas returneras False."""
+        gs = self._make_gs_mock(acl_ok=False)
+        mock_conn = self._make_pg_conn_mock()
+
+        with patch.object(gl, "_fetch_role_credentials", return_value=(TEST_ROLE_NAME, TEST_ROLE_PASSWORD)):
+            result = gl.handle_schema_notification(
+                VALID_CREATE_SCHEMA, DB_CONFIG, mock_conn, gs
+            )
+        self.assertFalse(result)
+        gs.create_workspace.assert_called_once()
+        gs.create_pg_datastore.assert_called_once()
+        self.assertEqual(gs.create_gs_role.call_count, 2)
 
     # ------------------------------------------------------------------
     # 3. Schema DROP-hanterare
     # ------------------------------------------------------------------
     def test_drop_handler_calls_delete_workspace(self):
-        """Lyckad väg: delete_workspace anropas för ett giltigt schema."""
+        """Lyckad väg: ACL-regler, workspace och roller tas bort i rätt ordning."""
         gs = self._make_gs_mock()
         result = gl.handle_schema_removal_notification(VALID_DROP_SCHEMA, gs)
 
         self.assertTrue(result)
+        gs.delete_workspace_acl.assert_called_once_with(VALID_DROP_SCHEMA)
         gs.delete_workspace.assert_called_once_with(VALID_DROP_SCHEMA)
+        self.assertEqual(gs.delete_gs_role.call_count, 2)
+        gs.delete_gs_role.assert_any_call(f"r_{VALID_DROP_SCHEMA}")
+        gs.delete_gs_role.assert_any_call(f"w_{VALID_DROP_SCHEMA}")
 
     def test_drop_handler_rejects_invalid_schema(self):
         """Ogiltiga schemanamn avvisas innan GeoServer kontaktas."""
@@ -274,38 +419,83 @@ class TestHandlerLogicWithMockGeoServer(unittest.TestCase):
         self.assertFalse(result)
         gs.delete_workspace.assert_not_called()
 
+    def test_drop_handler_accepts_new_prefix_after_runtime_config_change(self):
+        """
+        Regression: DROP-notifiering för skx_kba_test avvisas om SCHEMA_PATTERN
+        är inaktuellt (t.ex. överskrivit av en annan DB-tråd utan skx).
+        handle_schema_removal_notification ska ladda om mönstret via pg_conn
+        innan validering.
+        """
+        gs = self._make_gs_mock()
+
+        # handle_schema_removal_notification uses "with pg_conn.cursor() as cur:" so
+        # the context manager protocol calls __enter__() on cursor()'s return value.
+        # We must wire __enter__.return_value to cur_mock, not cursor.return_value itself.
+        cur_mock = MagicMock()
+        cur_mock.fetchall.side_effect = [
+            [("sk0",), ("sk1",), ("skx",)],   # standardiserade_skyddsnivaer
+            [("ext",), ("kba",), ("sys",)],    # standardiserade_datakategorier
+        ]
+        mock_conn = MagicMock()
+        # handle_schema_removal_notification uses "with pg_conn.cursor() as cur:"
+        # so __enter__.return_value must be the configured cursor mock.
+        mock_conn.cursor.return_value.__enter__.return_value = cur_mock
+
+        original_pattern = gl.SCHEMA_PATTERN
+        try:
+            # Sätt ett inaktuellt mönster som saknar skx (simulerar överskrivning
+            # från en annan DB-tråd)
+            gl.SCHEMA_PATTERN = __import__("re").compile(r"^(sk0|sk1)_(ext|kba|sys)_.+$")
+            result = gl.handle_schema_removal_notification(
+                "skx_kba_test", gs, pg_conn=mock_conn
+            )
+        finally:
+            gl.SCHEMA_PATTERN = original_pattern
+
+        self.assertTrue(result, "skx_kba_test ska accepteras när mönstret laddats om från DB")
+        gs.delete_workspace.assert_called_once_with("skx_kba_test")
+
     def test_drop_handler_returns_false_on_geoserver_failure(self):
-        """Hanteraren returnerar False när GeoServer-borttagning misslyckas."""
+        """Hanteraren returnerar False när workspace-borttagning misslyckas; roller rensas inte."""
         gs = self._make_gs_mock()
         gs.delete_workspace.return_value = False
         result = gl.handle_schema_removal_notification(VALID_DROP_SCHEMA, gs)
         self.assertFalse(result)
+        gs.delete_workspace_acl.assert_called_once_with(VALID_DROP_SCHEMA)
+        gs.delete_gs_role.assert_not_called()
 
 
 class TestListenLoopIntegration(unittest.TestCase):
     """
     Integrationstest: kör listen_loop i en bakgrundstråd, skicka NOTIFY
     från huvudtråden och verifiera att mock-GeoServer anropades korrekt.
+
+    _fetch_role_credentials mockas för att undvika beroende av databasens
+    hex_role_credentials-tabell under integrationstester.
     """
 
     TIMEOUT = 5  # sekunder att vänta på att tråden plockar upp notifieringen
 
-    def _run_listen_loop(self, gs_mock, stop_event, db_label="testdb"):
-        db_config = {**PG_PARAMS, "jndi_mappings": JNDI_MAPPINGS}
-        gl.listen_loop(
-            db_config,
-            reconnect_delay=1,
-            gs_client=gs_mock,
-            stop_event=stop_event,
-        )
+    def _run_listen_loop(self, gs_mock, stop_event):
+        with patch.object(gl, "_fetch_role_credentials", return_value=(TEST_ROLE_NAME, TEST_ROLE_PASSWORD)):
+            gl.listen_loop(
+                DB_CONFIG,
+                reconnect_delay=1,
+                gs_client=gs_mock,
+                stop_event=stop_event,
+            )
 
     def _make_gs_mock(self):
         gs = MagicMock()
         gs.workspace_exists.return_value = False
         gs.create_workspace.return_value = True
         gs.datastore_exists.return_value = False
-        gs.create_jndi_datastore.return_value = True
+        gs.create_pg_datastore.return_value = True
+        gs.create_gs_role.return_value = True
+        gs.create_workspace_acl.return_value = True
         gs.delete_workspace.return_value = True
+        gs.delete_workspace_acl.return_value = True
+        gs.delete_gs_role.return_value = True
         return gs
 
     def test_listen_loop_picks_up_create_notification(self):
@@ -331,7 +521,7 @@ class TestListenLoopIntegration(unittest.TestCase):
         t.join(timeout=3)
 
         gs.create_workspace.assert_called_once_with(VALID_CREATE_SCHEMA)
-        gs.create_jndi_datastore.assert_called_once()
+        gs.create_pg_datastore.assert_called_once()
 
     def test_listen_loop_picks_up_drop_notification(self):
         """listen_loop tar emot geoserver_schema_drop NOTIFY och anropar delete_workspace."""
@@ -425,12 +615,13 @@ class TestCreateWorkspaceNamespaceUri(unittest.TestCase):
         self.assertEqual(method, "PUT")
         self.assertIn("/namespaces/sk0_ext_sjv", url)
 
-        # Verify the URI in the payload is a proper https URI, not "http://sk0_ext_sjv"
+        # Verify the URI is not GeoServer's auto-generated "http://<name>" form
         ns_payload = calls[2][1]["json"]
         uri = ns_payload["namespace"]["uri"]
-        self.assertTrue(uri.startswith("https://"), f"Expected https URI, got: {uri}")
-        self.assertNotEqual(uri, "http://sk0_ext_sjv")
         self.assertIn("sk0_ext_sjv", uri)
+        self.assertNotEqual(uri, "http://sk0_ext_sjv")
+        # Default namespace_uri_base = base_url ("http://geoserver.example.com")
+        self.assertEqual(uri, "http://geoserver.example.com/sk0_ext_sjv")
 
     def test_namespace_put_failure_still_returns_true(self):
         """Misslyckad namespace-uppdatering ska inte hindra workspace från att rapporteras som skapad."""
@@ -459,17 +650,1000 @@ class TestCreateWorkspaceNamespaceUri(unittest.TestCase):
         # Only 2 calls: workspace_exists + POST; no PUT
         self.assertEqual(len(mock_req.call_args_list), 2)
 
-    def test_existing_workspace_skips_all_calls(self):
-        """Om workspace redan finns ska varken POST eller PUT anropas."""
+    def test_existing_workspace_correct_namespace_skips_write(self):
+        """Workspace finns med korrekt namespace URI → GET-kontroll, ingen POST/PUT."""
         client = self._make_client()
+
+        ns_resp = MagicMock()
+        ns_resp.status_code = 200
+        ns_resp.json.return_value = {
+            # Default namespace_uri_base = base_url = "http://geoserver.example.com"
+            "namespace": {"prefix": "sk0_ext_sjv", "uri": "http://geoserver.example.com/sk0_ext_sjv"}
+        }
 
         with patch.object(client, "_request_with_retry", side_effect=[
             self._mock_response(200),  # workspace_exists -> 200 = exists
+            ns_resp,                   # get_namespace_uri -> correct URI
         ]) as mock_req:
             result = client.create_workspace("sk0_ext_sjv")
 
         self.assertTrue(result)
-        self.assertEqual(len(mock_req.call_args_list), 1)
+        calls = mock_req.call_args_list
+        self.assertEqual(len(calls), 2)
+        # Second call must be GET to namespaces
+        self.assertEqual(calls[1][0][0], "GET")
+        self.assertIn("/namespaces/sk0_ext_sjv", calls[1][0][1])
+
+    def test_existing_workspace_wrong_namespace_is_repaired(self):
+        """Workspace finns med fel namespace URI (t.ex. GeoServers auto-genererade) → korrigeras via PUT."""
+        client = self._make_client()
+
+        ns_resp = MagicMock()
+        ns_resp.status_code = 200
+        ns_resp.json.return_value = {
+            # GeoServer's auto-generated URI: no host, just the name → wrong format
+            "namespace": {"prefix": "sk0_ext_sjv", "uri": "http://sk0_ext_sjv"}
+        }
+
+        with patch.object(client, "_request_with_retry", side_effect=[
+            self._mock_response(200),  # workspace_exists -> 200 = exists
+            ns_resp,                   # get_namespace_uri -> wrong URI
+            self._mock_response(200),  # PUT /namespaces -> 200 success
+        ]) as mock_req:
+            result = client.create_workspace("sk0_ext_sjv")
+
+        self.assertTrue(result)
+        calls = mock_req.call_args_list
+        self.assertEqual(len(calls), 3)
+        # Third call must be PUT to namespaces with the correct namespace_uri_base URI
+        method, url = calls[2][0][0], calls[2][0][1]
+        self.assertEqual(method, "PUT")
+        self.assertIn("/namespaces/sk0_ext_sjv", url)
+        ns_payload = calls[2][1]["json"]
+        # Default namespace_uri_base = base_url = "http://geoserver.example.com"
+        self.assertEqual(ns_payload["namespace"]["uri"], "http://geoserver.example.com/sk0_ext_sjv")
+
+
+class TestCreateGsRole(unittest.TestCase):
+    """
+    Enhetstester för GeoServerClient.create_gs_role – verifierar hantering av
+    lyckad skapning, 409 Conflict och GeoServer-specifikt 404 "already exists".
+    """
+
+    def _make_client(self):
+        return gl.GeoServerClient(
+            base_url="http://geoserver.example.com",
+            user="admin",
+            password="secret",
+        )
+
+    def _mock_response(self, status_code, text=""):
+        resp = MagicMock()
+        resp.status_code = status_code
+        resp.text = text
+        return resp
+
+    def test_create_role_success(self):
+        """201 → roll skapad, returnerar True."""
+        client = self._make_client()
+        with patch.object(client, "_request_with_retry",
+                          return_value=self._mock_response(201)):
+            self.assertTrue(client.create_gs_role("r_sk0_kba_test"))
+
+    def test_create_role_409_already_exists(self):
+        """409 → rollen finns redan, returnerar True (idempotent)."""
+        client = self._make_client()
+        with patch.object(client, "_request_with_retry",
+                          return_value=self._mock_response(409)):
+            self.assertTrue(client.create_gs_role("r_sk0_kba_test"))
+
+    def test_create_role_404_already_exists_geoserver_quirk(self):
+        """
+        Regression: GeoServer 2.27.x returnerar 404 med 'already exists' i
+        svarstexten när rollen redan finns (t.ex. efter manuell workspace-borttagning
+        utan att ta bort rollerna). Ska behandlas som 409, inte som fel.
+        """
+        client = self._make_client()
+        body = (
+            "<!doctype html><html><body>"
+            "<p><b>Message</b> The role r_skx_kba_test11 already exists</p>"
+            "</body></html>"
+        )
+        with patch.object(client, "_request_with_retry",
+                          return_value=self._mock_response(404, body)):
+            self.assertTrue(client.create_gs_role("r_skx_kba_test11"))
+
+    def test_create_role_404_genuine_not_found(self):
+        """404 utan 'already exists' i svarstexten är ett riktigt fel → False."""
+        client = self._make_client()
+        with patch.object(client, "_request_with_retry",
+                          return_value=self._mock_response(404, "Not Found")):
+            self.assertFalse(client.create_gs_role("r_sk0_kba_test"))
+
+    def test_create_role_server_error(self):
+        """500 → logg ERROR, returnerar False."""
+        client = self._make_client()
+        with patch.object(client, "_request_with_retry",
+                          return_value=self._mock_response(500, "Internal Server Error")):
+            self.assertFalse(client.create_gs_role("r_sk0_kba_test"))
+
+
+class TestCreateWorkspaceAcl(unittest.TestCase):
+    """
+    Enhetstester för GeoServerClient.create_workspace_acl – verifierar att
+    409 och GeoServer-specifikt 404 "already exists" behandlas som idempotent
+    framgång (samma mönster som create_gs_role).
+    """
+
+    def _make_client(self):
+        return gl.GeoServerClient(
+            base_url="http://geoserver.example.com",
+            user="admin",
+            password="secret",
+        )
+
+    def _mock_response(self, status_code, text=""):
+        resp = MagicMock()
+        resp.status_code = status_code
+        resp.text = text
+        return resp
+
+    def test_create_acl_success_201(self):
+        """201 → regler skapade, returnerar True."""
+        client = self._make_client()
+        with patch.object(client, "_request_with_retry",
+                          return_value=self._mock_response(201)):
+            self.assertTrue(client.create_workspace_acl("sk0_kba_test"))
+
+    def test_create_acl_success_200(self):
+        """200 → regler skapade (vissa GeoServer-versioner), returnerar True."""
+        client = self._make_client()
+        with patch.object(client, "_request_with_retry",
+                          return_value=self._mock_response(200)):
+            self.assertTrue(client.create_workspace_acl("sk0_kba_test"))
+
+    def test_create_acl_409_rules_already_correct(self):
+        """409 → GET visar att reglerna redan har rätt roll → returnerar True utan skrivning."""
+        client = self._make_client()
+        correct_rules = {
+            "sk0_kba_test.*.r": "r_sk0_kba_test",
+            "sk0_kba_test.*.w": "w_sk0_kba_test",
+        }
+        with patch.object(client, "_request_with_retry",
+                          return_value=self._mock_response(409)):
+            with patch.object(client, "get_acl_rules", return_value=correct_rules):
+                self.assertTrue(client.create_workspace_acl("sk0_kba_test"))
+
+    def test_create_acl_409_wrong_role_is_repaired(self):
+        """
+        409 → GET visar felaktig roll → DELETE gammal + POST ny regel.
+
+        Exempel: regeln pekar på ROLE_AUTHENTICATED istället för r_sk0_kba_test.
+        Utan den här reparationen skulle GeoServer fortsätta använda fel roll.
+        """
+        client = self._make_client()
+        wrong_rules = {
+            "sk0_kba_test.*.r": "ROLE_AUTHENTICATED",  # fel roll
+            "sk0_kba_test.*.w": "w_sk0_kba_test",      # korrekt
+        }
+        with patch.object(client, "_request_with_retry",
+                          return_value=self._mock_response(409)):
+            with patch.object(client, "get_acl_rules", return_value=wrong_rules):
+                with patch.object(client, "_request_with_retry") as mock_req:
+                    mock_req.side_effect = [
+                        self._mock_response(200),   # DELETE gammal regel
+                        self._mock_response(201),   # POST ny korrekt regel
+                    ]
+                    result = client._ensure_acl_rules("sk0_kba_test", {
+                        "sk0_kba_test.*.r": "r_sk0_kba_test",
+                        "sk0_kba_test.*.w": "w_sk0_kba_test",
+                    })
+
+        self.assertTrue(result)
+        calls = mock_req.call_args_list
+        # DELETE för felaktig regel
+        self.assertEqual(calls[0][0][0], "DELETE")
+        self.assertIn("sk0_kba_test.*.r", calls[0][0][1])
+        # POST med korrekt roll
+        self.assertEqual(calls[1][0][0], "POST")
+        self.assertEqual(calls[1][1]["json"], {"sk0_kba_test.*.r": "r_sk0_kba_test"})
+
+    def test_create_acl_404_already_exists_geoserver_quirk(self):
+        """
+        Regression: GeoServer kan returnera 404 med 'already exists' i kroppen
+        om ACL-reglerna lämnades kvar efter en manuell workspace-borttagning.
+        Ska behandlas som 409 och trigga verify-and-repair.
+        """
+        client = self._make_client()
+        body = "Rule sk0_kba_test.*.r already exists"
+        correct_rules = {
+            "sk0_kba_test.*.r": "r_sk0_kba_test",
+            "sk0_kba_test.*.w": "w_sk0_kba_test",
+        }
+        with patch.object(client, "_request_with_retry",
+                          return_value=self._mock_response(404, body)):
+            with patch.object(client, "get_acl_rules", return_value=correct_rules):
+                self.assertTrue(client.create_workspace_acl("sk0_kba_test"))
+
+    def test_create_acl_404_genuine_failure(self):
+        """404 utan 'already exists' är ett riktigt fel → False."""
+        client = self._make_client()
+        with patch.object(client, "_request_with_retry",
+                          return_value=self._mock_response(404, "Not Found")):
+            self.assertFalse(client.create_workspace_acl("sk0_kba_test"))
+
+    def test_create_acl_server_error(self):
+        """500 → logg ERROR, returnerar False."""
+        client = self._make_client()
+        with patch.object(client, "_request_with_retry",
+                          return_value=self._mock_response(500, "Internal Server Error")):
+            self.assertFalse(client.create_workspace_acl("sk0_kba_test"))
+
+    def test_create_acl_anonymous_read_adds_role_anonymous(self):
+        """anonymous_read=True → läsregeln inkluderar ROLE_ANONYMOUS i POST-payloaden."""
+        client = self._make_client()
+        posted = {}
+
+        def capture_request(method, url, **kwargs):
+            if method == "POST":
+                posted.update(kwargs.get("json", {}))
+            return self._mock_response(201)
+
+        with patch.object(client, "_request_with_retry", side_effect=capture_request):
+            self.assertTrue(client.create_workspace_acl("skx_kba_fg", anonymous_read=True))
+
+        self.assertEqual(posted.get("skx_kba_fg.*.r"), "r_skx_kba_fg,ROLE_ANONYMOUS")
+        self.assertEqual(posted.get("skx_kba_fg.*.w"), "w_skx_kba_fg")
+
+    def test_create_acl_anonymous_read_false_omits_role_anonymous(self):
+        """anonymous_read=False (default) → läsregeln innehåller inte ROLE_ANONYMOUS."""
+        client = self._make_client()
+        posted = {}
+
+        def capture_request(method, url, **kwargs):
+            if method == "POST":
+                posted.update(kwargs.get("json", {}))
+            return self._mock_response(201)
+
+        with patch.object(client, "_request_with_retry", side_effect=capture_request):
+            self.assertTrue(client.create_workspace_acl("sk1_kba_test"))
+
+        self.assertEqual(posted.get("sk1_kba_test.*.r"), "r_sk1_kba_test")
+        self.assertNotIn("ROLE_ANONYMOUS", posted.get("sk1_kba_test.*.r", ""))
+
+    def test_create_acl_409_anonymous_read_rules_already_correct(self):
+        """409 med ROLE_ANONYMOUS i befintliga regler → korrekt, returnerar True utan skrivning."""
+        client = self._make_client()
+        correct_rules = {
+            "skx_kba_fg.*.r": "r_skx_kba_fg,ROLE_ANONYMOUS",
+            "skx_kba_fg.*.w": "w_skx_kba_fg",
+        }
+        with patch.object(client, "_request_with_retry",
+                          return_value=self._mock_response(409)):
+            with patch.object(client, "get_acl_rules", return_value=correct_rules):
+                self.assertTrue(client.create_workspace_acl("skx_kba_fg", anonymous_read=True))
+
+
+class TestCreatePgDatastore(unittest.TestCase):
+    """
+    Enhetstester för GeoServerClient.create_pg_datastore som verifierar att
+    direkta PostgreSQL-anslutningsparametrar skickas korrekt till GeoServer.
+
+    Täcker specifikt regressionsfallet (lösenordsförnyelse efter ominstallation):
+    när en datastore redan finns med SAMMA pg_user men ett förnyat lösenord
+    (underhall_hex 'lösenord backfyllt') ska ett PUT skickas – inte hoppas över.
+    """
+
+    WORKSPACE   = "sk0_kba_testschema"
+    STORE       = "sk0_kba_testschema"
+    PG_USER     = "gs_r_sk0_kba_testschema"
+    PG_PASSWORD = "brand_new_password_after_reinstall"
+
+    def _make_client(self):
+        return gl.GeoServerClient(
+            base_url="http://geoserver.example.com",
+            user="admin",
+            password="secret",
+        )
+
+    def _mock_response(self, status_code, text=""):
+        resp = MagicMock()
+        resp.status_code = status_code
+        resp.text = text
+        return resp
+
+    def _call_create(self, client):
+        return client.create_pg_datastore(
+            workspace=self.WORKSPACE,
+            store_name=self.STORE,
+            host="db-host",
+            port=5432,
+            dbname="geodata_sk0_oppen",
+            schema_name=self.WORKSPACE,
+            pg_user=self.PG_USER,
+            pg_password=self.PG_PASSWORD,
+        )
+
+    # ------------------------------------------------------------------
+    # Regression: befintlig datastore med SAMMA användare – ska alltid PUT
+    # ------------------------------------------------------------------
+    def test_existing_store_same_user_refreshes_password(self):
+        """
+        Regression: befintlig datastore med samma pg_user ska ändå PUT:as
+        med det nya lösenordet.
+
+        Simulerar 'before state' efter ominstallation: underhall_hex har
+        genererat ett nytt lösenord ('lösenord backfyllt') men GeoServer
+        har fortfarande det gamla. Utan denna fix returnerades True direkt
+        och GeoServer fick aldrig det nya lösenordet → 'null'-fel vid
+        listning av lager.
+        """
+        client = self._make_client()
+
+        with patch.object(client, "_get_datastore_user", return_value=self.PG_USER):
+            with patch.object(client, "_update_pg_datastore", return_value=True) as mock_put:
+                result = self._call_create(client)
+
+        self.assertTrue(result)
+        mock_put.assert_called_once_with(
+            self.WORKSPACE, self.STORE,
+            "db-host", 5432, "geodata_sk0_oppen",
+            self.WORKSPACE, self.PG_USER, self.PG_PASSWORD,
+        )
+
+    def test_existing_store_different_user_updates_via_put(self):
+        """Befintlig datastore med annan pg_user (r_* → gs_r_* migration) → PUT."""
+        client = self._make_client()
+        old_user = f"r_{self.WORKSPACE}"
+
+        with patch.object(client, "_get_datastore_user", return_value=old_user):
+            with patch.object(client, "_update_pg_datastore", return_value=True) as mock_put:
+                result = self._call_create(client)
+
+        self.assertTrue(result)
+        mock_put.assert_called_once_with(
+            self.WORKSPACE, self.STORE,
+            "db-host", 5432, "geodata_sk0_oppen",
+            self.WORKSPACE, self.PG_USER, self.PG_PASSWORD,
+        )
+
+    # ------------------------------------------------------------------
+    # Ny datastore (finns inte sedan tidigare) – POST
+    # ------------------------------------------------------------------
+    def test_create_pg_datastore_success(self):
+        """Lyckad skapning av direkt PG-datastore returnerar True."""
+        client = self._make_client()
+
+        with patch.object(client, "_request_with_retry", side_effect=[
+            self._mock_response(404),  # _get_datastore_user → 404 = finns inte
+            self._mock_response(201),  # POST /datastores → 201
+        ]) as mock_req:
+            result = client.create_pg_datastore(
+                workspace=self.WORKSPACE,
+                store_name=self.STORE,
+                host="localhost",
+                port=5432,
+                dbname="geodata",
+                schema_name=self.WORKSPACE,
+                pg_user="r_sk0_kba_testschema",
+                pg_password="secret",
+            )
+
+        self.assertTrue(result)
+        calls = mock_req.call_args_list
+        self.assertEqual(len(calls), 2)
+
+        # Andra anropet ska vara POST till datastores
+        method, url = calls[1][0][0], calls[1][0][1]
+        self.assertEqual(method, "POST")
+        self.assertIn("/workspaces/sk0_kba_testschema/datastores", url)
+
+        # Kontrollera att payload innehåller direkta PG-parametrar (inte JNDI)
+        payload = calls[1][1]["json"]
+        ds = payload["dataStore"]
+        self.assertEqual(ds["type"], "PostGIS")
+        entries = {e["@key"]: e["$"] for e in ds["connectionParameters"]["entry"]}
+        self.assertEqual(entries["dbtype"], "postgis")
+        self.assertEqual(entries["host"], "localhost")
+        self.assertEqual(entries["port"], "5432")
+        self.assertEqual(entries["database"], "geodata")
+        self.assertEqual(entries["schema"], self.WORKSPACE)
+        self.assertEqual(entries["user"], "r_sk0_kba_testschema")
+        self.assertEqual(entries["passwd"], "secret")
+
+    def test_create_pg_datastore_failure(self):
+        """Om GeoServer returnerar fel vid POST returneras False."""
+        client = self._make_client()
+
+        with patch.object(client, "_request_with_retry", side_effect=[
+            self._mock_response(404),  # _get_datastore_user → finns inte
+            self._mock_response(500),  # POST → failure
+        ]):
+            result = client.create_pg_datastore(
+                workspace=self.WORKSPACE,
+                store_name=self.STORE,
+                host="localhost",
+                port=5432,
+                dbname="geodata",
+                schema_name=self.WORKSPACE,
+                pg_user="r_sk0_kba_testschema",
+                pg_password="secret",
+            )
+
+        self.assertFalse(result)
+
+    def test_post_conflict_falls_back_to_put(self):
+        """
+        POST 409/500 'already exists' (datastore finns men _get_datastore_user
+        misslyckades att läsa) ska falla tillbaka till _update_pg_datastore.
+        """
+        client = self._make_client()
+
+        with patch.object(client, "_get_datastore_user", return_value=None):
+            with patch.object(client, "_request_with_retry",
+                              return_value=self._mock_response(409, "already exists")):
+                with patch.object(client, "_update_pg_datastore", return_value=True) as mock_put:
+                    result = self._call_create(client)
+
+        self.assertTrue(result)
+        mock_put.assert_called_once()
+
+
+class TestReconcileGeoServerSchemas(unittest.TestCase):
+    """
+    Enhetstester för _reconcile_geoserver_schemas – startavstämningen som körs
+    en gång per uppstart och skapar saknade GeoServer-workspaces.
+
+    Varken PostgreSQL-server eller GeoServer behövs: cur, cur.connection och
+    gs_client mockas fullständigt.
+    """
+
+    # ------------------------------------------------------------------
+    # Hjälpare
+    # ------------------------------------------------------------------
+
+    def _make_cur_mock(self, pg_schema_names):
+        """
+        Returnerar en mock av en psycopg2-cursor vars fetchall() ger de
+        angivna schemanamnen och vars .connection ger en separat mock-anslutning.
+        """
+        cur = MagicMock()
+        cur.fetchall.return_value = [(name,) for name in pg_schema_names]
+        cur.connection = MagicMock()   # simulerar cur.connection (vår fix)
+        return cur
+
+    def _make_gs_mock(self, existing_workspaces=None, get_status=200):
+        """
+        Returnerar en GeoServerClient-mock vars GET /workspaces.json svarar
+        med de angivna workspace-namnen.
+        """
+        gs = MagicMock()
+        gs.rest_url = "http://geoserver.example.com/rest"
+        gs.create_workspace.return_value = True
+        gs.create_pg_datastore.return_value = True
+
+        ws_list = [{"name": n} for n in (existing_workspaces or [])]
+        get_resp = MagicMock()
+        get_resp.status_code = get_status
+        get_resp.json.return_value = {"workspaces": {"workspace": ws_list}}
+        gs._request_with_retry.return_value = get_resp
+        return gs
+
+    DB_CONFIG = {
+        "host": "localhost",
+        "port": 5432,
+        "dbname": "geodata",
+        "user": "hex_listener",
+        "password": "pw",
+    }
+
+    # ------------------------------------------------------------------
+    # 1. Normalflöde
+    # ------------------------------------------------------------------
+
+    def test_missing_schema_creates_workspace(self):
+        """Schema i PG men inte i GeoServer → workspace skapas."""
+        cur = self._make_cur_mock(["sk0_kba_testschema"])
+        gs  = self._make_gs_mock(existing_workspaces=[])
+
+        with patch.object(gl, "_fetch_role_credentials",
+                          return_value=(TEST_ROLE_NAME, TEST_ROLE_PASSWORD)):
+            gl._reconcile_geoserver_schemas(cur, self.DB_CONFIG, gs)
+
+        gs.create_workspace.assert_called_once_with("sk0_kba_testschema")
+
+    def test_existing_schema_refreshes_datastore_credentials(self):
+        """
+        Schema finns i både PG och GeoServer → workspace skapas inte igen men
+        create_pg_datastore anropas för att uppdatera lösenordet.
+
+        Förut hoppades befintliga scheman över helt under startavstämning.
+        Nu körs handle_schema_notification för alla scheman (idempotent) så att
+        lösenordsändringar efter ominstallation slår igenom vid omstart av tjänsten.
+        """
+        cur = self._make_cur_mock(["sk0_kba_testschema"])
+        gs  = self._make_gs_mock(existing_workspaces=["sk0_kba_testschema"])
+
+        with patch.object(gl, "_fetch_role_credentials",
+                          return_value=(TEST_ROLE_NAME, TEST_ROLE_PASSWORD)):
+            gl._reconcile_geoserver_schemas(cur, self.DB_CONFIG, gs)
+
+        # create_workspace anropas (idempotent – den verkliga implementationen
+        # kontrollerar att workspace finns innan den försöker skapa)
+        gs.create_workspace.assert_called_once_with("sk0_kba_testschema")
+        # create_pg_datastore anropas alltid för att synka lösenordet
+        gs.create_pg_datastore.assert_called_once()
+
+    def test_in_sync_logs_ok(self):
+        """Identiska listor → ingen skapning, inga varningar om saknade/extra scheman."""
+        cur = self._make_cur_mock(["sk0_kba_testschema"])
+        gs  = self._make_gs_mock(existing_workspaces=["sk0_kba_testschema"])
+
+        # Mocka handle_schema_notification för att isolera reconcilieringslogiken
+        # från interna varningar (t.ex. _load_schema_pattern med tom mock-cursor).
+        with patch.object(gl, "handle_schema_notification", return_value=True):
+            with self.assertLogs("geoserver_listener", level="WARNING") as cm:
+                # Trigga en WARNING vi kan filtrera bort – annars misslyckas assertLogs
+                # om inga loggar alls produceras.
+                logging.getLogger("geoserver_listener").warning("_sentinel_")
+                gl._reconcile_geoserver_schemas(cur, self.DB_CONFIG, gs)
+
+        # Den enda WARNING-raden ska vara vår sentinel, inte en om saknade scheman
+        warnings = [line for line in cm.output if "WARNING" in line and "_sentinel_" not in line]
+        self.assertEqual(warnings, [], f"Unexpected warnings: {warnings}")
+
+    # ------------------------------------------------------------------
+    # 2. Argument-passning (verifierar fixen: cur.connection som pg_conn)
+    # ------------------------------------------------------------------
+
+    def test_cur_connection_passed_as_pg_conn(self):
+        """
+        handle_schema_notification ska ta emot cur.connection som pg_conn –
+        det här testet fångar exakt det fel vi fixade (jndi_mappings / felaktig
+        argumentordning).
+        """
+        cur = self._make_cur_mock(["sk0_kba_testschema"])
+        gs  = self._make_gs_mock(existing_workspaces=[])
+
+        captured = {}
+
+        def fake_handle(schema_name, db_config, pg_conn, gs_client, db_label=""):
+            captured["pg_conn"] = pg_conn
+            captured["db_config"] = db_config
+            captured["gs_client"] = gs_client
+            return True
+
+        with patch.object(gl, "handle_schema_notification", side_effect=fake_handle):
+            gl._reconcile_geoserver_schemas(cur, self.DB_CONFIG, gs)
+
+        self.assertIn("pg_conn", captured, "handle_schema_notification was never called")
+        # pg_conn ska vara cur.connection, INTE gs_client eller jndi_mappings
+        self.assertIs(captured["pg_conn"], cur.connection)
+        # db_config ska vara hela DB_CONFIG-dict, inte en nyckel ur den
+        self.assertIs(captured["db_config"], self.DB_CONFIG)
+        # gs_client ska vara GeoServerClient-mocken
+        self.assertIs(captured["gs_client"], gs)
+
+    # ------------------------------------------------------------------
+    # 3. Saknade credentials (befintliga JNDI-scheman efter patch)
+    # ------------------------------------------------------------------
+
+    def test_missing_credentials_skips_schema_without_crash(self):
+        """
+        Schema utan rad i hex_role_credentials (t.ex. gamla JNDI-scheman) ska
+        hoppas över tyst – inte krascha startavstämningen.
+        """
+        cur = self._make_cur_mock(["sk0_kba_testschema"])
+        gs  = self._make_gs_mock(existing_workspaces=[])
+
+        with patch.object(gl, "_fetch_role_credentials", return_value=(None, None)):
+            # Ska inte kasta undantag
+            gl._reconcile_geoserver_schemas(cur, self.DB_CONFIG, gs)
+
+        gs.create_workspace.assert_not_called()
+
+    # ------------------------------------------------------------------
+    # 4. GeoServer-fel – startavstämningen ska aldrig avbryta lyssnaren
+    # ------------------------------------------------------------------
+
+    def test_geoserver_unavailable_skips_reconciliation(self):
+        """Nätverksfel mot GeoServer → logg ERROR, ingen krasch."""
+        cur = self._make_cur_mock(["sk0_kba_testschema"])
+        gs  = MagicMock()
+        gs.rest_url = "http://geoserver.example.com/rest"
+        gs._request_with_retry.side_effect = requests.exceptions.ConnectionError("down")
+
+        gl._reconcile_geoserver_schemas(cur, self.DB_CONFIG, gs)  # ska inte kasta
+
+        gs.create_workspace.assert_not_called()
+
+    def test_geoserver_non_200_skips_reconciliation(self):
+        """GeoServer svarar med t.ex. 503 → logg ERROR, ingen krasch."""
+        cur = self._make_cur_mock(["sk0_kba_testschema"])
+        gs  = self._make_gs_mock(existing_workspaces=[], get_status=503)
+
+        gl._reconcile_geoserver_schemas(cur, self.DB_CONFIG, gs)
+
+        gs.create_workspace.assert_not_called()
+
+    def test_workspace_creation_failure_continues_next_schema(self):
+        """
+        Om skapandet av en workspace misslyckas ska nästa schema i listan
+        ändå försökas – ett enskilt fel avbryter inte hela avstämningen.
+        """
+        cur = self._make_cur_mock(["sk0_kba_alpha", "sk0_kba_beta"])
+        gs  = self._make_gs_mock(existing_workspaces=[])
+
+        call_count = {"n": 0}
+
+        def handle_side_effect(schema_name, db_config, pg_conn, gs_client, db_label=""):
+            call_count["n"] += 1
+            if schema_name == "sk0_kba_alpha":
+                raise RuntimeError("simulated failure")
+            return True
+
+        with patch.object(gl, "handle_schema_notification", side_effect=handle_side_effect):
+            gl._reconcile_geoserver_schemas(cur, self.DB_CONFIG, gs)
+
+        self.assertEqual(call_count["n"], 2, "Båda scheman ska ha försökts")
+
+    # ------------------------------------------------------------------
+    # 5. Extra workspace i GeoServer – ska INTE tas bort
+    # ------------------------------------------------------------------
+
+    def test_extra_geoserver_workspace_logged_not_deleted(self):
+        """
+        Workspace i GeoServer utan matchande PG-schema → WARNING loggas,
+        delete_workspace anropas INTE.
+        """
+        cur = self._make_cur_mock([])   # inga PG-scheman
+        gs  = self._make_gs_mock(existing_workspaces=["sk0_kba_orphan"])
+
+        with self.assertLogs("geoserver_listener", level="WARNING") as cm:
+            gl._reconcile_geoserver_schemas(cur, self.DB_CONFIG, gs)
+
+        gs.delete_workspace = MagicMock()
+        gs.delete_workspace.assert_not_called()
+
+        warning_lines = [l for l in cm.output if "sk0_kba_orphan" in l]
+        self.assertTrue(warning_lines, "Förväntad WARNING om sk0_kba_orphan saknas i loggen")
+
+    def test_extra_non_hex_workspace_not_warned(self):
+        """
+        Workspace som inte matchar sk0/sk1-mönstret (t.ex. 'topp') ger ingen
+        WARNING – vi äger inte dem.
+        """
+        cur = self._make_cur_mock([])
+        gs  = self._make_gs_mock(existing_workspaces=["topp", "extern_data"])
+
+        with self.assertLogs("geoserver_listener", level="WARNING") as cm:
+            logging.getLogger("geoserver_listener").warning("_sentinel_")
+            gl._reconcile_geoserver_schemas(cur, self.DB_CONFIG, gs)
+
+        non_sentinel = [l for l in cm.output if "_sentinel_" not in l and "WARNING" in l]
+        self.assertEqual(non_sentinel, [])
+
+    # ------------------------------------------------------------------
+    # 6. DB-fel avbryter inte lyssnaren
+    # ------------------------------------------------------------------
+
+    def test_db_query_error_does_not_propagate(self):
+        """Fel i SQL-frågan (t.ex. brutna privilegier) loggas men kastas inte."""
+        cur = MagicMock()
+        cur.execute.side_effect = Exception("permission denied")
+        gs  = self._make_gs_mock(existing_workspaces=[])
+
+        gl._reconcile_geoserver_schemas(cur, self.DB_CONFIG, gs)  # ska inte kasta
+
+        gs.create_workspace.assert_not_called()
+
+    # ------------------------------------------------------------------
+    # 7. Sk2/skx-scheman publiceras inte om SCHEMA_PATTERN så säger
+    # ------------------------------------------------------------------
+
+
+    def test_sk2_schema_blocked_by_schema_pattern(self):
+        """
+        sk2 är inte publicerbart i standardkonfigurationen (publiceras_geoserver = false).
+        SCHEMA_PATTERN laddas från DB via _load_schema_pattern; i det här testet
+        mockas det till fallback-värdet (sk0/sk1 only) för att verifiera att
+        handle_schema_notification avvisar sk2 via _validate_schema_name.
+
+        Om sk2 skulle läggas till i standardiserade_skyddsnivaer med
+        publiceras_geoserver = true OCH _load_schema_pattern körs, uppdateras
+        SCHEMA_PATTERN och sk2-scheman publiceras. Det är avsiktligt beteende.
+        """
+        cur = self._make_cur_mock(["sk2_kba_hemlig"])
+        gs  = self._make_gs_mock(existing_workspaces=[])
+
+        # SCHEMA_PATTERN är fallback-värdet (sk0/sk1 only) – sk2 avvisas
+        with patch.object(gl, "_fetch_role_credentials",
+                          return_value=("r_sk2_kba_hemlig", "pw")):
+            gl._reconcile_geoserver_schemas(cur, self.DB_CONFIG, gs)
+
+        gs.create_workspace.assert_not_called()
+
+
+class TestLoadSchemaPattern(unittest.TestCase):
+    """
+    Enhetstester för _load_schema_pattern – verifierar att SCHEMA_PATTERN
+    byggs korrekt från konfigurationstabellerna och att fallback fungerar.
+    """
+
+    def _make_cur_mock(self, skyddsnivaer_prefixes, datakategori_prefixes):
+        """Cursor-mock vars fetchall returnerar rätt data för de två frågorna."""
+        cur = MagicMock()
+        cur.fetchall.side_effect = [
+            [(p,) for p in skyddsnivaer_prefixes],
+            [(p,) for p in datakategori_prefixes],
+        ]
+        return cur
+
+    def setUp(self):
+        """Spara originalvärdet av SCHEMA_PATTERN och återställ efter varje test."""
+        self._original_pattern = gl.SCHEMA_PATTERN
+
+    def tearDown(self):
+        gl.SCHEMA_PATTERN = self._original_pattern
+
+    def test_pattern_built_from_config(self):
+        """Mönstret byggs från skyddsnivaer + datakategorier ur DB."""
+        cur = self._make_cur_mock(["sk0", "sk1"], ["ext", "kba", "sys"])
+        gl._load_schema_pattern(cur)
+        self.assertRegex("sk0_kba_test",  gl.SCHEMA_PATTERN)
+        self.assertRegex("sk1_ext_sjv",   gl.SCHEMA_PATTERN)
+        self.assertNotRegex("sk2_kba_hemlig", gl.SCHEMA_PATTERN)
+
+    def test_new_security_level_included(self):
+        """Om sk2 läggs till med publiceras_geoserver = true inkluderas det i mönstret."""
+        cur = self._make_cur_mock(["sk0", "sk1", "sk2"], ["ext", "kba", "sys"])
+        gl._load_schema_pattern(cur)
+        self.assertRegex("sk2_kba_hemlig", gl.SCHEMA_PATTERN)
+
+    def test_new_datakategori_included(self):
+        """En ny datakategori inkluderas direkt efter att mönstret laddats."""
+        cur = self._make_cur_mock(["sk0", "sk1"], ["ext", "kba", "sys", "int"])
+        gl._load_schema_pattern(cur)
+        self.assertRegex("sk0_int_test", gl.SCHEMA_PATTERN)
+
+    def test_empty_skyddsnivaer_keeps_existing_pattern(self):
+        """Tomma skyddsnivaer → befintligt mönster behålls, ingen krasch."""
+        cur = self._make_cur_mock([], ["kba"])
+        original = gl.SCHEMA_PATTERN
+        gl._load_schema_pattern(cur)
+        self.assertIs(gl.SCHEMA_PATTERN, original)
+
+    def test_empty_kategorier_keeps_existing_pattern(self):
+        """Tomma datakategorier → befintligt mönster behålls."""
+        cur = self._make_cur_mock(["sk0"], [])
+        original = gl.SCHEMA_PATTERN
+        gl._load_schema_pattern(cur)
+        self.assertIs(gl.SCHEMA_PATTERN, original)
+
+    def test_db_error_keeps_existing_pattern(self):
+        """DB-fel → befintligt mönster behålls, ingen krasch."""
+        cur = MagicMock()
+        cur.execute.side_effect = Exception("connection lost")
+        original = gl.SCHEMA_PATTERN
+        gl._load_schema_pattern(cur)
+        self.assertIs(gl.SCHEMA_PATTERN, original)
+
+
+class TestPeriodicReconcileLoop(unittest.TestCase):
+    """
+    Enhetstester för _periodic_reconcile_loop – verifierar att periodisk
+    avstämning anropar _reconcile_geoserver_schemas, hanterar fel gracefully
+    och avslutar omedelbart när stop_event sätts.
+    """
+
+    DB_CONFIG = {
+        "host": "localhost",
+        "port": 5432,
+        "dbname": "geodata",
+        "user": "hex_listener",
+        "password": "pw",
+    }
+
+    def _make_conn_mock(self):
+        conn = MagicMock()
+        conn.cursor.return_value.__enter__.return_value = MagicMock()
+        return conn
+
+    def test_calls_reconcile_after_interval(self):
+        """Anropar _reconcile_geoserver_schemas efter interval_seconds."""
+        stop = threading.Event()
+        gs = MagicMock()
+        called = threading.Event()
+
+        def fake_reconcile(*args, **kwargs):
+            called.set()
+
+        with patch.object(gl, "_reconcile_geoserver_schemas", side_effect=fake_reconcile):
+            with patch("psycopg2.connect", return_value=self._make_conn_mock()):
+                t = threading.Thread(
+                    target=gl._periodic_reconcile_loop,
+                    args=(self.DB_CONFIG, gs, stop, 0.05, "test"),
+                    daemon=True,
+                )
+                t.start()
+                called.wait(timeout=3)
+                stop.set()
+                t.join(timeout=3)
+
+        self.assertTrue(called.is_set(), "_reconcile_geoserver_schemas anropades aldrig")
+
+    def test_stops_when_stop_event_set(self):
+        """stop_event redan satt → loop-body körs aldrig och tråden avslutas."""
+        stop = threading.Event()
+        stop.set()
+        gs = MagicMock()
+
+        with patch.object(gl, "_reconcile_geoserver_schemas") as mock_rec:
+            t = threading.Thread(
+                target=gl._periodic_reconcile_loop,
+                args=(self.DB_CONFIG, gs, stop, 60, "test"),
+                daemon=True,
+            )
+            t.start()
+            t.join(timeout=3)
+
+        mock_rec.assert_not_called()
+        self.assertFalse(t.is_alive())
+
+    def test_pg_connection_error_is_handled(self):
+        """OperationalError vid PG-anslutning loggas som WARNING – ingen krasch."""
+        stop = threading.Event()
+        gs = MagicMock()
+        attempt = {"n": 0}
+
+        def fail_connect(*args, **kwargs):
+            attempt["n"] += 1
+            if attempt["n"] >= 2:
+                stop.set()
+            raise psycopg2.OperationalError("connection refused")
+
+        with patch("psycopg2.connect", side_effect=fail_connect):
+            t = threading.Thread(
+                target=gl._periodic_reconcile_loop,
+                args=(self.DB_CONFIG, gs, stop, 0.05, "test"),
+                daemon=True,
+            )
+            t.start()
+            t.join(timeout=5)
+
+        self.assertFalse(t.is_alive())
+        self.assertGreaterEqual(attempt["n"], 1)
+
+    def test_unexpected_error_is_handled(self):
+        """RuntimeError under avstämning loggas som ERROR – tråden fortsätter och kraschar inte."""
+        stop = threading.Event()
+        gs = MagicMock()
+        call_count = {"n": 0}
+
+        def fail_reconcile(*args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] >= 2:
+                stop.set()
+            raise RuntimeError("unexpected")
+
+        with patch.object(gl, "_reconcile_geoserver_schemas", side_effect=fail_reconcile):
+            with patch("psycopg2.connect", return_value=self._make_conn_mock()):
+                t = threading.Thread(
+                    target=gl._periodic_reconcile_loop,
+                    args=(self.DB_CONFIG, gs, stop, 0.05, "test"),
+                    daemon=True,
+                )
+                t.start()
+                t.join(timeout=5)
+
+        self.assertFalse(t.is_alive())
+        self.assertGreaterEqual(call_count["n"], 1)
+
+    def test_opens_own_pg_connection(self):
+        """Öppnar en egen kortlivad PG-anslutning per körning med rätt parametrar."""
+        stop = threading.Event()
+        gs = MagicMock()
+        called = threading.Event()
+
+        with patch.object(gl, "_reconcile_geoserver_schemas", side_effect=lambda *a, **k: called.set()):
+            with patch("psycopg2.connect", return_value=self._make_conn_mock()) as mock_connect:
+                t = threading.Thread(
+                    target=gl._periodic_reconcile_loop,
+                    args=(self.DB_CONFIG, gs, stop, 0.05, "test"),
+                    daemon=True,
+                )
+                t.start()
+                called.wait(timeout=3)
+                stop.set()
+                t.join(timeout=3)
+
+        mock_connect.assert_called_with(
+            host=self.DB_CONFIG["host"],
+            port=self.DB_CONFIG["port"],
+            dbname=self.DB_CONFIG["dbname"],
+            user=self.DB_CONFIG["user"],
+            password=self.DB_CONFIG["password"],
+            connect_timeout=10,
+        )
+
+    def test_reconcile_interval_zero_does_not_spawn_thread(self):
+        """listen_loop med reconcile_interval=0 startar ingen reconcile-bakgrundstråd."""
+        gs = MagicMock()
+        stop = threading.Event()
+        stop.set()  # Avsluta listen_loop omedelbart utan PG-anslutning
+
+        with patch.object(gl, "_periodic_reconcile_loop") as mock_periodic:
+            gl.listen_loop(
+                DB_CONFIG,
+                reconnect_delay=1,
+                gs_client=gs,
+                stop_event=stop,
+                reconcile_interval=0,
+            )
+
+        mock_periodic.assert_not_called()
+
+    def test_reconcile_interval_positive_spawns_thread(self):
+        """listen_loop med reconcile_interval>0 startar _periodic_reconcile_loop som bakgrundstråd."""
+        gs = MagicMock()
+        gs.create_workspace.return_value = True
+        gs.create_pg_datastore.return_value = True
+        gs.create_gs_role.return_value = True
+        gs.create_workspace_acl.return_value = True
+        stop = threading.Event()
+        periodic_called = threading.Event()
+
+        def fake_periodic(db_config, gs_client, stop_event, interval_seconds, db_label="", all_pg_schemas=None):
+            periodic_called.set()
+            stop_event.wait()
+
+        with patch.object(gl, "_periodic_reconcile_loop", side_effect=fake_periodic):
+            with patch.object(gl, "_fetch_role_credentials",
+                              return_value=(TEST_ROLE_NAME, TEST_ROLE_PASSWORD)):
+                t = threading.Thread(
+                    target=gl.listen_loop,
+                    args=(DB_CONFIG, 1, gs, stop, None, None, 30),
+                    daemon=True,
+                )
+                t.start()
+                periodic_called.wait(timeout=3)
+                stop.set()
+                t.join(timeout=3)
+
+        self.assertTrue(periodic_called.is_set(), "_periodic_reconcile_loop startades aldrig")
+
+
+class TestLoadConfig(unittest.TestCase):
+    """
+    Enhetstester för load_config – verifierar att HEX_RECONCILE_INTERVAL
+    läses korrekt med standard och anpassade värden.
+    """
+
+    _MIN_ENV = {
+        "HEX_GS_USER": "admin",
+        "HEX_GS_PASSWORD": "secret",
+        "HEX_DB_1_DBNAME": "geodata",
+    }
+
+    def test_reconcile_interval_default(self):
+        """HEX_RECONCILE_INTERVAL ej satt → standard 3600."""
+        with patch.dict(os.environ, self._MIN_ENV, clear=True):
+            config = gl.load_config()
+        self.assertEqual(config["reconcile_interval"], 3600)
+
+    def test_reconcile_interval_custom(self):
+        """HEX_RECONCILE_INTERVAL=300 → 300."""
+        env = {**self._MIN_ENV, "HEX_RECONCILE_INTERVAL": "300"}
+        with patch.dict(os.environ, env, clear=True):
+            config = gl.load_config()
+        self.assertEqual(config["reconcile_interval"], 300)
+
+    def test_reconcile_interval_zero(self):
+        """HEX_RECONCILE_INTERVAL=0 → periodisk avstämning avaktiverad."""
+        env = {**self._MIN_ENV, "HEX_RECONCILE_INTERVAL": "0"}
+        with patch.dict(os.environ, env, clear=True):
+            config = gl.load_config()
+        self.assertEqual(config["reconcile_interval"], 0)
 
 
 # ---------------------------------------------------------------------------

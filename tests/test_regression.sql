@@ -578,71 +578,182 @@ DROP TABLE IF EXISTS sk0_ext_test.standardkol_y;
 DROP TABLE IF EXISTS sk1_kba_test.standardkol_kba_y;
 
 ------------------------------------------------------------------------
--- TEST 9: DROP SCHEMA cleans up roles
+-- TEST 9: Rollstruktur och DROP SCHEMA-rensning
+--
+-- Verifierar att alla fyra roller skapas korrekt vid CREATE SCHEMA:
+--   r_*/w_*     NOLOGIN behörighetsgrupper (ej i hex_geoserver_roller)
+--   gs_r_*/gs_w_* LOGIN tjänstekonton (i hex_geoserver_roller, i hex_role_credentials)
+-- Verifierar att alla fyra roller och credentials rensas vid DROP SCHEMA.
 ------------------------------------------------------------------------
 \echo ''
-\echo '--- TEST 9: DROP SCHEMA role cleanup ---'
+\echo '--- TEST 9: Rollstruktur (4 roller per schema) och DROP SCHEMA-rensning ---'
 
--- Use sk2_ext schema to test both w_{schema} and r_{schema} role creation
 DROP SCHEMA IF EXISTS sk2_ext_rolltest CASCADE;
 CREATE SCHEMA sk2_ext_rolltest;
 
--- Verify write role was created (w_{schema} matches all schemas)
+-- 9a: r_ och w_ ska vara NOLOGIN
 DO $$
 DECLARE
-    has_role boolean;
+    r_login boolean;
+    w_login boolean;
 BEGIN
-    SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = 'w_sk2_ext_rolltest') INTO has_role;
+    SELECT rolcanlogin INTO r_login FROM pg_roles WHERE rolname = 'r_sk2_ext_rolltest';
+    SELECT rolcanlogin INTO w_login FROM pg_roles WHERE rolname = 'w_sk2_ext_rolltest';
 
-    IF has_role THEN
-        RAISE NOTICE 'TEST 9a PASSED: Write role w_sk2_ext_rolltest created on schema creation';
+    IF r_login IS DISTINCT FROM true AND w_login IS DISTINCT FROM true THEN
+        RAISE NOTICE 'TEST 9a PASSED: r_ och w_ skapade som NOLOGIN';
     ELSE
-        RAISE WARNING 'TEST 9a FAILED: Write role w_sk2_ext_rolltest not created';
+        RAISE WARNING 'TEST 9a FAILED: r_login=%, w_login=% (båda ska vara false/NULL)', r_login, w_login;
     END IF;
 END $$;
 
--- Verify read role was created (r_{schema} matches sk2_%)
+-- 9b: gs_r_ och gs_w_ ska vara LOGIN
 DO $$
 DECLARE
-    has_role boolean;
+    gsr_login boolean;
+    gsw_login boolean;
 BEGIN
-    SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = 'r_sk2_ext_rolltest') INTO has_role;
+    SELECT rolcanlogin INTO gsr_login FROM pg_roles WHERE rolname = 'gs_r_sk2_ext_rolltest';
+    SELECT rolcanlogin INTO gsw_login FROM pg_roles WHERE rolname = 'gs_w_sk2_ext_rolltest';
 
-    IF has_role THEN
-        RAISE NOTICE 'TEST 9b PASSED: Read role r_sk2_ext_rolltest created on schema creation';
+    IF gsr_login = true AND gsw_login = true THEN
+        RAISE NOTICE 'TEST 9b PASSED: gs_r_ och gs_w_ skapade som LOGIN';
     ELSE
-        RAISE WARNING 'TEST 9b FAILED: Read role r_sk2_ext_rolltest not created';
+        RAISE WARNING 'TEST 9b FAILED: gs_r_login=%, gs_w_login=% (båda ska vara true)', gsr_login, gsw_login;
     END IF;
 END $$;
 
--- Drop the schema - roles should be cleaned up
+-- 9c: r_ och w_ ska INTE vara i hex_geoserver_roller
+DO $$
+DECLARE
+    r_in_grp boolean;
+    w_in_grp boolean;
+BEGIN
+    SELECT pg_has_role('r_sk2_ext_rolltest', 'hex_geoserver_roller', 'member') INTO r_in_grp;
+    SELECT pg_has_role('w_sk2_ext_rolltest', 'hex_geoserver_roller', 'member') INTO w_in_grp;
+
+    IF NOT r_in_grp AND NOT w_in_grp THEN
+        RAISE NOTICE 'TEST 9c PASSED: r_ och w_ är INTE i hex_geoserver_roller';
+    ELSE
+        RAISE WARNING 'TEST 9c FAILED: r_in_grp=%, w_in_grp=% (båda ska vara false)', r_in_grp, w_in_grp;
+    END IF;
+END $$;
+
+-- 9d: gs_r_ och gs_w_ ska vara i hex_geoserver_roller
+DO $$
+DECLARE
+    gsr_in_grp boolean;
+    gsw_in_grp boolean;
+BEGIN
+    SELECT pg_has_role('gs_r_sk2_ext_rolltest', 'hex_geoserver_roller', 'member') INTO gsr_in_grp;
+    SELECT pg_has_role('gs_w_sk2_ext_rolltest', 'hex_geoserver_roller', 'member') INTO gsw_in_grp;
+
+    IF gsr_in_grp AND gsw_in_grp THEN
+        RAISE NOTICE 'TEST 9d PASSED: gs_r_ och gs_w_ är i hex_geoserver_roller';
+    ELSE
+        RAISE WARNING 'TEST 9d FAILED: gsr_in_grp=%, gsw_in_grp=% (båda ska vara true)', gsr_in_grp, gsw_in_grp;
+    END IF;
+END $$;
+
+-- 9e: gs_r_ och gs_w_ ska ha credentials i hex_role_credentials (rolcanlogin=true)
+DO $$
+DECLARE
+    gsr_creds boolean;
+    gsw_creds boolean;
+BEGIN
+    SELECT EXISTS(SELECT 1 FROM public.hex_role_credentials WHERE rolname='gs_r_sk2_ext_rolltest' AND rolcanlogin=true AND password IS NOT NULL) INTO gsr_creds;
+    SELECT EXISTS(SELECT 1 FROM public.hex_role_credentials WHERE rolname='gs_w_sk2_ext_rolltest' AND rolcanlogin=true AND password IS NOT NULL) INTO gsw_creds;
+
+    IF gsr_creds AND gsw_creds THEN
+        RAISE NOTICE 'TEST 9e PASSED: gs_r_ och gs_w_ har lösenord i hex_role_credentials';
+    ELSE
+        RAISE WARNING 'TEST 9e FAILED: gsr_creds=%, gsw_creds=%', gsr_creds, gsw_creds;
+    END IF;
+END $$;
+
+-- 9f: r_ och w_ ska finnas i hex_role_credentials med rolcanlogin=false
+DO $$
+DECLARE
+    r_entry boolean;
+    w_entry boolean;
+BEGIN
+    SELECT EXISTS(SELECT 1 FROM public.hex_role_credentials WHERE rolname='r_sk2_ext_rolltest' AND rolcanlogin=false AND password IS NULL) INTO r_entry;
+    SELECT EXISTS(SELECT 1 FROM public.hex_role_credentials WHERE rolname='w_sk2_ext_rolltest' AND rolcanlogin=false AND password IS NULL) INTO w_entry;
+
+    IF r_entry AND w_entry THEN
+        RAISE NOTICE 'TEST 9f PASSED: r_ och w_ registrerade i hex_role_credentials (NOLOGIN)';
+    ELSE
+        RAISE WARNING 'TEST 9f FAILED: r_entry=%, w_entry=%', r_entry, w_entry;
+    END IF;
+END $$;
+
+-- 9g: gs_r_ ska ärva behörigheter från r_ (transitiv membership)
+DO $$
+DECLARE
+    inherits boolean;
+BEGIN
+    SELECT pg_has_role('gs_r_sk2_ext_rolltest', 'r_sk2_ext_rolltest', 'member') INTO inherits;
+
+    IF inherits THEN
+        RAISE NOTICE 'TEST 9g PASSED: gs_r_ ärver från r_ via gruppmedlemskap';
+    ELSE
+        RAISE WARNING 'TEST 9g FAILED: gs_r_ är inte medlem i r_';
+    END IF;
+END $$;
+
+-- 9h: AD-användare som tilldelas r_ ska INTE hamna i hex_geoserver_roller
+--     (simuleras: skapa en testroll, tilldela r_, kontrollera transitivitet)
+DO $$
+DECLARE
+    in_geoserver_roller boolean;
+BEGIN
+    CREATE ROLE hex_test_ad_user_tmp WITH NOLOGIN;
+    GRANT r_sk2_ext_rolltest TO hex_test_ad_user_tmp;
+    SELECT pg_has_role('hex_test_ad_user_tmp', 'hex_geoserver_roller', 'member') INTO in_geoserver_roller;
+    REVOKE r_sk2_ext_rolltest FROM hex_test_ad_user_tmp;
+    DROP ROLE hex_test_ad_user_tmp;
+
+    IF NOT in_geoserver_roller THEN
+        RAISE NOTICE 'TEST 9h PASSED: AD-användare med r_-tilldelning hamnar INTE i hex_geoserver_roller';
+    ELSE
+        RAISE WARNING 'TEST 9h FAILED: AD-användare transitiv i hex_geoserver_roller via r_ – pg_hba.conf-problemet kvarstår!';
+    END IF;
+END $$;
+
+-- DROP SCHEMA – alla fyra roller och credentials ska rensas
 DROP SCHEMA sk2_ext_rolltest CASCADE;
 
--- Verify write role was removed
+-- 9i: Alla fyra roller borttagna
 DO $$
 DECLARE
-    has_role boolean;
+    remaining text[];
 BEGIN
-    SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = 'w_sk2_ext_rolltest') INTO has_role;
+    SELECT array_agg(rolname) INTO remaining
+    FROM pg_roles
+    WHERE rolname IN ('r_sk2_ext_rolltest','w_sk2_ext_rolltest',
+                      'gs_r_sk2_ext_rolltest','gs_w_sk2_ext_rolltest');
 
-    IF NOT has_role THEN
-        RAISE NOTICE 'TEST 9c PASSED: Write role removed on DROP SCHEMA';
+    IF remaining IS NULL THEN
+        RAISE NOTICE 'TEST 9i PASSED: Alla fyra roller borttagna efter DROP SCHEMA';
     ELSE
-        RAISE WARNING 'TEST 9c FAILED: Write role w_sk2_ext_rolltest still exists after DROP SCHEMA';
+        RAISE WARNING 'TEST 9i FAILED: Följande roller finns kvar: %', array_to_string(remaining, ', ');
     END IF;
 END $$;
 
--- Verify read role was removed
+-- 9j: Alla credentials borttagna
 DO $$
 DECLARE
-    has_role boolean;
+    remaining text[];
 BEGIN
-    SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = 'r_sk2_ext_rolltest') INTO has_role;
+    SELECT array_agg(rolname) INTO remaining
+    FROM public.hex_role_credentials
+    WHERE rolname IN ('r_sk2_ext_rolltest','w_sk2_ext_rolltest',
+                      'gs_r_sk2_ext_rolltest','gs_w_sk2_ext_rolltest');
 
-    IF NOT has_role THEN
-        RAISE NOTICE 'TEST 9d PASSED: Read role removed on DROP SCHEMA';
+    IF remaining IS NULL THEN
+        RAISE NOTICE 'TEST 9j PASSED: Alla hex_role_credentials-poster borttagna efter DROP SCHEMA';
     ELSE
-        RAISE WARNING 'TEST 9d FAILED: Read role r_sk2_ext_rolltest still exists after DROP SCHEMA';
+        RAISE WARNING 'TEST 9j FAILED: Följande poster finns kvar i hex_role_credentials: %', array_to_string(remaining, ', ');
     END IF;
 END $$;
 

@@ -1,6 +1,6 @@
 -- Event Trigger: validera_schemanamn_trigger on database
 
--- DROP EVENT TRIGGER IF EXISTS validera_schemanamn_trigger;
+DROP EVENT TRIGGER IF EXISTS validera_schemanamn_trigger;
 
 CREATE EVENT TRIGGER validera_schemanamn_trigger ON ddl_command_end
     WHEN TAG IN ('CREATE SCHEMA')

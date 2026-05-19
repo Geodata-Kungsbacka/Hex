@@ -41,6 +41,7 @@ Ordningen är viktig.
 DROP EVENT TRIGGER IF EXISTS notifiera_geoserver_borttagning_trigger;
 DROP EVENT TRIGGER IF EXISTS notifiera_geoserver_trigger;
 DROP EVENT TRIGGER IF EXISTS validera_schemanamn_trigger;
+DROP EVENT TRIGGER IF EXISTS blockera_schema_namnbyte_trigger;
 DROP EVENT TRIGGER IF EXISTS hantera_standardiserade_roller_trigger;
 DROP EVENT TRIGGER IF EXISTS ta_bort_schemaroller_trigger;
 DROP EVENT TRIGGER IF EXISTS hantera_ny_vy_trigger;
@@ -60,9 +61,11 @@ DROP FUNCTION IF EXISTS public.hantera_borttagen_tabell();
 DROP FUNCTION IF EXISTS public.kontrollera_geometri_trigger() CASCADE;
 
 -- 3. Hjälpfunktioner
+DROP FUNCTION IF EXISTS public.tillämpa_grupprattigheter();
 DROP FUNCTION IF EXISTS public.lagg_till_dummy_geometri(text, text, geom_info);
 DROP FUNCTION IF EXISTS public.ta_bort_dummy_rad() CASCADE;
 DROP FUNCTION IF EXISTS public.tvinga_gid_fran_sekvens() CASCADE;
+DROP FUNCTION IF EXISTS public.underhall_hex();
 DROP FUNCTION IF EXISTS public.reparera_rad_triggers();
 DROP FUNCTION IF EXISTS public.tilldela_rollrattigheter(text, text, text);
 DROP FUNCTION IF EXISTS public.skapa_historik_qa(text, text);
@@ -76,21 +79,28 @@ DROP FUNCTION IF EXISTS public.spara_kolumnegenskaper(text, text);
 DROP FUNCTION IF EXISTS public.spara_tabellregler(text, text);
 
 -- 5. Valideringsfunktioner
-DROP FUNCTION IF EXISTS public.forklara_geometrifel(geometry, float);
-DROP FUNCTION IF EXISTS public.validera_geometri(geometry, float) CASCADE;
+DROP FUNCTION IF EXISTS public.forklara_geometrifel(geometry);
+DROP FUNCTION IF EXISTS public.validera_geometri(geometry) CASCADE;
 DROP FUNCTION IF EXISTS public.validera_schemanamn();
+DROP FUNCTION IF EXISTS public.blockera_schema_namnbyte();
 DROP FUNCTION IF EXISTS public.validera_vynamn(text, text);
 DROP FUNCTION IF EXISTS public.validera_tabell(text, text);
 
 -- 6. Strukturfunktioner
 DROP FUNCTION IF EXISTS public.hamta_kolumnstandard(text, text, geom_info);
 DROP FUNCTION IF EXISTS public.hamta_geometri_definition(text, text);
-DROP FUNCTION IF EXISTS public.system_owner();
 
--- 7. Konfigurationstabeller
+-- 7. Konfigurationsfunktioner och roller
+DROP FUNCTION IF EXISTS public.hex_schema_regex();
+DROP FUNCTION IF EXISTS public.system_owner();
+DROP ROLE IF EXISTS hex_geoserver_roller;
+
+-- 8. Konfigurationstabeller
+DROP TABLE IF EXISTS public.hex_role_credentials;
 DROP TABLE IF EXISTS public.hex_avvikande_srid;
 DROP TABLE IF EXISTS public.hex_dummy_geometrier;
 DROP TABLE IF EXISTS public.hex_afvaktande_geometri;
+DROP TABLE IF EXISTS public.hex_grupprattigheter;
 DROP TABLE IF EXISTS public.hex_systemanvandare;
 DROP TABLE IF EXISTS public.hex_metadata;
 DROP TABLE IF EXISTS public.standardiserade_roller;
@@ -98,7 +108,7 @@ DROP TABLE IF EXISTS public.standardiserade_kolumner;
 DROP TABLE IF EXISTS public.standardiserade_skyddsnivaer;
 DROP TABLE IF EXISTS public.standardiserade_datakategorier;
 
--- 8. Anpassade datatyper (sist)
+-- 9. Anpassade datatyper (sist)
 DROP TYPE IF EXISTS public.tabellregler;
 DROP TYPE IF EXISTS public.kolumnegenskaper;
 DROP TYPE IF EXISTS public.kolumnkonfig;

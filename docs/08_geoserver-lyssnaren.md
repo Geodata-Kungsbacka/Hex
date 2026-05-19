@@ -1,15 +1,49 @@
 # Hantera GeoServer-lyssnaren
 
 **Gäller:** Windows-tjänsten `HexGeoServerListener` som automatiskt publicerar
-nya `sk0`- och `sk1`-scheman till GeoServer.
+nya scheman till GeoServer.
 
 ---
 
 ## Bakgrund
 
-När ett `sk0`- eller `sk1`-schema skapas skickar Hex en `pg_notify`. En
-Python-process lyssnar på dessa notifieringar och skapar automatiskt en
-**workspace** och en **JNDI-datastore** i GeoServer med samma namn som schemat.
+När ett schema skapas skickar Hex en `pg_notify`. En Python-process lyssnar
+på dessa notifieringar och skapar automatiskt en **workspace** och en direkt
+**PostGIS-datastore** i GeoServer med samma namn som schemat.
+Datastore-autentiseringen hämtas från tabellen `hex_role_credentials` (GeoServer-tjänstekontot `gs_r_{schema}`).
+
+Vilka skyddsnivåer som publiceras styrs av kolumnen `publiceras_geoserver` i
+tabellen `standardiserade_skyddsnivaer` — standard är `sk0` och `sk1`.
+Ändra tabellen för att justera vilka prefix som publiceras:
+
+```sql
+-- Aktivera publicering för sk2
+UPDATE standardiserade_skyddsnivaer
+SET publiceras_geoserver = true
+WHERE prefix = 'sk2';
+```
+
+Huruvida publicerade lager är läsbara utan inloggning styrs av kolumnen `anonym_las`.
+När den är `true` läggs `ROLE_ANONYMOUS` till i GeoServers ACL-läsregel för alla
+workspaces med det prefixet, vilket tillåter anonyma WMS/WFS-anrop (t.ex. från Hajk).
+Standard är `true` för `sk0` (öppen publik data) och `false` för övriga prefix.
+Förutsätter att åtkomst redan begränsas på nätverksnivå (t.ex. IP-vitlista i `web.xml`).
+
+```sql
+-- Tillåt anonym WMS/WFS-läsning för skx (utvecklingsdata)
+UPDATE standardiserade_skyddsnivaer
+SET anonym_las = true
+WHERE prefix = 'skx';
+
+-- Kontrollera aktuell konfiguration
+SELECT prefix, beskrivning, publiceras_geoserver, anonym_las
+FROM standardiserade_skyddsnivaer
+ORDER BY prefix;
+```
+
+Lyssnaren laddar `anonym_las` per schema vid varje notifiering — ingen omstart krävs
+för att nya scheman ska få rätt regel. Befintliga workspaces uppdateras automatiskt
+vid nästa omstart av tjänsten (startavstämningen korrigerar avvikande ACL-regler).
 
 Processen körs som en Windows-tjänst och startar automatiskt med servern.
 
@@ -69,7 +103,26 @@ Kontrollera loggen efteråt.
 
 ---
 
-## Uppdatera konfigurationen (lösenord, JNDI m.m.)
+## Periodisk avstämning (reconciliation)
+
+Lyssnaren kör automatiskt en periodisk avstämning mot GeoServer för att reparera
+avvikelser — t.ex. om en workspace eller datastore försvunnit, eller om ACL-regler
+är felaktiga. Samma logik körs alltid vid tjänstens uppstart.
+
+Intervallet styrs av miljövariabeln `HEX_RECONCILE_INTERVAL` (sekunder, standard `3600`).
+Sätt till `0` för att inaktivera periodisk avstämning (uppstartsavstämningen körs ändå):
+
+```env
+HEX_RECONCILE_INTERVAL=3600   # Kontrollera varje timme (standard)
+HEX_RECONCILE_INTERVAL=0      # Ingen periodisk avstämning
+```
+
+Vid varje avstämning jämförs GeoServers befintliga workspaces mot scheman i PostgreSQL
+och avvikande ACL-regler korrigeras. Eventuella fel loggas men stoppar inte lyssnaren.
+
+---
+
+## Uppdatera konfigurationen (lösenord m.m.)
 
 Inställningarna finns i antingen en `.env`-fil i `src/geoserver/` eller
 som systemövergripande miljövariabler:
@@ -85,36 +138,39 @@ som systemövergripande miljövariabler:
 ## Lägga till en ny databas att övervaka
 
 1. Installera Hex-triggern i den nya databasen (se [09_installera-uppdatera-hex.md](09_installera-uppdatera-hex.md)).
-2. Skapa JNDI-resursen i GeoServers `context.xml`.
+2. Ge `hex_listener` CONNECT-rättighet och läsåtkomst till `hex_role_credentials`:
+   ```sql
+   GRANT CONNECT ON DATABASE geodata_ny TO hex_listener;
+   GRANT SELECT ON public.hex_role_credentials TO hex_listener;
+   ```
 3. Lägg till i `.env`:
    ```env
    HEX_DB_3_DBNAME=geodata_ny
-   HEX_DB_3_JNDI_sk0=java:comp/env/jdbc/server.geodata_ny_sk0
    ```
 4. Starta om tjänsten.
 
 ---
 
-## Lägga till eller byta JNDI-anslutningsanvändare
+## Datastore-autentisering
 
-JNDI-poolens databasanvändare är den roll som GeoServer faktiskt ansluter med mot PostgreSQL.
+GeoServer ansluter till PostgreSQL via direkta PostGIS-datastores (inte JNDI).
+Autentiseringsuppgifterna hanteras automatiskt av Hex:
 
-**Vad systemet hanterar automatiskt:**
-Schema- och tabellrättigheter tilldelas via `hantera_standardiserade_roller()` när scheman skapas, inklusive `DEFAULT PRIVILEGES` för framtida tabeller. Login-rollen ärver alla rättigheter från gruppollen via PostgreSQL roll-arv.
+- Vid **CREATE SCHEMA** skapar `hantera_standardiserade_roller()` fyra roller automatiskt:
+  - `r_{schema}` och `w_{schema}` — NOLOGIN behörighetsgrupper, tilldelas AD-användare/grupper
+  - `gs_r_{schema}` och `gs_w_{schema}` — LOGIN GeoServer-tjänstekonton med autogenererade
+    lösenord sparade i `hex_role_credentials`. Tjänstekontona ärver behörigheter från
+    `r_{schema}` respektive `w_{schema}` via gruppmedlemskap.
+- Lyssnaren hämtar `gs_r_{schema}`-uppgifterna och konfigurerar GeoServer-datastoren med dem.
+- Vid **DROP SCHEMA** tas alla fyra roller och deras poster i `hex_role_credentials` bort automatiskt.
 
-**Vad som konfigureras per miljö:**
-
-1. **Skapa login-rollen** i PostgreSQL och tilldela den lämplig grupproll:
-   ```sql
-   CREATE ROLE r_sk0_global_pub WITH LOGIN PASSWORD '...';
-   GRANT r_sk0_global TO r_sk0_global_pub;
-   ```
-
-2. **PostgreSQL-autentisering** — `pg_hba.conf`-poster är per login-roll och ärvs inte via gruppmedlemskap. Varje ny login-roll behöver en egen post konfigurerad enligt er miljö (IP-adress, autentiseringsmetod). Ladda om utan omstart: `SELECT pg_reload_conf()`.
-
-3. **JNDI-resursen i Tomcat** — miljöspecifik konfiguration i er Tomcat-installation. Resursens `name` (på formen `jdbc/...`) måste matcha `HEX_DB_N_JNDI_*`-variabeln i `.env`. Tomcat måste startas om för att läsa nya pooler.
-
-4. **Uppdatera lyssnaren** — lägg till `HEX_DB_N_JNDI_*` i `.env` och starta om tjänsten så att lyssnaren känner till den nya poolen.
+Det krävs normalt ingen manuell åtgärd. Om du behöver en `pg_hba.conf`-post
+för GeoServers direktanslutningar, tillåt `hex_geoserver_roller`-gruppen (som innehåller
+`gs_r_*` och `gs_w_*`) från GeoServers IP-adress med din föredragna autentiseringsmetod,
+och ladda om med:
+```sql
+SELECT pg_reload_conf();
+```
 
 ---
 
