@@ -10,28 +10,26 @@
 -- G2   OGC-invalid: self-intersecting polygon (bowtie)
 -- G3   OGC-invalid: ring not closed
 -- G4   Empty geometry (ST_GeomFromText with no points)
--- G5   Duplicate consecutive points (within 1 mm tolerance)
--- G6   Degenerate polygon — area below tolerance² (spike/needle)
--- G7   Degenerate line — length below tolerance (< 1 mm)
--- G8   Self-intersecting line (figure-8)
+-- G5   Duplicate consecutive points (exact zero-distance)
+-- G6   Degenerate polygon — area below threshold [check removed — now INFO]
+-- G7   Degenerate line — length below threshold [check removed — now INFO]
+-- G8   Self-intersecting line (figure-8) [check removed — now INFO]
 -- G9   Curved geometry (CIRCULARSTRING)
 -- G10  Valid polygon                       → passes
 -- G11  Valid line                          → passes
 -- G12  Valid point                         → passes
--- G13  Custom tolerance — geometry valid at default but bad at tighter tolerance
--- G14  Duplicate points at exactly the tolerance boundary
 -- G15  3D geometry (PolygonZ) — valid coordinates
--- G16  3D geometry (PolygonZ) — degenerate (zero area in XY)
+-- G16  3D geometry (PolygonZ) — degenerate (zero area in XY) [area check removed — INFO]
 -- G17  MultiPolygon with one invalid ring
--- G18  MultiLineString with one self-intersecting component
+-- G18  MultiLineString with one self-intersecting component [ST_IsSimple removed — INFO]
 -- G19  Error message contains no C-style format specifiers (regression: issue #74)
 -- G20  Trigger fires before CHECK constraint — correct exception structure
 -- G21  Trigger: valid geometry INSERT succeeds in _kba_ table
 -- G22  Trigger: invalid geometry INSERT rejected with Swedish message
 -- G23  Trigger: invalid geometry UPDATE rejected
 -- G24  Trigger: NULL geometry allowed through trigger
--- G25  Trigger: degenerate polygon rejected with area in message
--- G26  Trigger: degenerate line rejected with length in message
+-- G25  Trigger: degenerate polygon now accepted (size checks removed)
+-- G26  Trigger: degenerate line now accepted (size checks removed)
 -- G27  Trigger: curved geometry rejected with geometry type in message
 --
 -- Schema used: sk1_kba_geomtest
@@ -140,89 +138,75 @@ BEGIN
 END $$;
 
 -- ============================================================
--- G5: Duplicate consecutive points within 1 mm tolerance
+-- G5: Duplicate consecutive points (exact zero-distance)
 -- ============================================================
 DO $$
 DECLARE
     geom   geometry;
     result text;
 BEGIN
-    -- Two adjacent ring vertices only 0.0005 m apart (< 1 mm tolerance)
-    geom := ST_GeomFromText(
-        'POLYGON((0 0, 10 0, 10 0.0005, 10 10, 0 10, 0 0))', 3006
-    );
+    -- Line with exact duplicate interior point: (10 0) appears twice consecutively
+    geom := ST_GeomFromText('LINESTRING(0 0, 10 0, 10 0, 20 0)', 3006);
     result := public.forklara_geometrifel(geom);
-    IF result LIKE 'Geometrin innehåller duplicerade punkter%' THEN
-        RAISE NOTICE 'TEST G5 PASSED: Sub-tolerance duplicate points detected: %', result;
+    IF result LIKE 'Geometrin innehåller exakta duplicerade%' THEN
+        RAISE NOTICE 'TEST G5 PASSED: Exact duplicate points detected: %', result;
     ELSIF result IS NULL THEN
-        RAISE WARNING 'TEST G5 FAILED: Duplicate points within tolerance not detected';
+        RAISE WARNING 'TEST G5 FAILED: Exact duplicate points not detected';
     ELSE
         RAISE WARNING 'TEST G5 UNEXPECTED: %', result;
     END IF;
 END $$;
 
 -- ============================================================
--- G6: Degenerate polygon — area below tolerance² (0.001² = 0.000001 m²)
---     Flat triangle: all edges > 1 mm (avoids duplicate-points check),
---     but area = 0.5 × 0.002 × 0.0005 = 0.0000005 m² < 0.000001 m² threshold.
+-- G6: Degenerate polygon — area check removed, geometry now accepted
 -- ============================================================
 DO $$
 DECLARE
     geom   geometry;
     result text;
 BEGIN
-    -- Flat isoceles triangle: base 2 mm, height 0.5 mm → area ≈ 0.5 mm²
-    -- Shortest edge ≈ 1.12 mm, so no duplicate-points check triggers
     geom := ST_GeomFromText(
         'POLYGON((0 0, 0.002 0, 0.001 0.0005, 0 0))', 3006
     );
     result := public.forklara_geometrifel(geom);
-    IF result LIKE 'Polygonen är degenererad%' THEN
-        RAISE NOTICE 'TEST G6 PASSED: Degenerate polygon (tiny area) detected: %', result;
-    ELSIF result IS NULL THEN
-        RAISE WARNING 'TEST G6 FAILED: Degenerate polygon not detected (area may exceed tolerance²)';
+    IF result IS NULL THEN
+        RAISE NOTICE 'TEST G6 INFO: Degenerate polygon accepted — area/size check removed by design';
     ELSE
-        RAISE WARNING 'TEST G6 UNEXPECTED: %', result;
+        RAISE NOTICE 'TEST G6 INFO: Degenerate polygon flagged for other reason: %', result;
     END IF;
 END $$;
 
 -- ============================================================
--- G7: Degenerate line — length below tolerance (< 1 mm = 0.001 m)
+-- G7: Degenerate line — length check removed, geometry now accepted
 -- ============================================================
 DO $$
 DECLARE
     geom   geometry;
     result text;
 BEGIN
-    -- Line only 0.0005 m long (< 1 mm threshold)
     geom := ST_GeomFromText('LINESTRING(0 0, 0.0005 0)', 3006);
     result := public.forklara_geometrifel(geom);
-    IF result LIKE 'Linjen är degenererad%' THEN
-        RAISE NOTICE 'TEST G7 PASSED: Degenerate line (too short) detected: %', result;
-    ELSIF result IS NULL THEN
-        RAISE WARNING 'TEST G7 FAILED: Sub-mm line not detected as degenerate';
+    IF result IS NULL THEN
+        RAISE NOTICE 'TEST G7 INFO: Sub-mm line accepted — length check removed by design';
     ELSE
-        RAISE WARNING 'TEST G7 UNEXPECTED: %', result;
+        RAISE NOTICE 'TEST G7 INFO: Sub-mm line flagged for other reason: %', result;
     END IF;
 END $$;
 
 -- ============================================================
--- G8: Self-intersecting line (figure-8)
+-- G8: Self-intersecting line — ST_IsSimple check removed, geometry now accepted
 -- ============================================================
 DO $$
 DECLARE
     geom   geometry;
     result text;
 BEGIN
-    -- Line crosses itself in the middle
     geom := ST_GeomFromText('LINESTRING(0 0, 10 10, 10 0, 0 10)', 3006);
     result := public.forklara_geometrifel(geom);
-    IF result LIKE 'Linjen skär sig själv%' THEN
-        RAISE NOTICE 'TEST G8 PASSED: Self-intersecting line (figure-8) detected: %', result;
-    ELSIF result IS NULL THEN
-        RAISE WARNING 'TEST G8 FAILED: Self-intersecting line not detected';
+    IF result IS NULL THEN
+        RAISE NOTICE 'TEST G8 INFO: Self-intersecting line accepted — ST_IsSimple check removed by design';
     ELSE
-        RAISE WARNING 'TEST G8 UNEXPECTED: %', result;
+        RAISE NOTICE 'TEST G8 INFO: Self-intersecting line flagged for other reason: %', result;
     END IF;
 END $$;
 
@@ -297,54 +281,6 @@ BEGIN
 END $$;
 
 -- ============================================================
--- G13: Custom tight tolerance — geometry valid at 1 mm but rejected at 10 m
--- ============================================================
-DO $$
-DECLARE
-    geom          geometry;
-    result_default text;
-    result_tight   text;
-BEGIN
-    -- Line is 5 m long: passes default 1 mm threshold, fails 10 m threshold
-    geom := ST_GeomFromText('LINESTRING(0 0, 5 0)', 3006);
-    result_default := public.forklara_geometrifel(geom, 0.001);
-    result_tight   := public.forklara_geometrifel(geom, 10.0);
-    IF result_default IS NULL AND result_tight LIKE 'Linjen är degenererad%' THEN
-        RAISE NOTICE 'TEST G13 PASSED: Custom tolerance works — valid at 1mm, degenerate at 10m';
-    ELSIF result_default IS NOT NULL THEN
-        RAISE WARNING 'TEST G13 FAILED: 5m line wrongly rejected at default tolerance: %', result_default;
-    ELSE
-        RAISE WARNING 'TEST G13 FAILED: 5m line not rejected at 10m tolerance, got: %', result_tight;
-    END IF;
-END $$;
-
--- ============================================================
--- G14: Duplicate points at exactly the tolerance boundary
---      Point separation = exactly tolerance → should NOT be rejected
---      (ST_RemoveRepeatedPoints keeps points >= tolerance apart)
--- ============================================================
-DO $$
-DECLARE
-    geom   geometry;
-    result text;
-BEGIN
-    -- Adjacent ring vertices exactly 0.001 m apart (at boundary — should pass)
-    geom := ST_GeomFromText(
-        'POLYGON((0 0, 10 0, 10 0.001, 10 10, 0 10, 0 0))', 3006
-    );
-    result := public.forklara_geometrifel(geom);
-    -- Behavior at exact boundary depends on ST_RemoveRepeatedPoints semantics;
-    -- document actual result rather than assert direction
-    IF result IS NULL THEN
-        RAISE NOTICE 'TEST G14 INFO: Points at exactly tolerance boundary accepted (not flagged as duplicates)';
-    ELSIF result LIKE 'Geometrin innehåller duplicerade punkter%' THEN
-        RAISE NOTICE 'TEST G14 INFO: Points at exactly tolerance boundary flagged as duplicates (inclusive check)';
-    ELSE
-        RAISE NOTICE 'TEST G14 INFO: Boundary points result: %', result;
-    END IF;
-END $$;
-
--- ============================================================
 -- G15: 3D polygon (PolygonZ) with valid XY and Z — should pass
 -- ============================================================
 DO $$
@@ -374,12 +310,10 @@ BEGIN
         'POLYGON Z((0 0 0, 0.0001 0 0, 0.0001 0.0001 0, 0 0.0001 0, 0 0 0))', 3006
     );
     result := public.forklara_geometrifel(geom);
-    IF result LIKE 'Polygonen är degenererad%' THEN
-        RAISE NOTICE 'TEST G16 PASSED: Degenerate PolygonZ (tiny area) detected: %', result;
-    ELSIF result IS NULL THEN
-        RAISE NOTICE 'TEST G16 INFO: Tiny PolygonZ not caught — area may exceed tolerance² in Z projection';
+    IF result IS NULL THEN
+        RAISE NOTICE 'TEST G16 INFO: Tiny PolygonZ accepted — area check removed by design';
     ELSE
-        RAISE NOTICE 'TEST G16 INFO: PolygonZ result: %', result;
+        RAISE NOTICE 'TEST G16 INFO: Tiny PolygonZ flagged for other reason: %', result;
     END IF;
 END $$;
 
@@ -420,12 +354,10 @@ BEGIN
         3006
     );
     result := public.forklara_geometrifel(geom);
-    IF result LIKE 'Linjen skär sig själv%' THEN
-        RAISE NOTICE 'TEST G18 PASSED: MultiLineString with self-intersecting component detected: %', result;
-    ELSIF result IS NULL THEN
-        RAISE WARNING 'TEST G18 FAILED: MultiLineString with figure-8 component not flagged';
+    IF result IS NULL THEN
+        RAISE NOTICE 'TEST G18 INFO: MultiLineString with self-intersecting component accepted — ST_IsSimple check removed by design';
     ELSE
-        RAISE NOTICE 'TEST G18 INFO: MultiLineString result: %', result;
+        RAISE NOTICE 'TEST G18 INFO: MultiLineString flagged for other reason: %', result;
     END IF;
 END $$;
 
@@ -481,54 +413,54 @@ BEGIN
 END $$;
 
 -- ============================================================
--- G5b: Duplicate points return false
+-- G5b: Exact duplicate points return false
 -- ============================================================
 DO $$
 BEGIN
     IF NOT public.validera_geometri(
-        ST_GeomFromText('POLYGON((0 0,10 0,10 0.0005,10 10,0 10,0 0))', 3006)
+        ST_GeomFromText('LINESTRING(0 0, 10 0, 10 0, 20 0)', 3006)
     ) THEN
-        RAISE NOTICE 'TEST G5b PASSED: validera_geometri returns false for duplicate points';
+        RAISE NOTICE 'TEST G5b PASSED: validera_geometri returns false for exact duplicate points';
     ELSE
-        RAISE WARNING 'TEST G5b FAILED: validera_geometri accepts duplicate points within tolerance';
+        RAISE WARNING 'TEST G5b FAILED: validera_geometri accepts exact duplicate consecutive points';
     END IF;
 END $$;
 
 -- ============================================================
--- G6b: Degenerate polygon returns false
+-- G6b: Degenerate polygon now accepted (area check removed)
 -- ============================================================
 DO $$
 BEGIN
-    IF NOT public.validera_geometri(
+    IF public.validera_geometri(
         ST_GeomFromText('POLYGON((0 0,0.002 0,0.001 0.0005,0 0))', 3006)
     ) THEN
-        RAISE NOTICE 'TEST G6b PASSED: validera_geometri returns false for degenerate polygon';
+        RAISE NOTICE 'TEST G6b INFO: validera_geometri accepts degenerate polygon — area check removed by design';
     ELSE
-        RAISE WARNING 'TEST G6b FAILED: validera_geometri accepts degenerate polygon';
+        RAISE NOTICE 'TEST G6b INFO: validera_geometri rejects degenerate polygon for other reason';
     END IF;
 END $$;
 
 -- ============================================================
--- G7b: Degenerate line returns false
+-- G7b: Degenerate line now accepted (length check removed)
 -- ============================================================
 DO $$
 BEGIN
-    IF NOT public.validera_geometri(ST_GeomFromText('LINESTRING(0 0,0.0005 0)', 3006)) THEN
-        RAISE NOTICE 'TEST G7b PASSED: validera_geometri returns false for sub-mm line';
+    IF public.validera_geometri(ST_GeomFromText('LINESTRING(0 0,0.0005 0)', 3006)) THEN
+        RAISE NOTICE 'TEST G7b INFO: validera_geometri accepts sub-mm line — length check removed by design';
     ELSE
-        RAISE WARNING 'TEST G7b FAILED: validera_geometri accepts sub-mm line';
+        RAISE NOTICE 'TEST G7b INFO: validera_geometri rejects sub-mm line for other reason';
     END IF;
 END $$;
 
 -- ============================================================
--- G8b: Self-intersecting line returns false
+-- G8b: Self-intersecting line now accepted (ST_IsSimple removed)
 -- ============================================================
 DO $$
 BEGIN
-    IF NOT public.validera_geometri(ST_GeomFromText('LINESTRING(0 0,10 10,10 0,0 10)', 3006)) THEN
-        RAISE NOTICE 'TEST G8b PASSED: validera_geometri returns false for self-intersecting line';
+    IF public.validera_geometri(ST_GeomFromText('LINESTRING(0 0,10 10,10 0,0 10)', 3006)) THEN
+        RAISE NOTICE 'TEST G8b INFO: validera_geometri accepts self-intersecting line — ST_IsSimple check removed by design';
     ELSE
-        RAISE WARNING 'TEST G8b FAILED: validera_geometri accepts self-intersecting line';
+        RAISE NOTICE 'TEST G8b INFO: validera_geometri rejects self-intersecting line for other reason';
     END IF;
 END $$;
 
@@ -588,36 +520,10 @@ BEGIN
     -- Duplicate points branch
     BEGIN
         msg := public.forklara_geometrifel(
-            ST_GeomFromText('POLYGON((0 0,10 0,10 0.0005,10 10,0 10,0 0))', 3006)
+            ST_GeomFromText('LINESTRING(0 0, 10 0, 10 0, 20 0)', 3006)
         );
     EXCEPTION WHEN OTHERS THEN
         RAISE WARNING 'TEST G19 FAILED: Duplicate-points branch raised: %', SQLERRM;
-        ok := false;
-    END;
-
-    -- Degenerate polygon branch
-    BEGIN
-        msg := public.forklara_geometrifel(
-            ST_GeomFromText('POLYGON((0 0,0.002 0,0.001 0.0005,0 0))', 3006)
-        );
-    EXCEPTION WHEN OTHERS THEN
-        RAISE WARNING 'TEST G19 FAILED: Degenerate-polygon branch raised: %', SQLERRM;
-        ok := false;
-    END;
-
-    -- Degenerate line branch
-    BEGIN
-        msg := public.forklara_geometrifel(ST_GeomFromText('LINESTRING(0 0,0.0005 0)', 3006));
-    EXCEPTION WHEN OTHERS THEN
-        RAISE WARNING 'TEST G19 FAILED: Degenerate-line branch raised: %', SQLERRM;
-        ok := false;
-    END;
-
-    -- Self-intersecting line branch
-    BEGIN
-        msg := public.forklara_geometrifel(ST_GeomFromText('LINESTRING(0 0,10 10,10 0,0 10)', 3006));
-    EXCEPTION WHEN OTHERS THEN
-        RAISE WARNING 'TEST G19 FAILED: Self-intersecting-line branch raised: %', SQLERRM;
         ok := false;
     END;
 
@@ -732,45 +638,29 @@ EXCEPTION
 END $$;
 
 -- ============================================================
--- G25: Degenerate polygon message contains area value
+-- G25: Degenerate polygon now accepted (area/size checks removed)
 -- ============================================================
 DO $$
-DECLARE msg text;
 BEGIN
     INSERT INTO sk1_kba_geomtest.testobj_y (naam, geom)
     VALUES ('tiny', ST_GeomFromText('POLYGON((0 0,0.002 0,0.001 0.0005,0 0))', 3006));
-    RAISE WARNING 'TEST G25 FAILED: Degenerate polygon INSERT was not rejected';
+    RAISE NOTICE 'TEST G25 PASSED: Degenerate polygon INSERT accepted — size checks removed by design';
 EXCEPTION
     WHEN OTHERS THEN
-        GET STACKED DIAGNOSTICS msg = MESSAGE_TEXT;
-        IF msg LIKE '%degenererad%' AND msg LIKE '%m²%' THEN
-            RAISE NOTICE 'TEST G25 PASSED: Degenerate polygon rejected with area in message: %', left(msg, 120);
-        ELSIF msg LIKE '%degenererad%' THEN
-            RAISE NOTICE 'TEST G25 PARTIAL: Degenerate polygon rejected but m² unit missing from message: %', left(msg, 120);
-        ELSE
-            RAISE WARNING 'TEST G25 FAILED: Unexpected message: %', msg;
-        END IF;
+        RAISE WARNING 'TEST G25 FAILED: Degenerate polygon INSERT unexpectedly rejected: %', SQLERRM;
 END $$;
 
 -- ============================================================
--- G26: Degenerate line message contains length value
+-- G26: Degenerate line now accepted (length check removed)
 -- ============================================================
 DO $$
-DECLARE msg text;
 BEGIN
     INSERT INTO sk1_kba_geomtest.testlijn_l (naam, geom)
     VALUES ('tiny', ST_GeomFromText('LINESTRING(0 0,0.0005 0)', 3006));
-    RAISE WARNING 'TEST G26 FAILED: Sub-mm line INSERT was not rejected';
+    RAISE NOTICE 'TEST G26 PASSED: Degenerate line INSERT accepted — length check removed by design';
 EXCEPTION
     WHEN OTHERS THEN
-        GET STACKED DIAGNOSTICS msg = MESSAGE_TEXT;
-        IF msg LIKE '%degenererad%' AND msg LIKE '%m)%' THEN
-            RAISE NOTICE 'TEST G26 PASSED: Degenerate line rejected with length in message: %', left(msg, 120);
-        ELSIF msg LIKE '%degenererad%' THEN
-            RAISE NOTICE 'TEST G26 PARTIAL: Degenerate line rejected but unit missing from message: %', left(msg, 120);
-        ELSE
-            RAISE WARNING 'TEST G26 FAILED: Unexpected message: %', msg;
-        END IF;
+        RAISE WARNING 'TEST G26 FAILED: Degenerate line INSERT unexpectedly rejected: %', SQLERRM;
 END $$;
 
 -- ============================================================

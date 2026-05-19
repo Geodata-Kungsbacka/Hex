@@ -24,7 +24,7 @@ AS $BODY$
  *   Punkt/linje/polygon centrerad kring (160000, 6395000).
  *   Geometrin är 100 × 100 m och uppfyller validera_geometri()-kravet
  *   på _kba_-tabeller (giltig, ej tom, inga duplicerade punkter,
- *   area/längd > tolerans, ST_IsSimple).
+ *   inga kurvsegment).
  *
  * LIVSCYKEL
  *   Dummy-raden registreras i hex_dummy_geometrier.
