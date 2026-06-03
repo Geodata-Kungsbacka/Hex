@@ -831,23 +831,7 @@ class GeoServerClient:
                 log.info("  [DRY-RUN]   %s = %s", rule, role)
             return True
 
-        resp = self._request_with_retry(
-            "POST", f"{self.rest_url}/security/acl/layers", json=rules
-        )
-        if resp.status_code in (200, 201):
-            log.info("  ACL-regler skapade för workspace '%s'", workspace)
-            return True
-        elif resp.status_code == 409 or (
-            resp.status_code == 404 and "already exists" in resp.text
-        ):
-            # Minst en regel finns redan – verifiera att värdena stämmer och korrigera vid behov
-            return self._ensure_acl_rules(workspace, rules)
-        else:
-            log.error(
-                "  Misslyckades att skapa ACL-regler för workspace '%s': %d %s",
-                workspace, resp.status_code, resp.text,
-            )
-            return False
+        return self._ensure_acl_rules(workspace, rules)
 
     def delete_workspace_acl(self, workspace):
         """Tar bort ACL-regler för en workspace.

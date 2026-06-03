@@ -26,7 +26,7 @@ import logging
 import os
 import sys
 import threading
-from logging.handlers import RotatingFileHandler
+from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 
 import win32event
@@ -62,13 +62,13 @@ LOG_FILE = LOG_DIR / "hex_geoserver_listener.log"
 
 
 def setup_file_logging():
-    """Konfigurerar loggning till roterande fil."""
+    """Konfigurerar loggning till roterande fil (en fil per dag, 14 dagars historik)."""
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-    file_handler = RotatingFileHandler(
+    file_handler = TimedRotatingFileHandler(
         LOG_FILE,
-        maxBytes=10 * 1024 * 1024,  # 10 MB
-        backupCount=5,
+        when="midnight",
+        backupCount=14,
         encoding="utf-8",
     )
     file_handler.setLevel(logging.INFO)
