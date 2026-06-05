@@ -40,7 +40,7 @@ pg_notify('geoserver_schema', 'sk0_kba_test')
 [Python Listener - Windows Service]
 geoserver_listener.py
         |
-        +--> SELECT password FROM hex_role_credentials WHERE rolname = 'r_sk0_kba_test'
+        +--> SELECT password FROM hex_role_credentials WHERE rolname = 'gs_r_sk0_kba_test'
         |
         v
 GeoServer REST API:
@@ -87,8 +87,8 @@ GeoServer REST API:
          --> ACL-regler tas bort
   2. DELETE /rest/workspaces/sk0_kba_test?recurse=true
          --> workspace + datastores + publicerade lager tas bort
-  3. DELETE /rest/security/roles/role/r_sk0_kba_test
-     DELETE /rest/security/roles/role/w_sk0_kba_test
+  3. DELETE /rest/security/roles/role/gs_r_sk0_kba_test
+     DELETE /rest/security/roles/role/gs_w_sk0_kba_test
          --> GeoServer-roller tas bort
 ```
 
@@ -561,27 +561,21 @@ Testa att lyssnaren kan nå både PostgreSQL och GeoServer:
 
 ```cmd
 cd D:\Hex\src\geoserver
-[Python-sökväg]\python.exe geoserver_listener.py --test
+py geoserver_listener.py --test
 ```
 
-> **OBS – systemspecifikt Python-sökväg**
-> Kommandot `py` (Windows Python Launcher) läser skriptets shebang-rad
-> (`#!/usr/bin/env python3`) och letar upp `python3` i PATH. På servrar där
-> Python installerats på en icke-standardiserad plats (t.ex. `D:\Python\`)
-> kan detta leda till att Windows Store-stubben (`WindowsApps\python3.exe`)
-> hittas istället – en platshållare som inte kan köra filer och ger felet
+> **OBS:** På servrar där Python installerats på en icke-standardiserad plats
+> kan `py` leda till att Windows Store-stubben (`WindowsApps\python3.exe`)
+> hittas istället för den riktiga tolken, vilket ger felet
 > *"Unable to create process using …\WindowsApps\python3.exe"*.
 >
-> **Lösning:** Anropa Python-tolken direkt med dess fulla sökväg:
->
-> ```cmd
-> D:\Python\python.exe geoserver_listener.py --test
-> ```
->
-> Rätt sökväg på den aktuella servern kan alltid verifieras med:
->
+> Verifiera rätt sökväg med:
 > ```cmd
 > py -c "import sys; print(sys.executable)"
+> ```
+> Anropa sedan Python-tolken direkt med den sökvägen:
+> ```cmd
+> D:\Program Files\Python\python.exe geoserver_listener.py --test
 > ```
 
 Förväntad utskrift:
@@ -616,7 +610,7 @@ Kör lyssnaren i dry-run-läge för att se vad som händer utan att göra ändri
 
 **Terminal 1 - Starta lyssnaren** (från `D:\Hex\src\geoserver`):
 ```cmd
-[Python-sökväg]\python.exe geoserver_listener.py --dry-run
+py geoserver_listener.py --dry-run
 ```
 
 **Terminal 2 - Skapa ett testschema i psql (anslut till en av databaserna):**
@@ -673,7 +667,7 @@ Avbryt lyssnaren med `Ctrl+C`.
 Upprepa steg 7, men UTAN `--dry-run`:
 
 ```cmd
-[Python-sökväg]\python.exe geoserver_listener.py
+py geoserver_listener.py
 ```
 
 Skapa schemat och verifiera i GeoServer:
@@ -703,7 +697,7 @@ Nu när vi vet att allt fungerar, installera det som en riktig tjänst.
 
 ```cmd
 cd D:\Hex\src\geoserver
-[Python-sökväg]\python.exe geoserver_service.py install
+py geoserver_service.py install
 ```
 
 Förväntad utskrift:
@@ -725,7 +719,7 @@ Hör med din IT avdelning hur dom vill att tjänster sätts upp.
 ### 9c. Starta tjänsten
 
 ```cmd
-[Python-sökväg]\python.exe geoserver_service.py start
+py geoserver_service.py start
 ```
 
 Eller via `services.msc`, eller:
@@ -736,7 +730,7 @@ net start HexGeoServerListener
 ### 9d. Kontrollera status
 
 ```cmd
-[Python-sökväg]\python.exe geoserver_service.py status
+py geoserver_service.py status
 ```
 
 Kontrollera loggfilen:
