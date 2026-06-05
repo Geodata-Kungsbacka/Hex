@@ -18,10 +18,14 @@ CREATE SCHEMA sk0_kba_test
 [PostgreSQL Event Trigger 1]
 hantera_standardiserade_roller()
         |
-        +--> CREATE ROLE r_sk0_kba_test WITH LOGIN PASSWORD '<autogenererat>'
-        |    (läsroll - direkt PostgreSQL-anslutning för GeoServer)
-        +--> CREATE ROLE w_sk0_kba_test WITH LOGIN PASSWORD '<autogenererat>'
-        |    (skrivroll)
+        +--> CREATE ROLE r_sk0_kba_test NOLOGIN
+        |    (läsbehörighetsgrupp - tilldelas AD-användare)
+        +--> CREATE ROLE w_sk0_kba_test NOLOGIN
+        |    (skrivbehörighetsgrupp - tilldelas AD-användare)
+        +--> CREATE ROLE gs_r_sk0_kba_test WITH LOGIN PASSWORD '<autogenererat>'
+        |    (GeoServer läs-tjänstekonto - direkt PostgreSQL-anslutning)
+        +--> CREATE ROLE gs_w_sk0_kba_test WITH LOGIN PASSWORD '<autogenererat>'
+        |    (GeoServer skriv-tjänstekonto)
         +--> INSERT INTO hex_role_credentials (rolname, password)
              (lösenorden sparas i databasen för lyssnaren att hämta)
         |
@@ -46,13 +50,13 @@ GeoServer REST API:
          --> namespace URI satt
   3. POST /rest/workspaces/sk0_kba_test/datastores
          --> PostGIS-datastore "sk0_kba_test"
-             (direktanslutning med r_sk0_kba_test-uppgifter)
-  4. POST /rest/security/roles/role/r_sk0_kba_test
-  4. POST /rest/security/roles/role/w_sk0_kba_test
-         --> GeoServer-roller skapas (speglar PostgreSQL-rollerna)
+             (direktanslutning med gs_r_sk0_kba_test-uppgifter)
+  4. POST /rest/security/roles/role/gs_r_sk0_kba_test
+  4. POST /rest/security/roles/role/gs_w_sk0_kba_test
+         --> GeoServer-roller skapas (speglar PostgreSQL-tjänstekontona)
   5. POST /rest/security/acl/layers
-         --> sk0_kba_test.*.r = r_sk0_kba_test
-             sk0_kba_test.*.w = w_sk0_kba_test
+         --> sk0_kba_test.*.r = gs_r_sk0_kba_test
+             sk0_kba_test.*.w = gs_w_sk0_kba_test
              (ger rollerna tillgång till workspace)
 ```
 
@@ -214,7 +218,7 @@ automatiskt som en del av installationsordningen. De relevanta filerna är:
 | Fil | Syfte |
 |---|---|
 | `src/sql/02_tables/hex_role_credentials.sql` | Tabell där lösenord för LOGIN-roller sparas |
-| `src/sql/03_functions/05_trigger_functions/hantera_standardiserade_roller.sql` | Skapar r_/w_-roller med autogenererade lösenord vid CREATE SCHEMA |
+| `src/sql/03_functions/05_trigger_functions/hantera_standardiserade_roller.sql` | Skapar r_/w_-behörighetsgrupper och gs_r_/gs_w_-tjänstekonton med autogenererade lösenord vid CREATE SCHEMA |
 | `src/sql/04_triggers/hantera_standardiserade_roller_trigger.sql` | Registrerar ovanstående trigger |
 | `src/sql/03_functions/05_trigger_functions/notifiera_geoserver.sql` | Skickar pg_notify vid CREATE SCHEMA |
 | `src/sql/04_triggers/notifiera_geoserver_trigger.sql` | Registrerar ovanstående trigger |
@@ -297,15 +301,16 @@ PostgreSQL tillåter inte nätverksanslutningar förrän det finns en matchande 
 
 **1. `hex_listener`** — Python-lyssnaren som prenumererar på `pg_notify`.
 
-**2. `r_<schema>`-roller** — skapas automatiskt av `hantera_standardiserade_roller()`
-vid varje `CREATE SCHEMA`. GeoServer använder dessa roller för direktanslutning till
-varje PostGIS-datastore.
+**2. `gs_r_<schema>`- och `gs_w_<schema>`-roller** — skapas automatiskt av `hantera_standardiserade_roller()`
+vid varje `CREATE SCHEMA`. GeoServer använder dessa LOGIN-tjänstekonton för direktanslutning till
+varje PostGIS-datastore. (`r_*` och `w_*` är NOLOGIN-behörighetsgrupper för AD-användare och
+används inte av GeoServer direkt.)
 
-Alla dynamiskt skapade `r_*`- och `w_*`-roller läggs automatiskt till i
+Alla dynamiskt skapade `gs_r_*`- och `gs_w_*`-roller läggs automatiskt till i
 grupprollen **`hex_geoserver_roller`**. Rollen har inga egna rättigheter — den
 fungerar enbart som autentiseringsmål i `pg_hba.conf`. Det innebär att en
 `pg_hba.conf`-post kan referera till `+hex_geoserver_roller` för att täcka
-alla Hex-skapade roller utan att lista dem individuellt:
+alla Hex-skapade tjänstekonton utan att lista dem individuellt:
 
 ```
 # Exempel — hur exakt du konfigurerar detta är upp till DBA:n
@@ -359,7 +364,7 @@ Lyssnaren anropar GeoServer REST API för att:
 
 - Kontrollera om workspace/datastore redan finns (`GET`)
 - Skapa workspace och direkt PostGIS-datastore (`POST`)
-- Skapa GeoServer-roller `r_{schema}` och `w_{schema}` (`POST /rest/security/roles/`)
+- Skapa GeoServer-roller `gs_r_{schema}` och `gs_w_{schema}` (`POST /rest/security/roles/`)
 - Sätta ACL-regler som ger rollerna tillgång till workspace (`POST /rest/security/acl/layers`)
 - Ta bort ACL-regler, workspace och roller vid DROP SCHEMA (`DELETE`)
 
@@ -675,8 +680,8 @@ Skapa schemat och verifiera i GeoServer:
 1. Gå till http://localhost:8080/geoserver/web/
 2. Klicka på **Workspaces** — du bör se `sk0_kba_test` i listan
 3. Klicka på den, sedan **Stores** — du bör se en PostGIS-datastore med samma namn
-4. Gå till **Security > Users/Groups/Roles** — du bör se rollerna `r_sk0_kba_test` och `w_sk0_kba_test`
-5. Gå till **Security > Data** — du bör se reglerna `sk0_kba_test.*.r` och `sk0_kba_test.*.w`
+4. Gå till **Security > Users/Groups/Roles** — du bör se rollerna `gs_r_sk0_kba_test` och `gs_w_sk0_kba_test`
+5. Gå till **Security > Data** — du bör se reglerna `sk0_kba_test.*.r = gs_r_sk0_kba_test` och `sk0_kba_test.*.w = gs_w_sk0_kba_test`
 
 Testa sedan borttagning:
 ```sql
@@ -764,7 +769,7 @@ type D:\ProgramData\Hex\geoserver_listener.log
 Kontrollera GeoServer:
 - Workspace `sk1_kba_parkering` bör finnas under **Workspaces**
 - Datastore `sk1_kba_parkering` med direktanslutning via rollen `r_sk1_kba_parkering` under **Stores**
-- Rollerna `r_sk1_kba_parkering` och `w_sk1_kba_parkering` under **Security > Users/Groups/Roles**
+- Rollerna `gs_r_sk1_kba_parkering` och `gs_w_sk1_kba_parkering` under **Security > Users/Groups/Roles**
 - ACL-reglerna `sk1_kba_parkering.*.r` och `sk1_kba_parkering.*.w` under **Security > Data**
 
 ---
