@@ -709,7 +709,7 @@ Service installed
 ### 9b. Konfigurera återställning vid krasch
 
 Öppna `services.msc`, hitta **Hex GeoServer Schema Listener**, högerklicka
-och välj **Properties > Recovery**:
+och välj **Properties**:
 
 Starttypen ska vara **Automatic** (sätts under fliken
 **General > Startup type**) så att tjänsten startar vid serveromstart.
