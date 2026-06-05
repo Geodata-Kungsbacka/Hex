@@ -102,6 +102,19 @@ som inte längre existerar i databasen.
 ### Installera Python
 
 1. Hämta Python från [python.org/downloads](https://www.python.org/downloads/)
+
+   > **Luftgapat nätverk?** Om servern inte har internetåtkomst: ladda ned
+   > Python på en annan maskin och flytta över det till servern.
+   >
+   > **Viktigt:** Ladda ned exakt samma Python-version på båda maskinerna.
+   > Version måste stämma överens för att du ska kunna ladda ned
+   > Python-paket på den andra maskinen och flytta dem till servern (se Steg 1).
+   > Kontrollera att de matchar:
+   > ```cmd
+   > py --version
+   > ```
+   > Utskriften ska vara identisk på båda maskinerna, t.ex. `Python 3.14.5`.
+
 2. Kör installationsprogrammet som **Administrator**
 3. **VIKTIGT:** Kryssa i **"Install for all users"** innan du klickar Install
 
@@ -150,8 +163,33 @@ och ersätt `py` med den fullständiga sökvägen i kommandona nedan.
 
 Installera beroenden:
 ```cmd
-py -m pip install psycopg2 requests python-dotenv pywin32
+py -m pip install psycopg2-binary requests python-dotenv pywin32
 ```
+
+> **Luftgapat nätverk?** Om servern inte kan nå internet, ladda ned paketen
+> på en annan maskin och flytta dem till servern.
+>
+> **Förutsättning:** Båda maskinerna måste köra exakt samma Python-version
+> (se avsnittet om Python-installation ovan). Kontrollera att de matchar
+> innan du fortsätter:
+> ```cmd
+> py --version
+> ```
+>
+> **På maskinen med internetåtkomst** — ladda ned paketen som färdiga wheel-filer:
+> ```cmd
+> py -m pip download psycopg2-binary requests python-dotenv pywin32 --only-binary=:all: -d C:\hex-wheels
+> ```
+>
+> Kopiera mappen `C:\hex-wheels` till servern (t.ex. via USB eller fildelning).
+>
+> **På servern** — installera från de nedladdade filerna:
+> ```cmd
+> py -m pip install --no-index --find-links D:\hex-wheels psycopg2-binary requests python-dotenv pywin32
+> ```
+
+> **OBS:** `psycopg2-binary` används istället för `psycopg2` eftersom det är
+> förpaketerat och inte kräver en C-kompilator — fungerar utan problem på Windows.
 
 Kontrollera att allt installerades:
 ```cmd
@@ -165,14 +203,6 @@ python-dotenv     1.x.x
 pywin32           30x
 requests          2.3x.x
 ```
-
-> **OBS:** Om `psycopg2` inte går att installera (krav på C-kompilator),
-> ersätt det med `psycopg2-binary` i kommandot ovan:
-> ```cmd
-> py -m pip install psycopg2-binary requests python-dotenv pywin32
-> ```
-> `psycopg2-binary` är ett förpaketerat alternativ utan byggkrav och
-> fungerar utan problem på Windows.
 
 ---
 
