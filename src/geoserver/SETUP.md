@@ -150,11 +150,6 @@ och ersätt `py` med den fullständiga sökvägen i kommandona nedan.
 
 Installera beroenden:
 ```cmd
-py -m pip install -r requirements.txt
-```
-
-Eller manuellt:
-```cmd
 py -m pip install psycopg2 requests python-dotenv pywin32
 ```
 
@@ -172,10 +167,12 @@ requests          2.3x.x
 ```
 
 > **OBS:** Om `psycopg2` inte går att installera (krav på C-kompilator),
-> använd `psycopg2-binary` istället:
+> ersätt det med `psycopg2-binary` i kommandot ovan:
 > ```cmd
-> py -m pip install psycopg2-binary
+> py -m pip install psycopg2-binary requests python-dotenv pywin32
 > ```
+> `psycopg2-binary` är ett förpaketerat alternativ utan byggkrav och
+> fungerar utan problem på Windows.
 
 ---
 
