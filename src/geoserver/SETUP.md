@@ -18,10 +18,14 @@ CREATE SCHEMA sk0_kba_test
 [PostgreSQL Event Trigger 1]
 hantera_standardiserade_roller()
         |
-        +--> CREATE ROLE r_sk0_kba_test WITH LOGIN PASSWORD '<autogenererat>'
-        |    (läsroll - direkt PostgreSQL-anslutning för GeoServer)
-        +--> CREATE ROLE w_sk0_kba_test WITH LOGIN PASSWORD '<autogenererat>'
-        |    (skrivroll)
+        +--> CREATE ROLE r_sk0_kba_test NOLOGIN
+        |    (läsbehörighetsgrupp - tilldelas AD-användare)
+        +--> CREATE ROLE w_sk0_kba_test NOLOGIN
+        |    (skrivbehörighetsgrupp - tilldelas AD-användare)
+        +--> CREATE ROLE gs_r_sk0_kba_test WITH LOGIN PASSWORD '<autogenererat>'
+        |    (GeoServer läs-tjänstekonto - direkt PostgreSQL-anslutning)
+        +--> CREATE ROLE gs_w_sk0_kba_test WITH LOGIN PASSWORD '<autogenererat>'
+        |    (GeoServer skriv-tjänstekonto)
         +--> INSERT INTO hex_role_credentials (rolname, password)
              (lösenorden sparas i databasen för lyssnaren att hämta)
         |
@@ -36,7 +40,7 @@ pg_notify('geoserver_schema', 'sk0_kba_test')
 [Python Listener - Windows Service]
 geoserver_listener.py
         |
-        +--> SELECT password FROM hex_role_credentials WHERE rolname = 'r_sk0_kba_test'
+        +--> SELECT password FROM hex_role_credentials WHERE rolname = 'gs_r_sk0_kba_test'
         |
         v
 GeoServer REST API:
@@ -46,13 +50,13 @@ GeoServer REST API:
          --> namespace URI satt
   3. POST /rest/workspaces/sk0_kba_test/datastores
          --> PostGIS-datastore "sk0_kba_test"
-             (direktanslutning med r_sk0_kba_test-uppgifter)
-  4. POST /rest/security/roles/role/r_sk0_kba_test
-  4. POST /rest/security/roles/role/w_sk0_kba_test
-         --> GeoServer-roller skapas (speglar PostgreSQL-rollerna)
+             (direktanslutning med gs_r_sk0_kba_test-uppgifter)
+  4. POST /rest/security/roles/role/gs_r_sk0_kba_test
+  4. POST /rest/security/roles/role/gs_w_sk0_kba_test
+         --> GeoServer-roller skapas (speglar PostgreSQL-tjänstekontona)
   5. POST /rest/security/acl/layers
-         --> sk0_kba_test.*.r = r_sk0_kba_test
-             sk0_kba_test.*.w = w_sk0_kba_test
+         --> sk0_kba_test.*.r = gs_r_sk0_kba_test
+             sk0_kba_test.*.w = gs_w_sk0_kba_test
              (ger rollerna tillgång till workspace)
 ```
 
@@ -83,8 +87,8 @@ GeoServer REST API:
          --> ACL-regler tas bort
   2. DELETE /rest/workspaces/sk0_kba_test?recurse=true
          --> workspace + datastores + publicerade lager tas bort
-  3. DELETE /rest/security/roles/role/r_sk0_kba_test
-     DELETE /rest/security/roles/role/w_sk0_kba_test
+  3. DELETE /rest/security/roles/role/gs_r_sk0_kba_test
+     DELETE /rest/security/roles/role/gs_w_sk0_kba_test
          --> GeoServer-roller tas bort
 ```
 
@@ -102,6 +106,19 @@ som inte längre existerar i databasen.
 ### Installera Python
 
 1. Hämta Python från [python.org/downloads](https://www.python.org/downloads/)
+
+   > **Luftgapat nätverk?** Om servern inte har internetåtkomst: ladda ned
+   > Python på en annan maskin och flytta över det till servern.
+   >
+   > **Viktigt:** Ladda ned exakt samma Python-version på båda maskinerna.
+   > Version måste stämma överens för att du ska kunna ladda ned
+   > Python-paket på den andra maskinen och flytta dem till servern (se Steg 1).
+   > Kontrollera att de matchar:
+   > ```cmd
+   > py --version
+   > ```
+   > Utskriften ska vara identisk på båda maskinerna, t.ex. `Python 3.14.5`.
+
 2. Kör installationsprogrammet som **Administrator**
 3. **VIKTIGT:** Kryssa i **"Install for all users"** innan du klickar Install
 
@@ -150,13 +167,33 @@ och ersätt `py` med den fullständiga sökvägen i kommandona nedan.
 
 Installera beroenden:
 ```cmd
-py -m pip install -r requirements.txt
+py -m pip install psycopg2-binary requests python-dotenv pywin32
 ```
 
-Eller manuellt:
-```cmd
-py -m pip install psycopg2 requests python-dotenv pywin32
-```
+> **Luftgapat nätverk?** Om servern inte kan nå internet, ladda ned paketen
+> på en annan maskin och flytta dem till servern.
+>
+> **Förutsättning:** Båda maskinerna måste köra exakt samma Python-version
+> (se avsnittet om Python-installation ovan). Kontrollera att de matchar
+> innan du fortsätter:
+> ```cmd
+> py --version
+> ```
+>
+> **På maskinen med internetåtkomst** — ladda ned paketen som färdiga wheel-filer:
+> ```cmd
+> py -m pip download psycopg2-binary requests python-dotenv pywin32 --only-binary=:all: -d C:\hex-wheels
+> ```
+>
+> Kopiera mappen `C:\hex-wheels` till servern (t.ex. via USB eller fildelning).
+>
+> **På servern** — installera från de nedladdade filerna:
+> ```cmd
+> py -m pip install --no-index --find-links D:\hex-wheels psycopg2-binary requests python-dotenv pywin32
+> ```
+
+> **OBS:** `psycopg2-binary` används istället för `psycopg2` eftersom det är
+> förpaketerat och inte kräver en C-kompilator — fungerar utan problem på Windows.
 
 Kontrollera att allt installerades:
 ```cmd
@@ -171,12 +208,6 @@ pywin32           30x
 requests          2.3x.x
 ```
 
-> **OBS:** Om `psycopg2` inte går att installera (krav på C-kompilator),
-> använd `psycopg2-binary` istället:
-> ```cmd
-> py -m pip install psycopg2-binary
-> ```
-
 ---
 
 ## Steg 2: Installera SQL-komponenten via Hex
@@ -187,7 +218,7 @@ automatiskt som en del av installationsordningen. De relevanta filerna är:
 | Fil | Syfte |
 |---|---|
 | `src/sql/02_tables/hex_role_credentials.sql` | Tabell där lösenord för LOGIN-roller sparas |
-| `src/sql/03_functions/05_trigger_functions/hantera_standardiserade_roller.sql` | Skapar r_/w_-roller med autogenererade lösenord vid CREATE SCHEMA |
+| `src/sql/03_functions/05_trigger_functions/hantera_standardiserade_roller.sql` | Skapar r_/w_-behörighetsgrupper och gs_r_/gs_w_-tjänstekonton med autogenererade lösenord vid CREATE SCHEMA |
 | `src/sql/04_triggers/hantera_standardiserade_roller_trigger.sql` | Registrerar ovanstående trigger |
 | `src/sql/03_functions/05_trigger_functions/notifiera_geoserver.sql` | Skickar pg_notify vid CREATE SCHEMA |
 | `src/sql/04_triggers/notifiera_geoserver_trigger.sql` | Registrerar ovanstående trigger |
@@ -270,15 +301,16 @@ PostgreSQL tillåter inte nätverksanslutningar förrän det finns en matchande 
 
 **1. `hex_listener`** — Python-lyssnaren som prenumererar på `pg_notify`.
 
-**2. `r_<schema>`-roller** — skapas automatiskt av `hantera_standardiserade_roller()`
-vid varje `CREATE SCHEMA`. GeoServer använder dessa roller för direktanslutning till
-varje PostGIS-datastore.
+**2. `gs_r_<schema>`- och `gs_w_<schema>`-roller** — skapas automatiskt av `hantera_standardiserade_roller()`
+vid varje `CREATE SCHEMA`. GeoServer använder dessa LOGIN-tjänstekonton för direktanslutning till
+varje PostGIS-datastore. (`r_*` och `w_*` är NOLOGIN-behörighetsgrupper för AD-användare och
+används inte av GeoServer direkt.)
 
-Alla dynamiskt skapade `r_*`- och `w_*`-roller läggs automatiskt till i
+Alla dynamiskt skapade `gs_r_*`- och `gs_w_*`-roller läggs automatiskt till i
 grupprollen **`hex_geoserver_roller`**. Rollen har inga egna rättigheter — den
 fungerar enbart som autentiseringsmål i `pg_hba.conf`. Det innebär att en
 `pg_hba.conf`-post kan referera till `+hex_geoserver_roller` för att täcka
-alla Hex-skapade roller utan att lista dem individuellt:
+alla Hex-skapade tjänstekonton utan att lista dem individuellt:
 
 ```
 # Exempel — hur exakt du konfigurerar detta är upp till DBA:n
@@ -332,7 +364,7 @@ Lyssnaren anropar GeoServer REST API för att:
 
 - Kontrollera om workspace/datastore redan finns (`GET`)
 - Skapa workspace och direkt PostGIS-datastore (`POST`)
-- Skapa GeoServer-roller `r_{schema}` och `w_{schema}` (`POST /rest/security/roles/`)
+- Skapa GeoServer-roller `gs_r_{schema}` och `gs_w_{schema}` (`POST /rest/security/roles/`)
 - Sätta ACL-regler som ger rollerna tillgång till workspace (`POST /rest/security/acl/layers`)
 - Ta bort ACL-regler, workspace och roller vid DROP SCHEMA (`DELETE`)
 
@@ -453,15 +485,15 @@ en workspace eller datastore saknas (t.ex. för att någon manuellt tagit bort d
 skapas de om automatiskt, och autentiseringsuppgifterna uppdateras alltid med
 aktuella värden från `hex_role_credentials`.
 
-Standardintervallet är **900 sekunder (15 minuter)**. Ändra eller avaktivera med:
+Standardintervallet är **3600 sekunder (60 minuter)**. Ändra eller avaktivera med:
 
 ```env
-HEX_RECONCILE_INTERVAL=900   # sekunder mellan kontroller; 0 = avaktiverat
+HEX_RECONCILE_INTERVAL=3600   # sekunder mellan kontroller; 0 = avaktiverat
 ```
 
 | Variabel | Standard | Beskrivning |
 |---|---|---|
-| `HEX_RECONCILE_INTERVAL` | `900` | Intervall i sekunder (0 avaktiverar) |
+| `HEX_RECONCILE_INTERVAL` | `3600` | Intervall i sekunder (0 avaktiverar) |
 
 > **OBS:** Periodisk avstämning skapar aldrig om publicerade lager (feature types)
 > – enbart workspaces, datastores, GeoServer-roller och ACL-regler. Lager måste
@@ -529,27 +561,21 @@ Testa att lyssnaren kan nå både PostgreSQL och GeoServer:
 
 ```cmd
 cd D:\Hex\src\geoserver
-[Python-sökväg]\python.exe geoserver_listener.py --test
+py geoserver_listener.py --test
 ```
 
-> **OBS – systemspecifikt Python-sökväg**
-> Kommandot `py` (Windows Python Launcher) läser skriptets shebang-rad
-> (`#!/usr/bin/env python3`) och letar upp `python3` i PATH. På servrar där
-> Python installerats på en icke-standardiserad plats (t.ex. `D:\Python\`)
-> kan detta leda till att Windows Store-stubben (`WindowsApps\python3.exe`)
-> hittas istället – en platshållare som inte kan köra filer och ger felet
+> **OBS:** På servrar där Python installerats på en icke-standardiserad plats
+> kan `py` leda till att Windows Store-stubben (`WindowsApps\python3.exe`)
+> hittas istället för den riktiga tolken, vilket ger felet
 > *"Unable to create process using …\WindowsApps\python3.exe"*.
 >
-> **Lösning:** Anropa Python-tolken direkt med dess fulla sökväg:
->
-> ```cmd
-> D:\Python\python.exe geoserver_listener.py --test
-> ```
->
-> Rätt sökväg på den aktuella servern kan alltid verifieras med:
->
+> Verifiera rätt sökväg med:
 > ```cmd
 > py -c "import sys; print(sys.executable)"
+> ```
+> Anropa sedan Python-tolken direkt med den sökvägen:
+> ```cmd
+> D:\Program Files\Python\python.exe geoserver_listener.py --test
 > ```
 
 Förväntad utskrift:
@@ -584,7 +610,7 @@ Kör lyssnaren i dry-run-läge för att se vad som händer utan att göra ändri
 
 **Terminal 1 - Starta lyssnaren** (från `D:\Hex\src\geoserver`):
 ```cmd
-[Python-sökväg]\python.exe geoserver_listener.py --dry-run
+py geoserver_listener.py --dry-run
 ```
 
 **Terminal 2 - Skapa ett testschema i psql (anslut till en av databaserna):**
@@ -641,15 +667,15 @@ Avbryt lyssnaren med `Ctrl+C`.
 Upprepa steg 7, men UTAN `--dry-run`:
 
 ```cmd
-[Python-sökväg]\python.exe geoserver_listener.py
+py geoserver_listener.py
 ```
 
 Skapa schemat och verifiera i GeoServer:
 1. Gå till http://localhost:8080/geoserver/web/
 2. Klicka på **Workspaces** — du bör se `sk0_kba_test` i listan
 3. Klicka på den, sedan **Stores** — du bör se en PostGIS-datastore med samma namn
-4. Gå till **Security > Users/Groups/Roles** — du bör se rollerna `r_sk0_kba_test` och `w_sk0_kba_test`
-5. Gå till **Security > Data** — du bör se reglerna `sk0_kba_test.*.r` och `sk0_kba_test.*.w`
+4. Gå till **Security > Users/Groups/Roles** — du bör se rollerna `gs_r_sk0_kba_test` och `gs_w_sk0_kba_test`
+5. Gå till **Security > Data** — du bör se reglerna `sk0_kba_test.*.r = gs_r_sk0_kba_test` och `sk0_kba_test.*.w = gs_w_sk0_kba_test`
 
 Testa sedan borttagning:
 ```sql
@@ -671,7 +697,7 @@ Nu när vi vet att allt fungerar, installera det som en riktig tjänst.
 
 ```cmd
 cd D:\Hex\src\geoserver
-[Python-sökväg]\python.exe geoserver_service.py install
+py geoserver_service.py install
 ```
 
 Förväntad utskrift:
@@ -683,7 +709,7 @@ Service installed
 ### 9b. Konfigurera återställning vid krasch
 
 Öppna `services.msc`, hitta **Hex GeoServer Schema Listener**, högerklicka
-och välj **Properties > Recovery**:
+och välj **Properties**:
 
 Starttypen ska vara **Automatic** (sätts under fliken
 **General > Startup type**) så att tjänsten startar vid serveromstart.
@@ -693,7 +719,7 @@ Hör med din IT avdelning hur dom vill att tjänster sätts upp.
 ### 9c. Starta tjänsten
 
 ```cmd
-[Python-sökväg]\python.exe geoserver_service.py start
+py geoserver_service.py start
 ```
 
 Eller via `services.msc`, eller:
@@ -704,7 +730,7 @@ net start HexGeoServerListener
 ### 9d. Kontrollera status
 
 ```cmd
-[Python-sökväg]\python.exe geoserver_service.py status
+py geoserver_service.py status
 ```
 
 Kontrollera loggfilen:
@@ -737,7 +763,7 @@ type D:\ProgramData\Hex\geoserver_listener.log
 Kontrollera GeoServer:
 - Workspace `sk1_kba_parkering` bör finnas under **Workspaces**
 - Datastore `sk1_kba_parkering` med direktanslutning via rollen `r_sk1_kba_parkering` under **Stores**
-- Rollerna `r_sk1_kba_parkering` och `w_sk1_kba_parkering` under **Security > Users/Groups/Roles**
+- Rollerna `gs_r_sk1_kba_parkering` och `gs_w_sk1_kba_parkering` under **Security > Users/Groups/Roles**
 - ACL-reglerna `sk1_kba_parkering.*.r` och `sk1_kba_parkering.*.w` under **Security > Data**
 
 ---
