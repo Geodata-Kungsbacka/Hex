@@ -232,7 +232,7 @@ BEGIN
                     )
                 ELSE
                     -- Vanliga kolumner
-                    c.udt_name
+                    c.udt_name::text
             END as datatyp,
             CASE WHEN a.attgenerated = 's' THEN true 
                  ELSE false END as is_generated,
