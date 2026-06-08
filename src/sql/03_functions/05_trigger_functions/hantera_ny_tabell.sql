@@ -349,13 +349,21 @@ BEGIN
                 DECLARE
                     constraint_namn text := 'validera_geom_' || tabell_namn;
                 BEGIN
-                    EXECUTE format(
-                        'ALTER TABLE %I.%I ADD CONSTRAINT %I CHECK (public.validera_geometri(geom))',
-                        schema_namn,
-                        tabell_namn,
-                        constraint_namn
-                    );
-                    RAISE NOTICE '  ✓ Geometrivalidering tillagd: %', constraint_namn;
+                    IF EXISTS (
+                        SELECT 1 FROM pg_constraint
+                        WHERE conrelid = format('%I.%I', schema_namn, tabell_namn)::regclass
+                          AND conname = constraint_namn
+                    ) THEN
+                        RAISE NOTICE '  - Geometrivalidering redan tillagd (återställd av aterskapa_kolumnegenskaper): %', constraint_namn;
+                    ELSE
+                        EXECUTE format(
+                            'ALTER TABLE %I.%I ADD CONSTRAINT %I CHECK (public.validera_geometri(geom))',
+                            schema_namn,
+                            tabell_namn,
+                            constraint_namn
+                        );
+                        RAISE NOTICE '  ✓ Geometrivalidering tillagd: %', constraint_namn;
+                    END IF;
                     EXECUTE format(
                         'CREATE TRIGGER hex_kontrollera_geom'
                         ' BEFORE INSERT OR UPDATE ON %I.%I'
