@@ -41,14 +41,23 @@ BEGIN
         RAISE NOTICE '[tilldela_rollrattigheter] SELECT-rättigheter beviljade (inkl. DEFAULT PRIVILEGES för %)', system_owner();
 
     ELSIF p_rolltyp = 'write' THEN
-        -- Skrivrättigheter: SELECT, INSERT, UPDATE, DELETE
+        -- Skrivrättigheter: SELECT, INSERT, UPDATE, DELETE på tabeller
         EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA %I TO %I',
                       p_schema_namn, p_rollnamn);
-        -- DEFAULT PRIVILEGES för postgres
+        -- DEFAULT PRIVILEGES för postgres (tabeller)
         EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA %I GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO %I',
                       p_schema_namn, p_rollnamn);
-        -- DEFAULT PRIVILEGES för ägarrollen
+        -- DEFAULT PRIVILEGES för ägarrollen (tabeller)
         EXECUTE format('ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO %I',
+                      system_owner(), p_schema_namn, p_rollnamn);
+        -- Skrivrättigheter på sekvenser (krävs för INSERT med seriella/identity-kolumner)
+        EXECUTE format('GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA %I TO %I',
+                      p_schema_namn, p_rollnamn);
+        -- DEFAULT PRIVILEGES för postgres (sekvenser)
+        EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA %I GRANT USAGE, SELECT ON SEQUENCES TO %I',
+                      p_schema_namn, p_rollnamn);
+        -- DEFAULT PRIVILEGES för ägarrollen (sekvenser)
+        EXECUTE format('ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I GRANT USAGE, SELECT ON SEQUENCES TO %I',
                       system_owner(), p_schema_namn, p_rollnamn);
         RAISE NOTICE '[tilldela_rollrattigheter] Skrivrättigheter beviljade (inkl. DEFAULT PRIVILEGES för %)', system_owner();
     END IF;
@@ -62,6 +71,7 @@ ALTER FUNCTION public.tilldela_rollrattigheter(text, text, text)
 
 COMMENT ON FUNCTION public.tilldela_rollrattigheter(text, text, text)
     IS 'Tilldelar rättigheter till roller baserat på rolltyp. Hanterar både read (SELECT)
-    och write (SELECT, INSERT, UPDATE, DELETE) med DEFAULT PRIVILEGES för framtida objekt.
-    Sätter DEFAULT PRIVILEGES både för postgres och system_owner() (ägarrollen) så att
-    tabeller skapade av t.ex. FME automatiskt får korrekta rättigheter.';
+    och write (SELECT, INSERT, UPDATE, DELETE på tabeller samt USAGE, SELECT på sekvenser)
+    med DEFAULT PRIVILEGES för framtida objekt. Sätter DEFAULT PRIVILEGES både för postgres
+    och system_owner() (ägarrollen) så att tabeller och sekvenser skapade av t.ex. FME eller
+    QGIS automatiskt får korrekta rättigheter.';
