@@ -282,8 +282,8 @@ class TestHandlerLogicWithMockGeoServer(unittest.TestCase):
         # returnerar, så vi måste koppla __enter__.return_value till cur_mock.
         cur_mock = MagicMock()
         cur_mock.fetchall.side_effect = [
-            [("sk0",), ("sk1",), ("skx",)],   # standardiserade_skyddsnivaer
-            [("ext",), ("kba",), ("sys",)],    # standardiserade_datakategorier
+            [("sk0",), ("sk1",), ("skx",)],   # hex_standardiserade_skyddsnivaer
+            [("ext",), ("kba",), ("sys",)],    # hex_standardiserade_datakategorier
         ]
         cur_mock.fetchone.return_value = (False,)   # anonym_las för skx
         mock_conn = MagicMock()
@@ -433,8 +433,8 @@ class TestHandlerLogicWithMockGeoServer(unittest.TestCase):
         # We must wire __enter__.return_value to cur_mock, not cursor.return_value itself.
         cur_mock = MagicMock()
         cur_mock.fetchall.side_effect = [
-            [("sk0",), ("sk1",), ("skx",)],   # standardiserade_skyddsnivaer
-            [("ext",), ("kba",), ("sys",)],    # standardiserade_datakategorier
+            [("sk0",), ("sk1",), ("skx",)],   # hex_standardiserade_skyddsnivaer
+            [("ext",), ("kba",), ("sys",)],    # hex_standardiserade_datakategorier
         ]
         mock_conn = MagicMock()
         # handle_schema_removal_notification uses "with pg_conn.cursor() as cur:"
@@ -931,7 +931,7 @@ class TestCreatePgDatastore(unittest.TestCase):
 
     Täcker specifikt regressionsfallet (lösenordsförnyelse efter ominstallation):
     när en datastore redan finns med SAMMA pg_user men ett förnyat lösenord
-    (underhall_hex 'lösenord backfyllt') ska ett PUT skickas – inte hoppas över.
+    (hex_underhall 'lösenord backfyllt') ska ett PUT skickas – inte hoppas över.
     """
 
     WORKSPACE   = "sk0_kba_testschema"
@@ -972,7 +972,7 @@ class TestCreatePgDatastore(unittest.TestCase):
         Regression: befintlig datastore med samma pg_user ska ändå PUT:as
         med det nya lösenordet.
 
-        Simulerar 'before state' efter ominstallation: underhall_hex har
+        Simulerar 'before state' efter ominstallation: hex_underhall har
         genererat ett nytt lösenord ('lösenord backfyllt') men GeoServer
         har fortfarande det gamla. Utan denna fix returnerades True direkt
         och GeoServer fick aldrig det nya lösenordet → 'null'-fel vid
@@ -1349,7 +1349,7 @@ class TestReconcileGeoServerSchemas(unittest.TestCase):
         mockas det till fallback-värdet (sk0/sk1 only) för att verifiera att
         handle_schema_notification avvisar sk2 via _validate_schema_name.
 
-        Om sk2 skulle läggas till i standardiserade_skyddsnivaer med
+        Om sk2 skulle läggas till i hex_standardiserade_skyddsnivaer med
         publiceras_geoserver = true OCH _load_schema_pattern körs, uppdateras
         SCHEMA_PATTERN och sk2-scheman publiceras. Det är avsiktligt beteende.
         """

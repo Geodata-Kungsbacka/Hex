@@ -84,10 +84,10 @@ python install_hex.py --upgrade   # Uppgradera med bevarade inställningar
 ```
 
 Följande tabeller bevaras automatiskt vid `--upgrade`:
-- `standardiserade_kolumner` — anpassade standardkolumner
-- `standardiserade_roller` — anpassade rollmallar
-- `standardiserade_datakategorier` — anpassade datakategorier
-- `standardiserade_skyddsnivaer` — anpassade skyddsnivåer
+- `hex_standardiserade_kolumner` — anpassade standardkolumner
+- `hex_standardiserade_roller` — anpassade rollmallar
+- `hex_standardiserade_datakategorier` — anpassade datakategorier
+- `hex_standardiserade_skyddsnivaer` — anpassade skyddsnivåer
 - `hex_systemanvandare` — registrerade systemanvändare
 - `hex_grupprattigheter` — AD-grupp-till-Hex-roll-mappningar
 - `hex_role_credentials` — autogenererade lösenord för `gs_r_`/`gs_w_`-roller
@@ -102,7 +102,7 @@ Följande tabeller bevaras automatiskt vid `--upgrade`:
 
 Om du föredrar att köra SQL direkt, se installationsordningen i `README.md`
 under avsnittet *Detaljerad installationsordning*. Starta alltid med
-`src/sql/00_config/system_owner.sql` och ange ägarrollen där.
+`src/sql/00_config/hex_systemagare.sql` och ange ägarrollen där.
 
 ---
 
@@ -117,6 +117,6 @@ ORDER BY evtname;
 
 -- Kontrollera standardkolumner
 SELECT kolumnnamn, ordinal_position
-FROM standardiserade_kolumner
+FROM hex_standardiserade_kolumner
 ORDER BY ordinal_position;
 ```

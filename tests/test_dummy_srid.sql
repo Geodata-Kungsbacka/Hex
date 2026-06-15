@@ -4,10 +4,10 @@
 -- Testar:
 --   1  hex_dummy_geometrier tabell (struktur och rättigheter)
 --   2  hex_avvikande_srid tabell (struktur och rättigheter)
---   3  lagg_till_dummy_geometri() (dummy-insättning och registrering)
---   4  ta_bort_dummy_rad() (automatisk dummy-borttagning vid INSERT)
+--   3  hex_lagg_till_dummy_geometri() (dummy-insättning och registrering)
+--   4  hex_ta_bort_dummy_rad() (automatisk dummy-borttagning vid INSERT)
 --   5  hex_avvikande_srid registrering vid SRID ≠ 3007
---   6  Rensning vid DROP TABLE (hantera_borttagen_tabell)
+--   6  Rensning vid DROP TABLE (hex_hantera_borttagen_tabell)
 --
 -- Konvention: NOTICE = PASSED/INFO, WARNING = FAILED
 -- ============================================================
@@ -121,10 +121,10 @@ BEGIN
 END $$;
 
 -- ============================================================
--- 3: lagg_till_dummy_geometri — dummy inserted on CREATE TABLE
+-- 3: hex_lagg_till_dummy_geometri — dummy inserted on CREATE TABLE
 -- ============================================================
 \echo ''
-\echo '--- GROUP 3: lagg_till_dummy_geometri() ---'
+\echo '--- GROUP 3: hex_lagg_till_dummy_geometri() ---'
 
 CREATE TABLE sk0_ext_dummy_test.punker_p (
     beskrivning text,
@@ -207,10 +207,10 @@ BEGIN
 END $$;
 
 -- ============================================================
--- 4: ta_bort_dummy_rad — dummy auto-removed on first real INSERT
+-- 4: hex_ta_bort_dummy_rad — dummy auto-removed on first real INSERT
 -- ============================================================
 \echo ''
-\echo '--- GROUP 4: ta_bort_dummy_rad() ---'
+\echo '--- GROUP 4: hex_ta_bort_dummy_rad() ---'
 
 -- 4a: Before real insert, dummy still present
 DO $$

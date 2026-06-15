@@ -266,7 +266,7 @@ BEGIN
     RAISE WARNING 'TEST 4a FAILED: Invalid schema name was accepted';
 EXCEPTION
     WHEN OTHERS THEN
-        IF SQLERRM LIKE '%validera_schemanamn%' AND (SQLERRM LIKE '%sk0%' OR SQLERRM LIKE '%sk1%' OR SQLERRM LIKE '%sk2%') THEN
+        IF SQLERRM LIKE '%hex_validera_schemanamn%' AND (SQLERRM LIKE '%sk0%' OR SQLERRM LIKE '%sk1%' OR SQLERRM LIKE '%sk2%') THEN
             RAISE NOTICE 'TEST 4a PASSED: Invalid schema rejected with helpful error';
         ELSE
             RAISE WARNING 'TEST 4a PARTIAL: Schema rejected but message unclear: %', SQLERRM;
@@ -401,7 +401,7 @@ BEGIN
     END IF;
 END $$;
 
--- Test that table restructuring still works (DROP TABLE during byt_ut_tabell
+-- Test that table restructuring still works (DROP TABLE during hex_byt_ut_tabell
 -- should NOT cascade to history because of the recursion guard)
 CREATE TABLE sk1_kba_test.omstrukt_test_y (
     data text,
@@ -449,7 +449,7 @@ CREATE TABLE sk1_kba_test.kolumnordning_y (
     geom geometry(Polygon, 3007)
 );
 
--- If hantera_kolumntillagg fires during CREATE TABLE, columns get dropped
+-- If hex_hantera_ny_kolumn fires during CREATE TABLE, columns get dropped
 -- and re-added, causing gaps in ordinal_position (e.g. 1,2,13,14,15,16,17).
 -- With the fix, max(ordinal_position) should equal count(*).
 DO $$
@@ -906,7 +906,7 @@ EXCEPTION
         RAISE NOTICE 'TEST 10f PASSED: Geometry column must be named geom: %', SQLERRM;
 END $$;
 
--- 10g: ALTER TABLE ADD COLUMN on existing table (hantera_kolumntillagg)
+-- 10g: ALTER TABLE ADD COLUMN on existing table (hex_hantera_ny_kolumn)
 CREATE TABLE sk0_ext_test.addcol_y (
     data text,
     geom geometry(Polygon, 3007)

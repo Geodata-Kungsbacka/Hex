@@ -8,7 +8,7 @@
 --    A4  Roles: read/write group roles + login roles created on CREATE SCHEMA
 --    A5  sk2 excluded from GeoServer pg_notify
 --
--- B  Vy-validering (hantera_ny_vy / validera_vynamn)
+-- B  Vy-validering (hex_hantera_ny_vy / hex_validera_vynamn)
 --    B1  Valid non-geometry view (v_ prefix, no suffix)
 --    B2  Valid geometry view (v_ prefix + geometry suffix)
 --    B3  View missing v_ prefix rejected
@@ -37,11 +37,11 @@ DROP SCHEMA IF EXISTS sk0_ext_ab_temp CASCADE;
 
 -- Setup global role configuration needed for A4 tests.
 -- r_sk0_global and r_sk1_global are created by the event trigger when a
--- sk0/sk1 schema is created, provided the rows exist in standardiserade_roller.
-DELETE FROM standardiserade_roller WHERE rollnamn IN ('r_sk0_global', 'r_sk1_global');
+-- sk0/sk1 schema is created, provided the rows exist in hex_standardiserade_roller.
+DELETE FROM hex_standardiserade_roller WHERE rollnamn IN ('r_sk0_global', 'r_sk1_global');
 DROP ROLE IF EXISTS r_sk0_global;
 DROP ROLE IF EXISTS r_sk1_global;
-INSERT INTO standardiserade_roller (rollnamn, rolltyp, schema_uttryck, ta_bort_med_schema, with_login, beskrivning) VALUES
+INSERT INTO hex_standardiserade_roller (rollnamn, rolltyp, schema_uttryck, ta_bort_med_schema, with_login, beskrivning) VALUES
     ('r_sk0_global', 'read', 'LIKE ''sk0_%''', false, false, 'Global read role for sk0'),
     ('r_sk1_global', 'read', 'LIKE ''sk1_%''', false, false, 'Global read role for sk1');
 
@@ -113,7 +113,7 @@ BEGIN
         SELECT 1 FROM pg_constraint
         WHERE conrelid = 'sk2_ext_test.fororeningar_y'::regclass
         AND contype = 'c'
-        AND pg_get_constraintdef(oid) LIKE '%validera_geometri%'
+        AND pg_get_constraintdef(oid) LIKE '%hex_validera_geometri%'
     ) THEN
         RAISE NOTICE 'TEST A1d PASSED: No geometry validation constraint on sk2_ext (correct)';
     ELSE
@@ -148,7 +148,7 @@ BEGIN
         SELECT 1 FROM pg_constraint
         WHERE conrelid = 'sk2_kba_test.markfororeningar_y'::regclass
         AND contype = 'c'
-        AND pg_get_constraintdef(oid) LIKE '%validera_geometri%'
+        AND pg_get_constraintdef(oid) LIKE '%hex_validera_geometri%'
     ) THEN
         RAISE NOTICE 'TEST A2b PASSED: sk2_kba has geometry validation constraint';
     ELSE
@@ -178,7 +178,7 @@ EXCEPTION
         IF SQLERRM LIKE '%Ogiltig geometri%' AND SQLERRM LIKE '%tom%' THEN
             RAISE NOTICE 'TEST A2d PASSED: Empty geometry blocked with descriptive message: %', left(SQLERRM, 120);
         ELSIF SQLERRM LIKE '%check constraint%' OR SQLERRM LIKE '%validera_geom%' THEN
-            RAISE WARNING 'TEST A2d PARTIAL: Geometry blocked by CHECK constraint but trigger message missing. Is kontrollera_geometri_trigger installed?';
+            RAISE WARNING 'TEST A2d PARTIAL: Geometry blocked by CHECK constraint but trigger message missing. Is hex_kontrollera_geometri_trigger installed?';
         ELSE
             RAISE NOTICE 'TEST A2d PASSED (other reason): %', left(SQLERRM, 120);
         END IF;
@@ -399,7 +399,7 @@ DROP SCHEMA IF EXISTS sk2_sys_test  CASCADE;
 DROP SCHEMA IF EXISTS sk1_kba_htest CASCADE;
 
 -- Remove global role configuration added for A4 tests
-DELETE FROM standardiserade_roller WHERE rollnamn IN ('r_sk0_global', 'r_sk1_global');
+DELETE FROM hex_standardiserade_roller WHERE rollnamn IN ('r_sk0_global', 'r_sk1_global');
 DROP ROLE IF EXISTS r_sk0_global;
 DROP ROLE IF EXISTS r_sk1_global;
 

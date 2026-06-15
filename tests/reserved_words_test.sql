@@ -8,8 +8,8 @@
 -- the generated trigger function body.
 --
 -- Covers two code paths:
---   1. skapa_historik_qa      – trigger creation at CREATE TABLE time
---   2. hantera_kolumntillagg  – trigger regeneration at ALTER TABLE time
+--   1. hex_skapa_historik_qa      – trigger creation at CREATE TABLE time
+--   2. hex_hantera_ny_kolumn  – trigger regeneration at ALTER TABLE time
 --
 -- Run as: sudo -u postgres psql -d hex_test -f tests/reserved_words_test.sql
 -- =============================================================================
@@ -42,7 +42,7 @@ CREATE SCHEMA IF NOT EXISTS sk0_ext_reswords;
 
 
 -- =============================================================================
--- GROUP 1: TABLE CREATION  (skapa_historik_qa code path)
+-- GROUP 1: TABLE CREATION  (hex_skapa_historik_qa code path)
 -- A _kba_ schema table with reserved-word columns must:
 --   (a) create successfully
 --   (b) produce a working _h history table
@@ -262,7 +262,7 @@ END $$;
 
 
 -- =============================================================================
--- GROUP 2: ALTER TABLE  (hantera_kolumntillagg trigger-regeneration code path)
+-- GROUP 2: ALTER TABLE  (hex_hantera_ny_kolumn trigger-regeneration code path)
 -- Adding a reserved-word column to an existing history-tracked table must
 -- regenerate the QA trigger function without syntax errors.
 -- =============================================================================

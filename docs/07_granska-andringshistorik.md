@@ -7,7 +7,7 @@
 ## Bakgrund
 
 För varje tabell i ett schema som har minst en kolumn med `historik_qa = true`
-i `standardiserade_kolumner` skapar Hex automatiskt en historiktabell med
+i `hex_standardiserade_kolumner` skapar Hex automatiskt en historiktabell med
 suffixet `_h`. Historiktabellen innehåller alla kolumner från originaltabellen
 plus tre extra:
 

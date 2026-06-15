@@ -34,15 +34,15 @@ flowchart LR
         DS["DROP SCHEMA"]
     end
 
-    CS --> VS["validera_schemanamn"]
-    CS --> HSR["hantera_standardiserade_roller"]
-    CS --> NG["notifiera_geoserver"]
-    CT --> HNT["hantera_ny_tabell"]
-    AT --> HK["hantera_kolumntillagg"]
-    CV --> HNV["hantera_ny_vy"]
-    DT --> HBT["hantera_borttagen_tabell"]
-    DS --> TBS["ta_bort_schemaroller"]
-    DS --> NGB["notifiera_geoserver_borttagning"]
+    CS --> VS["hex_validera_schemanamn"]
+    CS --> HSR["hex_hantera_std_roller"]
+    CS --> NG["hex_notifiera_gs"]
+    CT --> HNT["hex_hantera_ny_tabell"]
+    AT --> HK["hex_hantera_ny_kolumn"]
+    CV --> HNV["hex_hantera_ny_vy"]
+    DT --> HBT["hex_hantera_borttagen_tabell"]
+    DS --> TBS["hex_ta_bort_schemaroller"]
+    DS --> NGB["hex_notifiera_gs_borttagning"]
     NG  -.->|pg_notify geoserver_schema| GS["GeoServer-lyssnaren<br/>(Python)"]
     NGB -.->|pg_notify geoserver_schema_drop| GS
 ```
@@ -54,7 +54,7 @@ flowchart LR
 Systemets beteende styrs av data, inte hårdkodad logik.
 Inga kodredigeringar behövs för att lägga till kolumner, roller eller ändra regler.
 
-### `standardiserade_kolumner`
+### `hex_standardiserade_kolumner`
 Definierar vilka kolumner som automatiskt injiceras i alla tabeller.
 
 | Kolumn | Syfte |
@@ -78,7 +78,7 @@ Definierar vilka kolumner som automatiskt injiceras i alla tabeller.
 
 ---
 
-### `standardiserade_roller`
+### `hex_standardiserade_roller`
 Definierar vilka roller som automatiskt skapas för nya scheman.
 
 | Kolumn | Syfte |
@@ -88,7 +88,7 @@ Definierar vilka roller som automatiskt skapas för nya scheman.
 | `schema_uttryck` | SQL-filter — rollen skapas bara om schemanamnet matchar |
 | `ta_bort_med_schema` | `true` = rollen tas bort när schemat droppas |
 | `with_login` | `true` = rollen skapas med LOGIN och autogenererat lösenord (sparas i `hex_role_credentials`). `false` = NOLOGIN (ren behörighetsgrupp). |
-| `arvs_fran` | Om satt, ersätts `{schema}` och rollen beviljas `GRANT arvs_fran TO rollnamn` i stället för direkta schemabehörigheter via `tilldela_rollrattigheter`. Används för att hålla `gs_r_`/`gs_w_`-behörigheter synkroniserade med `r_`/`w_`. |
+| `arvs_fran` | Om satt, ersätts `{schema}` och rollen beviljas `GRANT arvs_fran TO rollnamn` i stället för direkta schemabehörigheter via `hex_tilldela_rollrattigheter`. Används för att hålla `gs_r_`/`gs_w_`-behörigheter synkroniserade med `r_`/`w_`. |
 
 **Fördefinierade roller:**
 
@@ -125,7 +125,7 @@ Register över kända systemanvändare och verktyg som skapar tabeller i två st
 | `anvandare` | Matchas mot `session_user`, `current_user` och `application_name` |
 | `beskrivning` | Fritext om verktyget/systemet |
 
-Matchning sker i `hantera_ny_tabell` vid CREATE TABLE. Om träff — och tabellnamnet har geometrisuffix men saknar geometrikolumn — registreras tabellen som afvaktande i stället för att ett fel kastas.
+Matchning sker i `hex_hantera_ny_tabell` vid CREATE TABLE. Om träff — och tabellnamnet har geometrisuffix men saknar geometrikolumn — registreras tabellen som afvaktande i stället för att ett fel kastas.
 
 **Förval**: `fme` (FME Desktop/Server) är förregistrerat.
 
@@ -142,9 +142,9 @@ Tillfällig registreringstabell för tabeller som väntar på sin geometrikolumn
 | `registrerad_av` | `current_user` vid registreringen |
 
 **Livscykel**:
-- *INSERT*: `hantera_ny_tabell()` — systemanvändare skapar tabell med suffix men utan geom
-- *DELETE*: `hantera_kolumntillagg()` — geometrikolumnen har lagts till och GiST-index skapats
-- *DELETE*: `hantera_borttagen_tabell()` — tabellen droppades innan geometrin hann läggas till
+- *INSERT*: `hex_hantera_ny_tabell()` — systemanvändare skapar tabell med suffix men utan geom
+- *DELETE*: `hex_hantera_ny_kolumn()` — geometrikolumnen har lagts till och GiST-index skapats
+- *DELETE*: `hex_hantera_borttagen_tabell()` — tabellen droppades innan geometrin hann läggas till
 
 En kvarliggande rad indikerar att verktyget aldrig slutförde sitt andra steg.
 
@@ -155,19 +155,19 @@ En kvarliggande rad indikerar att verktyget aldrig slutförde sitt andra steg.
 ```mermaid
 flowchart TD
     START(["CREATE SCHEMA sk0_kba_bygg"])
-    START --> VS["validera_schemanamn<br/>trigger 1"]
+    START --> VS["hex_validera_schemanamn<br/>trigger 1"]
     VS --> |"ogiltigt namn"| ERRV(["EXCEPTION + rollback"])
     VS --> |"giltigt: mönster från konfigurationstabeller"| HSR
 
-    HSR["hantera_standardiserade_roller<br/>trigger 2 — SECURITY DEFINER"]
-    HSR --> LOOP["Evaluera schema_uttryck<br/>för varje rad i standardiserade_roller"]
+    HSR["hex_hantera_std_roller<br/>trigger 2 — SECURITY DEFINER"]
+    HSR --> LOOP["Evaluera schema_uttryck<br/>för varje rad i hex_standardiserade_roller"]
     LOOP --> |"matchar (with_login=true)"| LOGIN["CREATE ROLE rollnamn WITH LOGIN<br/>lösenord → hex_role_credentials<br/>GRANT CONNECT ON DATABASE<br/>GRANT hex_geoserver_roller TO rollnamn"]
     LOOP --> |"matchar (with_login=false)"| NOLOGIN["CREATE ROLE rollnamn NOLOGIN"]
     LOGIN --> |"arvs_fran IS NOT NULL<br/>(gs_r_, gs_w_)"| ARV["GRANT arvs_fran TO rollnamn<br/>(ärver behörigheter från r_/w_-gruppen)"]
-    LOGIN --> |"arvs_fran IS NULL"| TRR["tilldela_rollrattigheter<br/>GRANT USAGE + SELECT / DML"]
+    LOGIN --> |"arvs_fran IS NULL"| TRR["hex_tilldela_rollrattigheter<br/>GRANT USAGE + SELECT / DML"]
     NOLOGIN --> TRR
 
-    TRR --> NG["notifiera_geoserver<br/>trigger 3"]
+    TRR --> NG["hex_notifiera_gs<br/>trigger 3"]
     NG --> |"prefix = sk0 / sk1"| NOTIFY["pg_notify<br/>geoserver_schema<br/>sk0_kba_bygg"]
     NG --> |"sk2 / systemschema"| SKIP(["hoppar över"])
     NOTIFY -.-> GS(["GeoServer-lyssnaren<br/>se avsnitt 9"])
@@ -181,16 +181,16 @@ Tre eventutlösare körs i ordning vid `DDL_COMMAND_END`:
 
 ---
 
-### Steg 1 — `validera_schemanamn_trigger` → `validera_schemanamn()`
+### Steg 1 — `hex_validera_schemanamn_trigger` → `hex_validera_schemanamn()`
 
 **Syfte:** Blockera ogiltiga schemanamn innan något annat händer.
 
 ```
-validera_schemanamn()
+hex_validera_schemanamn()
   ├── Hoppar över: public, information_schema, pg_*
   ├── Bygger mönster dynamiskt från konfigurationstabellerna:
-  │     standardiserade_skyddsnivaer  → prefix-del  (t.ex. sk0|sk1|sk2|skx)
-  │     standardiserade_datakategorier → kategori-del (t.ex. ext|kba|sys)
+  │     hex_standardiserade_skyddsnivaer  → prefix-del  (t.ex. sk0|sk1|sk2|skx)
+  │     hex_standardiserade_datakategorier → kategori-del (t.ex. ext|kba|sys)
   │     Resultat: ^(sk0|sk1|sk2|skx)_(ext|kba|sys)_.+$
   │     sk0 / sk1 / sk2  = säkerhetsnivå (0=öppen, 1=kommunal, 2=skyddad)
   │     skx              = okänd / oklassificerad (endast GIS-administratörer)
@@ -203,15 +203,15 @@ validera_schemanamn()
 
 ---
 
-### Steg 2 — `hantera_standardiserade_roller_trigger` → `hantera_standardiserade_roller()`
+### Steg 2 — `hex_hantera_std_roller_trigger` → `hex_hantera_std_roller()`
 
-**Syfte:** Skapa rollstruktur automatiskt baserat på `standardiserade_roller`.
+**Syfte:** Skapa rollstruktur automatiskt baserat på `hex_standardiserade_roller`.
 **Kör som:** SECURITY DEFINER (postgres) — krävs för att skapa roller.
 
 ```
-hantera_standardiserade_roller()
+hex_hantera_std_roller()
   ├── Hoppar över systemscheman
-  ├── För varje rad i standardiserade_roller:
+  ├── För varje rad i hex_standardiserade_roller:
   │     ├── Evaluerar schema_uttryck mot schemanamnet
   │     │     Exempel: 'IS NOT NULL' → matchar alla scheman
   │     └── Om matchar:
@@ -224,12 +224,12 @@ hantera_standardiserade_roller()
   │           │     │     (tillåter pg_hba.conf att matcha via +hex_geoserver_roller)
   │           │     └── Om arvs_fran IS NOT NULL:
   │           │           GRANT <arvs_fran> TO <rollnamn>  (ärver behörigheter från r_/w_-gruppen)
-  │           │         Annars: tilldela_rollrattigheter(schema, roll, typ)
+  │           │         Annars: hex_tilldela_rollrattigheter(schema, roll, typ)
   │           │
   │           ├── with_login = false (r_*, w_*):
   │           │     ├── CREATE ROLE <rollnamn> WITH NOLOGIN
-  │           │     ├── GRANT <rollnamn> TO system_owner() WITH ADMIN OPTION
-  │           │     └── → tilldela_rollrattigheter(schema, roll, typ)
+  │           │     ├── GRANT <rollnamn> TO hex_systemagare() WITH ADMIN OPTION
+  │           │     └── → hex_tilldela_rollrattigheter(schema, roll, typ)
   │           │               ├── GRANT USAGE ON SCHEMA
   │           │               ├── read:  GRANT SELECT ON ALL TABLES
   │           │               │          ALTER DEFAULT PRIVILEGES … GRANT SELECT
@@ -245,12 +245,12 @@ hantera_standardiserade_roller()
 
 ---
 
-### Steg 3 — `notifiera_geoserver_trigger` → `notifiera_geoserver()`
+### Steg 3 — `hex_notifiera_gs_trigger` → `hex_notifiera_gs()`
 
 **Syfte:** Signalera till den externa GeoServer-lyssnaren att skapa workspace och datakälla.
 
 ```
-notifiera_geoserver()
+hex_notifiera_gs()
   ├── Hoppar över systemscheman
   ├── Extraherar prefix: sk0 eller sk1
   │     (sk2 exponeras inte mot GeoServer)
@@ -280,28 +280,28 @@ flowchart TD
 
     subgraph PREP["Fas 1 – Förberedelse"]
         direction TB
-        VT["validera_tabell<br/>namnkonvention + geomstruktur"]
-        VT --> HGD["hamta_geometri_definition<br/>typ · SRID · dimensioner · suffix Z/M/ZM<br/>→ geom_info"]
+        VT["hex_validera_tabell<br/>namnkonvention + geomstruktur"]
+        VT --> HGD["hex_hamta_geometri_definition<br/>typ · SRID · dimensioner · suffix Z/M/ZM<br/>→ hex_geom_info"]
         HGD --> |fel| ERR2(["EXCEPTION / rollback"])
-        HGD --> |ok| STR["spara_tabellregler<br/>index · FK · PK/UNIQUE/multi-CHECK"]
-        STR --> SKE["spara_kolumnegenskaper<br/>DEFAULT · NOT NULL · CHECK · IDENTITY"]
-        SKE --> HKS["hamta_kolumnstandard<br/>utvärderar schema_uttryck per rad<br/>mergar standard + user + geom i slutlig ordning"]
+        HGD --> |ok| STR["hex_spara_tabellregler<br/>index · FK · PK/UNIQUE/multi-CHECK"]
+        STR --> SKE["hex_spara_kolumnegenskaper<br/>DEFAULT · NOT NULL · CHECK · IDENTITY"]
+        SKE --> HKS["hex_hamta_kolumnstandard<br/>utvärderar schema_uttryck per rad<br/>mergar standard + user + geom i slutlig ordning"]
     end
 
     subgraph REBUILD["Fas 2 – Omstrukturering"]
         direction TB
-        BU["byt_ut_tabell<br/>DROP TABLE original CASCADE<br/>RENAME temp → original<br/>uppdatera_sekvensnamn"]
-        BU --> ATR["aterskapa_tabellregler<br/>1. INDEX  2. PK/UNIQUE/CHECK  3. FOREIGN KEY"]
-        ATR --> AKE["aterskapa_kolumnegenskaper<br/>1. NOT NULL  2. CHECK  3. DEFAULT  4. IDENTITY"]
+        BU["hex_byt_ut_tabell<br/>DROP TABLE original CASCADE<br/>RENAME temp → original<br/>hex_uppdatera_sekvensnamn"]
+        BU --> ATR["hex_aterskapa_tabellregler<br/>1. INDEX  2. PK/UNIQUE/CHECK  3. FOREIGN KEY"]
+        ATR --> AKE["hex_aterskapa_kolumnegenskaper<br/>1. NOT NULL  2. CHECK  3. DEFAULT  4. IDENTITY"]
     end
 
     subgraph POST["Fas 3 – Efterbehandling"]
         direction TB
         GIST["Skapa GiST-index på geom<br/>alla scheman med geometri"]
         GIST --> GC{"schema matchar<br/>^sk0-2_kba_ ?"}
-        GC --> |ja| VC["ADD CHECK validera_geometri<br/>OGC · ej tom · ej exakta dubbletter<br/>inga kurvsegment"]
+        GC --> |ja| VC["ADD CHECK hex_validera_geometri<br/>OGC · ej tom · ej exakta dubbletter<br/>inga kurvsegment"]
         GC --> |nej| HQA
-        VC --> HQA["skapa_historik_qa"]
+        VC --> HQA["hex_skapa_historik_qa"]
         HQA --> HQC{"historik_qa=true<br/>standardkolumn?"}
         HQC --> |nej| DONE(["klar ✓"])
         HQC --> |ja| HTAB["Skapa _h-tabell<br/>h_typ · h_tidpunkt · h_av + alla föräldrakolumner"]
@@ -324,10 +324,10 @@ CREATE TABLE sk0_kba_bygg.byggnader_y (
 
 En eventutlösare körs vid `DDL_COMMAND_END`:
 
-`hantera_ny_tabell_trigger` → `hantera_ny_tabell()`
+`hex_hantera_ny_tabell_trigger` → `hex_hantera_ny_tabell()`
 
 ```
-hantera_ny_tabell()
+hex_hantera_ny_tabell()
   ├── Rekursionsskydd: avbryt om temp.tabellstrukturering_pagar = true
   ├── Hoppar över: public-schema, tabeller som slutar på _h
   │     (om en tabell slutar på _h utan förälder → EXCEPTION)
@@ -338,11 +338,11 @@ hantera_ny_tabell()
   │       ├── INSERT INTO hex_afvaktande_geometri (schema, tabell)
   │       ├── Fortsätter med normal omstrukturering (gid, standardkolumner m.m.)
   │       └── Steg 8 (GiST-index) och steg 9 (geometrivalidering) hoppas över —
-  │             dessa slutförs av hantera_kolumntillagg när geom-kolonnen anländer
+  │             dessa slutförs av hex_hantera_ny_kolumn när geom-kolonnen anländer
   │     Om ingen träff och geometrisuffix saknar geom → EXCEPTION (normal väg)
   │
   ├── [1] VALIDERA TABELL
-  │     → validera_tabell(schema, tabell)
+  │     → hex_validera_tabell(schema, tabell)
   │           ├── Utan geometri: tabell får INTE sluta på _p/_l/_y/_g
   │           ├── Med geometri:
   │           │     ├── Exakt 1 geometrikolumn måste finnas
@@ -352,31 +352,31 @@ hantera_ny_tabell()
   │           │     │     _l = LINESTRING/MULTILINESTRING
   │           │     │     _y = POLYGON/MULTIPOLYGON
   │           │     │     _g = övriga typer
-  │           │     └── → hamta_geometri_definition(schema, tabell)
+  │           │     └── → hex_hamta_geometri_definition(schema, tabell)
   │           │               ├── Hämtar typ, SRID, dimensioner från geometry_columns
   │           │               ├── Beräknar suffix: Z / M / ZM / (inget)
   │           │               ├── Bygger definition: geometry(PolygonZ, 3007)
-  │           │               └── Returnerar geom_info-struct
+  │           │               └── Returnerar hex_geom_info-struct
   │           └── Validering misslyckad → EXCEPTION → rollback
   │
   ├── [2] SPARA TABELLREGLER (innan tabellen rivs)
-  │     → spara_tabellregler(schema, tabell)
+  │     → hex_spara_tabellregler(schema, tabell)
   │           ├── Indexdefinitioner (ej PK, ej UNIQUE)  → CREATE INDEX …
   │           ├── Främmande nycklar                     → conname;definition
   │           └── PK, UNIQUE, multi-kolumn-CHECK        → conname;definition
-  │           Returnerar: tabellregler-struct
+  │           Returnerar: hex_tabellregler-struct
   │
   ├── [3] SPARA KOLUMNEGENSKAPER (innan tabellen rivs)
-  │     → spara_kolumnegenskaper(schema, tabell)
+  │     → hex_spara_kolumnegenskaper(schema, tabell)
   │           ├── DEFAULT-värden per kolumn             → colname;uttryck
   │           ├── NOT NULL-flaggor                      → kolumnnamn
   │           ├── Enkla CHECK-villkor (1 kolumn)        → conname;colname;definition
   │           └── IDENTITY-definitioner                 → colname;GENERATED ALWAYS …
-  │           Returnerar: kolumnegenskaper-struct
+  │           Returnerar: hex_kolumnegenskaper-struct
   │
   ├── [4] BYGG SLUTLIG KOLUMNLISTA
-  │     → hamta_kolumnstandard(schema, tabell, geom_info)
-  │           ├── Evaluerar schema_uttryck för varje rad i standardiserade_kolumner
+  │     → hex_hamta_kolumnstandard(schema, tabell, hex_geom_info)
+  │           ├── Evaluerar schema_uttryck för varje rad i hex_standardiserade_kolumner
   │           │     Exempel för sk0_kba_bygg:
   │           │       gid          → 'IS NOT NULL' → matchar → inkluderas
   │           │       skapad_av    → 'LIKE '%_kba_%'' → matchar → inkluderas
@@ -387,26 +387,26 @@ hantera_ny_tabell()
   │           │     2. Användarens egna kolumner                      (beteckning)
   │           │     3. Standardkolumner med negativ ordinal_position  (skapad_av, andrad_tidpunkt, andrad_av)
   │           │     4. Geometrikolumnen                               (geom)
-  │           └── Returnerar: array av kolumnkonfig-struct i slutlig ordning
+  │           └── Returnerar: array av hex_kolumnkonfig-struct i slutlig ordning
   │
   ├── [5] BYT UT TABELL
   │     Sätter: temp.tabellstrukturering_pagar = true
-  │     → byt_ut_tabell(schema, tabell, temp_tabell)
+  │     → hex_byt_ut_tabell(schema, tabell, temp_tabell)
   │           ├── DROP TABLE original CASCADE
   │           │     (tar bort beroenden: index, constraints, triggers)
   │           └── ALTER TABLE temp_tabell RENAME TO original
-  │     → uppdatera_sekvensnamn(schema, tabell)
+  │     → hex_uppdatera_sekvensnamn(schema, tabell)
   │           ├── Letar sekvenser som ägs av tabellen och innehåller '_temp_0001_'
   │           └── Döper om: tar bort '_temp_0001_'-delen från sekvensnamnet
   │
   ├── [6] ÅTERSKAPA TABELLREGLER
-  │     → aterskapa_tabellregler(schema, tabell, regler)
+  │     → hex_aterskapa_tabellregler(schema, tabell, regler)
   │           ├── 1. CREATE INDEX (index)
   │           ├── 2. ADD CONSTRAINT (PK, UNIQUE, multi-kolumn-CHECK)
   │           └── 3. ADD CONSTRAINT (FOREIGN KEY) — sist, kan referera andra tabeller
   │
   ├── [7] ÅTERSKAPA KOLUMNEGENSKAPER
-  │     → aterskapa_kolumnegenskaper(schema, tabell, egenskaper)
+  │     → hex_aterskapa_kolumnegenskaper(schema, tabell, egenskaper)
   │           ├── 1. SET NOT NULL
   │           ├── 2. ADD CONSTRAINT (enkla CHECK-villkor)
   │           ├── 3. SET DEFAULT (hoppar över standardkolumner med historik_qa=true)
@@ -421,15 +421,15 @@ hantera_ny_tabell()
   ├── [9] GEOMETRIVALIDERING (villkorligt, hoppas över för afvaktande tabeller)
   │     ├── Gäller BARA scheman som matchar ^sk[0-2]_kba_
   │     │     (externt laddade _ext_-scheman valideras i FME, inte här)
-  │     └── ADD CONSTRAINT … CHECK (validera_geometri(geom))
-  │                 → validera_geometri(geom)
+  │     └── ADD CONSTRAINT … CHECK (hex_validera_geometri(geom))
+  │                 → hex_validera_geometri(geom)
   │                       ├── ST_IsValid()            — OGC-korrekt topologi
   │                       ├── NOT ST_IsEmpty()        — innehåller koordinater
   │                       ├── Inga exakta dubbletter  — ST_RemoveRepeatedPoints (nolltolerans)
   │                       └── NOT ST_HasArc()         — inga kurvsegment
   │
   └── [10] SKAPA HISTORIK OCH QA (villkorligt)
-        → skapa_historik_qa(schema, tabell)
+        → hex_skapa_historik_qa(schema, tabell)
               ├── Kontrollerar om någon standardkolumn har historik_qa=true
               │     Ja: andrad_tidpunkt, andrad_av → fortsätter
               │     Nej: returnerar false, ingenting skapas
@@ -474,7 +474,7 @@ flowchart TD
     REN --> |nej| IDENT["Identifiera standardkolumner<br/>med ordinal_position < 0"]
 
     IDENT --> MOVE["Flytta varje kolumn till sist:<br/>ADD temp-kolumn<br/>UPDATE<br/>DROP original<br/>RENAME temp → original"]
-    MOVE --> GEOM["hamta_geometri_definition<br/>Flytta geom till absolut sist<br/>(samma 4-stegs teknik)"]
+    MOVE --> GEOM["hex_hamta_geometri_definition<br/>Flytta geom till absolut sist<br/>(samma 4-stegs teknik)"]
 
     GEOM --> AFV{"Tabell i<br/>hex_afvaktande_geometri?"}
     AFV --> |ja| AFVOK["Verifiera suffix mot geomtyp<br/>Skapa GiST-index<br/>DELETE från hex_afvaktande_geometri"]
@@ -495,13 +495,13 @@ flowchart TD
 ALTER TABLE sk0_kba_bygg.byggnader_y ADD COLUMN antal_bostad integer;
 ```
 
-`hantera_kolumntillagg_trigger` → `hantera_kolumntillagg()`
+`hex_hantera_ny_kolumn_trigger` → `hex_hantera_ny_kolumn()`
 
 ```
-hantera_kolumntillagg()
+hex_hantera_ny_kolumn()
   ├── Rekursionsskydd: avbryt om temp.reorganization_in_progress = true
   ├── Avbryt om temp.tabellstrukturering_pagar = true
-  │     (hantera_ny_tabell håller på — stör inte)
+  │     (hex_hantera_ny_tabell håller på — stör inte)
   │
   ├── Är det en RENAME TO-operation? → se avsnitt 5
   │
@@ -518,7 +518,7 @@ hantera_kolumntillagg()
   │     (Data bevaras; kolumnen hamnar sist tack vare PostgreSQL:s ordning)
   │
   ├── [3] FLYTTA GEOMETRIKOLUMN TILL ABSOLUT SIST
-  │     ├── → hamta_geometri_definition(schema, tabell)  (hämtar aktuell definition)
+  │     ├── → hex_hamta_geometri_definition(schema, tabell)  (hämtar aktuell definition)
   │     └── Samma 4-stegs temp-kolumnteknik som ovan
   │
   ├── [4] SLUTFÖR AFVAKTANDE GEOMETRIHANTERING (om tabellen var afvaktande)
@@ -526,7 +526,7 @@ hantera_kolumntillagg()
   │       Ja:
   │         ├── Verifierar att tabellsuffixet stämmer med faktisk geometrityp
   │         │     (_l och MULTILINESTRING → ok, annars EXCEPTION)
-  │         ├── CREATE INDEX … USING gist(geom)  (GiST-index skapas här, inte i hantera_ny_tabell)
+  │         ├── CREATE INDEX … USING gist(geom)  (GiST-index skapas här, inte i hex_hantera_ny_tabell)
   │         └── DELETE FROM hex_afvaktande_geometri WHERE schema = … AND tabell = …
   │       Nej: hoppar över
   │
@@ -562,10 +562,10 @@ flowchart TD
 ALTER TABLE sk0_kba_bygg.byggnader_y RENAME TO fastigheter_y;
 ```
 
-`hantera_kolumntillagg_trigger` → `hantera_kolumntillagg()`
+`hex_hantera_ny_kolumn_trigger` → `hex_hantera_ny_kolumn()`
 
 ```
-hantera_kolumntillagg()
+hex_hantera_ny_kolumn()
   ├── Detekterar RENAME TO i frågesträngen
   │
   ├── Slår upp tabellen i hex_metadata via OID (stabilt genom rename)
@@ -610,12 +610,12 @@ CREATE VIEW sk0_kba_bygg.v_byggnader_aktiva_y AS
   SELECT * FROM sk0_kba_bygg.byggnader_y WHERE status = 'aktiv';
 ```
 
-`hantera_ny_vy_trigger` → `hantera_ny_vy()`
+`hex_hantera_ny_vy_trigger` → `hex_hantera_ny_vy()`
 
 ```
-hantera_ny_vy()
+hex_hantera_ny_vy()
   ├── Hoppar över public-schema
-  └── → validera_vynamn(schema, vynamn)
+  └── → hex_validera_vynamn(schema, vynamn)
           ├── Kontrollerar prefix: måste börja med v_
           │
           ├── Räknar geometrier i geometry_columns för vyn
@@ -668,14 +668,14 @@ flowchart TD
 DROP TABLE sk0_kba_bygg.byggnader_y;
 ```
 
-`hantera_borttagen_tabell_trigger` → `hantera_borttagen_tabell()`
+`hex_hantera_borttagen_tabell_trigger` → `hex_hantera_borttagen_tabell()`
 Körs vid `SQL_DROP` (före den faktiska borttagningen).
 
 ```
-hantera_borttagen_tabell()
+hex_hantera_borttagen_tabell()
   ├── Rekursionsskydd: avbryt om temp.historikborttagning_pagar = true
   ├── Avbryt om temp.tabellstrukturering_pagar = true
-  │     (byt_ut_tabell droppar internt — det är inte en riktig DROP)
+  │     (hex_byt_ut_tabell droppar internt — det är inte en riktig DROP)
   │
   ├── Sätter: temp.historikborttagning_pagar = true
   │
@@ -704,18 +704,18 @@ hantera_borttagen_tabell()
 ```mermaid
 flowchart TD
     START(["DROP SCHEMA sk0_kba_bygg CASCADE"])
-    START --> TBS_T["ta_bort_schemaroller_trigger<br/>SQL_DROP"]
-    START --> NGB_T["notifiera_geoserver_borttagning_trigger<br/>SQL_DROP"]
+    START --> TBS_T["hex_ta_bort_schemaroller_trigger<br/>SQL_DROP"]
+    START --> NGB_T["hex_notifiera_gs_borttagning_trigger<br/>SQL_DROP"]
 
     TBS_T --> SYS{"Systemschema?"}
     SYS --> |ja| SKIP(["hoppar över"])
-    SYS --> |nej| LOOP["För varje rad i standardiserade_roller<br/>där ta_bort_med_schema = true"]
+    SYS --> |nej| LOOP["För varje rad i hex_standardiserade_roller<br/>där ta_bort_med_schema = true"]
     LOOP --> DROPROL["REASSIGN OWNED BY roll TO postgres<br/>DROP OWNED BY roll<br/>DROP ROLE roll<br/>DELETE från hex_role_credentials"]
     DROPROL --> DONE_ROLES(["Roller borttagna ✓"])
 
     NGB_T --> SYS2{"Systemschema?"}
     SYS2 --> |ja| SKIP2(["hoppar över"])
-    SYS2 --> |nej| GS_CHK["Kontrollera prefix mot<br/>standardiserade_skyddsnivaer<br/>publiceras_geoserver = true"]
+    SYS2 --> |nej| GS_CHK["Kontrollera prefix mot<br/>hex_standardiserade_skyddsnivaer<br/>publiceras_geoserver = true"]
     GS_CHK --> |"sk2 / ej GeoServer-publicerat"| SKIP3(["hoppar över"])
     GS_CHK --> |"sk0 / sk1"| NOTIFY["pg_notify<br/>geoserver_schema_drop<br/>sk0_kba_bygg"]
     NOTIFY -.->|"Python-lyssnaren tar emot"| GS(["GeoServer REST API<br/>DELETE ACL-regler<br/>DELETE /workspaces/sk0_kba_bygg?recurse=true<br/>DELETE GeoServer-roller r_ och w_"])
@@ -730,15 +730,15 @@ Två eventutlösare körs parallellt vid `SQL_DROP`:
 
 ---
 
-### Trigger A — `ta_bort_schemaroller_trigger` → `ta_bort_schemaroller()`
+### Trigger A — `hex_ta_bort_schemaroller_trigger` → `hex_ta_bort_schemaroller()`
 
 **Kör som:** SECURITY DEFINER (postgres) — krävs för att ta bort roller.
 
 ```
-ta_bort_schemaroller()
+hex_ta_bort_schemaroller()
   ├── Hoppar över systemscheman
   │
-  └── För varje rad i standardiserade_roller där ta_bort_med_schema = true:
+  └── För varje rad i hex_standardiserade_roller där ta_bort_med_schema = true:
         ├── Bygger rollnamn: ersätter {schema} med faktiskt schemanamn
         │
         ├── REASSIGN OWNED BY <roll> TO postgres
@@ -750,15 +750,15 @@ ta_bort_schemaroller()
 
 ---
 
-### Trigger B — `notifiera_geoserver_borttagning_trigger` → `notifiera_geoserver_borttagning()`
+### Trigger B — `hex_notifiera_gs_borttagning_trigger` → `hex_notifiera_gs_borttagning()`
 
 **Syfte:** Signalera till den externa GeoServer-lyssnaren att rensa bort workspace och datastores.
 
 ```
-notifiera_geoserver_borttagning()
+hex_notifiera_gs_borttagning()
   ├── Hoppar över systemscheman
   ├── Identifierar borttagna scheman via pg_event_trigger_dropped_objects()
-  │     (schemat är borttaget — namnprefixet jämförs mot standardiserade_skyddsnivaer)
+  │     (schemat är borttaget — namnprefixet jämförs mot hex_standardiserade_skyddsnivaer)
   ├── Om prefix = sk0 eller sk1 (publiceras_geoserver = true):
   │     pg_notify('geoserver_schema_drop', 'sk0_kba_bygg')
   │       → Python-lyssnaren tar emot och kör:
@@ -784,8 +784,8 @@ mot PostgreSQL och väntar på `pg_notify`-meddelanden på **två kanaler**.
 
 ```mermaid
 flowchart TD
-    PG_C(["PostgreSQL<br/>notifiera_geoserver()"])
-    PG_D(["PostgreSQL<br/>notifiera_geoserver_borttagning()"])
+    PG_C(["PostgreSQL<br/>hex_notifiera_gs()"])
+    PG_D(["PostgreSQL<br/>hex_notifiera_gs_borttagning()"])
     PG_C --> |"pg_notify<br/>geoserver_schema<br/>sk0_kba_bygg"| LL
     PG_D --> |"pg_notify<br/>geoserver_schema_drop<br/>sk0_kba_bygg"| LL
 
@@ -818,9 +818,9 @@ flowchart TD
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │  PostgreSQL                                                         │
-│    notifiera_geoserver()            → pg_notify('geoserver_schema', │
+│    hex_notifiera_gs()            → pg_notify('geoserver_schema', │
 │                                                  'sk0_kba_bygg')   │
-│    notifiera_geoserver_borttagning()→ pg_notify('geoserver_schema_  │
+│    hex_notifiera_gs_borttagning()→ pg_notify('geoserver_schema_  │
 │                                         drop', 'sk0_kba_bygg')     │
 └──────────────────────────────────┬──────────────────────────────────┘
                        LISTEN / NOTIFY (två kanaler)
@@ -851,8 +851,8 @@ flowchart TD
 │                                                                     │
 │  handle_schema_notification('sk0_kba_bygg', db_config, pg_conn,    │
 │                              gs_client)                             │
-│    ├── Laddar mönster från standardiserade_skyddsnivaer /           │
-│    │     standardiserade_datakategorier (dynamiskt, utan omstart)  │
+│    ├── Laddar mönster från hex_standardiserade_skyddsnivaer /           │
+│    │     hex_standardiserade_datakategorier (dynamiskt, utan omstart)  │
 │    ├── Hämtar credentials för gs_r_sk0_kba_bygg ur hex_role_credentials│
 │    ├── → GeoServerClient.create_workspace()                         │
 │    ├── → GeoServerClient.create_pg_datastore()                     │
@@ -864,8 +864,8 @@ flowchart TD
 │             sk0_kba_bygg.*.w = w_sk0_kba_bygg                      │
 │                                                                     │
 │  handle_schema_removal_notification('sk0_kba_bygg', gs_client)     │
-│    ├── Laddar mönster från standardiserade_skyddsnivaer /           │
-│    │     standardiserade_datakategorier (dynamiskt, utan omstart)  │
+│    ├── Laddar mönster från hex_standardiserade_skyddsnivaer /           │
+│    │     hex_standardiserade_datakategorier (dynamiskt, utan omstart)  │
 │    ├── → GeoServerClient.delete_workspace_acl()                    │
 │    ├── → GeoServerClient.delete_workspace()                        │
 │    ├── → GeoServerClient.delete_gs_role('r_sk0_kba_bygg')          │
@@ -957,14 +957,14 @@ HexGeoServerService (win32serviceutil.ServiceFramework)
 
 ## 10. Rekursionsskydd
 
-Systemet skapar tabeller internt (t.ex. vid `byt_ut_tabell`) och tar bort dem —
+Systemet skapar tabeller internt (t.ex. vid `hex_byt_ut_tabell`) och tar bort dem —
 det utlöser i sin tur nya eventutlösare. Tre flaggor förhindrar oändliga kedjor:
 
 | Flagga | Sätts av | Kontrolleras av | Syfte |
 |---|---|---|---|
-| `temp.tabellstrukturering_pagar` | `hantera_ny_tabell` | `hantera_ny_tabell`, `hantera_kolumntillagg`, `hantera_borttagen_tabell` | Förhindrar re-entry under `byt_ut_tabell` |
-| `temp.reorganization_in_progress` | `hantera_kolumntillagg` | `hantera_kolumntillagg` | Förhindrar re-entry under kolumnflyttning |
-| `temp.historikborttagning_pagar` | `hantera_borttagen_tabell` | `hantera_borttagen_tabell` | Förhindrar re-entry när `_h`-tabellen droppas |
+| `temp.tabellstrukturering_pagar` | `hex_hantera_ny_tabell` | `hex_hantera_ny_tabell`, `hex_hantera_ny_kolumn`, `hex_hantera_borttagen_tabell` | Förhindrar re-entry under `hex_byt_ut_tabell` |
+| `temp.reorganization_in_progress` | `hex_hantera_ny_kolumn` | `hex_hantera_ny_kolumn` | Förhindrar re-entry under kolumnflyttning |
+| `temp.historikborttagning_pagar` | `hex_hantera_borttagen_tabell` | `hex_hantera_borttagen_tabell` | Förhindrar re-entry när `_h`-tabellen droppas |
 
 > `temp.*` är PostgreSQL-sessionsvariabler — de återställs automatiskt
 > när transaktionen avslutas, oavsett om den lyckas eller rullas tillbaka.
@@ -977,54 +977,54 @@ det utlöser i sin tur nya eventutlösare. Tre flaggor förhindrar oändliga ked
 
 | Funktion | Utlösare av | Händelse |
 |---|---|---|
-| `validera_schemanamn()` | `validera_schemanamn_trigger` | CREATE SCHEMA, DDL_COMMAND_END |
-| `hantera_standardiserade_roller()` | `hantera_standardiserade_roller_trigger` | CREATE SCHEMA, DDL_COMMAND_END |
-| `notifiera_geoserver()` | `notifiera_geoserver_trigger` | CREATE SCHEMA, DDL_COMMAND_END |
-| `notifiera_geoserver_borttagning()` | `notifiera_geoserver_borttagning_trigger` | DROP SCHEMA, SQL_DROP |
-| `hantera_ny_tabell()` | `hantera_ny_tabell_trigger` | CREATE TABLE, DDL_COMMAND_END |
-| `hantera_kolumntillagg()` | `hantera_kolumntillagg_trigger` | ALTER TABLE, DDL_COMMAND_END |
-| `hantera_ny_vy()` | `hantera_ny_vy_trigger` | CREATE VIEW, DDL_COMMAND_END |
-| `hantera_borttagen_tabell()` | `hantera_borttagen_tabell_trigger` | DROP TABLE, SQL_DROP |
-| `ta_bort_schemaroller()` | `ta_bort_schemaroller_trigger` | DROP SCHEMA, SQL_DROP |
+| `hex_validera_schemanamn()` | `hex_validera_schemanamn_trigger` | CREATE SCHEMA, DDL_COMMAND_END |
+| `hex_hantera_std_roller()` | `hex_hantera_std_roller_trigger` | CREATE SCHEMA, DDL_COMMAND_END |
+| `hex_notifiera_gs()` | `hex_notifiera_gs_trigger` | CREATE SCHEMA, DDL_COMMAND_END |
+| `hex_notifiera_gs_borttagning()` | `hex_notifiera_gs_borttagning_trigger` | DROP SCHEMA, SQL_DROP |
+| `hex_hantera_ny_tabell()` | `hex_hantera_ny_tabell_trigger` | CREATE TABLE, DDL_COMMAND_END |
+| `hex_hantera_ny_kolumn()` | `hex_hantera_ny_kolumn_trigger` | ALTER TABLE, DDL_COMMAND_END |
+| `hex_hantera_ny_vy()` | `hex_hantera_ny_vy_trigger` | CREATE VIEW, DDL_COMMAND_END |
+| `hex_hantera_borttagen_tabell()` | `hex_hantera_borttagen_tabell_trigger` | DROP TABLE, SQL_DROP |
+| `hex_ta_bort_schemaroller()` | `hex_ta_bort_schemaroller_trigger` | DROP SCHEMA, SQL_DROP |
 
 ### Valideringsfunktioner
 
 | Funktion | Anropas av | Syfte |
 |---|---|---|
-| `validera_tabell(schema, tabell)` | `hantera_ny_tabell` | Kontrollerar namnkonvention och geometristruktur |
-| `validera_vynamn(schema, vy)` | `hantera_ny_vy` | Kontrollerar prefix och suffix |
-| `validera_geometri(geom)` | CHECK-villkor på tabeller | OGC-validering + kvalitetskontroll |
+| `hex_validera_tabell(schema, tabell)` | `hex_hantera_ny_tabell` | Kontrollerar namnkonvention och geometristruktur |
+| `hex_validera_vynamn(schema, vy)` | `hex_hantera_ny_vy` | Kontrollerar prefix och suffix |
+| `hex_validera_geometri(geom)` | CHECK-villkor på tabeller | OGC-validering + kvalitetskontroll |
 
 ### Strukturfunktioner
 
 | Funktion | Anropas av | Syfte |
 |---|---|---|
-| `hamta_geometri_definition(schema, tabell)` | `validera_tabell`, `hantera_kolumntillagg`, `skapa_historik_qa` | Extraherar geometry_columns-info till geom_info-struct |
-| `hamta_kolumnstandard(schema, tabell, geom_info)` | `hantera_ny_tabell` | Bygger slutlig kolumnlista utifrån standardiserade_kolumner |
+| `hex_hamta_geometri_definition(schema, tabell)` | `hex_validera_tabell`, `hex_hantera_ny_kolumn`, `hex_skapa_historik_qa` | Extraherar geometry_columns-info till hex_geom_info-struct |
+| `hex_hamta_kolumnstandard(schema, tabell, hex_geom_info)` | `hex_hantera_ny_tabell` | Bygger slutlig kolumnlista utifrån hex_standardiserade_kolumner |
 
 ### Regelhanteringsfunktioner
 
 | Funktion | Anropas av | Syfte |
 |---|---|---|
-| `spara_tabellregler(schema, tabell)` | `hantera_ny_tabell` | Extraherar index, FK, constraints |
-| `spara_kolumnegenskaper(schema, tabell)` | `hantera_ny_tabell` | Extraherar DEFAULT, NOT NULL, CHECK, IDENTITY |
-| `aterskapa_tabellregler(schema, tabell, regler)` | `hantera_ny_tabell` | Återskapar i beroendeordning |
-| `aterskapa_kolumnegenskaper(schema, tabell, egenskaper)` | `hantera_ny_tabell` | Återskapar i beroendeordning |
+| `hex_spara_tabellregler(schema, tabell)` | `hex_hantera_ny_tabell` | Extraherar index, FK, constraints |
+| `hex_spara_kolumnegenskaper(schema, tabell)` | `hex_hantera_ny_tabell` | Extraherar DEFAULT, NOT NULL, CHECK, IDENTITY |
+| `hex_aterskapa_tabellregler(schema, tabell, regler)` | `hex_hantera_ny_tabell` | Återskapar i beroendeordning |
+| `hex_aterskapa_kolumnegenskaper(schema, tabell, egenskaper)` | `hex_hantera_ny_tabell` | Återskapar i beroendeordning |
 
 ### Verktygsfunktioner
 
 | Funktion | Anropas av | Syfte |
 |---|---|---|
-| `byt_ut_tabell(schema, tabell, temp)` | `hantera_ny_tabell` | DROP original + RENAME temp |
-| `uppdatera_sekvensnamn(schema, tabell)` | `hantera_ny_tabell` | Döper om IDENTITY-sekvenser |
-| `skapa_historik_qa(schema, tabell)` | `hantera_ny_tabell` | Skapar historiktabell + QA-trigger |
-| `tilldela_rollrattigheter(schema, roll, typ)` | `hantera_standardiserade_roller` | GRANT USAGE/SELECT/INSERT/UPDATE/DELETE |
+| `hex_byt_ut_tabell(schema, tabell, temp)` | `hex_hantera_ny_tabell` | DROP original + RENAME temp |
+| `hex_uppdatera_sekvensnamn(schema, tabell)` | `hex_hantera_ny_tabell` | Döper om IDENTITY-sekvenser |
+| `hex_skapa_historik_qa(schema, tabell)` | `hex_hantera_ny_tabell` | Skapar historiktabell + QA-trigger |
+| `hex_tilldela_rollrattigheter(schema, roll, typ)` | `hex_hantera_std_roller` | GRANT USAGE/SELECT/INSERT/UPDATE/DELETE |
 
 ### Anpassade typer
 
 | Typ | Används av | Innehåll |
 |---|---|---|
-| `geom_info` | `validera_tabell`, `hamta_kolumnstandard`, `skapa_historik_qa` | Geometrikolumnens namn, typ, SRID, suffix, definition |
-| `kolumnkonfig` | `hamta_kolumnstandard` | Kolumnnamn, position, datatyp |
-| `kolumnegenskaper` | `spara_kolumnegenskaper`, `aterskapa_kolumnegenskaper` | DEFAULT, NOT NULL, CHECK, IDENTITY per kolumn |
-| `tabellregler` | `spara_tabellregler`, `aterskapa_tabellregler` | Index, FK, PK/UNIQUE/CHECK på tabellnivå |
+| `hex_geom_info` | `hex_validera_tabell`, `hex_hamta_kolumnstandard`, `hex_skapa_historik_qa` | Geometrikolumnens namn, typ, SRID, suffix, definition |
+| `hex_kolumnkonfig` | `hex_hamta_kolumnstandard` | Kolumnnamn, position, datatyp |
+| `hex_kolumnegenskaper` | `hex_spara_kolumnegenskaper`, `hex_aterskapa_kolumnegenskaper` | DEFAULT, NOT NULL, CHECK, IDENTITY per kolumn |
+| `hex_tabellregler` | `hex_spara_tabellregler`, `hex_aterskapa_tabellregler` | Index, FK, PK/UNIQUE/CHECK på tabellnivå |

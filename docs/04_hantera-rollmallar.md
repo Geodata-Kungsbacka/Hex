@@ -6,14 +6,14 @@
 
 ## Bakgrund
 
-Tabellen `standardiserade_roller` definierar vilka roller Hex ska skapa
+Tabellen `hex_standardiserade_roller` definierar vilka roller Hex ska skapa
 automatiskt vid `CREATE SCHEMA`. Varje rad är en rollmall. Du kan lägga till
 nya mallar, till exempel för en ny applikation som ska ha åtkomst till
 vissa scheman.
 
 ---
 
-## Kolumner i `standardiserade_roller`
+## Kolumner i `hex_standardiserade_roller`
 
 | Kolumn | Beskrivning |
 |--------|-------------|
@@ -31,7 +31,7 @@ vissa scheman.
 
 ```sql
 SELECT rollnamn, rolltyp, schema_uttryck, global_roll, login_roller, ta_bort_med_schema
-FROM standardiserade_roller
+FROM hex_standardiserade_roller
 ORDER BY rollnamn;
 ```
 
@@ -39,12 +39,12 @@ ORDER BY rollnamn;
 
 ## Lägga till en rollmall
 
-Roller skapas automatiskt baserat på innehållet i `standardiserade_roller` — inga specifika applikationsnamn är hårdkodade. Standardvärdet för `login_roller` är `{_pub}`, vilket ger en inloggningsroll per gruproll för publiceringstjänster.
+Roller skapas automatiskt baserat på innehållet i `hex_standardiserade_roller` — inga specifika applikationsnamn är hårdkodade. Standardvärdet för `login_roller` är `{_pub}`, vilket ger en inloggningsroll per gruproll för publiceringstjänster.
 
 Exempel: lägg till en extra läsroll för alla `sk0`-scheman med ett eget suffix.
 
 ```sql
-INSERT INTO standardiserade_roller (
+INSERT INTO hex_standardiserade_roller (
     rollnamn, rolltyp, schema_uttryck,
     global_roll, ta_bort_med_schema, login_roller, beskrivning
 ) VALUES (
@@ -80,7 +80,7 @@ kommande `sk0`-scheman.
 Tar bort mallen, men **inte** roller som redan skapats:
 
 ```sql
-DELETE FROM standardiserade_roller
+DELETE FROM hex_standardiserade_roller
 WHERE rollnamn = 'r_{schema}' AND login_roller = ARRAY['_lasroll'];
 ```
 
@@ -88,7 +88,7 @@ WHERE rollnamn = 'r_{schema}' AND login_roller = ARRAY['_lasroll'];
 
 ## Viktigt att tänka på
 
-- Ändringar i `standardiserade_roller` gäller **bara nya scheman** som skapas
+- Ändringar i `hex_standardiserade_roller` gäller **bara nya scheman** som skapas
   efter ändringen. Befintliga scheman påverkas inte automatiskt.
 - Om du vill lägga till en roll för ett befintligt schema måste du göra det manuellt
   med `CREATE ROLE` och `GRANT`.

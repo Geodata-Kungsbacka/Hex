@@ -9,7 +9,7 @@
 När ett schema skapas triggar Hex automatiskt:
 
 1. **Namnvalidering** – ogiltiga namn blockeras direkt.
-2. **Rollskapande** – läs- och skrivrättighetsroller skapas enligt konfigurationen i `standardiserade_roller`.
+2. **Rollskapande** – läs- och skrivrättighetsroller skapas enligt konfigurationen i `hex_standardiserade_roller`.
 3. **GeoServer-publicering** – för `sk0`- och `sk1`-scheman skickas en notifiering till GeoServer-lyssnaren som skapar en workspace och PostGIS-datastore.
 
 ---
@@ -19,7 +19,7 @@ När ett schema skapas triggar Hex automatiskt:
 Schemanamn måste följa mönstret: **`<skyddsnivå>_(ext|kba|sys)_<beskrivning>`**
 
 Giltiga skyddsnivåer och datakategorier hämtas dynamiskt ur konfigurationstabellerna
-`standardiserade_skyddsnivaer` och `standardiserade_datakategorier`. Med
+`hex_standardiserade_skyddsnivaer` och `hex_standardiserade_datakategorier`. Med
 standardkonfigurationen gäller:
 
 | Del | Värden | Betydelse |
@@ -66,7 +66,7 @@ ORDER BY rolname;
 ```
 
 Du bör se `w_sk1_kba_parkering` (skrivrollen per schema) och de globala rollerna
-`r_sk1_global`, `r_sk1_global_pub` m.fl. (läsroller skapas globalt för sk1, inte per schema, baserat på `standardiserade_roller`).
+`r_sk1_global`, `r_sk1_global_pub` m.fl. (läsroller skapas globalt för sk1, inte per schema, baserat på `hex_standardiserade_roller`).
 
 ### 3. Ge användare åtkomst
 
@@ -98,7 +98,7 @@ DROP SCHEMA sk1_kba_parkering CASCADE;
 ```
 
 Hex tar automatiskt bort alla tillhörande roller (de som är märkta med
-`ta_bort_med_schema = true` i `standardiserade_roller`).
+`ta_bort_med_schema = true` i `hex_standardiserade_roller`).
 
 > **OBS:** `CASCADE` tar bort alla tabeller och objekt i schemat – använd med försiktighet.
 > GeoServer-workspace tas bort automatiskt, och tar med sig Store och Layers däri.

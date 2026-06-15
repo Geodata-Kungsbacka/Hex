@@ -9,8 +9,8 @@
  * Objekt under test:
  *   public.hex_systemanvandare     — register över systemanvändare
  *   public.hex_afvaktande_geometri — register över väntande geometri
- *   hantera_ny_tabell              — uppskjuten valideringslogik
- *   hantera_kolumntillagg          — väntande slutförande + suffixvalidering
+ *   hex_hantera_ny_tabell              — uppskjuten valideringslogik
+ *   hex_hantera_ny_kolumn          — väntande slutförande + suffixvalidering
  *
  * Grupper:
  *   F1  Infrastruktur (tabeller finns, fme inlagd)
@@ -168,7 +168,7 @@ BEGIN
     ) THEN
         RAISE NOTICE 'TEST F2c GODKÄNT:Standardkolumn gid tillagd under steg A (icke-geometrikolumner uppskjuts inte)';
     ELSE
-        RAISE WARNING 'TEST F2c MISSLYCKAT:gid saknas – hantera_ny_tabell omstrukturerade inte tabellen under steg A';
+        RAISE WARNING 'TEST F2c MISSLYCKAT:gid saknas – hex_hantera_ny_tabell omstrukturerade inte tabellen under steg A';
     END IF;
 END $$;
 
@@ -260,7 +260,7 @@ BEGIN
         SELECT 1 FROM pg_constraint
         WHERE conrelid = 'sk0_ext_fmetest.trafikdata_l'::regclass
         AND contype = 'c'
-        AND pg_get_constraintdef(oid) LIKE '%validera_geometri%'
+        AND pg_get_constraintdef(oid) LIKE '%hex_validera_geometri%'
     ) THEN
         RAISE NOTICE 'TEST F2i GODKÄNT:Ingen geometrivalideringsbegränsning på _ext_-tabell (korrekt)';
     ELSE
@@ -316,7 +316,7 @@ BEGIN
         SELECT 1 FROM pg_constraint
         WHERE conrelid = 'sk1_kba_fmetest.fastigheter_y'::regclass
         AND contype = 'c'
-        AND pg_get_constraintdef(oid) LIKE '%validera_geometri%'
+        AND pg_get_constraintdef(oid) LIKE '%hex_validera_geometri%'
     ) THEN
         RAISE NOTICE 'TEST F3c GODKÄNT:Geometrivalideringsbegränsning tillagd på kba-tabell under steg B';
     ELSE
@@ -362,7 +362,7 @@ EXCEPTION
         IF SQLERRM LIKE '%Ogiltig geometri%' AND SQLERRM LIKE '%tom%' THEN
             RAISE NOTICE 'TEST F3f GODKÄNT:Tom geometri blockerades med beskrivande meddelande: %', left(SQLERRM, 120);
         ELSIF SQLERRM LIKE '%check constraint%' OR SQLERRM LIKE '%validera_geom%' THEN
-            RAISE WARNING 'TEST F3f DELVIS: Geometri blockerades av CHECK-begränsning men triggermeddelande saknas. Är kontrollera_geometri_trigger installerad?';
+            RAISE WARNING 'TEST F3f DELVIS: Geometri blockerades av CHECK-begränsning men triggermeddelande saknas. Är hex_kontrollera_geometri_trigger installerad?';
         ELSE
             RAISE NOTICE 'TEST F3f GODKÄNT (annan anledning): %', left(SQLERRM, 120);
         END IF;
@@ -388,7 +388,7 @@ EXCEPTION
 END $$;
 
 -- F3g: Dokumenterar känd brist – ingen historiktabell för FME kba-uppskjuten tabell
---      skapa_historik_qa körs i steg 10 av hantera_ny_tabell med geometriinfo=NULL.
+--      hex_skapa_historik_qa körs i steg 10 av hex_hantera_ny_tabell med geometriinfo=NULL.
 --      Om geometri krävs för att skapa historik skapas aldrig historiktabellen.
 DO $$
 BEGIN
@@ -396,9 +396,9 @@ BEGIN
         SELECT 1 FROM information_schema.tables
         WHERE table_schema = 'sk1_kba_fmetest' AND table_name = 'fastigheter_y_h'
     ) THEN
-        RAISE NOTICE 'TEST F3g INFO: Historiktabell SKAPADES för kba-uppskjuten tabell (skapa_historik_qa körs schemabaserat, inte geometribaserat)';
+        RAISE NOTICE 'TEST F3g INFO: Historiktabell SKAPADES för kba-uppskjuten tabell (hex_skapa_historik_qa körs schemabaserat, inte geometribaserat)';
     ELSE
-        RAISE NOTICE 'TEST F3g INFO: Ingen historiktabell för FME-uppskjuten kba-tabell. skapa_historik_qa kräver geometri vid steg A. Historiktabeller för FME-laddad kba-data måste skapas manuellt.';
+        RAISE NOTICE 'TEST F3g INFO: Ingen historiktabell för FME-uppskjuten kba-tabell. hex_skapa_historik_qa kräver geometri vid steg A. Historiktabeller för FME-laddad kba-data måste skapas manuellt.';
     END IF;
 END $$;
 
@@ -566,7 +566,7 @@ END $$;
 \echo '--- GRUPP F6: FME normal väg (geometri i CREATE TABLE) ---'
 
 -- När FME inkluderar geometri i CREATE TABLE får den uppskjutna vägen INTE aktiveras.
--- Tabellen genomgår validera_tabell på normalt sätt.
+-- Tabellen genomgår hex_validera_tabell på normalt sätt.
 SET application_name = 'fme';
 
 DO $$
@@ -759,7 +759,7 @@ DROP TABLE IF EXISTS sk0_ext_fmetest.batch_c_l;
 \echo '--- GRUPP F9: FME icke-geometrisk tabell (inget suffix, ingen uppskjutning) ---'
 
 -- FME kan också skriva icke-geometritabeller. Dessa har inget geometrisuffix så den
--- uppskjutna vägen FÅR INTE aktiveras – de går genom validera_tabell normalt.
+-- uppskjutna vägen FÅR INTE aktiveras – de går genom hex_validera_tabell normalt.
 SET application_name = 'fme';
 
 DO $$
@@ -865,7 +865,7 @@ END $$;
 
 DROP TABLE sk0_ext_fmetest.abandoned_l;
 
--- Efter DROP TABLE ska den väntande posten rensas av hantera_borttagen_tabell.
+-- Efter DROP TABLE ska den väntande posten rensas av hex_hantera_borttagen_tabell.
 DO $$
 BEGIN
     IF EXISTS (
@@ -873,12 +873,12 @@ BEGIN
         WHERE ag.schema_namn = 'sk0_ext_fmetest' AND ag.tabell_namn = 'abandoned_l'
     ) THEN
         RAISE WARNING 'TEST F11 GAP BEKRÄFTAT: Väntande post för abandoned_l överlever DROP TABLE. '
-            'hantera_borttagen_tabell rensar inte hex_afvaktande_geometri. '
+            'hex_hantera_borttagen_tabell rensar inte hex_afvaktande_geometri. '
             'Inaktuella poster måste tas bort manuellt: '
             'DELETE FROM public.hex_afvaktande_geometri WHERE schema_namn = ''sk0_ext_fmetest'' AND tabell_namn = ''abandoned_l'';';
     ELSE
         RAISE NOTICE 'TEST F11 GODKÄNT:Väntande post borttagen vid DROP TABLE '
-            '(hantera_borttagen_tabell rensar hex_afvaktande_geometri – gap löst)';
+            '(hex_hantera_borttagen_tabell rensar hex_afvaktande_geometri – gap löst)';
     END IF;
 END $$;
 
@@ -890,7 +890,7 @@ WHERE ag.schema_namn = 'sk0_ext_fmetest' AND ag.tabell_namn = 'abandoned_l';
 -- F12: STEG 5C – TABELL UTAN SUFFIX FÅR GEOMETRI VIA ALTER TABLE
 ------------------------------------------------------------------------
 -- Testar steg 5c-buggfixen: en tabell skapad utan geometrisuffix
--- (tillåten som icke-geometrisk tabell av validera_tabell) måste AVVISAS när
+-- (tillåten som icke-geometrisk tabell av hex_validera_tabell) måste AVVISAS när
 -- en geometrikolumn läggs till via ALTER TABLE, eftersom det inte finns något
 -- suffix att validera geometritypen mot.
 --
@@ -1030,7 +1030,7 @@ END $$;
 DROP TABLE IF EXISTS sk0_ext_fmetest.steg5c_nosfx;
 
 -- F12i: Steg 5c FRAMGÅNG-väg.
--- En tabell med korrekt suffix som på något sätt förbigick hantera_ny_tabell
+-- En tabell med korrekt suffix som på något sätt förbigick hex_hantera_ny_tabell
 -- (t.ex. en direkt DB-återställning eller migreringsverktyg) ska hanteras elegant
 -- när geom läggs till senare: steg 5c känner igen korrekt suffix, skapar
 -- GiST och kör standardgeometriinställningar utan fel.
@@ -1160,7 +1160,7 @@ DROP TABLE sk0_ext_fmetest.en_gist_y;
 -- Simulerar scenariot där FME:
 --   1) Skapar en väntande tabell (steg A – normalt, med suffix)
 --   2) Lägger till geom och ett EGET GiST via en förbikopp ALTER TABLE (steg B förbikopp)
---   3) Utlöser senare en ny ALTER TABLE som aktiverar hantera_kolumntillagg,
+--   3) Utlöser senare en ny ALTER TABLE som aktiverar hex_hantera_ny_kolumn,
 --      som kör steg 5b (tabell fortfarande i hex_afvaktande_geometri).
 --      Steg 5b.3 deduplicerar: tar bort FME-stilat GiST, skapar Hex-standarden.
 --
@@ -1213,7 +1213,7 @@ BEGIN
     END IF;
 END $$;
 
--- Steg C: Utlös afvaktande-slutförande (valfri ALTER TABLE aktiverar hantera_kolumntillagg → steg 5b)
+-- Steg C: Utlös afvaktande-slutförande (valfri ALTER TABLE aktiverar hex_hantera_ny_kolumn → steg 5b)
 ALTER TABLE sk0_ext_fmetest.dup_gist_p ADD COLUMN extra_kol text;
 
 -- F13d: Exakt ett GiST med Hex-standardnamn efter deduplicering

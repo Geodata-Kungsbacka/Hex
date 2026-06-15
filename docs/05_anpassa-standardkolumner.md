@@ -6,7 +6,7 @@
 
 ## Bakgrund
 
-Tabellen `standardiserade_kolumner` definierar vilka kolumner Hex lägger till
+Tabellen `hex_standardiserade_kolumner` definierar vilka kolumner Hex lägger till
 automatiskt när en tabell skapas med `CREATE TABLE`. Standarduppsättningen är:
 
 | Kolumn | Position | Typ | Schema | Uppdateras av |
@@ -24,7 +24,7 @@ Negativa positioner placeras sist i tabellen, i stigande ordning, direkt före g
 
 ---
 
-## Kolumner i `standardiserade_kolumner`
+## Kolumner i `hex_standardiserade_kolumner`
 
 | Kolumn | Beskrivning |
 |--------|-------------|
@@ -42,7 +42,7 @@ Negativa positioner placeras sist i tabellen, i stigande ordning, direkt före g
 
 ```sql
 SELECT kolumnnamn, ordinal_position, datatyp, schema_uttryck, historik_qa
-FROM standardiserade_kolumner
+FROM hex_standardiserade_kolumner
 ORDER BY ordinal_position;
 ```
 
@@ -53,7 +53,7 @@ ORDER BY ordinal_position;
 Exempel: en kolumn `extern_id` som bara ska läggas till i externa (`_ext_`) scheman.
 
 ```sql
-INSERT INTO standardiserade_kolumner (
+INSERT INTO hex_standardiserade_kolumner (
     kolumnnamn, ordinal_position, datatyp,
     schema_uttryck, historik_qa, beskrivning
 ) VALUES (
@@ -85,7 +85,7 @@ som skapas i `_ext_`-scheman.
 ## Ändra ett befintligt standardvärde
 
 ```sql
-UPDATE standardiserade_kolumner
+UPDATE hex_standardiserade_kolumner
 SET default_varde = 'now()'
 WHERE kolumnnamn = 'skapad_tidpunkt';
 ```
@@ -95,7 +95,7 @@ WHERE kolumnnamn = 'skapad_tidpunkt';
 ## Ta bort en standardkolumn
 
 ```sql
-DELETE FROM standardiserade_kolumner
+DELETE FROM hex_standardiserade_kolumner
 WHERE kolumnnamn = 'extern_id';
 ```
 

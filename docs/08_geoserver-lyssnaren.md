@@ -13,12 +13,12 @@ på dessa notifieringar och skapar automatiskt en **workspace** och en direkt
 Datastore-autentiseringen hämtas från tabellen `hex_role_credentials` (GeoServer-tjänstekontot `gs_r_{schema}`).
 
 Vilka skyddsnivåer som publiceras styrs av kolumnen `publiceras_geoserver` i
-tabellen `standardiserade_skyddsnivaer` — standard är `sk0` och `sk1`.
+tabellen `hex_standardiserade_skyddsnivaer` — standard är `sk0` och `sk1`.
 Ändra tabellen för att justera vilka prefix som publiceras:
 
 ```sql
 -- Aktivera publicering för sk2
-UPDATE standardiserade_skyddsnivaer
+UPDATE hex_standardiserade_skyddsnivaer
 SET publiceras_geoserver = true
 WHERE prefix = 'sk2';
 ```
@@ -31,13 +31,13 @@ Förutsätter att åtkomst redan begränsas på nätverksnivå (t.ex. IP-vitlist
 
 ```sql
 -- Tillåt anonym WMS/WFS-läsning för skx (utvecklingsdata)
-UPDATE standardiserade_skyddsnivaer
+UPDATE hex_standardiserade_skyddsnivaer
 SET anonym_las = true
 WHERE prefix = 'skx';
 
 -- Kontrollera aktuell konfiguration
 SELECT prefix, beskrivning, publiceras_geoserver, anonym_las
-FROM standardiserade_skyddsnivaer
+FROM hex_standardiserade_skyddsnivaer
 ORDER BY prefix;
 ```
 
@@ -156,7 +156,7 @@ som systemövergripande miljövariabler:
 GeoServer ansluter till PostgreSQL via direkta PostGIS-datastores (inte JNDI).
 Autentiseringsuppgifterna hanteras automatiskt av Hex:
 
-- Vid **CREATE SCHEMA** skapar `hantera_standardiserade_roller()` fyra roller automatiskt:
+- Vid **CREATE SCHEMA** skapar `hex_hantera_std_roller()` fyra roller automatiskt:
   - `r_{schema}` och `w_{schema}` — NOLOGIN behörighetsgrupper, tilldelas AD-användare/grupper
   - `gs_r_{schema}` och `gs_w_{schema}` — LOGIN GeoServer-tjänstekonton med autogenererade
     lösenord sparade i `hex_role_credentials`. Tjänstekontona ärver behörigheter från

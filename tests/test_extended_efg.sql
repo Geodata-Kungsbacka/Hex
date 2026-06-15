@@ -244,7 +244,7 @@ END $$;
 -- ============================================================
 -- G: QA TRIGGER SAFETY DURING ADD COLUMN (COLUMN-ORDER FIX)
 --
--- Bug: steg 4 och 5 i hantera_kolumntillagg gör UPDATE-satser
+-- Bug: steg 4 och 5 i hex_hantera_ny_kolumn gör UPDATE-satser
 -- för att kopiera kolumndata till en temporär _temp0001-kolumn.
 -- QA-triggern (trg_<tabell>_qa) fångar UPDATEn och kör:
 --   INSERT INTO <historiktabell> SELECT OLD.*

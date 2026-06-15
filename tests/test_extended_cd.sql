@@ -188,7 +188,7 @@ BEGIN
 
     CASE persistence
         WHEN 'p' THEN
-            RAISE WARNING 'TEST D1 INFO: UNLOGGED TABLE became permanent/logged after Hex restructuring. The UNLOGGED property is silently dropped during byt_ut_tabell. Expected if temp table is created as permanent.';
+            RAISE WARNING 'TEST D1 INFO: UNLOGGED TABLE became permanent/logged after Hex restructuring. The UNLOGGED property is silently dropped during hex_byt_ut_tabell. Expected if temp table is created as permanent.';
         WHEN 'u' THEN
             RAISE NOTICE 'TEST D1 PASSED: UNLOGGED property preserved after restructuring';
         ELSE
@@ -252,7 +252,7 @@ BEGIN
     END IF;
 END $$;
 
--- D5: ALTER TABLE RENAME TO - hantera_kolumntillagg fires on the NEW name.
+-- D5: ALTER TABLE RENAME TO - hex_hantera_ny_kolumn fires on the NEW name.
 --     The history table keeps the OLD name -> becomes orphaned.
 CREATE TABLE sk2_kba_test.rename_src_y (
     info text,
@@ -315,7 +315,7 @@ BEGIN
     ELSIF NOT old_h_gone THEN
         RAISE WARNING 'TEST D5c BUG: rename_src_y_h still exists (was never renamed - RENAME handling did not fire)';
     ELSIF NOT new_h_gone THEN
-        RAISE WARNING 'TEST D5c BUG: rename_dst_y_h was NOT cleaned up on DROP TABLE (OID lookup in hantera_borttagen_tabell failed)';
+        RAISE WARNING 'TEST D5c BUG: rename_dst_y_h was NOT cleaned up on DROP TABLE (OID lookup in hex_hantera_borttagen_tabell failed)';
     END IF;
 END $$;
 
@@ -344,7 +344,7 @@ BEGIN
 END $$;
 
 -- D7: DROP a STANDARD column - the column mover adds temp then fails -> orphaned _temp0001
---     This is the bug where hantera_kolumntillagg has no pre-existence check.
+--     This is the bug where hex_hantera_ny_kolumn has no pre-existence check.
 ALTER TABLE sk2_kba_test.dropcol_test_y DROP COLUMN IF EXISTS andrad_tidpunkt;
 
 DO $$
@@ -398,7 +398,7 @@ BEGIN
     END IF;
 END $$;
 
--- D9: 61-character table name -> Hex validera_tabell max is 54 chars, so this gets
+-- D9: 61-character table name -> Hex hex_validera_tabell max is 54 chars, so this gets
 --     rejected before PostgreSQL's 63-char identifier limit is ever reached.
 DO $$
 DECLARE

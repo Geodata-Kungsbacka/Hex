@@ -17,7 +17,7 @@ ALTER TABLE public.hex_standardiserade_datakategorier
 COMMENT ON TABLE public.hex_standardiserade_datakategorier
     IS 'Definierar giltiga datakategoriprefix (ext, kba, sys, ...) och deras innebörd.
 Tabellen används av hex_validera_schemanamn() för att bygga det tillåtna namnmönstret dynamiskt.
-Observera att standardiserade_kolumner.schema_uttryck refererar till kategorier med LIKE-uttryck
+Observera att hex_standardiserade_kolumner.schema_uttryck refererar till kategorier med LIKE-uttryck
 (t.ex. LIKE ''%_kba_%'') – uppdatera dessa rader vid behov när en ny kategori läggs till.
 Lägg till en ny rad här för att registrera en ny datakategori.';
 

@@ -1,7 +1,7 @@
 -- ============================================================
 -- TEST: Role permission grants on w_ and r_ roles
 --
--- Verifies that tilldela_rollrattigheter() correctly grants:
+-- Verifies that hex_tilldela_rollrattigheter() correctly grants:
 --   r_ roles: USAGE on schema, SELECT on tables (+ default privs)
 --   w_ roles: USAGE on schema, SELECT/INSERT/UPDATE/DELETE on tables,
 --             USAGE+SELECT on sequences (+ default privs for both)
@@ -23,8 +23,8 @@ DROP ROLE IF EXISTS r_sk1_kba_permtest;
 DROP ROLE IF EXISTS w_sk1_kba_permtest;
 
 -- ============================================================
--- Setup: CREATE SCHEMA triggers hantera_standardiserade_roller,
--- which calls tilldela_rollrattigheter for each role.
+-- Setup: CREATE SCHEMA triggers hex_hantera_std_roller,
+-- which calls hex_tilldela_rollrattigheter for each role.
 -- ============================================================
 CREATE SCHEMA sk1_kba_permtest;
 

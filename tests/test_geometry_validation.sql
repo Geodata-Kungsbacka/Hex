@@ -2,9 +2,9 @@
 -- HEX GEOMETRY VALIDATION TEST SUITE — GROUP G
 --
 -- Tests every bad geometry type through:
---   (a) forklara_geometrifel()  — error message correctness
---   (b) validera_geometri()     — boolean rejection
---   (c) kontrollera_geometri_trigger() — end-to-end through a _kba_ table
+--   (a) hex_forklara_geometrifel()  — error message correctness
+--   (b) hex_validera_geometri()     — boolean rejection
+--   (c) hex_kontrollera_geometri_trigger() — end-to-end through a _kba_ table
 --
 -- G1   NULL geometry                      → passes (CHECK semantics)
 -- G2   OGC-invalid: self-intersecting polygon (bowtie)
@@ -59,7 +59,7 @@ CREATE TABLE sk1_kba_geomtest.testlijn_l (
 );
 
 \echo ''
-\echo '--- GROUP G: forklara_geometrifel() — error message correctness ---'
+\echo '--- GROUP G: hex_forklara_geometrifel() — error message correctness ---'
 
 -- ============================================================
 -- G1: NULL → should return NULL (valid per CHECK semantics)
@@ -67,7 +67,7 @@ CREATE TABLE sk1_kba_geomtest.testlijn_l (
 DO $$
 DECLARE result text;
 BEGIN
-    result := public.forklara_geometrifel(NULL::geometry);
+    result := public.hex_forklara_geometrifel(NULL::geometry);
     IF result IS NULL THEN
         RAISE NOTICE 'TEST G1 PASSED: NULL geometry returns NULL (no error)';
     ELSE
@@ -85,7 +85,7 @@ DECLARE
 BEGIN
     -- Bowtie polygon: ring crosses itself
     geom := ST_GeomFromText('POLYGON((0 0, 2 2, 2 0, 0 2, 0 0))', 3006);
-    result := public.forklara_geometrifel(geom);
+    result := public.hex_forklara_geometrifel(geom);
     IF result LIKE 'Geometrin är inte OGC-giltig:%' THEN
         RAISE NOTICE 'TEST G2 PASSED: Bowtie polygon detected as OGC-invalid: %', result;
     ELSIF result IS NULL THEN
@@ -108,7 +108,7 @@ BEGIN
     geom := ST_GeomFromText(
         'POLYGON((0 0, 4 0, 4 4, 2 4, 2 2, 2 4, 0 4, 0 0))', 3006
     );
-    result := public.forklara_geometrifel(geom);
+    result := public.hex_forklara_geometrifel(geom);
     IF result LIKE 'Geometrin är inte OGC-giltig:%' THEN
         RAISE NOTICE 'TEST G3 PASSED: Self-tangent polygon detected as OGC-invalid: %', result;
     ELSIF result IS NULL THEN
@@ -127,7 +127,7 @@ DECLARE
     result text;
 BEGIN
     geom := ST_GeomFromText('POLYGON EMPTY');
-    result := public.forklara_geometrifel(geom);
+    result := public.hex_forklara_geometrifel(geom);
     IF result = 'Geometrin är tom (innehåller inga koordinater)' THEN
         RAISE NOTICE 'TEST G4 PASSED: Empty geometry correctly identified';
     ELSIF result IS NULL THEN
@@ -147,7 +147,7 @@ DECLARE
 BEGIN
     -- Line with exact duplicate interior point: (10 0) appears twice consecutively
     geom := ST_GeomFromText('LINESTRING(0 0, 10 0, 10 0, 20 0)', 3006);
-    result := public.forklara_geometrifel(geom);
+    result := public.hex_forklara_geometrifel(geom);
     IF result LIKE 'Geometrin innehåller exakta duplicerade%' THEN
         RAISE NOTICE 'TEST G5 PASSED: Exact duplicate points detected: %', result;
     ELSIF result IS NULL THEN
@@ -168,7 +168,7 @@ BEGIN
     geom := ST_GeomFromText(
         'POLYGON((0 0, 0.002 0, 0.001 0.0005, 0 0))', 3006
     );
-    result := public.forklara_geometrifel(geom);
+    result := public.hex_forklara_geometrifel(geom);
     IF result IS NULL THEN
         RAISE NOTICE 'TEST G6 INFO: Degenerate polygon accepted — area/size check removed by design';
     ELSE
@@ -185,7 +185,7 @@ DECLARE
     result text;
 BEGIN
     geom := ST_GeomFromText('LINESTRING(0 0, 0.0005 0)', 3006);
-    result := public.forklara_geometrifel(geom);
+    result := public.hex_forklara_geometrifel(geom);
     IF result IS NULL THEN
         RAISE NOTICE 'TEST G7 INFO: Sub-mm line accepted — length check removed by design';
     ELSE
@@ -202,7 +202,7 @@ DECLARE
     result text;
 BEGIN
     geom := ST_GeomFromText('LINESTRING(0 0, 10 10, 10 0, 0 10)', 3006);
-    result := public.forklara_geometrifel(geom);
+    result := public.hex_forklara_geometrifel(geom);
     IF result IS NULL THEN
         RAISE NOTICE 'TEST G8 INFO: Self-intersecting line accepted — ST_IsSimple check removed by design';
     ELSE
@@ -219,7 +219,7 @@ DECLARE
     result text;
 BEGIN
     geom := ST_GeomFromText('CIRCULARSTRING(0 0, 1 1, 2 0)');
-    result := public.forklara_geometrifel(geom);
+    result := public.hex_forklara_geometrifel(geom);
     IF result LIKE 'Geometrin innehåller kurvsegment%' THEN
         RAISE NOTICE 'TEST G9 PASSED: Curved geometry (CIRCULARSTRING) detected: %', result;
     ELSIF result IS NULL THEN
@@ -238,7 +238,7 @@ DECLARE
     result text;
 BEGIN
     geom := ST_GeomFromText('POLYGON((0 0, 100 0, 100 100, 0 100, 0 0))', 3006);
-    result := public.forklara_geometrifel(geom);
+    result := public.hex_forklara_geometrifel(geom);
     IF result IS NULL THEN
         RAISE NOTICE 'TEST G10 PASSED: Valid polygon correctly returns NULL (no error)';
     ELSE
@@ -255,7 +255,7 @@ DECLARE
     result text;
 BEGIN
     geom := ST_GeomFromText('LINESTRING(0 0, 100 100)', 3006);
-    result := public.forklara_geometrifel(geom);
+    result := public.hex_forklara_geometrifel(geom);
     IF result IS NULL THEN
         RAISE NOTICE 'TEST G11 PASSED: Valid line correctly returns NULL (no error)';
     ELSE
@@ -272,7 +272,7 @@ DECLARE
     result text;
 BEGIN
     geom := ST_GeomFromText('POINT(100 200)', 3006);
-    result := public.forklara_geometrifel(geom);
+    result := public.hex_forklara_geometrifel(geom);
     IF result IS NULL THEN
         RAISE NOTICE 'TEST G12 PASSED: Valid point correctly returns NULL (no error)';
     ELSE
@@ -289,7 +289,7 @@ DECLARE
     result text;
 BEGIN
     geom := ST_GeomFromText('POLYGON Z((0 0 10, 100 0 11, 100 100 12, 0 100 13, 0 0 10))', 3006);
-    result := public.forklara_geometrifel(geom);
+    result := public.hex_forklara_geometrifel(geom);
     IF result IS NULL THEN
         RAISE NOTICE 'TEST G15 PASSED: Valid 3D polygon (PolygonZ) correctly returns NULL';
     ELSE
@@ -309,7 +309,7 @@ BEGIN
     geom := ST_GeomFromText(
         'POLYGON Z((0 0 0, 0.0001 0 0, 0.0001 0.0001 0, 0 0.0001 0, 0 0 0))', 3006
     );
-    result := public.forklara_geometrifel(geom);
+    result := public.hex_forklara_geometrifel(geom);
     IF result IS NULL THEN
         RAISE NOTICE 'TEST G16 INFO: Tiny PolygonZ accepted — area check removed by design';
     ELSE
@@ -330,7 +330,7 @@ BEGIN
         'MULTIPOLYGON(((0 0, 1 0, 1 1, 0 1, 0 0)), ((10 10, 12 12, 12 10, 10 12, 10 10)))',
         3006
     );
-    result := public.forklara_geometrifel(geom);
+    result := public.hex_forklara_geometrifel(geom);
     IF result LIKE 'Geometrin är inte OGC-giltig:%' THEN
         RAISE NOTICE 'TEST G17 PASSED: MultiPolygon with invalid component detected: %', result;
     ELSIF result IS NULL THEN
@@ -353,7 +353,7 @@ BEGIN
         'MULTILINESTRING((0 0, 10 0), (20 20, 30 30, 30 20, 20 30))',
         3006
     );
-    result := public.forklara_geometrifel(geom);
+    result := public.hex_forklara_geometrifel(geom);
     IF result IS NULL THEN
         RAISE NOTICE 'TEST G18 INFO: MultiLineString with self-intersecting component accepted — ST_IsSimple check removed by design';
     ELSE
@@ -362,29 +362,29 @@ BEGIN
 END $$;
 
 \echo ''
-\echo '--- GROUP G: validera_geometri() — boolean rejection ---'
+\echo '--- GROUP G: hex_validera_geometri() — boolean rejection ---'
 
 -- ============================================================
 -- G10b–G12b: Valid geometries return true
 -- ============================================================
 DO $$
 BEGIN
-    IF public.validera_geometri(ST_GeomFromText('POLYGON((0 0,100 0,100 100,0 100,0 0))', 3006)) THEN
-        RAISE NOTICE 'TEST G10b PASSED: validera_geometri returns true for valid polygon';
+    IF public.hex_validera_geometri(ST_GeomFromText('POLYGON((0 0,100 0,100 100,0 100,0 0))', 3006)) THEN
+        RAISE NOTICE 'TEST G10b PASSED: hex_validera_geometri returns true for valid polygon';
     ELSE
-        RAISE WARNING 'TEST G10b FAILED: validera_geometri returns false for valid polygon';
+        RAISE WARNING 'TEST G10b FAILED: hex_validera_geometri returns false for valid polygon';
     END IF;
 
-    IF public.validera_geometri(ST_GeomFromText('LINESTRING(0 0, 100 100)', 3006)) THEN
-        RAISE NOTICE 'TEST G11b PASSED: validera_geometri returns true for valid line';
+    IF public.hex_validera_geometri(ST_GeomFromText('LINESTRING(0 0, 100 100)', 3006)) THEN
+        RAISE NOTICE 'TEST G11b PASSED: hex_validera_geometri returns true for valid line';
     ELSE
-        RAISE WARNING 'TEST G11b FAILED: validera_geometri returns false for valid line';
+        RAISE WARNING 'TEST G11b FAILED: hex_validera_geometri returns false for valid line';
     END IF;
 
-    IF public.validera_geometri(ST_GeomFromText('POINT(100 200)', 3006)) THEN
-        RAISE NOTICE 'TEST G12b PASSED: validera_geometri returns true for valid point';
+    IF public.hex_validera_geometri(ST_GeomFromText('POINT(100 200)', 3006)) THEN
+        RAISE NOTICE 'TEST G12b PASSED: hex_validera_geometri returns true for valid point';
     ELSE
-        RAISE WARNING 'TEST G12b FAILED: validera_geometri returns false for valid point';
+        RAISE WARNING 'TEST G12b FAILED: hex_validera_geometri returns false for valid point';
     END IF;
 END $$;
 
@@ -393,10 +393,10 @@ END $$;
 -- ============================================================
 DO $$
 BEGIN
-    IF NOT public.validera_geometri(ST_GeomFromText('POLYGON((0 0,2 2,2 0,0 2,0 0))', 3006)) THEN
-        RAISE NOTICE 'TEST G2b PASSED: validera_geometri returns false for bowtie polygon';
+    IF NOT public.hex_validera_geometri(ST_GeomFromText('POLYGON((0 0,2 2,2 0,0 2,0 0))', 3006)) THEN
+        RAISE NOTICE 'TEST G2b PASSED: hex_validera_geometri returns false for bowtie polygon';
     ELSE
-        RAISE WARNING 'TEST G2b FAILED: validera_geometri returns true for bowtie polygon';
+        RAISE WARNING 'TEST G2b FAILED: hex_validera_geometri returns true for bowtie polygon';
     END IF;
 END $$;
 
@@ -405,10 +405,10 @@ END $$;
 -- ============================================================
 DO $$
 BEGIN
-    IF NOT public.validera_geometri(ST_GeomFromText('POLYGON EMPTY')) THEN
-        RAISE NOTICE 'TEST G4b PASSED: validera_geometri returns false for empty geometry';
+    IF NOT public.hex_validera_geometri(ST_GeomFromText('POLYGON EMPTY')) THEN
+        RAISE NOTICE 'TEST G4b PASSED: hex_validera_geometri returns false for empty geometry';
     ELSE
-        RAISE WARNING 'TEST G4b FAILED: validera_geometri returns true for empty geometry';
+        RAISE WARNING 'TEST G4b FAILED: hex_validera_geometri returns true for empty geometry';
     END IF;
 END $$;
 
@@ -417,12 +417,12 @@ END $$;
 -- ============================================================
 DO $$
 BEGIN
-    IF NOT public.validera_geometri(
+    IF NOT public.hex_validera_geometri(
         ST_GeomFromText('LINESTRING(0 0, 10 0, 10 0, 20 0)', 3006)
     ) THEN
-        RAISE NOTICE 'TEST G5b PASSED: validera_geometri returns false for exact duplicate points';
+        RAISE NOTICE 'TEST G5b PASSED: hex_validera_geometri returns false for exact duplicate points';
     ELSE
-        RAISE WARNING 'TEST G5b FAILED: validera_geometri accepts exact duplicate consecutive points';
+        RAISE WARNING 'TEST G5b FAILED: hex_validera_geometri accepts exact duplicate consecutive points';
     END IF;
 END $$;
 
@@ -431,12 +431,12 @@ END $$;
 -- ============================================================
 DO $$
 BEGIN
-    IF public.validera_geometri(
+    IF public.hex_validera_geometri(
         ST_GeomFromText('POLYGON((0 0,0.002 0,0.001 0.0005,0 0))', 3006)
     ) THEN
-        RAISE NOTICE 'TEST G6b INFO: validera_geometri accepts degenerate polygon — area check removed by design';
+        RAISE NOTICE 'TEST G6b INFO: hex_validera_geometri accepts degenerate polygon — area check removed by design';
     ELSE
-        RAISE NOTICE 'TEST G6b INFO: validera_geometri rejects degenerate polygon for other reason';
+        RAISE NOTICE 'TEST G6b INFO: hex_validera_geometri rejects degenerate polygon for other reason';
     END IF;
 END $$;
 
@@ -445,10 +445,10 @@ END $$;
 -- ============================================================
 DO $$
 BEGIN
-    IF public.validera_geometri(ST_GeomFromText('LINESTRING(0 0,0.0005 0)', 3006)) THEN
-        RAISE NOTICE 'TEST G7b INFO: validera_geometri accepts sub-mm line — length check removed by design';
+    IF public.hex_validera_geometri(ST_GeomFromText('LINESTRING(0 0,0.0005 0)', 3006)) THEN
+        RAISE NOTICE 'TEST G7b INFO: hex_validera_geometri accepts sub-mm line — length check removed by design';
     ELSE
-        RAISE NOTICE 'TEST G7b INFO: validera_geometri rejects sub-mm line for other reason';
+        RAISE NOTICE 'TEST G7b INFO: hex_validera_geometri rejects sub-mm line for other reason';
     END IF;
 END $$;
 
@@ -457,10 +457,10 @@ END $$;
 -- ============================================================
 DO $$
 BEGIN
-    IF public.validera_geometri(ST_GeomFromText('LINESTRING(0 0,10 10,10 0,0 10)', 3006)) THEN
-        RAISE NOTICE 'TEST G8b INFO: validera_geometri accepts self-intersecting line — ST_IsSimple check removed by design';
+    IF public.hex_validera_geometri(ST_GeomFromText('LINESTRING(0 0,10 10,10 0,0 10)', 3006)) THEN
+        RAISE NOTICE 'TEST G8b INFO: hex_validera_geometri accepts self-intersecting line — ST_IsSimple check removed by design';
     ELSE
-        RAISE NOTICE 'TEST G8b INFO: validera_geometri rejects self-intersecting line for other reason';
+        RAISE NOTICE 'TEST G8b INFO: hex_validera_geometri rejects self-intersecting line for other reason';
     END IF;
 END $$;
 
@@ -469,10 +469,10 @@ END $$;
 -- ============================================================
 DO $$
 BEGIN
-    IF NOT public.validera_geometri(ST_GeomFromText('CIRCULARSTRING(0 0,1 1,2 0)')) THEN
-        RAISE NOTICE 'TEST G9b PASSED: validera_geometri returns false for CIRCULARSTRING';
+    IF NOT public.hex_validera_geometri(ST_GeomFromText('CIRCULARSTRING(0 0,1 1,2 0)')) THEN
+        RAISE NOTICE 'TEST G9b PASSED: hex_validera_geometri returns false for CIRCULARSTRING';
     ELSE
-        RAISE WARNING 'TEST G9b FAILED: validera_geometri accepts CIRCULARSTRING';
+        RAISE WARNING 'TEST G9b FAILED: hex_validera_geometri accepts CIRCULARSTRING';
     END IF;
 END $$;
 
@@ -481,10 +481,10 @@ END $$;
 -- ============================================================
 DO $$
 BEGIN
-    IF public.validera_geometri(NULL::geometry) THEN
-        RAISE NOTICE 'TEST G1b PASSED: validera_geometri returns true for NULL (CHECK semantics)';
+    IF public.hex_validera_geometri(NULL::geometry) THEN
+        RAISE NOTICE 'TEST G1b PASSED: hex_validera_geometri returns true for NULL (CHECK semantics)';
     ELSE
-        RAISE WARNING 'TEST G1b FAILED: validera_geometri returns false for NULL';
+        RAISE WARNING 'TEST G1b FAILED: hex_validera_geometri returns false for NULL';
     END IF;
 END $$;
 
@@ -503,7 +503,7 @@ DECLARE
 BEGIN
     -- OGC-invalid branch (bowtie)
     BEGIN
-        msg := public.forklara_geometrifel(ST_GeomFromText('POLYGON((0 0,2 2,2 0,0 2,0 0))', 3006));
+        msg := public.hex_forklara_geometrifel(ST_GeomFromText('POLYGON((0 0,2 2,2 0,0 2,0 0))', 3006));
     EXCEPTION WHEN OTHERS THEN
         RAISE WARNING 'TEST G19 FAILED: OGC-invalid branch raised: %', SQLERRM;
         ok := false;
@@ -511,7 +511,7 @@ BEGIN
 
     -- Empty branch
     BEGIN
-        msg := public.forklara_geometrifel(ST_GeomFromText('POLYGON EMPTY'));
+        msg := public.hex_forklara_geometrifel(ST_GeomFromText('POLYGON EMPTY'));
     EXCEPTION WHEN OTHERS THEN
         RAISE WARNING 'TEST G19 FAILED: Empty branch raised: %', SQLERRM;
         ok := false;
@@ -519,7 +519,7 @@ BEGIN
 
     -- Duplicate points branch
     BEGIN
-        msg := public.forklara_geometrifel(
+        msg := public.hex_forklara_geometrifel(
             ST_GeomFromText('LINESTRING(0 0, 10 0, 10 0, 20 0)', 3006)
         );
     EXCEPTION WHEN OTHERS THEN
@@ -529,14 +529,14 @@ BEGIN
 
     -- Curved geometry branch
     BEGIN
-        msg := public.forklara_geometrifel(ST_GeomFromText('CIRCULARSTRING(0 0,1 1,2 0)'));
+        msg := public.hex_forklara_geometrifel(ST_GeomFromText('CIRCULARSTRING(0 0,1 1,2 0)'));
     EXCEPTION WHEN OTHERS THEN
         RAISE WARNING 'TEST G19 FAILED: Curved-geometry branch raised: %', SQLERRM;
         ok := false;
     END;
 
     IF ok THEN
-        RAISE NOTICE 'TEST G19 PASSED: All forklara_geometrifel() branches execute without format() errors';
+        RAISE NOTICE 'TEST G19 PASSED: All hex_forklara_geometrifel() branches execute without format() errors';
     END IF;
 END $$;
 
@@ -674,12 +674,12 @@ BEGIN
     -- Cast CIRCULARSTRING to geometry so it fits into the generic geom column
     geom := ST_GeomFromText('CIRCULARSTRING(0 0, 1 1, 2 0)');
 
-    -- Test against forklara_geometrifel directly (trigger column type may reject cast)
-    msg := public.forklara_geometrifel(geom);
+    -- Test against hex_forklara_geometrifel directly (trigger column type may reject cast)
+    msg := public.hex_forklara_geometrifel(geom);
     IF msg LIKE '%kurvsegment%' AND msg ILIKE '%circularstring%' THEN
         RAISE NOTICE 'TEST G27 PASSED: Curved geometry message contains type name: %', msg;
     ELSIF msg IS NULL THEN
-        RAISE WARNING 'TEST G27 FAILED: CIRCULARSTRING returned NULL from forklara_geometrifel';
+        RAISE WARNING 'TEST G27 FAILED: CIRCULARSTRING returned NULL from hex_forklara_geometrifel';
     ELSE
         RAISE WARNING 'TEST G27 FAILED: Unexpected message: %', msg;
     END IF;

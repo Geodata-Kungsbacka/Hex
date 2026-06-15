@@ -102,13 +102,13 @@ EXCEPTION
     WHEN OTHERS THEN
         IF SQLERRM LIKE '%Ogiltigt tabellnamn%pg_temp%'
         OR SQLERRM LIKE '%invalid table name%pg_temp%' THEN
-            RAISE WARNING 'TEST H1 BUG CONFIRMED: Hex event trigger fires on TEMP TABLE and errors (validera_tabell rejects pg_temp.* name). TEMP TABLE creation in a managed schema fails entirely. Error: %', left(SQLERRM, 120);
+            RAISE WARNING 'TEST H1 BUG CONFIRMED: Hex event trigger fires on TEMP TABLE and errors (hex_validera_tabell rejects pg_temp.* name). TEMP TABLE creation in a managed schema fails entirely. Error: %', left(SQLERRM, 120);
         ELSE
             RAISE WARNING 'TEST H1 FAILED: TEMP TABLE caused unexpected error: %', SQLERRM;
         END IF;
 END $$;
 
--- H2: Inline CHECK constraint - must survive byt_ut_tabell restructuring
+-- H2: Inline CHECK constraint - must survive hex_byt_ut_tabell restructuring
 CREATE TABLE sk1_kba_edge.checked_y (
     category text    CHECK (category IN ('A', 'B', 'C')),
     score    integer CHECK (score BETWEEN 0 AND 100),
@@ -122,18 +122,18 @@ BEGIN
     FROM pg_constraint
     WHERE conrelid = 'sk1_kba_edge.checked_y'::regclass
       AND contype = 'c'
-      AND pg_get_constraintdef(oid) NOT LIKE '%validera_geometri%';
+      AND pg_get_constraintdef(oid) NOT LIKE '%hex_validera_geometri%';
 
     IF user_check_count >= 2 THEN
         RAISE NOTICE 'TEST H2 PASSED: % user CHECK constraint(s) survived Hex restructuring', user_check_count;
     ELSIF user_check_count = 1 THEN
-        RAISE WARNING 'TEST H2 PARTIAL: Only 1 of 2 user CHECK constraints survived byt_ut_tabell';
+        RAISE WARNING 'TEST H2 PARTIAL: Only 1 of 2 user CHECK constraints survived hex_byt_ut_tabell';
     ELSE
-        RAISE WARNING 'TEST H2 FAILED: User CHECK constraints lost during Hex restructuring (byt_ut_tabell does not preserve them)';
+        RAISE WARNING 'TEST H2 FAILED: User CHECK constraints lost during Hex restructuring (hex_byt_ut_tabell does not preserve them)';
     END IF;
 END $$;
 
--- H3: Inline UNIQUE constraint - must survive byt_ut_tabell restructuring
+-- H3: Inline UNIQUE constraint - must survive hex_byt_ut_tabell restructuring
 CREATE TABLE sk0_ext_edge.unique_test_y (
     kodnummer text UNIQUE,
     geom      geometry(Polygon, 3007)
@@ -148,11 +148,11 @@ BEGIN
     ) THEN
         RAISE NOTICE 'TEST H3 PASSED: UNIQUE constraint survived Hex restructuring';
     ELSE
-        RAISE WARNING 'TEST H3 FAILED: UNIQUE constraint lost during Hex restructuring (byt_ut_tabell does not preserve it)';
+        RAISE WARNING 'TEST H3 FAILED: UNIQUE constraint lost during Hex restructuring (hex_byt_ut_tabell does not preserve it)';
     END IF;
 END $$;
 
--- H4: Inline FOREIGN KEY - must survive byt_ut_tabell restructuring
+-- H4: Inline FOREIGN KEY - must survive hex_byt_ut_tabell restructuring
 CREATE TABLE sk0_ext_edge.fk_test_y (
     ref_id integer REFERENCES public.hex_edge_ref(id),
     geom   geometry(Polygon, 3007)
@@ -167,7 +167,7 @@ BEGIN
     ) THEN
         RAISE NOTICE 'TEST H4 PASSED: FOREIGN KEY constraint survived Hex restructuring';
     ELSE
-        RAISE WARNING 'TEST H4 FAILED: FOREIGN KEY constraint lost during Hex restructuring (byt_ut_tabell does not preserve it)';
+        RAISE WARNING 'TEST H4 FAILED: FOREIGN KEY constraint lost during Hex restructuring (hex_byt_ut_tabell does not preserve it)';
     END IF;
 END $$;
 
@@ -448,7 +448,7 @@ BEGIN
         SELECT 1 FROM pg_constraint
         WHERE conrelid = 'sk0_sys_edge.config'::regclass
           AND contype = 'c'
-          AND pg_get_constraintdef(oid) LIKE '%validera_geometri%'
+          AND pg_get_constraintdef(oid) LIKE '%hex_validera_geometri%'
     ) INTO has_valid;
 
     IF has_gid AND NOT has_hist AND NOT has_valid THEN
@@ -504,9 +504,9 @@ BEGIN
         WHERE table_schema = 'sk3_ext_edge' AND table_name = 'punter_p'
           AND column_name = 'gid'
     ) THEN
-        RAISE NOTICE 'TEST J3 INFO: sk3_* IS restructured by Hex (gid added — sk3 configured in standardiserade_kolumner)';
+        RAISE NOTICE 'TEST J3 INFO: sk3_* IS restructured by Hex (gid added — sk3 configured in hex_standardiserade_kolumner)';
     ELSE
-        RAISE NOTICE 'TEST J3 INFO: sk3_* is NOT restructured by Hex (sk3 not in standardiserade_kolumner — treated as unmanaged schema)';
+        RAISE NOTICE 'TEST J3 INFO: sk3_* is NOT restructured by Hex (sk3 not in hex_standardiserade_kolumner — treated as unmanaged schema)';
     END IF;
 EXCEPTION
     WHEN OTHERS THEN

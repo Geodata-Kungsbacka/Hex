@@ -524,9 +524,9 @@ END $$;
 -- GROUP 6: DESTRUCTIVE CONFIG TESTS
 -- =============================================================================
 
--- TEST 33: Clear standardiserade_kolumner – tables still create but with no std cols
+-- TEST 33: Clear hex_standardiserade_kolumner – tables still create but with no std cols
 DO $$ BEGIN
-    TRUNCATE standardiserade_kolumner;
+    TRUNCATE hex_standardiserade_kolumner;
 
     CREATE TABLE sk1_kba_stress.utan_std_p (
         namn text,
@@ -539,48 +539,48 @@ DO $$ BEGIN
         WHERE table_schema = 'sk1_kba_stress' AND table_name = 'utan_std_p'
         AND column_name = 'gid'
     ) THEN
-        PERFORM _fail(33, 'Config: empty standardiserade_kolumner – no gid added', 'gid still exists');
+        PERFORM _fail(33, 'Config: empty hex_standardiserade_kolumner – no gid added', 'gid still exists');
     ELSE
-        PERFORM _pass(33, 'Config: empty standardiserade_kolumner – no gid added');
+        PERFORM _pass(33, 'Config: empty hex_standardiserade_kolumner – no gid added');
     END IF;
 
     DROP TABLE sk1_kba_stress.utan_std_p;
 EXCEPTION WHEN OTHERS THEN
-    PERFORM _fail(33, 'Config: empty standardiserade_kolumner', SQLERRM);
+    PERFORM _fail(33, 'Config: empty hex_standardiserade_kolumner', SQLERRM);
 END $$;
 
 -- Restore default columns after test 33
-INSERT INTO standardiserade_kolumner (kolumnnamn, ordinal_position, datatyp, default_varde, beskrivning, schema_uttryck, historik_qa) VALUES
+INSERT INTO hex_standardiserade_kolumner (kolumnnamn, ordinal_position, datatyp, default_varde, beskrivning, schema_uttryck, historik_qa) VALUES
     ('gid',             1,  'integer GENERATED ALWAYS AS IDENTITY', NULL,           'Primärnyckel',               'IS NOT NULL',    false),
     ('skapad_tidpunkt', -4, 'timestamptz',  'NOW()',        'Tidpunkt då raden skapades',   'IS NOT NULL',    false),
     ('skapad_av',       -3, 'character varying', 'session_user', 'Användare som skapade raden',  'LIKE ''%_kba_%''', false),
     ('andrad_tidpunkt', -2, 'timestamptz',  'NOW()',        'Senaste ändringstidpunkt',     'LIKE ''%_kba_%''', true),
     ('andrad_av',       -1, 'character varying', 'session_user', 'Användare som senast ändrade', 'LIKE ''%_kba_%''', true);
 
--- TEST 34: Clear standardiserade_roller – schema creates but gets no roles
+-- TEST 34: Clear hex_standardiserade_roller – schema creates but gets no roles
 DO $$ BEGIN
-    TRUNCATE standardiserade_roller;
+    TRUNCATE hex_standardiserade_roller;
     CREATE SCHEMA sk1_kba_norolls;
 
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname LIKE '%_norolls%') THEN
-        PERFORM _fail(34, 'Config: empty standardiserade_roller – no roles created',
+        PERFORM _fail(34, 'Config: empty hex_standardiserade_roller – no roles created',
             'roles still created');
     ELSE
-        PERFORM _pass(34, 'Config: empty standardiserade_roller – no roles created');
+        PERFORM _pass(34, 'Config: empty hex_standardiserade_roller – no roles created');
     END IF;
     DROP SCHEMA sk1_kba_norolls;
 EXCEPTION WHEN OTHERS THEN
-    PERFORM _fail(34, 'Config: empty standardiserade_roller', SQLERRM);
+    PERFORM _fail(34, 'Config: empty hex_standardiserade_roller', SQLERRM);
 END $$;
 
 -- Restore default roles
-INSERT INTO standardiserade_roller (rollnamn, rolltyp, schema_uttryck, with_login, beskrivning) VALUES
+INSERT INTO hex_standardiserade_roller (rollnamn, rolltyp, schema_uttryck, with_login, beskrivning) VALUES
     ('r_{schema}', 'read',  'IS NOT NULL', true, 'Schemaspecifik läsroll'),
     ('w_{schema}', 'write', 'IS NOT NULL', true, 'Schemaspecifik skrivroll');
 
 -- TEST 35: Invalid rolltyp CHECK constraint (should be blocked)
 DO $$ BEGIN
-    INSERT INTO standardiserade_roller (rollnamn, rolltyp, schema_uttryck)
+    INSERT INTO hex_standardiserade_roller (rollnamn, rolltyp, schema_uttryck)
     VALUES ('r_test', 'execute', 'IS NOT NULL');
     PERFORM _fail(35, 'Config: invalid rolltyp blocked by CHECK');
 EXCEPTION WHEN OTHERS THEN
@@ -620,10 +620,10 @@ END $$;
 -- TEST 38: GeoServer notify fires for sk0 and sk1 but NOT sk2
 DO $$ BEGIN
     -- We capture which schemas fire the notify by checking the trigger logic directly
-    -- sk2 should not notify (confirmed by inspecting notifiera_geoserver function)
+    -- sk2 should not notify (confirmed by inspecting hex_notifiera_gs function)
     DECLARE result text;
     BEGIN
-        SELECT prosrc INTO result FROM pg_proc WHERE proname = 'notifiera_geoserver';
+        SELECT prosrc INTO result FROM pg_proc WHERE proname = 'hex_notifiera_gs';
         IF result ILIKE '%sk[01]%' OR result ILIKE '%sk0%' OR result ILIKE '%sk1%' THEN
             PERFORM _pass(38, 'GeoServer: notify only fires for sk0/sk1 (sk2 excluded)');
         ELSE
@@ -693,7 +693,7 @@ BEGIN
         naam text
     );
 
-    -- 41a: trigger was created by hantera_ny_tabell
+    -- 41a: trigger was created by hex_hantera_ny_tabell
     SELECT EXISTS (
         SELECT 1
         FROM   pg_trigger      t

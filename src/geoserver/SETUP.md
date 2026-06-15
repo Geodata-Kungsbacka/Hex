@@ -16,7 +16,7 @@ CREATE SCHEMA sk0_kba_test
         |
         v
 [PostgreSQL Event Trigger 1]
-hantera_standardiserade_roller()
+hex_hantera_std_roller()
         |
         +--> CREATE ROLE r_sk0_kba_test NOLOGIN
         |    (läsbehörighetsgrupp - tilldelas AD-användare)
@@ -31,7 +31,7 @@ hantera_standardiserade_roller()
         |
         v
 [PostgreSQL Event Trigger 2]
-notifiera_geoserver()
+hex_notifiera_gs()
         |
         v
 pg_notify('geoserver_schema', 'sk0_kba_test')
@@ -71,7 +71,7 @@ DROP SCHEMA sk0_kba_test CASCADE
         |
         v
 [PostgreSQL Event Trigger]
-notifiera_geoserver_borttagning()
+hex_notifiera_gs_borttagning()
         |
         v
 pg_notify('geoserver_schema_drop', 'sk0_kba_test')
@@ -218,12 +218,12 @@ automatiskt som en del av installationsordningen. De relevanta filerna är:
 | Fil | Syfte |
 |---|---|
 | `src/sql/02_tables/hex_role_credentials.sql` | Tabell där lösenord för LOGIN-roller sparas |
-| `src/sql/03_functions/05_trigger_functions/hantera_standardiserade_roller.sql` | Skapar r_/w_-behörighetsgrupper och gs_r_/gs_w_-tjänstekonton med autogenererade lösenord vid CREATE SCHEMA |
-| `src/sql/04_triggers/hantera_standardiserade_roller_trigger.sql` | Registrerar ovanstående trigger |
-| `src/sql/03_functions/05_trigger_functions/notifiera_geoserver.sql` | Skickar pg_notify vid CREATE SCHEMA |
-| `src/sql/04_triggers/notifiera_geoserver_trigger.sql` | Registrerar ovanstående trigger |
-| `src/sql/03_functions/05_trigger_functions/notifiera_geoserver_borttagning.sql` | Skickar pg_notify vid DROP SCHEMA |
-| `src/sql/04_triggers/notifiera_geoserver_borttagning_trigger.sql` | Registrerar ovanstående trigger |
+| `src/sql/03_functions/05_trigger_functions/hex_hantera_std_roller.sql` | Skapar r_/w_-behörighetsgrupper och gs_r_/gs_w_-tjänstekonton med autogenererade lösenord vid CREATE SCHEMA |
+| `src/sql/04_triggers/hex_hantera_std_roller_trigger.sql` | Registrerar ovanstående trigger |
+| `src/sql/03_functions/05_trigger_functions/hex_notifiera_gs.sql` | Skickar pg_notify vid CREATE SCHEMA |
+| `src/sql/04_triggers/hex_notifiera_gs_trigger.sql` | Registrerar ovanstående trigger |
+| `src/sql/03_functions/05_trigger_functions/hex_notifiera_gs_borttagning.sql` | Skickar pg_notify vid DROP SCHEMA |
+| `src/sql/04_triggers/hex_notifiera_gs_borttagning_trigger.sql` | Registrerar ovanstående trigger |
 
 > **VIKTIGT:** Samtliga triggers måste installeras i **varje** databas som
 > ska övervakas. Kör `install_hex.py` en gång per databas, med rätt
@@ -233,10 +233,10 @@ Om du redan har Hex installerat och bara vill lägga till dessa triggers manuell
 
 ```sql
 -- Kör som postgres-användaren i VARJE databas som ska övervakas
--- 1. notifiera_geoserver.sql         (CREATE SCHEMA-funktion)
--- 2. notifiera_geoserver_trigger.sql (CREATE SCHEMA-trigger)
--- 3. notifiera_geoserver_borttagning.sql         (DROP SCHEMA-funktion)
--- 4. notifiera_geoserver_borttagning_trigger.sql (DROP SCHEMA-trigger)
+-- 1. hex_notifiera_gs.sql         (CREATE SCHEMA-funktion)
+-- 2. hex_notifiera_gs_trigger.sql (CREATE SCHEMA-trigger)
+-- 3. hex_notifiera_gs_borttagning.sql         (DROP SCHEMA-funktion)
+-- 4. hex_notifiera_gs_borttagning_trigger.sql (DROP SCHEMA-trigger)
 ```
 
 **Verifiera att triggerna finns:**
@@ -244,14 +244,14 @@ Om du redan har Hex installerat och bara vill lägga till dessa triggers manuell
 SELECT evtname, evtevent, evttags
 FROM pg_event_trigger
 WHERE evtname IN (
-    'hantera_standardiserade_roller_trigger',
-    'notifiera_geoserver_trigger',
-    'notifiera_geoserver_borttagning_trigger'
+    'hex_hantera_std_roller_trigger',
+    'hex_notifiera_gs_trigger',
+    'hex_notifiera_gs_borttagning_trigger'
 );
 ```
 
-Du bör se tre rader. `hantera_standardiserade_roller_trigger` körs alltid
-**före** `notifiera_geoserver_trigger` så att lösenordet redan finns i
+Du bör se tre rader. `hex_hantera_std_roller_trigger` körs alltid
+**före** `hex_notifiera_gs_trigger` så att lösenordet redan finns i
 `hex_role_credentials` när lyssnaren svarar på notifieringen.
 
 ---
@@ -301,7 +301,7 @@ PostgreSQL tillåter inte nätverksanslutningar förrän det finns en matchande 
 
 **1. `hex_listener`** — Python-lyssnaren som prenumererar på `pg_notify`.
 
-**2. `gs_r_<schema>`- och `gs_w_<schema>`-roller** — skapas automatiskt av `hantera_standardiserade_roller()`
+**2. `gs_r_<schema>`- och `gs_w_<schema>`-roller** — skapas automatiskt av `hex_hantera_std_roller()`
 vid varje `CREATE SCHEMA`. GeoServer använder dessa LOGIN-tjänstekonton för direktanslutning till
 varje PostGIS-datastore. (`r_*` och `w_*` är NOLOGIN-behörighetsgrupper för AD-användare och
 används inte av GeoServer direkt.)
@@ -475,7 +475,7 @@ per databas om de skiljer sig från standardvärdena ovan (t.ex. `HEX_DB_2_HOST=
 
 > **Datastore-autentisering:** Lyssnaren hämtar autentiseringsuppgifter för
 > GeoServer-datastores direkt från tabellen `hex_role_credentials` i varje
-> databas. Lösenorden genereras automatiskt av `hantera_standardiserade_roller()`
+> databas. Lösenorden genereras automatiskt av `hex_hantera_std_roller()`
 > vid CREATE SCHEMA och kräver ingen manuell konfiguration.
 
 #### Periodisk avstämning (valfritt)
@@ -823,9 +823,9 @@ vid uppstart:
 ### Lägga till en ny databas (t.ex. sk3)
 
 1. Installera alla event-triggers i den nya databasen (enklast via `install_hex.py`):
-   - `hantera_standardiserade_roller` (skapar roller och lösenord)
-   - `notifiera_geoserver` (skickar CREATE-notifiering)
-   - `notifiera_geoserver_borttagning` (skickar DROP-notifiering)
+   - `hex_hantera_std_roller` (skapar roller och lösenord)
+   - `hex_notifiera_gs` (skickar CREATE-notifiering)
+   - `hex_notifiera_gs_borttagning` (skickar DROP-notifiering)
 2. Ge `hex_listener` nödvändiga rättigheter på den nya databasen:
    ```sql
    GRANT CONNECT ON DATABASE geodata_sk3 TO hex_listener;
@@ -839,7 +839,7 @@ vid uppstart:
 4. Starta om tjänsten: `python geoserver_service.py restart`
 
 > Lyssnaren läser vilka scheman som ska publiceras till GeoServer direkt från
-> `standardiserade_skyddsnivaer` (`publiceras_geoserver = true`) vid uppstart.
+> `hex_standardiserade_skyddsnivaer` (`publiceras_geoserver = true`) vid uppstart.
 > Ingen kodredigering krävs för att lägga till en ny skyddsnivå — lägg till
 > raden i konfigurationstabellen så hanteras den automatiskt.
 
@@ -847,7 +847,7 @@ vid uppstart:
 
 Autentiseringsuppgifter för GeoServer-datastores hanteras automatiskt av Hex:
 
-- `hantera_standardiserade_roller()` skapar `r_{schema}` med LOGIN och ett
+- `hex_hantera_std_roller()` skapar `r_{schema}` med LOGIN och ett
   autogenererat lösenord vid varje CREATE SCHEMA
 - Lösenordet sparas i `hex_role_credentials` och läses av lyssnaren vid
   datastore-skapandet
