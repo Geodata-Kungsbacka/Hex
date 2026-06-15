@@ -55,12 +55,12 @@ INSTALL_ORDER = [
     "src/sql/01_types/kolumnegenskaper.sql",
     "src/sql/01_types/tabellregler.sql",
     # Tabeller
-    "src/sql/02_tables/standardiserade_skyddsnivaer.sql",
-    # hex_schema_regex() läser standardiserade_skyddsnivaer – måste skapas efter tabellen
+    "src/sql/02_tables/hex_standardiserade_skyddsnivaer.sql",
+    # hex_schema_regex() läser hex_standardiserade_skyddsnivaer – måste skapas efter tabellen
     "src/sql/00_config/hex_schema_regex.sql",
-    "src/sql/02_tables/standardiserade_datakategorier.sql",
-    "src/sql/02_tables/standardiserade_kolumner.sql",
-    "src/sql/02_tables/standardiserade_roller.sql",
+    "src/sql/02_tables/hex_standardiserade_datakategorier.sql",
+    "src/sql/02_tables/hex_standardiserade_kolumner.sql",
+    "src/sql/02_tables/hex_standardiserade_roller.sql",
     "src/sql/02_tables/hex_metadata.sql",
     "src/sql/02_tables/hex_systemanvandare.sql",
     "src/sql/02_tables/hex_grupprattigheter.sql",
@@ -99,7 +99,7 @@ INSTALL_ORDER = [
     "src/sql/03_functions/05_trigger_functions/hantera_kolumntillagg.sql",
     "src/sql/03_functions/05_trigger_functions/hantera_ny_vy.sql",
     "src/sql/03_functions/05_trigger_functions/ta_bort_schemaroller.sql",
-    "src/sql/03_functions/05_trigger_functions/hantera_standardiserade_roller.sql",
+    "src/sql/03_functions/05_trigger_functions/hantera_hex_standardiserade_roller.sql",
     "src/sql/03_functions/05_trigger_functions/hantera_borttagen_tabell.sql",
     "src/sql/03_functions/05_trigger_functions/notifiera_geoserver.sql",
     "src/sql/03_functions/05_trigger_functions/notifiera_geoserver_borttagning.sql",
@@ -108,7 +108,7 @@ INSTALL_ORDER = [
     "src/sql/04_triggers/hantera_kolumntillagg_trigger.sql",
     "src/sql/04_triggers/hantera_ny_vy_trigger.sql",
     "src/sql/04_triggers/ta_bort_schemaroller_trigger.sql",
-    "src/sql/04_triggers/hantera_standardiserade_roller_trigger.sql",
+    "src/sql/04_triggers/hantera_hex_standardiserade_roller_trigger.sql",
     "src/sql/04_triggers/hantera_borttagen_tabell_trigger.sql",
     "src/sql/04_triggers/validera_schemanamn_trigger.sql",
     "src/sql/04_triggers/blockera_schema_namnbyte_trigger.sql",
@@ -126,7 +126,7 @@ DROP EVENT TRIGGER IF EXISTS notifiera_geoserver_borttagning_trigger;
 DROP EVENT TRIGGER IF EXISTS notifiera_geoserver_trigger;
 DROP EVENT TRIGGER IF EXISTS validera_schemanamn_trigger;
 DROP EVENT TRIGGER IF EXISTS blockera_schema_namnbyte_trigger;
-DROP EVENT TRIGGER IF EXISTS hantera_standardiserade_roller_trigger;
+DROP EVENT TRIGGER IF EXISTS hantera_hex_standardiserade_roller_trigger;
 DROP EVENT TRIGGER IF EXISTS ta_bort_schemaroller_trigger;
 DROP EVENT TRIGGER IF EXISTS hantera_ny_vy_trigger;
 DROP EVENT TRIGGER IF EXISTS hantera_kolumntillagg_trigger;
@@ -136,7 +136,7 @@ DROP EVENT TRIGGER IF EXISTS hantera_borttagen_tabell_trigger;
 -- Triggerfunktioner
 DROP FUNCTION IF EXISTS public.notifiera_geoserver_borttagning();
 DROP FUNCTION IF EXISTS public.notifiera_geoserver();
-DROP FUNCTION IF EXISTS public.hantera_standardiserade_roller();
+DROP FUNCTION IF EXISTS public.hantera_hex_standardiserade_roller();
 DROP FUNCTION IF EXISTS public.ta_bort_schemaroller();
 DROP FUNCTION IF EXISTS public.hantera_ny_vy();
 DROP FUNCTION IF EXISTS public.hantera_kolumntillagg();
@@ -189,10 +189,10 @@ DROP TABLE IF EXISTS public.hex_afvaktande_geometri;
 DROP TABLE IF EXISTS public.hex_grupprattigheter;
 DROP TABLE IF EXISTS public.hex_systemanvandare;
 DROP TABLE IF EXISTS public.hex_metadata;
-DROP TABLE IF EXISTS public.standardiserade_roller;
-DROP TABLE IF EXISTS public.standardiserade_kolumner;
-DROP TABLE IF EXISTS public.standardiserade_skyddsnivaer;
-DROP TABLE IF EXISTS public.standardiserade_datakategorier;
+DROP TABLE IF EXISTS public.hex_standardiserade_roller;
+DROP TABLE IF EXISTS public.hex_standardiserade_kolumner;
+DROP TABLE IF EXISTS public.hex_standardiserade_skyddsnivaer;
+DROP TABLE IF EXISTS public.hex_standardiserade_datakategorier;
 
 -- Typer (måste tas bort efter funktioner som använder dem)
 DROP TYPE IF EXISTS public.tabellregler;
@@ -207,19 +207,19 @@ DROP TYPE IF EXISTS public.geom_info;
 # =============================================================================
 
 PRESERVE_CONFIG = {
-    "standardiserade_skyddsnivaer": {
+    "hex_standardiserade_skyddsnivaer": {
         "key": "prefix",
         "restore": ["beskrivning", "publiceras_geoserver", "anonym_las"],
     },
-    "standardiserade_datakategorier": {
+    "hex_standardiserade_datakategorier": {
         "key": "prefix",
         "restore": ["beskrivning", "validera_geometri"],
     },
-    "standardiserade_kolumner": {
+    "hex_standardiserade_kolumner": {
         "key": "kolumnnamn",
         "restore": ["ordinal_position", "datatyp", "default_varde", "schema_uttryck", "historik_qa", "beskrivning"],
     },
-    "standardiserade_roller": {
+    "hex_standardiserade_roller": {
         "key": "rollnamn",
         "restore": ["rolltyp", "schema_uttryck", "ta_bort_med_schema", "with_login", "arvs_fran", "beskrivning"],
     },
@@ -517,7 +517,7 @@ def install(db: dict, base_path="."):
         print("Kontrollerar PostGIS-tillägget...")
         cur.execute("CREATE EXTENSION IF NOT EXISTS postgis")
 
-        # Säkerställ att pgcrypto finns (krävs av hantera_standardiserade_roller
+        # Säkerställ att pgcrypto finns (krävs av hantera_hex_standardiserade_roller
         # för gen_random_bytes() vid lösenordsgenerering)
         print("Kontrollerar pgcrypto-tillägget...")
         cur.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto")

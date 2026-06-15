@@ -9,7 +9,7 @@ AS $BODY$
  * Event trigger-funktion som skickar pg_notify till GeoServer-lyssnaren
  * när nya scheman skapas med en skyddsnivå där publiceras_geoserver = true.
  *
- * Vilka skyddsnivåer som publiceras styrs av tabellen standardiserade_skyddsnivaer.
+ * Vilka skyddsnivåer som publiceras styrs av tabellen hex_standardiserade_skyddsnivaer.
  * Standardkonfiguration: sk0 och sk1 publiceras, sk2 och skx publiceras inte.
  *
  * FUNKTIONALITET:
@@ -52,7 +52,7 @@ BEGIN
 
         -- Kontrollera om skyddsnivån för detta schema ska publiceras till GeoServer
         SELECT prefix INTO schema_prefix
-        FROM public.standardiserade_skyddsnivaer
+        FROM public.hex_standardiserade_skyddsnivaer
         WHERE publiceras_geoserver = true
           AND schema_namn LIKE prefix || '_%';
 
@@ -89,7 +89,7 @@ ALTER FUNCTION public.notifiera_geoserver()
 
 COMMENT ON FUNCTION public.notifiera_geoserver()
     IS 'Event trigger-funktion som skickar pg_notify till GeoServer-lyssnaren vid CREATE SCHEMA.
-Publicerar scheman vars skyddsnivå har publiceras_geoserver = true i standardiserade_skyddsnivaer
+Publicerar scheman vars skyddsnivå har publiceras_geoserver = true i hex_standardiserade_skyddsnivaer
 (standardkonfiguration: sk0 och sk1). Notifieringen används av en extern Python-process
 för att skapa workspace och direkt PostGIS-datastore i GeoServer via REST API.
 Datastore-autentiseringen hämtas från hex_role_credentials (läsrollen r_{schema}).';

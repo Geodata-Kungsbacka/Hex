@@ -18,7 +18,7 @@ AS $BODY$
  * - p_rolltyp: 'read' (SELECT) eller 'write' (SELECT, INSERT, UPDATE, DELETE)
  *
  * ANVÄNDNING:
- * Anropas automatiskt av hantera_standardiserade_roller() när nya roller skapas.
+ * Anropas automatiskt av hantera_hex_standardiserade_roller() när nya roller skapas.
  * Tilldelar både rättigheter på befintliga objekt och framtida objekt (DEFAULT PRIVILEGES).
  ******************************************************************************/
 BEGIN

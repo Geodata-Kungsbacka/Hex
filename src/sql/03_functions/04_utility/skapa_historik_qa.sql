@@ -47,7 +47,7 @@ BEGIN
         array_agg(sk.kolumnnamn ORDER BY sk.ordinal_position),
         array_agg(sk.default_varde ORDER BY sk.ordinal_position)
     INTO qa_kolumner, qa_uttryck
-    FROM standardiserade_kolumner sk
+    FROM hex_standardiserade_kolumner sk
     WHERE sk.historik_qa = true
     AND sk.default_varde IS NOT NULL
     AND EXISTS (

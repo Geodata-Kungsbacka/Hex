@@ -221,7 +221,7 @@ BEGIN
             FOR stdkol IN
                 SELECT kolumnnamn, ordinal_position, datatyp, default_varde,
                        historik_qa, schema_uttryck
-                FROM standardiserade_kolumner
+                FROM hex_standardiserade_kolumner
                 WHERE ordinal_position < 0
                 ORDER BY ordinal_position
             LOOP
@@ -510,10 +510,10 @@ BEGIN
             END IF;
 
             -- Steg 5b.4: Lägg till geometrivalidering för scheman vars datakategori
-            --            har validera_geometri = true i standardiserade_datakategorier
+            --            har validera_geometri = true i hex_standardiserade_datakategorier
             IF geometriinfo IS NOT NULL AND geometriinfo.kolumnnamn IS NOT NULL
                AND EXISTS (
-                   SELECT 1 FROM public.standardiserade_datakategorier d
+                   SELECT 1 FROM public.hex_standardiserade_datakategorier d
                    WHERE d.validera_geometri = true
                      AND schema_namn ~ (public.hex_schema_regex() || d.prefix || '_')
                )
@@ -654,7 +654,7 @@ BEGIN
 
                 -- Geometrivalidering (datakategorier med validera_geometri = true)
                 IF EXISTS (
-                    SELECT 1 FROM public.standardiserade_datakategorier d
+                    SELECT 1 FROM public.hex_standardiserade_datakategorier d
                     WHERE d.validera_geometri = true
                       AND schema_namn ~ (public.hex_schema_regex() || d.prefix || '_')
                 ) THEN
@@ -859,7 +859,7 @@ BEGIN
                                     array_agg(sk.kolumnnamn ORDER BY sk.ordinal_position),
                                     array_agg(sk.default_varde ORDER BY sk.ordinal_position)
                                 INTO qa_kolumner, qa_uttryck
-                                FROM standardiserade_kolumner sk
+                                FROM hex_standardiserade_kolumner sk
                                 WHERE sk.historik_qa = true
                                 AND sk.default_varde IS NOT NULL
                                 AND EXISTS (
@@ -932,7 +932,7 @@ BEGIN
                         BEGIN
                             FOR h_kolumn IN 
                                 SELECT sk.kolumnnamn
-                                FROM standardiserade_kolumner sk
+                                FROM hex_standardiserade_kolumner sk
                                 WHERE sk.ordinal_position < 0
                                 AND EXISTS (
                                     SELECT 1 FROM information_schema.columns c

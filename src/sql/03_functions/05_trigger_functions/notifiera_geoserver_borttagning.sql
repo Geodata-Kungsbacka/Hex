@@ -52,9 +52,9 @@ BEGIN
 
         -- Kontrollera om skyddsnivån för detta schema publicerats till GeoServer.
         -- Schemat är redan borttaget så vi kan inte fråga det direkt – vi identifierar
-        -- det via namnprefixet mot standardiserade_skyddsnivaer.
+        -- det via namnprefixet mot hex_standardiserade_skyddsnivaer.
         SELECT prefix INTO schema_prefix
-        FROM public.standardiserade_skyddsnivaer
+        FROM public.hex_standardiserade_skyddsnivaer
         WHERE publiceras_geoserver = true
           AND schema_namn LIKE prefix || '_%';
 

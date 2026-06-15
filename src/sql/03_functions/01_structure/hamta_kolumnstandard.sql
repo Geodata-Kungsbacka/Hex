@@ -15,7 +15,7 @@ AS $BODY$
  * PRAKTISKT EXEMPEL:
  * En användare skapar: CREATE TABLE sk0_ext_sgu.jorddjupsmodell_y (meter_till_berg integer, geom geometry);
  * Funktionen returnerar kolumner för: (gid, meter_till_berg, skapad_tidpunkt, geom)
- * Där gid och skapad_tidpunkt kommer från standardiserade_kolumner
+ * Där gid och skapad_tidpunkt kommer från hex_standardiserade_kolumner
  *
  * ANVÄNDS AV: hantera_ny_tabell() för att omstrukturera tabeller automatiskt
  *
@@ -91,10 +91,10 @@ AS $BODY$
 DECLARE 
     resultat kolumnkonfig[];          -- Resultatarray som returneras
     create_kolumn record;             -- För loggning av kolumninformation
-    standardkolumn record;            -- För loop genom standardiserade_kolumner
+    standardkolumn record;            -- För loop genom hex_standardiserade_kolumner
     matchar boolean;                  -- För evaluering av schema_uttryck
     sql_sats text;                    -- För loggning av SQL-satser
-    antal_standardkolumner integer;   -- Antal kolumner från standardiserade_kolumner
+    antal_standardkolumner integer;   -- Antal kolumner från hex_standardiserade_kolumner
     antal_filtrerade integer;         -- Antal kolumner efter schema-filtrering
     antal_tabellkolumner integer;     -- Totalt antal kolumner
 BEGIN
@@ -115,7 +115,7 @@ BEGIN
     -- Steg 2: Räkna standardkolumner för statistik
     RAISE NOTICE '[hamta_kolumnstandard] Steg 2: Räknar standardkolumner';
     SELECT COUNT(*) INTO antal_standardkolumner 
-    FROM standardiserade_kolumner;
+    FROM hex_standardiserade_kolumner;
     RAISE NOTICE '[hamta_kolumnstandard]   - Totalt antal standardkolumner: %', antal_standardkolumner;
 
     -- STEG 3: Hitta vilka standardkolumner som passar detta schema
@@ -127,13 +127,13 @@ BEGIN
     -- Skapa temporär tabell för filtrerade standardkolumner (nu med historik_qa och default_varde)
     CREATE TEMP TABLE temp_filtrerade_standardkolumner AS
         SELECT kolumnnamn, ordinal_position, datatyp, historik_qa, default_varde
-        FROM standardiserade_kolumner 
+        FROM hex_standardiserade_kolumner 
         WHERE false; -- Tom tabell med rätt struktur
 
     -- Loop genom alla standardkolumner och testa schema_uttryck
     FOR standardkolumn IN 
         SELECT kolumnnamn, ordinal_position, datatyp, schema_uttryck, historik_qa, default_varde
-        FROM standardiserade_kolumner 
+        FROM hex_standardiserade_kolumner 
         ORDER BY ordinal_position
     LOOP
         BEGIN
@@ -246,7 +246,7 @@ BEGIN
         LEFT JOIN pg_attrdef d ON (a.attrelid, a.attnum) = (d.adrelid, d.adnum)
         WHERE c.table_schema = p_schema_namn
         AND c.table_name = p_tabell_namn
-        AND c.column_name NOT IN (SELECT kolumnnamn FROM standardiserade_kolumner)
+        AND c.column_name NOT IN (SELECT kolumnnamn FROM hex_standardiserade_kolumner)
         AND c.column_name != 'geom'
 
         UNION ALL
@@ -368,7 +368,7 @@ ALTER FUNCTION public.hamta_kolumnstandard(text, text, geom_info)
 
 COMMENT ON FUNCTION public.hamta_kolumnstandard(text, text, geom_info)
     IS 'Sammanställer en komplett kolumnlista för en tabell genom att kombinera 
-kolumner från standardiserade_kolumner (filtrerade baserat på schema_uttryck) 
+kolumner från hex_standardiserade_kolumner (filtrerade baserat på schema_uttryck) 
 och originaltabellen samt eventuell geometri. Hanterar historik_qa-flaggan för
 att avgöra om DEFAULT ska läggas till eller hanteras av triggers. Använder 
 tvåstegsfiltrering: 1) Loop för schema_uttryck-evaluering 2) Vanlig UNION ALL 

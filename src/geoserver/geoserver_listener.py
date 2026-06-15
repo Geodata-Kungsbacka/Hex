@@ -19,7 +19,7 @@ Processen lyssnar på två PostgreSQL-kanaler och hanterar schema-händelser aut
        som inte längre existerar.
 
 Båda kanalerna hanterar enbart scheman vars skyddsnivå har publiceras_geoserver = true
-i tabellen standardiserade_skyddsnivaer. Standardkonfigurationen publicerar sk0 och sk1;
+i tabellen hex_standardiserade_skyddsnivaer. Standardkonfigurationen publicerar sk0 och sk1;
 övriga prefix (sk2, skx m.fl.) kan aktiveras genom att sätta publiceras_geoserver = true
 för respektive rad. Mönstret laddas om dynamiskt vid varje notifiering.
 
@@ -947,8 +947,8 @@ class GeoServerClient:
 # =============================================================================
 
 # Regex som matchar giltiga schemanamn för GeoServer-publicering.
-# Laddas dynamiskt från standardiserade_skyddsnivaer (publiceras_geoserver = true)
-# och standardiserade_datakategorier vid uppstart via _load_schema_pattern().
+# Laddas dynamiskt från hex_standardiserade_skyddsnivaer (publiceras_geoserver = true)
+# och hex_standardiserade_datakategorier vid uppstart via _load_schema_pattern().
 # Standardvärdet nedan används som fallback om DB-laddningen misslyckas.
 SCHEMA_PATTERN = re.compile(r"^sk[01]_(ext|kba|sys)_.+$")
 _schema_pattern_lock = threading.Lock()
@@ -958,8 +958,8 @@ def _load_schema_pattern(cur):
     """Laddar schemanamnsmönstret från konfigurationstabellerna och uppdaterar SCHEMA_PATTERN.
 
     Bygger ett regex baserat på:
-      - standardiserade_skyddsnivaer WHERE publiceras_geoserver = true  → tillåtna prefix
-      - standardiserade_datakategorier                                  → tillåtna kategorier
+      - hex_standardiserade_skyddsnivaer WHERE publiceras_geoserver = true  → tillåtna prefix
+      - hex_standardiserade_datakategorier                                  → tillåtna kategorier
 
     Om tabellerna är tomma eller ett fel uppstår behålls det befintliga mönstret.
     Anropas i listen_loop efter lyckad DB-anslutning så att mönstret hålls i synk
@@ -968,13 +968,13 @@ def _load_schema_pattern(cur):
     global SCHEMA_PATTERN
     try:
         cur.execute(
-            "SELECT prefix FROM public.standardiserade_skyddsnivaer"
+            "SELECT prefix FROM public.hex_standardiserade_skyddsnivaer"
             " WHERE publiceras_geoserver = true ORDER BY prefix"
         )
         skyddsnivaer = [row[0] for row in cur.fetchall()]
 
         cur.execute(
-            "SELECT prefix FROM public.standardiserade_datakategorier ORDER BY prefix"
+            "SELECT prefix FROM public.hex_standardiserade_datakategorier ORDER BY prefix"
         )
         kategorier = [row[0] for row in cur.fetchall()]
 
@@ -1067,7 +1067,7 @@ def _validate_schema_name(schema_name, tag):
 def _fetch_anonymous_read(conn, schema_name):
     """Returnerar True om prefixet för schema_name har anonym_las aktiverat.
 
-    Slår upp standardiserade_skyddsnivaer.anonym_las för prefixet (första
+    Slår upp hex_standardiserade_skyddsnivaer.anonym_las för prefixet (första
     segmentet i schemanamnet, t.ex. 'sk0' ur 'sk0_kba_fg'). Returnerar False
     vid databasfel eller om prefixet inte hittas.
     """
@@ -1075,7 +1075,7 @@ def _fetch_anonymous_read(conn, schema_name):
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT anonym_las FROM public.standardiserade_skyddsnivaer"
+                "SELECT anonym_las FROM public.hex_standardiserade_skyddsnivaer"
                 " WHERE prefix = %s",
                 (prefix,),
             )
@@ -1102,7 +1102,7 @@ def handle_schema_notification(schema_name, db_config, pg_conn, gs_client, db_la
     log.info("%sMottog notifiering för schema: %s", tag, schema_name)
 
     # Ladda om mönstret innan validering så att ändringar i
-    # standardiserade_skyddsnivaer (t.ex. publiceras_geoserver = true för ett
+    # hex_standardiserade_skyddsnivaer (t.ex. publiceras_geoserver = true för ett
     # nytt prefix) slår igenom utan omstart av tjänsten.
     with pg_conn.cursor() as cur:
         _load_schema_pattern(cur)
@@ -1232,8 +1232,8 @@ def _fetch_publishable_schemas(db_config):
                     " FROM pg_namespace"
                     " WHERE EXISTS ("
                     "   SELECT 1"
-                    "   FROM public.standardiserade_skyddsnivaer n,"
-                    "        public.standardiserade_datakategorier d"
+                    "   FROM public.hex_standardiserade_skyddsnivaer n,"
+                    "        public.hex_standardiserade_datakategorier d"
                     "   WHERE n.publiceras_geoserver = true"
                     "     AND nspname ~ ('^' || n.prefix || '_' || d.prefix || '_')"
                     " )"
@@ -1288,8 +1288,8 @@ def _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label="", all_pg_
             " FROM pg_namespace"
             " WHERE EXISTS ("
             "   SELECT 1"
-            "   FROM public.standardiserade_skyddsnivaer n,"
-            "        public.standardiserade_datakategorier d"
+            "   FROM public.hex_standardiserade_skyddsnivaer n,"
+            "        public.hex_standardiserade_datakategorier d"
             "   WHERE n.publiceras_geoserver = true"
             "     AND nspname ~ ('^' || n.prefix || '_' || d.prefix || '_')"
             " )"

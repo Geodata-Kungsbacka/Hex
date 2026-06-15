@@ -9,7 +9,7 @@ AS $BODY$
 
 /******************************************************************************
  * Tar automatiskt bort roller kopplade till scheman som tas bort.
- * Läser konfiguration från standardiserade_roller istället för hårdkodade rollnamn.
+ * Läser konfiguration från hex_standardiserade_roller istället för hårdkodade rollnamn.
  *
  * SECURITY DEFINER: Körs som funktionens ägare (postgres) för att säkerställa
  * att roller kan tas bort oavsett vilken användare som droppar schemat.
@@ -49,7 +49,7 @@ BEGIN
 
         -- Loopa genom rollkonfigurationer som ska tas bort med schema
         FOR rollkonfiguration IN
-            SELECT * FROM standardiserade_roller
+            SELECT * FROM hex_standardiserade_roller
             WHERE ta_bort_med_schema = true
             ORDER BY gid
         LOOP
@@ -101,5 +101,5 @@ ALTER FUNCTION public.ta_bort_schemaroller()
 
 COMMENT ON FUNCTION public.ta_bort_schemaroller()
     IS 'Tar automatiskt bort roller när scheman tas bort. Läser konfiguration från
-    standardiserade_roller och tar endast bort roller där ta_bort_med_schema = true.
+    hex_standardiserade_roller och tar endast bort roller där ta_bort_med_schema = true.
     Rensar även hex_role_credentials för borttagna LOGIN-roller.';

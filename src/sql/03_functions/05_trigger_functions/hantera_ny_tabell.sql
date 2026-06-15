@@ -337,12 +337,12 @@ BEGIN
             END IF;
 
             -- Steg 9: Lägg till geometrivalidering för scheman vars datakategori
-            --         har validera_geometri = true i standardiserade_datakategorier
+            --         har validera_geometri = true i hex_standardiserade_datakategorier
             op_steg := 'geometrivalidering';
             RAISE NOTICE 'Steg 9/10: Kontrollerar geometrivalidering';
             RAISE NOTICE '  - geometriinfo.kolumnnamn: %', geometriinfo.kolumnnamn;
             IF geometriinfo IS NOT NULL AND geometriinfo.kolumnnamn IS NOT NULL AND EXISTS (
-                SELECT 1 FROM public.standardiserade_datakategorier d
+                SELECT 1 FROM public.hex_standardiserade_datakategorier d
                 WHERE d.validera_geometri = true
                   AND schema_namn ~ (public.hex_schema_regex() || d.prefix || '_')
             ) THEN

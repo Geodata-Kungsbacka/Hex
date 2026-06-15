@@ -22,7 +22,7 @@ AS $BODY$
  *
  * SECURITY DEFINER: Körs med ägarrollens (system_owner) rättigheter.
  * system_owner har ADMIN OPTION på alla Hex-schemaroller (beviljas i
- * hantera_standardiserade_roller vid skapandet), vilket krävs för att
+ * hantera_hex_standardiserade_roller vid skapandet), vilket krävs för att
  * kunna GRANT:a dessa roller vidare till AD-grupproller.
  *
  * Anropas manuellt av DBA efter att rader lagts till i hex_grupprattigheter:

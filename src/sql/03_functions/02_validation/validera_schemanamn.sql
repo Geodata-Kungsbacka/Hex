@@ -13,8 +13,8 @@ AS $BODY$
  * MÖNSTER: <skyddsnivå>_<datakategori>_<namn>
  *
  * Giltiga skyddsnivåer och datakategorier hämtas dynamiskt från:
- *   public.standardiserade_skyddsnivaer
- *   public.standardiserade_datakategorier
+ *   public.hex_standardiserade_skyddsnivaer
+ *   public.hex_standardiserade_datakategorier
  *
  * Lägg till rader i dessa tabeller för att utöka giltiga kombinationer
  * utan att behöva ändra den här funktionen.
@@ -45,13 +45,13 @@ BEGIN
     RAISE NOTICE '[validera_schemanamn] Kontrollerar schemanamn mot Hex namngivningskonvention';
 
     -- Bygg regex-mönstret dynamiskt från konfigurationstabellerna
-    valideringssteg := 'hämtar skyddsnivåer från standardiserade_skyddsnivaer';
+    valideringssteg := 'hämtar skyddsnivåer från hex_standardiserade_skyddsnivaer';
     SELECT string_agg(prefix, '|' ORDER BY prefix) INTO skyddsniva_del
-    FROM public.standardiserade_skyddsnivaer;
+    FROM public.hex_standardiserade_skyddsnivaer;
 
-    valideringssteg := 'hämtar datakategorier från standardiserade_datakategorier';
+    valideringssteg := 'hämtar datakategorier från hex_standardiserade_datakategorier';
     SELECT string_agg(prefix, '|' ORDER BY prefix) INTO datakategori_del
-    FROM public.standardiserade_datakategorier;
+    FROM public.hex_standardiserade_datakategorier;
 
     schema_pattern := '^(' || skyddsniva_del || ')_(' || datakategori_del || ')_.+$';
 
@@ -123,11 +123,11 @@ BEGIN
         -- Steg 4: Sammanfattning för detta schema
         RAISE NOTICE '[validera_schemanamn] Steg 4: Validering slutförd för schema "%"', schema_namn;
         RAISE NOTICE '[validera_schemanamn]   » Skyddsnivå: %',
-            (SELECT beskrivning FROM public.standardiserade_skyddsnivaer
+            (SELECT beskrivning FROM public.hex_standardiserade_skyddsnivaer
              WHERE schema_namn LIKE prefix || '_%'
              LIMIT 1);
         RAISE NOTICE '[validera_schemanamn]   » Datakategori: %',
-            (SELECT beskrivning FROM public.standardiserade_datakategorier
+            (SELECT beskrivning FROM public.hex_standardiserade_datakategorier
              WHERE schema_namn LIKE '%_' || prefix || '_%'
              LIMIT 1);
     END LOOP;
@@ -160,6 +160,6 @@ ALTER FUNCTION public.validera_schemanamn()
 COMMENT ON FUNCTION public.validera_schemanamn()
     IS 'Event trigger-funktion som validerar schemanamn mot Hex namngivningskonvention.
 Tillåtna skyddsnivåer och datakategorier hämtas dynamiskt från
-standardiserade_skyddsnivaer och standardiserade_datakategorier.
+hex_standardiserade_skyddsnivaer och hex_standardiserade_datakategorier.
 Blockerar skapande av scheman som inte matchar mönstret.
 Systemscheman (public, information_schema, pg_*) undantas från validering.';

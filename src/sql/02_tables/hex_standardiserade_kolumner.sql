@@ -1,8 +1,8 @@
--- Table: public.standardiserade_kolumner
+-- Table: public.hex_standardiserade_kolumner
 
--- DROP TABLE IF EXISTS public.standardiserade_kolumner;
+-- DROP TABLE IF EXISTS public.hex_standardiserade_kolumner;
 
-CREATE TABLE IF NOT EXISTS public.standardiserade_kolumner
+CREATE TABLE IF NOT EXISTS public.hex_standardiserade_kolumner
 (
     gid integer NOT NULL GENERATED ALWAYS AS IDENTITY ( INCREMENT 1 START 1 MINVALUE 1 MAXVALUE 2147483647 CACHE 1 ),
     kolumnnamn text COLLATE pg_catalog."default" NOT NULL,
@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS public.standardiserade_kolumner
     historik_qa boolean DEFAULT false,
     beskrivning text COLLATE pg_catalog."default",
     
-    CONSTRAINT standardiserade_kolumner_kolumnnamn_key UNIQUE (kolumnnamn),
+    CONSTRAINT hex_standardiserade_kolumner_kolumnnamn_key UNIQUE (kolumnnamn),
     CONSTRAINT valid_kolumnnamn_length CHECK (length(kolumnnamn) <= 63),
     CONSTRAINT valid_ordinal_position CHECK (ordinal_position <> 0),
     CONSTRAINT valid_schema_uttryck CHECK (
@@ -25,18 +25,18 @@ CREATE TABLE IF NOT EXISTS public.standardiserade_kolumner
 
 TABLESPACE pg_default;
 
-ALTER TABLE IF EXISTS public.standardiserade_kolumner
+ALTER TABLE IF EXISTS public.hex_standardiserade_kolumner
     OWNER to postgres;
 
-COMMENT ON TABLE public.standardiserade_kolumner
+COMMENT ON TABLE public.hex_standardiserade_kolumner
     IS E'Definierar standardkolumner för tabellstrukturer.\\n\\nordinal_position:\\n  > 0: kolumnen placeras först i angiven ordning\\n  < 0: kolumnen placeras sist i omvänd ordning\\n  NULL/0 är inte tillåtet\\n\\nschema_uttryck:\\n  SQL-uttryck som avgör vilka scheman kolumnen ska appliceras på.\\n  Exempel: "LIKE ''%_ext_%''", "= ''sk0_ext_sgu''", "IS NOT NULL"';
 
-COMMENT ON COLUMN public.standardiserade_kolumner.schema_uttryck
+COMMENT ON COLUMN public.hex_standardiserade_kolumner.schema_uttryck
     IS 'SQL-uttryck som avgör vilka scheman kolumnen ska appliceras på. Värdet sätts in efter "WHERE p_schema_namn [detta_värde]". Exempel: "= ''sk0_ext_sgu''", "LIKE ''%_ext_%''", "IN (''sk0_ext_sgu'', ''sk1_ext_region'')"';
 
 -- Lägg till grundläggande standardkolumner
 -- ÄNDRING: Använder session_user istället för current_user för att fånga faktisk autentiserad användare
-INSERT INTO public.standardiserade_kolumner(
+INSERT INTO public.hex_standardiserade_kolumner(
     kolumnnamn, ordinal_position, datatyp, default_varde, beskrivning, schema_uttryck, historik_qa)
 VALUES
     ('gid', 1, 'integer GENERATED ALWAYS AS IDENTITY', NULL, 'Primärnyckel', 'IS NOT NULL', false),
@@ -49,4 +49,4 @@ ON CONFLICT (kolumnnamn) DO NOTHING;
 -- Any database user who creates tables needs to read these configuration tables,
 -- since the trigger functions (hantera_ny_tabell, hantera_kolumntillagg) run
 -- as SECURITY INVOKER (the calling user's privileges).
-GRANT SELECT ON public.standardiserade_kolumner TO PUBLIC;
+GRANT SELECT ON public.hex_standardiserade_kolumner TO PUBLIC;

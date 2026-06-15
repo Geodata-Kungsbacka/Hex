@@ -108,7 +108,7 @@ BEGIN
             BEGIN
                 -- Kontrollera om detta är en standardkolumn
                 SELECT EXISTS (
-                    SELECT 1 FROM standardiserade_kolumner 
+                    SELECT 1 FROM hex_standardiserade_kolumner 
                     WHERE kolumnnamn = kolumn_namn
                 ) INTO ar_standardkolumn;
                 

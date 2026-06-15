@@ -15,12 +15,12 @@ AS $BODY$
  * för att säkerställa att befintliga tabeller och roller har all förväntad
  * funktionalitet, även när de skapades med en äldre version av Hex.
  *
- * Schemaprefix hämtas dynamiskt från standardiserade_skyddsnivaer, så att
+ * Schemaprefix hämtas dynamiskt från hex_standardiserade_skyddsnivaer, så att
  * egna prefix (t.ex. sc1, sk3) fungerar utan kodändringar.
  *
  * Hanterar nio åtgärdstyper:
  *
- *   schemamigrering      Uppgraderar hex_role_credentials och standardiserade_roller
+ *   schemamigrering      Uppgraderar hex_role_credentials och hex_standardiserade_roller
  *                        till aktuellt schema idempotent (ADD COLUMN IF NOT EXISTS).
  *                        Körs alltid först.
  *
@@ -88,14 +88,14 @@ BEGIN
     -- -------------------------------------------------------------------------
     EXECUTE 'ALTER TABLE public.hex_role_credentials ALTER COLUMN password DROP NOT NULL';
     EXECUTE 'ALTER TABLE public.hex_role_credentials ADD COLUMN IF NOT EXISTS rolcanlogin boolean NOT NULL DEFAULT true';
-    EXECUTE 'ALTER TABLE public.standardiserade_roller ADD COLUMN IF NOT EXISTS arvs_fran text DEFAULT NULL';
+    EXECUTE 'ALTER TABLE public.hex_standardiserade_roller ADD COLUMN IF NOT EXISTS arvs_fran text DEFAULT NULL';
 
-    -- Bygg regex från standardiserade_skyddsnivaer en gång.
+    -- Bygg regex från hex_standardiserade_skyddsnivaer en gång.
     -- Alla schemanamnkontroller i denna funktion använder denna variabel
     -- så att egna prefix fungerar utan kodändringar.
     SELECT '^(' || string_agg(prefix, '|') || ')_'
     INTO   schema_regex
-    FROM   public.standardiserade_skyddsnivaer;
+    FROM   public.hex_standardiserade_skyddsnivaer;
 
     -- -------------------------------------------------------------------------
     -- 1. hex_tvinga_gid
@@ -149,7 +149,7 @@ BEGIN
     -- -------------------------------------------------------------------------
     -- 2. hex_kontrollera_geom
     --    Scheman vars datakategori har validera_geometri = true i
-    --    standardiserade_datakategorier, med en kolumn 'geom' av PostGIS-typ.
+    --    hex_standardiserade_datakategorier, med en kolumn 'geom' av PostGIS-typ.
     --    Historiktabeller (har h_typ-kolumn) undantas.
     -- -------------------------------------------------------------------------
     FOR r IN
@@ -158,7 +158,7 @@ BEGIN
         JOIN   pg_namespace n ON n.oid = c.relnamespace
         WHERE  c.relkind = 'r'
           AND  EXISTS (
-                   SELECT 1 FROM public.standardiserade_datakategorier d
+                   SELECT 1 FROM public.hex_standardiserade_datakategorier d
                    WHERE  d.validera_geometri = true
                      AND  n.nspname ~ (schema_regex || d.prefix || '_')
                )
@@ -328,7 +328,7 @@ BEGIN
     -- -------------------------------------------------------------------------
     -- 5. rollstruktur
     --    Verifierar och reparerar alla fyra roller per schema enligt
-    --    standardiserade_roller. Hanterar både nyinstallationer och migrering
+    --    hex_standardiserade_roller. Hanterar både nyinstallationer och migrering
     --    från äldre konfigurationer (r_*/w_* som LOGIN → NOLOGIN).
     --
     --    NOLOGIN-roller (with_login=false, t.ex. r_*, w_*):
@@ -354,7 +354,7 @@ BEGIN
     LOOP
         FOR rol IN
             SELECT rollnamn, rolltyp, schema_uttryck, with_login, arvs_fran
-            FROM   public.standardiserade_roller
+            FROM   public.hex_standardiserade_roller
             ORDER BY gid
         LOOP
             BEGIN
@@ -609,7 +609,7 @@ BEGIN
     LOOP
         FOR rol IN
             SELECT rollnamn, rolltyp, schema_uttryck, with_login, arvs_fran
-            FROM   public.standardiserade_roller
+            FROM   public.hex_standardiserade_roller
             ORDER BY gid
         LOOP
             BEGIN
@@ -678,7 +678,7 @@ BEGIN
     FOR r IN
         SELECT DISTINCT n.nspname AS s
         FROM   pg_namespace n
-        JOIN   public.standardiserade_skyddsnivaer ssn
+        JOIN   public.hex_standardiserade_skyddsnivaer ssn
                ON n.nspname LIKE ssn.prefix || '_%'
               AND ssn.publiceras_geoserver = true
         WHERE  EXISTS (
@@ -708,7 +708,7 @@ DROP FUNCTION IF EXISTS public.reparera_rad_triggers();
 
 COMMENT ON FUNCTION public.underhall_hex()
     IS 'Reparerar och verifierar hela Hex-strukturen för alla scheman.
-Uppgraderar tabellscheman (hex_role_credentials, standardiserade_roller) idempotent.
+Uppgraderar tabellscheman (hex_role_credentials, hex_standardiserade_roller) idempotent.
 Återkopplar saknade rad-nivå-triggers (hex_tvinga_gid, hex_kontrollera_geom,
 hex_ta_bort_dummy, trg_<tabell>_qa).
 Verifierar och reparerar alla fyra roller per schema:
@@ -720,6 +720,6 @@ NOLOGIN-roller som felaktigt hamnat där.
 Reparerar schemabehörigheter (NOLOGIN: tilldela_rollrattigheter,
 LOGIN: GRANT arvs_fran).
 Skickar pg_notify för GeoServer-publicering (gs_r_-uppgifter krävs).
-Schemaprefix hämtas från standardiserade_skyddsnivaer – egna prefix fungerar
+Schemaprefix hämtas från hex_standardiserade_skyddsnivaer – egna prefix fungerar
 utan kodändringar. Idempotent. Anropas av installeraren efter varje
 installation/uppgradering.';

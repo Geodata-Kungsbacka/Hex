@@ -17,7 +17,7 @@ COMMENT ON TABLE public.hex_role_credentials
       w_{schema}    – NOLOGIN behörighetsgrupp (skriv), rolcanlogin=false, password=NULL
       gs_r_{schema} – LOGIN GeoServer läs-tjänstekonto, rolcanlogin=true, password satt
       gs_w_{schema} – LOGIN GeoServer skriv-tjänstekonto, rolcanlogin=true, password satt
-    Skrivs av hantera_standardiserade_roller() vid CREATE SCHEMA.
+    Skrivs av hantera_hex_standardiserade_roller() vid CREATE SCHEMA.
     Läses av hex_listener för att konfigurera direktanslutningar i GeoServer
     (enbart rader med rolcanlogin=true och rolnamn som matchar gs_r_{schema}).
     Används också av underhall_hex() som källa för rollverifiering.';
