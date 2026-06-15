@@ -5,7 +5,7 @@
 CREATE OR REPLACE FUNCTION public.spara_kolumnegenskaper(
 	p_schema_namn text,
 	p_tabell_namn text)
-    RETURNS kolumnegenskaper
+    RETURNS hex_kolumnegenskaper
     LANGUAGE 'plpgsql'
     COST 100
     VOLATILE PARALLEL UNSAFE
@@ -14,7 +14,7 @@ AS $BODY$
 /******************************************************************************
  * Denna funktion sparar kolumnspecifika egenskaper som sedan kan användas
  * vid omstrukturering av tabeller. Funktionen separerar egenskaper som bara
- * påverkar enskilda kolumner från egentliga tabellregler.
+ * påverkar enskilda kolumner från egentliga hex_tabellregler.
  *
  * Funktionen sparar:
  * 1. DEFAULT-värden
@@ -40,7 +40,7 @@ AS $BODY$
  * - Slutresultat sammanfattas
  ******************************************************************************/
 DECLARE
-    resultat kolumnegenskaper;   -- Variabel som håller alla kolumnegenskaper
+    resultat hex_kolumnegenskaper;   -- Variabel som håller alla hex_kolumnegenskaper
     tabell_oid oid;             -- Tabellens unika PostgreSQL-ID
     antal_default integer;      -- För statistik
     antal_notnull integer;      -- För statistik
@@ -48,7 +48,7 @@ DECLARE
     antal_identity integer;     -- För statistik
 BEGIN
     RAISE NOTICE E'[spara_kolumnegenskaper] === START ===';
-    RAISE NOTICE '[spara_kolumnegenskaper] Analyserar kolumnegenskaper för %.%', p_schema_namn, p_tabell_namn;
+    RAISE NOTICE '[spara_kolumnegenskaper] Analyserar hex_kolumnegenskaper för %.%', p_schema_namn, p_tabell_namn;
     
     -- Steg 1: Hämta tabellens OID (via regclass för korrekt hantering av
     -- specialtecken som åäö i tabell-/schemanamn)
@@ -208,5 +208,5 @@ ALTER FUNCTION public.spara_kolumnegenskaper(text, text)
 COMMENT ON FUNCTION public.spara_kolumnegenskaper(text, text)
     IS 'Sparar kolumnspecifika egenskaper från PostgreSQL:s systemtabeller.
 Hanterar DEFAULT-värden, NOT NULL, kolumnspecifika CHECK-begränsningar och 
-IDENTITY-definitioner. Del av uppdelningen mellan tabellregler och kolumnegenskaper
+IDENTITY-definitioner. Del av uppdelningen mellan hex_tabellregler och hex_kolumnegenskaper
 för ett tydligare struktureringssystem.';

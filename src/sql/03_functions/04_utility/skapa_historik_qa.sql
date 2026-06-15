@@ -34,7 +34,7 @@ DECLARE
     
     -- Nya variabler för geometrihantering
     har_geometri boolean := false;
-    geometriinfo geom_info;
+    geometriinfo hex_geom_info;
 BEGIN
     RAISE NOTICE E'[skapa_historik_qa] === START ===';
     RAISE NOTICE '[skapa_historik_qa] Skapar historik/QA för %.%', p_schema_namn, p_tabell_namn;

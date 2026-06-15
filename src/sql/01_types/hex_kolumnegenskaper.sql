@@ -1,10 +1,10 @@
--- Type: kolumnegenskaper
+-- Type: hex_kolumnegenskaper
 
--- DROP TYPE IF EXISTS public.kolumnegenskaper;
+-- DROP TYPE IF EXISTS public.hex_kolumnegenskaper;
 
 DO $$
 BEGIN
-    CREATE TYPE public.kolumnegenskaper AS
+    CREATE TYPE public.hex_kolumnegenskaper AS
     (
         default_defs text[],
         notnull_defs text[],
@@ -16,10 +16,10 @@ EXCEPTION
 END;
 $$;
 
-ALTER TYPE public.kolumnegenskaper
+ALTER TYPE public.hex_kolumnegenskaper
     OWNER TO postgres;
 
-COMMENT ON TYPE public.kolumnegenskaper
+COMMENT ON TYPE public.hex_kolumnegenskaper
     IS 'Kolumnspecifika egenskaper inkl. DEFAULT, NOT NULL, CHECK och IDENTITY.
-Används i kombination med tabellregler för att separera kolumn- och 
+Används i kombination med hex_tabellregler för att separera kolumn- och 
 tabellegenskaper i struktureringssystemet.';

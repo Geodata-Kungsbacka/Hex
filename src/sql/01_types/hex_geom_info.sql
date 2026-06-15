@@ -1,10 +1,10 @@
--- Type: geom_info
+-- Type: hex_geom_info
 
--- DROP TYPE IF EXISTS public.geom_info;
+-- DROP TYPE IF EXISTS public.hex_geom_info;
 
 DO $$
 BEGIN
-    CREATE TYPE public.geom_info AS
+    CREATE TYPE public.hex_geom_info AS
     (
         kolumnnamn text,
         typ_ursprunglig text,
@@ -20,5 +20,5 @@ EXCEPTION
 END;
 $$;
 
-ALTER TYPE public.geom_info
+ALTER TYPE public.hex_geom_info
     OWNER TO postgres;

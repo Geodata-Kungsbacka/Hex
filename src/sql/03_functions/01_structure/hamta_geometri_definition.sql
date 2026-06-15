@@ -5,7 +5,7 @@
 CREATE OR REPLACE FUNCTION public.hamta_geometri_definition(
 	p_schema_namn text,
 	p_tabell_namn text)
-    RETURNS geom_info
+    RETURNS hex_geom_info
     LANGUAGE 'plpgsql'
     COST 100
     VOLATILE PARALLEL UNSAFE
@@ -13,7 +13,7 @@ AS $BODY$
 
 /******************************************************************************
  * Denna funktion analyserar en tabells geometrikolumn och returnerar en 
- * strukturerad representation av dess egenskaper via geom_info-typen.
+ * strukturerad representation av dess egenskaper via hex_geom_info-typen.
  *
  * Funktionen validerar först att:
  * 1. Tabellen har exakt en geometrikolumn
@@ -31,7 +31,7 @@ AS $BODY$
  * - Felmeddelanden ger diagnostikinformation för felsökning
  ******************************************************************************/
 DECLARE
-    resultat geom_info;    -- Returvärde som byggs stegvis
+    resultat hex_geom_info;    -- Returvärde som byggs stegvis
     antal_geom integer;    -- För validering av antal geometrikolumner
     felaktigt_namn text;   -- För validering av kolumnnamn
 BEGIN
@@ -149,6 +149,6 @@ ALTER FUNCTION public.hamta_geometri_definition(text, text)
 
 COMMENT ON FUNCTION public.hamta_geometri_definition(text, text)
     IS 'Analyserar en tabells geometrikolumn och returnerar en strukturerad 
-representation av dess egenskaper via geom_info-typen. Validerar att tabellen
+representation av dess egenskaper via hex_geom_info-typen. Validerar att tabellen
 har exakt en geometrikolumn med namnet "geom" och skapar sedan en komplett
 geometridefinition som kan användas för CREATE TABLE och ALTER TABLE.';

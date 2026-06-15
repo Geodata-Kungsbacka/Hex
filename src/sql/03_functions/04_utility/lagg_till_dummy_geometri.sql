@@ -1,9 +1,9 @@
--- FUNCTION: public.lagg_till_dummy_geometri(text, text, geom_info)
+-- FUNCTION: public.lagg_till_dummy_geometri(text, text, hex_geom_info)
 
 CREATE OR REPLACE FUNCTION public.lagg_till_dummy_geometri(
     p_schema_namn  text,
     p_tabell_namn  text,
-    p_geometriinfo geom_info
+    p_geometriinfo hex_geom_info
 )
     RETURNS void
     LANGUAGE 'plpgsql'
@@ -96,10 +96,10 @@ EXCEPTION
 END;
 $BODY$;
 
-ALTER FUNCTION public.lagg_till_dummy_geometri(text, text, geom_info)
+ALTER FUNCTION public.lagg_till_dummy_geometri(text, text, hex_geom_info)
     OWNER TO postgres;
 
-COMMENT ON FUNCTION public.lagg_till_dummy_geometri(text, text, geom_info)
+COMMENT ON FUNCTION public.lagg_till_dummy_geometri(text, text, hex_geom_info)
     IS 'Lägger till en minimal dummy-geometrirad i en geometritabell för att QGIS
 ska kunna identifiera geometritypen via normal DB-anslutning (utan manuell dialog).
 Dummy-koordinaterna ligger i Kungsbacka-området (EPSG 3007, ~160000 6395000) och

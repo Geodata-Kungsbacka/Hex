@@ -1,11 +1,11 @@
--- FUNCTION: public.aterskapa_kolumnegenskaper(text, text, kolumnegenskaper)
+-- FUNCTION: public.aterskapa_kolumnegenskaper(text, text, hex_kolumnegenskaper)
 
--- DROP FUNCTION IF EXISTS public.aterskapa_kolumnegenskaper(text, text, kolumnegenskaper);
+-- DROP FUNCTION IF EXISTS public.aterskapa_kolumnegenskaper(text, text, hex_kolumnegenskaper);
 
 CREATE OR REPLACE FUNCTION public.aterskapa_kolumnegenskaper(
 	p_schema_namn text,
 	p_tabell_namn text,
-	p_egenskaper kolumnegenskaper)
+	p_egenskaper hex_kolumnegenskaper)
     RETURNS void
     LANGUAGE 'plpgsql'
     COST 100
@@ -14,7 +14,7 @@ AS $BODY$
 
 /******************************************************************************
  * Denna funktion återskapar kolumnspecifika egenskaper för en tabell.
- * Funktionen är separat från återskapande av tabellregler för att hålla
+ * Funktionen är separat från återskapande av hex_tabellregler för att hålla
  * ett tydligt koncept av ansvarsfördelning.
  *
  * Egenskaper återskapas i följande ordning:
@@ -38,7 +38,7 @@ DECLARE
     antal_identity integer;  -- Antal återskapade IDENTITY-definitioner
 BEGIN
     RAISE NOTICE E'[aterskapa_kolumnegenskaper] === START ===';
-    RAISE NOTICE '[aterskapa_kolumnegenskaper] Återskapar kolumnegenskaper för %.%', 
+    RAISE NOTICE '[aterskapa_kolumnegenskaper] Återskapar hex_kolumnegenskaper för %.%', 
         p_schema_namn, p_tabell_namn;
 
     -- Steg 1: Återskapa NOT NULL-begränsningar
@@ -186,10 +186,10 @@ EXCEPTION
 END;
 $BODY$;
 
-ALTER FUNCTION public.aterskapa_kolumnegenskaper(text, text, kolumnegenskaper)
+ALTER FUNCTION public.aterskapa_kolumnegenskaper(text, text, hex_kolumnegenskaper)
     OWNER TO postgres;
 
-COMMENT ON FUNCTION public.aterskapa_kolumnegenskaper(text, text, kolumnegenskaper)
+COMMENT ON FUNCTION public.aterskapa_kolumnegenskaper(text, text, hex_kolumnegenskaper)
     IS 'Återskapar kolumnspecifika egenskaper som DEFAULT, NOT NULL, kolumnspecifika 
-CHECK-begränsningar och IDENTITY-definitioner. Del av uppdelningen mellan tabellregler 
-och kolumnegenskaper för ett tydligare struktureringssystem.';
+CHECK-begränsningar och IDENTITY-definitioner. Del av uppdelningen mellan hex_tabellregler 
+och hex_kolumnegenskaper för ett tydligare struktureringssystem.';

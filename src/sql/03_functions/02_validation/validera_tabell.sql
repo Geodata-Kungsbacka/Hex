@@ -3,8 +3,8 @@
 CREATE OR REPLACE FUNCTION public.validera_tabell(
     p_schema_namn text,
     p_tabell_namn text,
-    OUT p_geometriinfo geom_info)
-    RETURNS geom_info
+    OUT p_geometriinfo hex_geom_info)
+    RETURNS hex_geom_info
     LANGUAGE 'plpgsql'
     COST 100
     VOLATILE PARALLEL UNSAFE

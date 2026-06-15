@@ -5,7 +5,7 @@
 CREATE OR REPLACE FUNCTION public.spara_tabellregler(
 	p_schema_namn text,
 	p_tabell_namn text)
-    RETURNS tabellregler
+    RETURNS hex_tabellregler
     LANGUAGE 'plpgsql'
     COST 100
     VOLATILE PARALLEL UNSAFE
@@ -14,7 +14,7 @@ AS $BODY$
 /******************************************************************************
  * Denna funktion sparar tabellövergripande regler som sedan kan återskapas
  * vid omstrukturering av tabeller. Funktionen har anpassats för att endast
- * hantera äkta tabellregler, medan kolumnegenskaper hanteras separat av
+ * hantera äkta hex_tabellregler, medan hex_kolumnegenskaper hanteras separat av
  * spara_kolumnegenskaper().
  *
  * Funktionen sparar:
@@ -42,7 +42,7 @@ AS $BODY$
  * - Slutresultat sammanfattas
  ******************************************************************************/
 DECLARE
-    resultat tabellregler;     -- Variabel som håller alla regler
+    resultat hex_tabellregler;     -- Variabel som håller alla regler
     tabell_oid oid;           -- Tabellens unika PostgreSQL-ID
     antal_index integer;      -- För statistik
     antal_fk integer;         -- För statistik
@@ -172,6 +172,6 @@ ALTER FUNCTION public.spara_tabellregler(text, text)
 
 COMMENT ON FUNCTION public.spara_tabellregler(text, text)
     IS 'Sparar tabellövergripande regler från PostgreSQL:s systemtabeller.
-Hanterar nu endast äkta tabellregler (index, FK, multikolumns-constraints),
-medan kolumnegenskaper har flyttats till en separat funktion. Del av uppdelningen 
-mellan tabellregler och kolumnegenskaper för ett tydligare struktureringssystem.';
+Hanterar nu endast äkta hex_tabellregler (index, FK, multikolumns-constraints),
+medan hex_kolumnegenskaper har flyttats till en separat funktion. Del av uppdelningen 
+mellan hex_tabellregler och hex_kolumnegenskaper för ett tydligare struktureringssystem.';

@@ -46,9 +46,9 @@ DECLARE
     tabell_namn text;          -- Namn på tabellen
     
     -- Variabler för kolumnhantering
-    flyttkolumner kolumnkonfig[];     -- Kolumner som ska flyttas
-    kolumn kolumnkonfig;             -- För iteration över kolumner
-    geometriinfo geom_info;          -- Strukturerad geometriinformation
+    flyttkolumner hex_kolumnkonfig[];     -- Kolumner som ska flyttas
+    kolumn hex_kolumnkonfig;             -- För iteration över kolumner
+    geometriinfo hex_geom_info;          -- Strukturerad geometriinformation
     sql_sats text;                   -- För att bygga SQL-satser
     
     -- Variabler för statushantering
@@ -217,7 +217,7 @@ BEGIN
             stdkol       record;
             kol_matchar  boolean;
         BEGIN
-            flyttkolumner := ARRAY[]::kolumnkonfig[];
+            flyttkolumner := ARRAY[]::hex_kolumnkonfig[];
             FOR stdkol IN
                 SELECT kolumnnamn, ordinal_position, datatyp, default_varde,
                        historik_qa, schema_uttryck
@@ -240,7 +240,7 @@ BEGIN
                                 ELSE
                                     stdkol.datatyp
                             END
-                        )::kolumnkonfig
+                        )::hex_kolumnkonfig
                     );
                 END IF;
             END LOOP;

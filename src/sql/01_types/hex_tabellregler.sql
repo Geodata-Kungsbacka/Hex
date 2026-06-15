@@ -1,10 +1,10 @@
--- Type: tabellregler
+-- Type: hex_tabellregler
 
--- DROP TYPE IF EXISTS public.tabellregler;
+-- DROP TYPE IF EXISTS public.hex_tabellregler;
 
 DO $$
 BEGIN
-    CREATE TYPE public.tabellregler AS
+    CREATE TYPE public.hex_tabellregler AS
     (
         index_defs text[],
         fk_defs text[],
@@ -17,5 +17,5 @@ EXCEPTION
 END;
 $$;
 
-ALTER TYPE public.tabellregler
+ALTER TYPE public.hex_tabellregler
     OWNER TO postgres;

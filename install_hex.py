@@ -50,10 +50,10 @@ INSTALL_ORDER = [
     # Konfiguration
     "src/sql/00_config/hex_geoserver_roller.sql",
     # Typer
-    "src/sql/01_types/geom_info.sql",
-    "src/sql/01_types/kolumnkonfig.sql",
-    "src/sql/01_types/kolumnegenskaper.sql",
-    "src/sql/01_types/tabellregler.sql",
+    "src/sql/01_types/hex_geom_info.sql",
+    "src/sql/01_types/hex_kolumnkonfig.sql",
+    "src/sql/01_types/hex_kolumnegenskaper.sql",
+    "src/sql/01_types/hex_tabellregler.sql",
     # Tabeller
     "src/sql/02_tables/hex_standardiserade_skyddsnivaer.sql",
     # hex_schema_regex() läser hex_standardiserade_skyddsnivaer – måste skapas efter tabellen
@@ -146,7 +146,7 @@ DROP FUNCTION IF EXISTS public.kontrollera_geometri_trigger() CASCADE;
 
 -- Hjälpfunktioner
 DROP FUNCTION IF EXISTS public.tillämpa_grupprattigheter();
-DROP FUNCTION IF EXISTS public.lagg_till_dummy_geometri(text, text, geom_info);
+DROP FUNCTION IF EXISTS public.lagg_till_dummy_geometri(text, text, hex_geom_info);
 DROP FUNCTION IF EXISTS public.ta_bort_dummy_rad() CASCADE;
 DROP FUNCTION IF EXISTS public.tvinga_gid_fran_sekvens() CASCADE;
 DROP FUNCTION IF EXISTS public.underhall_hex();
@@ -157,8 +157,8 @@ DROP FUNCTION IF EXISTS public.uppdatera_sekvensnamn(text, text, text);
 DROP FUNCTION IF EXISTS public.byt_ut_tabell(text, text, text);
 
 -- Regelfunktioner
-DROP FUNCTION IF EXISTS public.aterskapa_kolumnegenskaper(text, text, kolumnegenskaper);
-DROP FUNCTION IF EXISTS public.aterskapa_tabellregler(text, text, tabellregler);
+DROP FUNCTION IF EXISTS public.aterskapa_kolumnegenskaper(text, text, hex_kolumnegenskaper);
+DROP FUNCTION IF EXISTS public.aterskapa_tabellregler(text, text, hex_tabellregler);
 DROP FUNCTION IF EXISTS public.spara_kolumnegenskaper(text, text);
 DROP FUNCTION IF EXISTS public.spara_tabellregler(text, text);
 
@@ -171,7 +171,7 @@ DROP FUNCTION IF EXISTS public.validera_vynamn(text, text);
 DROP FUNCTION IF EXISTS public.validera_tabell(text, text);
 
 -- Strukturfunktioner
-DROP FUNCTION IF EXISTS public.hamta_kolumnstandard(text, text, geom_info);
+DROP FUNCTION IF EXISTS public.hamta_kolumnstandard(text, text, hex_geom_info);
 DROP FUNCTION IF EXISTS public.hamta_geometri_definition(text, text);
 
 -- Konfigurationsfunktioner
@@ -195,10 +195,10 @@ DROP TABLE IF EXISTS public.hex_standardiserade_skyddsnivaer;
 DROP TABLE IF EXISTS public.hex_standardiserade_datakategorier;
 
 -- Typer (måste tas bort efter funktioner som använder dem)
-DROP TYPE IF EXISTS public.tabellregler;
-DROP TYPE IF EXISTS public.kolumnegenskaper;
-DROP TYPE IF EXISTS public.kolumnkonfig;
-DROP TYPE IF EXISTS public.geom_info;
+DROP TYPE IF EXISTS public.hex_tabellregler;
+DROP TYPE IF EXISTS public.hex_kolumnegenskaper;
+DROP TYPE IF EXISTS public.hex_kolumnkonfig;
+DROP TYPE IF EXISTS public.hex_geom_info;
 """
 
 # =============================================================================

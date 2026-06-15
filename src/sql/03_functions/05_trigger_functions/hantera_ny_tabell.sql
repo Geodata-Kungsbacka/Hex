@@ -10,12 +10,12 @@ AS $BODY$
  *    (hex_systemanvandare, t.ex. FME) kan skapa tabeller med geometrisuffix
  *    utan geometrikolumn – dessa registreras i hex_afvaktande_geometri och
  *    stegen 8–9 slutförs av hantera_kolumntillagg när geom-kolumnen anländer.
- * 2. Sparar tabellregler och kolumnegenskaper
+ * 2. Sparar hex_tabellregler och hex_kolumnegenskaper
  * 3. Bestämmer kolumnstruktur (standardkolumner för aktuellt schema)
  * 4. Skapar en temporär tabell med standardkolumner
  * 5. Ersätter originaltabellen med den temporära och döper om sekvenser
- * 6. Återskapar tabellregler (PRIMARY KEY undantas – hanteras av gid)
- * 7. Återskapar kolumnegenskaper
+ * 6. Återskapar hex_tabellregler (PRIMARY KEY undantas – hanteras av gid)
+ * 7. Återskapar hex_kolumnegenskaper
  * 7.5. Skapar trigger hex_tvinga_gid (gid sätts alltid av sekvensen, aldrig av klienten)
  * 8. Skapar GiST-index för geometrikolumn (alla scheman)
  * 9. Lägger till geometrivalidering för _kba_-scheman
@@ -32,14 +32,14 @@ DECLARE
     temp_tabellnamn text;      -- Temporärt tabellnamn
     
     -- Variabel för kolumnhantering
-    standardkolumner kolumnkonfig[];   -- Kolumner för den nya tabellen
+    standardkolumner hex_kolumnkonfig[];   -- Kolumner för den nya tabellen
     
     -- Variabler för regler och egenskaper
-    tabell_regler tabellregler;        -- Tabellövergripande regler
-    kolumn_egenskaper kolumnegenskaper; -- Kolumnspecifika egenskaper
+    tabell_regler hex_tabellregler;        -- Tabellövergripande regler
+    kolumn_egenskaper hex_kolumnegenskaper; -- Kolumnspecifika egenskaper
     
     -- För geometrihantering
-    geometriinfo geom_info;            -- Strukturerad geometriinformation
+    geometriinfo hex_geom_info;            -- Strukturerad geometriinformation
     
     -- För felhantering och loggning
     op_steg text;                      -- Operationssteg för felsökning
@@ -199,9 +199,9 @@ BEGIN
                 END;
             END IF;
 
-            -- Steg 2: Spara tabellregler och kolumnegenskaper
+            -- Steg 2: Spara hex_tabellregler och hex_kolumnegenskaper
             op_steg := 'spara regler';
-            RAISE NOTICE 'Steg 2/10: Sparar tabellregler och kolumnegenskaper';
+            RAISE NOTICE 'Steg 2/10: Sparar hex_tabellregler och hex_kolumnegenskaper';
             tabell_regler := spara_tabellregler(schema_namn, tabell_namn);
             kolumn_egenskaper := spara_kolumnegenskaper(schema_namn, tabell_namn);
             
@@ -214,7 +214,7 @@ BEGIN
             IF ar_fme THEN
                 RAISE NOTICE '[hantera_ny_tabell] [FME-DEBUG] Bestämd kolumnstruktur (% kolumner):', array_length(standardkolumner, 1);
                 DECLARE
-                    fme_sk kolumnkonfig;
+                    fme_sk hex_kolumnkonfig;
                     fme_idx integer := 0;
                 BEGIN
                     FOREACH fme_sk IN ARRAY standardkolumner LOOP
@@ -277,14 +277,14 @@ BEGIN
                 END IF;
             END;
             
-            -- Steg 6: Återskapa tabellregler
+            -- Steg 6: Återskapa hex_tabellregler
             op_steg := 'återskapa regler';
-            RAISE NOTICE 'Steg 6/10: Återskapar tabellregler';
+            RAISE NOTICE 'Steg 6/10: Återskapar hex_tabellregler';
             PERFORM aterskapa_tabellregler(schema_namn, tabell_namn, tabell_regler);
             
-            -- Steg 7: Återskapa kolumnegenskaper
+            -- Steg 7: Återskapa hex_kolumnegenskaper
             op_steg := 'återskapa egenskaper';
-            RAISE NOTICE 'Steg 7/10: Återskapar kolumnegenskaper';
+            RAISE NOTICE 'Steg 7/10: Återskapar hex_kolumnegenskaper';
             PERFORM aterskapa_kolumnegenskaper(schema_namn, tabell_namn, kolumn_egenskaper);
             
             -- Steg 7.5: Tvinga gid att alltid hämtas från sekvensen

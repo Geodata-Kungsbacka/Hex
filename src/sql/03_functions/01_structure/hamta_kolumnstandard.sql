@@ -1,8 +1,8 @@
 CREATE OR REPLACE FUNCTION public.hamta_kolumnstandard(
     p_schema_namn text,
     p_tabell_namn text,
-    p_geometriinfo geom_info)
-    RETURNS kolumnkonfig[]
+    p_geometriinfo hex_geom_info)
+    RETURNS hex_kolumnkonfig[]
     LANGUAGE 'plpgsql'
     COST 100
     VOLATILE PARALLEL UNSAFE
@@ -22,10 +22,10 @@ AS $BODY$
  * PARAMETRAR:
  * - p_schema_namn: Namnet på schemat (t.ex. "sk0_ext_sgu", "sk1_kba_mh_bygg")
  * - p_tabell_namn: Namnet på tabellen (t.ex. "jorddjupsmodell_y") 
- * - p_geometriinfo: Struct med geometriinformation (geom_info-typ) eller NULL
+ * - p_geometriinfo: Struct med geometriinformation (hex_geom_info-typ) eller NULL
  *
  * RETURVÄRDE:
- * - Array av kolumnkonfig-objekt, där varje objekt innehåller:
+ * - Array av hex_kolumnkonfig-objekt, där varje objekt innehåller:
  *   * kolumnnamn: Namnet på kolumnen (t.ex. "gid", "meter_till_berg")
  *   * ordinal_position: Sorteringsordning (1,2,3... eller -1,-2,-3...)
  *   * datatyp: PostgreSQL-datatyp (t.ex. "integer", "text", "geometry(Polygon,3007)")
@@ -89,7 +89,7 @@ AS $BODY$
  * 2. Använd vanlig UNION ALL för att kombinera alla kolumntyper
  ******************************************************************************/
 DECLARE 
-    resultat kolumnkonfig[];          -- Resultatarray som returneras
+    resultat hex_kolumnkonfig[];          -- Resultatarray som returneras
     create_kolumn record;             -- För loggning av kolumninformation
     standardkolumn record;            -- För loop genom hex_standardiserade_kolumner
     matchar boolean;                  -- För evaluering av schema_uttryck
@@ -319,10 +319,10 @@ BEGIN
 
     -- STEG 7: Skapa resultatarray som funktionen returnerar
     -- array_agg(): Samlar alla rader till en array
-    -- ROW()::kolumnkonfig: Skapar en struct av typen kolumnkonfig från varje rad
+    -- ROW()::hex_kolumnkonfig: Skapar en struct av typen hex_kolumnkonfig från varje rad
     -- Ordningen kommer från UNION ALL-sekvensen ovan (ingen ORDER BY behövs)
     RAISE NOTICE '[hamta_kolumnstandard] Steg 7: Skapar resultatarray';
-    SELECT array_agg(ROW(kolumnnamn, ordinal_position, datatyp)::kolumnkonfig)
+    SELECT array_agg(ROW(kolumnnamn, ordinal_position, datatyp)::hex_kolumnkonfig)
     INTO resultat 
     FROM temp_kolumner_till_fardig_tabell;
 
@@ -363,14 +363,14 @@ EXCEPTION
 END;
 $BODY$;
 
-ALTER FUNCTION public.hamta_kolumnstandard(text, text, geom_info)
+ALTER FUNCTION public.hamta_kolumnstandard(text, text, hex_geom_info)
     OWNER TO postgres;
 
-COMMENT ON FUNCTION public.hamta_kolumnstandard(text, text, geom_info)
+COMMENT ON FUNCTION public.hamta_kolumnstandard(text, text, hex_geom_info)
     IS 'Sammanställer en komplett kolumnlista för en tabell genom att kombinera 
 kolumner från hex_standardiserade_kolumner (filtrerade baserat på schema_uttryck) 
 och originaltabellen samt eventuell geometri. Hanterar historik_qa-flaggan för
 att avgöra om DEFAULT ska läggas till eller hanteras av triggers. Använder 
 tvåstegsfiltrering: 1) Loop för schema_uttryck-evaluering 2) Vanlig UNION ALL 
-för sammansättning. Returnerar en array med kolumnkonfig-objekt som används 
+för sammansättning. Returnerar en array med hex_kolumnkonfig-objekt som används 
 för att skapa den standardiserade tabellstrukturen.';

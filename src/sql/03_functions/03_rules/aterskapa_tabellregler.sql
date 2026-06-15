@@ -1,11 +1,11 @@
--- FUNCTION: public.aterskapa_tabellregler(text, text, tabellregler)
+-- FUNCTION: public.aterskapa_tabellregler(text, text, hex_tabellregler)
 
--- DROP FUNCTION IF EXISTS public.aterskapa_tabellregler(text, text, tabellregler);
+-- DROP FUNCTION IF EXISTS public.aterskapa_tabellregler(text, text, hex_tabellregler);
 
 CREATE OR REPLACE FUNCTION public.aterskapa_tabellregler(
 	p_schema_namn text,
 	p_tabell_namn text,
-	p_regler tabellregler)
+	p_regler hex_tabellregler)
     RETURNS void
     LANGUAGE 'plpgsql'
     COST 100
@@ -14,8 +14,8 @@ AS $BODY$
 
 /******************************************************************************
  * Denna funktion återskapar tabellövergripande regler i rätt ordning. 
- * Funktionen har anpassats för att endast hantera äkta tabellregler, medan
- * kolumnegenskaper hanteras separat av aterskapa_kolumnegenskaper().
+ * Funktionen har anpassats för att endast hantera äkta hex_tabellregler, medan
+ * hex_kolumnegenskaper hanteras separat av aterskapa_kolumnegenskaper().
  *
  * Regler återskapas i följande ordning:
  * 1. Index (skapas först eftersom de kan behövas av constraints)
@@ -39,7 +39,7 @@ DECLARE
     antal_fk integer;        -- Antal återskapade foreign keys  
 BEGIN
     RAISE NOTICE E'[aterskapa_tabellregler] === START ===';
-    RAISE NOTICE '[aterskapa_tabellregler] Återskapar tabellregler för %.%', p_schema_namn, p_tabell_namn;
+    RAISE NOTICE '[aterskapa_tabellregler] Återskapar hex_tabellregler för %.%', p_schema_namn, p_tabell_namn;
 
     -- Steg 1: Återskapa index
     op_steg := 'index';
@@ -141,10 +141,10 @@ EXCEPTION
 END;
 $BODY$;
 
-ALTER FUNCTION public.aterskapa_tabellregler(text, text, tabellregler)
+ALTER FUNCTION public.aterskapa_tabellregler(text, text, hex_tabellregler)
     OWNER TO postgres;
 
-COMMENT ON FUNCTION public.aterskapa_tabellregler(text, text, tabellregler)
+COMMENT ON FUNCTION public.aterskapa_tabellregler(text, text, hex_tabellregler)
     IS 'Återskapar tabellövergripande regler (index, constraints, foreign keys) i korrekt ordning.
 PRIMARY KEY-constraints undantas alltid: Hex tillhandahåller sin egen primärnyckel via
 gid-kolumnen, och en extern PRIMARY KEY (t.ex. från FME) skulle orsaka konflikt.
