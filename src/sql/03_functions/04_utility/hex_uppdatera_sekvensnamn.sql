@@ -1,4 +1,4 @@
-CREATE OR REPLACE FUNCTION public.uppdatera_sekvensnamn(
+CREATE OR REPLACE FUNCTION public.hex_uppdatera_sekvensnamn(
     p_schema_namn text,
     p_tabell_namn text,
     p_temp_suffix text DEFAULT '_temp_0001'
@@ -42,8 +42,8 @@ BEGIN
 END;
 $BODY$;
 
-ALTER FUNCTION public.uppdatera_sekvensnamn(text, text, text)
+ALTER FUNCTION public.hex_uppdatera_sekvensnamn(text, text, text)
     OWNER TO postgres;
 
-COMMENT ON FUNCTION public.uppdatera_sekvensnamn(text, text, text)
+COMMENT ON FUNCTION public.hex_uppdatera_sekvensnamn(text, text, text)
     IS 'Döper om IDENTITY-sekvenser som skapats med temporärt suffix tillbaka till korrekt namn.';

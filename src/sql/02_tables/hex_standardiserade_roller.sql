@@ -36,7 +36,7 @@ COMMENT ON COLUMN public.hex_standardiserade_roller.with_login
 
 COMMENT ON COLUMN public.hex_standardiserade_roller.arvs_fran
     IS 'Om satt, beviljas denna roll till den nya rollen via GRANT istället för att
-    tilldela_rollrattigheter() anropas direkt. Stödjer {schema}-substitution.
+    hex_tilldela_rollrattigheter() anropas direkt. Stödjer {schema}-substitution.
     Används för att låta gs_r_{schema} och gs_w_{schema} ärva rättigheter från
     r_{schema} respektive w_{schema}, så att behörigheterna hålls synkroniserade.';
 
@@ -51,6 +51,6 @@ INSERT INTO hex_standardiserade_roller (rollnamn, rolltyp, schema_uttryck, with_
 ON CONFLICT (rollnamn) DO NOTHING;
 
 -- Any database user who creates tables needs to read these configuration tables,
--- since the trigger functions (hantera_ny_tabell, hantera_kolumntillagg) run
+-- since the trigger functions (hex_hantera_ny_tabell, hex_hantera_ny_kolumn) run
 -- as SECURITY INVOKER (the calling user's privileges).
 GRANT SELECT ON public.hex_standardiserade_roller TO PUBLIC;

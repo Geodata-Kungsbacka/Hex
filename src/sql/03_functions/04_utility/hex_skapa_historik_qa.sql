@@ -1,4 +1,4 @@
-CREATE OR REPLACE FUNCTION public.skapa_historik_qa(
+CREATE OR REPLACE FUNCTION public.hex_skapa_historik_qa(
     p_schema_namn text,
     p_tabell_namn text
 )
@@ -17,7 +17,7 @@ AS $BODY$
  * UPPDATERAD: Använder nu session_user istället för current_user för att
  * fånga den faktiskt autentiserade användaren (inte SET ROLE-identitet).
  *
- * UPPDATERAD: Använder nu hamta_geometri_definition() för korrekt 
+ * UPPDATERAD: Använder nu hex_hamta_geometri_definition() för korrekt 
  * geometrihantering i historiktabeller.
  ******************************************************************************/
 DECLARE
@@ -36,12 +36,12 @@ DECLARE
     har_geometri boolean := false;
     geometriinfo hex_geom_info;
 BEGIN
-    RAISE NOTICE E'[skapa_historik_qa] === START ===';
-    RAISE NOTICE '[skapa_historik_qa] Skapar historik/QA för %.%', p_schema_namn, p_tabell_namn;
+    RAISE NOTICE E'[hex_skapa_historik_qa] === START ===';
+    RAISE NOTICE '[hex_skapa_historik_qa] Skapar historik/QA för %.%', p_schema_namn, p_tabell_namn;
     
     -- Steg 1: Kontrollera QA-kolumner
     op_steg := 'kontrollera qa-kolumner';
-    RAISE NOTICE '[skapa_historik_qa] Steg 1: Kontrollerar QA-kolumner';
+    RAISE NOTICE '[hex_skapa_historik_qa] Steg 1: Kontrollerar QA-kolumner';
     
     SELECT 
         array_agg(sk.kolumnnamn ORDER BY sk.ordinal_position),
@@ -60,20 +60,20 @@ BEGIN
     antal_qa_kolumner := COALESCE(array_length(qa_kolumner, 1), 0);
     
     IF antal_qa_kolumner = 0 THEN
-        RAISE NOTICE '[skapa_historik_qa]   » Inga QA-kolumner med historik_qa = true hittades';
-        RAISE NOTICE '[skapa_historik_qa] === AVBRUTEN (ingen historik behövs) ===';
+        RAISE NOTICE '[hex_skapa_historik_qa]   » Inga QA-kolumner med historik_qa = true hittades';
+        RAISE NOTICE '[hex_skapa_historik_qa] === AVBRUTEN (ingen historik behövs) ===';
         RETURN false;
     END IF;
     
-    RAISE NOTICE '[skapa_historik_qa]   » Hittade % QA-kolumner:', antal_qa_kolumner;
+    RAISE NOTICE '[hex_skapa_historik_qa]   » Hittade % QA-kolumner:', antal_qa_kolumner;
     FOR i IN 1..antal_qa_kolumner LOOP
-        RAISE NOTICE '[skapa_historik_qa]     #%: % (uttryck: %)',
+        RAISE NOTICE '[hex_skapa_historik_qa]     #%: % (uttryck: %)',
             i, qa_kolumner[i], qa_uttryck[i];
     END LOOP;
     
     -- Steg 2: Kontrollera om tabellen har geometri
     op_steg := 'kontrollera geometri';
-    RAISE NOTICE '[skapa_historik_qa] Steg 2: Kontrollerar geometrikolumn';
+    RAISE NOTICE '[hex_skapa_historik_qa] Steg 2: Kontrollerar geometrikolumn';
     
     SELECT EXISTS(
         SELECT 1 FROM geometry_columns
@@ -83,16 +83,16 @@ BEGIN
     ) INTO har_geometri;
     
     IF har_geometri THEN
-        RAISE NOTICE '[skapa_historik_qa]   » Geometrikolumn upptäckt - hämtar definition';
-        geometriinfo := hamta_geometri_definition(p_schema_namn, p_tabell_namn);
-        RAISE NOTICE '[skapa_historik_qa]   » Geometridefinition: %', geometriinfo.definition;
+        RAISE NOTICE '[hex_skapa_historik_qa]   » Geometrikolumn upptäckt - hämtar definition';
+        geometriinfo := hex_hamta_geometri_definition(p_schema_namn, p_tabell_namn);
+        RAISE NOTICE '[hex_skapa_historik_qa]   » Geometridefinition: %', geometriinfo.definition;
     ELSE
-        RAISE NOTICE '[skapa_historik_qa]   » Ingen geometrikolumn funnen';
+        RAISE NOTICE '[hex_skapa_historik_qa]   » Ingen geometrikolumn funnen';
     END IF;
     
     -- Steg 3: Hämta kolumndefinitioner från originaltabellen
     op_steg := 'hämta kolumndefinitioner';
-    RAISE NOTICE '[skapa_historik_qa] Steg 3: Analyserar originaltabellens struktur';
+    RAISE NOTICE '[hex_skapa_historik_qa] Steg 3: Analyserar originaltabellens struktur';
     
     SELECT 
         string_agg(
@@ -131,7 +131,7 @@ BEGIN
     WHERE c.table_schema = p_schema_namn
     AND c.table_name = p_tabell_namn;
     
-    RAISE NOTICE '[skapa_historik_qa]   » Originaltabell har % kolumner', antal_original_kolumner;
+    RAISE NOTICE '[hex_skapa_historik_qa]   » Originaltabell har % kolumner', antal_original_kolumner;
     
     -- Hämta kolumnnamn för INSERT (citerade med %I för att hantera reserverade ord)
     SELECT string_agg(format('%I', c.column_name), ', ' ORDER BY c.ordinal_position)
@@ -140,16 +140,16 @@ BEGIN
     WHERE c.table_schema = p_schema_namn
     AND c.table_name = p_tabell_namn;
     
-    RAISE NOTICE '[skapa_historik_qa]   » Kolumnlista för INSERT: %',
+    RAISE NOTICE '[hex_skapa_historik_qa]   » Kolumnlista för INSERT: %',
         substring(kolumn_lista from 1 for 50) ||
         CASE WHEN length(kolumn_lista) > 50 THEN '...' ELSE '' END;
 
     -- Steg 4: Skapa historiktabell
     -- ÄNDRING: Använder session_user istället för current_user
     op_steg := 'skapa historiktabell';
-    RAISE NOTICE '[skapa_historik_qa] Steg 4: Skapar historiktabell';
-    RAISE NOTICE '[skapa_historik_qa]   » Tabellnamn: %.%', p_schema_namn, p_tabell_namn || '_h';
-    RAISE NOTICE '[skapa_historik_qa]   » Med 3 h_-kolumner + % originalkolumner', antal_original_kolumner;
+    RAISE NOTICE '[hex_skapa_historik_qa] Steg 4: Skapar historiktabell';
+    RAISE NOTICE '[hex_skapa_historik_qa]   » Tabellnamn: %.%', p_schema_namn, p_tabell_namn || '_h';
+    RAISE NOTICE '[hex_skapa_historik_qa]   » Med 3 h_-kolumner + % originalkolumner', antal_original_kolumner;
     
     EXECUTE format(
         'CREATE TABLE %I.%I (
@@ -161,11 +161,11 @@ BEGIN
         p_schema_namn, p_tabell_namn || '_h',
         kolumn_definitioner
     );
-    RAISE NOTICE '[skapa_historik_qa]   ✓ Historiktabell skapad';
+    RAISE NOTICE '[hex_skapa_historik_qa]   ✓ Historiktabell skapad';
     
     -- Steg 5: Skapa index
     op_steg := 'skapa index';
-    RAISE NOTICE '[skapa_historik_qa] Steg 5: Skapar index för prestanda';
+    RAISE NOTICE '[hex_skapa_historik_qa] Steg 5: Skapar index för prestanda';
     
     -- Index name capped at 56 chars to avoid colliding with the 63-char history
     -- table name when p_tabell_namn is 61+ characters long.
@@ -174,11 +174,11 @@ BEGIN
         left(p_tabell_namn, 50) || '_h_idx',
         p_schema_namn, p_tabell_namn || '_h'
     );
-    RAISE NOTICE '[skapa_historik_qa]   ✓ Index skapat: %', left(p_tabell_namn, 50) || '_h_idx';
+    RAISE NOTICE '[hex_skapa_historik_qa]   ✓ Index skapat: %', left(p_tabell_namn, 50) || '_h_idx';
     
     -- Steg 6: Bygg trigger-satser
     op_steg := 'bygg trigger-satser';
-    RAISE NOTICE '[skapa_historik_qa] Steg 6: Bygger trigger-satser för QA-uppdatering';
+    RAISE NOTICE '[hex_skapa_historik_qa] Steg 6: Bygger trigger-satser för QA-uppdatering';
     
     FOR i IN 1..antal_qa_kolumner LOOP
         trigger_satser := trigger_satser || format(
@@ -186,13 +186,13 @@ BEGIN
             qa_kolumner[i], qa_uttryck[i]
         );
     END LOOP;
-    RAISE NOTICE '[skapa_historik_qa]   » Trigger kommer sätta % QA-värden', antal_qa_kolumner;
+    RAISE NOTICE '[hex_skapa_historik_qa]   » Trigger kommer sätta % QA-värden', antal_qa_kolumner;
     
     -- Steg 7: Skapa triggerfunktion
     -- ÄNDRING: Använder session_user istället för current_user
     op_steg := 'skapa triggerfunktion';
     trigger_funktionsnamn := 'trg_fn_' || p_tabell_namn || '_qa';
-    RAISE NOTICE '[skapa_historik_qa] Steg 7: Skapar triggerfunktion %', trigger_funktionsnamn;
+    RAISE NOTICE '[hex_skapa_historik_qa] Steg 7: Skapar triggerfunktion %', trigger_funktionsnamn;
     
     EXECUTE format($TRIG$
         CREATE OR REPLACE FUNCTION %I.%I()
@@ -231,7 +231,7 @@ BEGIN
         trigger_satser,
         p_schema_namn, p_tabell_namn || '_h', kolumn_lista
     );
-    RAISE NOTICE '[skapa_historik_qa]   ✓ Triggerfunktion skapad';
+    RAISE NOTICE '[hex_skapa_historik_qa]   ✓ Triggerfunktion skapad';
     
     -- Steg 7.5: Registrera OID → historiktabell-mappning i hex_metadata
     -- Gör det möjligt att spåra historiktabellen även efter RENAME TO,
@@ -261,13 +261,13 @@ BEGIN
                 parent_table     = EXCLUDED.parent_table,
                 history_table    = EXCLUDED.history_table,
                 trigger_funktion = EXCLUDED.trigger_funktion;
-            RAISE NOTICE '[skapa_historik_qa]   ✓ Registrerad i hex_metadata (OID: %)', parent_oid_val;
+            RAISE NOTICE '[hex_skapa_historik_qa]   ✓ Registrerad i hex_metadata (OID: %)', parent_oid_val;
         END IF;
     END;
 
     -- Steg 8: Skapa trigger
     op_steg := 'skapa trigger';
-    RAISE NOTICE '[skapa_historik_qa] Steg 8: Skapar trigger på modertabell';
+    RAISE NOTICE '[hex_skapa_historik_qa] Steg 8: Skapar trigger på modertabell';
     
     EXECUTE format(
         'CREATE TRIGGER trg_%s_qa 
@@ -276,11 +276,11 @@ BEGIN
         p_tabell_namn, p_schema_namn, p_tabell_namn,
         p_schema_namn, trigger_funktionsnamn
     );
-    RAISE NOTICE '[skapa_historik_qa]   ✓ Trigger skapad: trg_%_qa', p_tabell_namn;
+    RAISE NOTICE '[hex_skapa_historik_qa]   ✓ Trigger skapad: trg_%_qa', p_tabell_namn;
     
     -- Steg 9: Dokumentera
     op_steg := 'dokumentera';
-    RAISE NOTICE '[skapa_historik_qa] Steg 9: Lägger till dokumentation';
+    RAISE NOTICE '[hex_skapa_historik_qa] Steg 9: Lägger till dokumentation';
     
     EXECUTE format(
         'COMMENT ON TABLE %I.%I IS %L',
@@ -292,39 +292,39 @@ BEGIN
     );
     
     -- Sammanfattning
-    RAISE NOTICE '[skapa_historik_qa] Sammanfattning:';
-    RAISE NOTICE '[skapa_historik_qa]   » Historiktabell:     %.%_h', p_schema_namn, p_tabell_namn;
-    RAISE NOTICE '[skapa_historik_qa]   » Triggerfunktion:    %', trigger_funktionsnamn;
-    RAISE NOTICE '[skapa_historik_qa]   » QA-kolumner:        %', array_to_string(qa_kolumner, ', ');
-    RAISE NOTICE '[skapa_historik_qa]   » Geometri:           %',
+    RAISE NOTICE '[hex_skapa_historik_qa] Sammanfattning:';
+    RAISE NOTICE '[hex_skapa_historik_qa]   » Historiktabell:     %.%_h', p_schema_namn, p_tabell_namn;
+    RAISE NOTICE '[hex_skapa_historik_qa]   » Triggerfunktion:    %', trigger_funktionsnamn;
+    RAISE NOTICE '[hex_skapa_historik_qa]   » QA-kolumner:        %', array_to_string(qa_kolumner, ', ');
+    RAISE NOTICE '[hex_skapa_historik_qa]   » Geometri:           %',
         CASE WHEN har_geometri THEN geometriinfo.definition ELSE 'Ingen' END;
-    RAISE NOTICE '[skapa_historik_qa]   » Totalt kolumner:    % (3 h_ + % original)',
+    RAISE NOTICE '[hex_skapa_historik_qa]   » Totalt kolumner:    % (3 h_ + % original)',
         3 + antal_original_kolumner, antal_original_kolumner;
     
-    RAISE NOTICE '[skapa_historik_qa] === SLUT ===';
+    RAISE NOTICE '[hex_skapa_historik_qa] === SLUT ===';
     RETURN true;
 
 EXCEPTION
     WHEN OTHERS THEN
-        RAISE NOTICE '[skapa_historik_qa] !!! FEL UPPSTOD !!!';
-        RAISE NOTICE '[skapa_historik_qa] Senaste kontext:';
-        RAISE NOTICE '[skapa_historik_qa]   - Schema: %', p_schema_namn;
-        RAISE NOTICE '[skapa_historik_qa]   - Tabell: %', p_tabell_namn;
-        RAISE NOTICE '[skapa_historik_qa]   - Operation: %', op_steg;
-        RAISE NOTICE '[skapa_historik_qa]   - QA-kolumner: %', COALESCE(array_to_string(qa_kolumner, ', '), 'inga');
-        RAISE NOTICE '[skapa_historik_qa] Tekniska feldetaljer:';
-        RAISE NOTICE '[skapa_historik_qa]   - Felkod: %', SQLSTATE;
-        RAISE NOTICE '[skapa_historik_qa]   - Felmeddelande: %', SQLERRM;
+        RAISE NOTICE '[hex_skapa_historik_qa] !!! FEL UPPSTOD !!!';
+        RAISE NOTICE '[hex_skapa_historik_qa] Senaste kontext:';
+        RAISE NOTICE '[hex_skapa_historik_qa]   - Schema: %', p_schema_namn;
+        RAISE NOTICE '[hex_skapa_historik_qa]   - Tabell: %', p_tabell_namn;
+        RAISE NOTICE '[hex_skapa_historik_qa]   - Operation: %', op_steg;
+        RAISE NOTICE '[hex_skapa_historik_qa]   - QA-kolumner: %', COALESCE(array_to_string(qa_kolumner, ', '), 'inga');
+        RAISE NOTICE '[hex_skapa_historik_qa] Tekniska feldetaljer:';
+        RAISE NOTICE '[hex_skapa_historik_qa]   - Felkod: %', SQLSTATE;
+        RAISE NOTICE '[hex_skapa_historik_qa]   - Felmeddelande: %', SQLERRM;
         RAISE;
 END;
 $BODY$;
 
-ALTER FUNCTION public.skapa_historik_qa(text, text)
+ALTER FUNCTION public.hex_skapa_historik_qa(text, text)
     OWNER TO postgres;
 
-COMMENT ON FUNCTION public.skapa_historik_qa(text, text)
+COMMENT ON FUNCTION public.hex_skapa_historik_qa(text, text)
     IS 'Skapar historiktabell och QA-triggers för tabeller som har QA-kolumner med historik_qa=true.
 Använder session_user för att fånga den faktiskt autentiserade användaren (inte SET ROLE-identitet).
-Använder hamta_geometri_definition() för korrekt geometrihantering i historiktabeller, vilket 
+Använder hex_hamta_geometri_definition() för korrekt geometrihantering i historiktabeller, vilket 
 säkerställer att geometrikolumner behåller sin specifika typ och SRID (t.ex. geometry(PolygonZ,3007))
 istället för generisk geometry-typ. Detta förhindrar QA-trigger-krascher vid geometrikopiering.';

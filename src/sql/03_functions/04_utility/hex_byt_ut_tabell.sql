@@ -1,4 +1,4 @@
-CREATE OR REPLACE FUNCTION public.byt_ut_tabell(
+CREATE OR REPLACE FUNCTION public.hex_byt_ut_tabell(
     p_schema_namn text,
     p_tabell_namn text,
     p_temp_tabellnamn text

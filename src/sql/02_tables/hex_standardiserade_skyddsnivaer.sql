@@ -21,8 +21,8 @@ ALTER TABLE public.hex_standardiserade_skyddsnivaer
 
 COMMENT ON TABLE public.hex_standardiserade_skyddsnivaer
     IS 'Definierar giltiga säkerhetsnivåprefix (sk0, sk1, sk2, skx, ...) och deras egenskaper.
-Tabellen används av validera_schemanamn() för att bygga det tillåtna namnmönstret dynamiskt,
-och av notifiera_geoserver() för att avgöra vilka scheman som ska publiceras.
+Tabellen används av hex_validera_schemanamn() för att bygga det tillåtna namnmönstret dynamiskt,
+och av hex_notifiera_gs() för att avgöra vilka scheman som ska publiceras.
 Lägg till en ny rad här för att registrera en ny säkerhetsnivå.';
 
 COMMENT ON COLUMN public.hex_standardiserade_skyddsnivaer.prefix
@@ -50,6 +50,6 @@ UPDATE public.hex_standardiserade_skyddsnivaer
     SET anonym_las = true
     WHERE prefix = 'sk0' AND NOT anonym_las;
 
--- Trigger functions (hantera_ny_tabell, validera_schemanamn, notifiera_geoserver) run as
+-- Trigger functions (hex_hantera_ny_tabell, hex_validera_schemanamn, hex_notifiera_gs) run as
 -- SECURITY INVOKER, so the calling user needs SELECT on this table.
 GRANT SELECT ON public.hex_standardiserade_skyddsnivaer TO PUBLIC;

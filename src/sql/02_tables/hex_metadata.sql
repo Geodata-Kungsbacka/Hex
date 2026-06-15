@@ -5,9 +5,9 @@
 -- mappningen förblir giltig även när en tabell döps om – till skillnad från den
 -- gamla namnkonventionsuppslaget (tabell_h) som slutar fungera direkt.
 --
--- Skrivs av:      skapa_historik_qa()        (vid skapande av historiktabell)
--- Uppdateras av:  hantera_kolumntillagg()    (vid ALTER TABLE RENAME TO)
--- Raderas av:     hantera_borttagen_tabell() (vid DROP TABLE)
+-- Skrivs av:      hex_skapa_historik_qa()        (vid skapande av historiktabell)
+-- Uppdateras av:  hex_hantera_ny_kolumn()    (vid ALTER TABLE RENAME TO)
+-- Raderas av:     hex_hantera_borttagen_tabell() (vid DROP TABLE)
 
 CREATE TABLE IF NOT EXISTS public.hex_metadata (
     parent_oid       oid          PRIMARY KEY,
@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS public.hex_metadata (
     parent_table     text         NOT NULL,
     history_schema   text         NOT NULL,
     history_table    text         NOT NULL,
-    trigger_funktion text,        -- NULL om skapa_historik_qa returnerade false
+    trigger_funktion text,        -- NULL om hex_skapa_historik_qa returnerade false
     created_at       timestamptz  NOT NULL DEFAULT now()
 );
 

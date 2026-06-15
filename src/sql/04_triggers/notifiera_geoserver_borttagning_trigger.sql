@@ -6,7 +6,7 @@ DROP EVENT TRIGGER IF EXISTS notifiera_geoserver_borttagning_trigger;
 
 CREATE EVENT TRIGGER notifiera_geoserver_borttagning_trigger ON SQL_DROP
     WHEN TAG IN ('DROP SCHEMA')
-    EXECUTE PROCEDURE public.notifiera_geoserver_borttagning();
+    EXECUTE PROCEDURE public.hex_notifiera_gs_borttagning();
 
 ALTER EVENT TRIGGER notifiera_geoserver_borttagning_trigger
     OWNER TO postgres;

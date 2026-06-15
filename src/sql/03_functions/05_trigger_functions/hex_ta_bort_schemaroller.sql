@@ -1,4 +1,4 @@
-CREATE OR REPLACE FUNCTION public.ta_bort_schemaroller()
+CREATE OR REPLACE FUNCTION public.hex_ta_bort_schemaroller()
     RETURNS event_trigger
     LANGUAGE 'plpgsql'
     COST 100
@@ -29,8 +29,8 @@ DECLARE
     roll_existerar      boolean;
     antal_borttagna     integer := 0;
 BEGIN
-    RAISE NOTICE E'[ta_bort_schemaroller] === START ===';
-    RAISE NOTICE '[ta_bort_schemaroller] Hanterar rollborttagning för borttagna scheman';
+    RAISE NOTICE E'[hex_ta_bort_schemaroller] === START ===';
+    RAISE NOTICE '[hex_ta_bort_schemaroller] Hanterar rollborttagning för borttagna scheman';
 
     -- Identifiera borttagna scheman från trigger-händelsen
     FOR kommando IN SELECT * FROM pg_event_trigger_dropped_objects()
@@ -38,12 +38,12 @@ BEGIN
     LOOP
         schema_namn := kommando.object_name;
 
-        RAISE NOTICE E'[ta_bort_schemaroller] ================';
-        RAISE NOTICE '[ta_bort_schemaroller] Schema borttaget: %', schema_namn;
+        RAISE NOTICE E'[hex_ta_bort_schemaroller] ================';
+        RAISE NOTICE '[hex_ta_bort_schemaroller] Schema borttaget: %', schema_namn;
 
         -- Hoppa över systemscheman
         IF schema_namn = 'public' OR schema_namn ~ '^pg_' OR schema_namn = 'information_schema' THEN
-            RAISE NOTICE '[ta_bort_schemaroller] Hoppar över systemschema: %', schema_namn;
+            RAISE NOTICE '[hex_ta_bort_schemaroller] Hoppar över systemschema: %', schema_namn;
             CONTINUE;
         END IF;
 
@@ -55,7 +55,7 @@ BEGIN
         LOOP
             slutligt_rollnamn := replace(rollkonfiguration.rollnamn, '{schema}', schema_namn);
 
-            RAISE NOTICE '[ta_bort_schemaroller] Kontrollerar roll: %', slutligt_rollnamn;
+            RAISE NOTICE '[hex_ta_bort_schemaroller] Kontrollerar roll: %', slutligt_rollnamn;
 
             SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = slutligt_rollnamn) INTO roll_existerar;
 
@@ -68,38 +68,38 @@ BEGIN
                     -- Rensa sparade autentiseringsuppgifter
                     DELETE FROM hex_role_credentials WHERE rolname = slutligt_rollnamn;
 
-                    RAISE NOTICE '[ta_bort_schemaroller]   ✓ Roll borttagen: %', slutligt_rollnamn;
+                    RAISE NOTICE '[hex_ta_bort_schemaroller]   ✓ Roll borttagen: %', slutligt_rollnamn;
                     antal_borttagna := antal_borttagna + 1;
                 EXCEPTION
                     WHEN OTHERS THEN
-                        RAISE WARNING '[ta_bort_schemaroller]   ⚠ Kunde inte ta bort roll %: %', slutligt_rollnamn, SQLERRM;
-                        RAISE WARNING '[ta_bort_schemaroller]     Rollen äger objekt i annan databas. Ta bort manuellt med: DROP ROLE %;', slutligt_rollnamn;
+                        RAISE WARNING '[hex_ta_bort_schemaroller]   ⚠ Kunde inte ta bort roll %: %', slutligt_rollnamn, SQLERRM;
+                        RAISE WARNING '[hex_ta_bort_schemaroller]     Rollen äger objekt i annan databas. Ta bort manuellt med: DROP ROLE %;', slutligt_rollnamn;
                 END;
             ELSE
-                RAISE NOTICE '[ta_bort_schemaroller]   - Roll existerar inte: %', slutligt_rollnamn;
+                RAISE NOTICE '[hex_ta_bort_schemaroller]   - Roll existerar inte: %', slutligt_rollnamn;
             END IF;
         END LOOP;
 
-        RAISE NOTICE '[ta_bort_schemaroller] Sammanfattning för schema %: % roller borttagna',
+        RAISE NOTICE '[hex_ta_bort_schemaroller] Sammanfattning för schema %: % roller borttagna',
             schema_namn, antal_borttagna;
         antal_borttagna := 0;
     END LOOP;
 
-    RAISE NOTICE '[ta_bort_schemaroller] === SLUT ===';
+    RAISE NOTICE '[hex_ta_bort_schemaroller] === SLUT ===';
 
 EXCEPTION
     WHEN OTHERS THEN
-        RAISE NOTICE '[ta_bort_schemaroller] !!! FEL UPPSTOD !!!';
-        RAISE NOTICE '[ta_bort_schemaroller]   - Schema: %', schema_namn;
-        RAISE NOTICE '[ta_bort_schemaroller]   - Fel: %', SQLERRM;
+        RAISE NOTICE '[hex_ta_bort_schemaroller] !!! FEL UPPSTOD !!!';
+        RAISE NOTICE '[hex_ta_bort_schemaroller]   - Schema: %', schema_namn;
+        RAISE NOTICE '[hex_ta_bort_schemaroller]   - Fel: %', SQLERRM;
         RAISE;
 END;
 $BODY$;
 
-ALTER FUNCTION public.ta_bort_schemaroller()
+ALTER FUNCTION public.hex_ta_bort_schemaroller()
     OWNER TO postgres;
 
-COMMENT ON FUNCTION public.ta_bort_schemaroller()
+COMMENT ON FUNCTION public.hex_ta_bort_schemaroller()
     IS 'Tar automatiskt bort roller när scheman tas bort. Läser konfiguration från
     hex_standardiserade_roller och tar endast bort roller där ta_bort_med_schema = true.
     Rensar även hex_role_credentials för borttagna LOGIN-roller.';

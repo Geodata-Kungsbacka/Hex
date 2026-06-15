@@ -1,4 +1,4 @@
--- FUNCTION: public.system_owner()
+-- FUNCTION: public.hex_systemagare()
 
 /******************************************************************************
  * Returnerar namnet på ägarrollen för Hex-objekt.
@@ -12,7 +12,7 @@
  * genererar funktionen dynamiskt baserat på OWNER_ROLE-konfigurationen.
  ******************************************************************************/
 
-CREATE OR REPLACE FUNCTION public.system_owner()
+CREATE OR REPLACE FUNCTION public.hex_systemagare()
     RETURNS text
     LANGUAGE 'sql'
     IMMUTABLE
@@ -20,7 +20,7 @@ AS $BODY$
     SELECT 'gis_admin'::text;  -- ← Ändra detta till din ägarroll
 $BODY$;
 
-ALTER FUNCTION public.system_owner() OWNER TO postgres;
+ALTER FUNCTION public.hex_systemagare() OWNER TO postgres;
 
-COMMENT ON FUNCTION public.system_owner()
+COMMENT ON FUNCTION public.hex_systemagare()
     IS 'Returnerar ägarrollen för Hex-skapade roller. Används för att ge ADMIN OPTION så att ägarrollen kan hantera roller skapade av event triggers.';

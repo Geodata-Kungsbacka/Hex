@@ -31,7 +31,7 @@ COMMENT ON COLUMN public.hex_grupprattigheter.beskrivning IS
     'Valfri DBA-anteckning om varför mappningen finns.';
 
 -- Återkalla alla rättigheter från PUBLIC.
--- Ge skrivrättigheter enbart till ägarrollen (system_owner).
+-- Ge skrivrättigheter enbart till ägarrollen (hex_systemagare).
 -- Triggerfunktioner behöver inte läsa tabellen direkt.
 REVOKE ALL ON public.hex_grupprattigheter FROM PUBLIC;
 
@@ -39,7 +39,7 @@ DO $$
 BEGIN
     EXECUTE format(
         'GRANT SELECT, INSERT, UPDATE, DELETE ON public.hex_grupprattigheter TO %I',
-        public.system_owner()
+        public.hex_systemagare()
     );
 END;
 $$;

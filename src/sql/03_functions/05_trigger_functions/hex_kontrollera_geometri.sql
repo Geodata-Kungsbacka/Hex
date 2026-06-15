@@ -1,8 +1,8 @@
--- FUNCTION: public.kontrollera_geometri_trigger()
+-- FUNCTION: public.hex_kontrollera_geometri_trigger()
 
--- DROP FUNCTION IF EXISTS public.kontrollera_geometri_trigger();
+-- DROP FUNCTION IF EXISTS public.hex_kontrollera_geometri_trigger();
 
-CREATE OR REPLACE FUNCTION public.kontrollera_geometri_trigger()
+CREATE OR REPLACE FUNCTION public.hex_kontrollera_geometri_trigger()
     RETURNS trigger
     LANGUAGE 'plpgsql'
     COST 100
@@ -20,13 +20,13 @@ AS $BODY$
  * är fel med geometrin, snarare än det generiska:
  *   "new row for relation … violates check constraint"
  *
- * Triggern installeras automatiskt av hantera_ny_tabell() och
- * hantera_kolumntillagg() på alla _kba_-tabeller med geometrikolumn (geom).
+ * Triggern installeras automatiskt av hex_hantera_ny_tabell() och
+ * hex_hantera_ny_kolumn() på alla _kba_-tabeller med geometrikolumn (geom).
  ******************************************************************************/
 DECLARE
     fel text;
 BEGIN
-    fel := public.forklara_geometrifel(NEW.geom);
+    fel := public.hex_forklara_geometrifel(NEW.geom);
     IF fel IS NOT NULL THEN
         RAISE EXCEPTION 'Ogiltig geometri i tabellen "%": %',
             TG_TABLE_NAME, fel
@@ -36,10 +36,10 @@ BEGIN
 END;
 $BODY$;
 
-ALTER FUNCTION public.kontrollera_geometri_trigger()
+ALTER FUNCTION public.hex_kontrollera_geometri_trigger()
     OWNER TO postgres;
 
-COMMENT ON FUNCTION public.kontrollera_geometri_trigger()
+COMMENT ON FUNCTION public.hex_kontrollera_geometri_trigger()
     IS 'BEFORE INSERT OR UPDATE trigger som avvisar ogiltig geometri med ett läsbart
 felmeddelande. Installeras automatiskt av Hex på alla _kba_-tabeller med geometrikolumn.
 Avfyras före CHECK-constrainten validera_geom_<tabell> för att ge QGIS-användare en

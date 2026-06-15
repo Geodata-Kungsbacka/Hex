@@ -4,22 +4,22 @@
 -- koordinatsystem än EPSG 3007 (SWEREF99 12 00), vilket är det
 -- enda koordinatsystem som ska användas i databasen.
 --
--- En rad registreras automatiskt när hantera_ny_tabell() eller
--- hantera_kolumntillagg() (tvåstegsmönstret) stöter på en tabell
+-- En rad registreras automatiskt när hex_hantera_ny_tabell() eller
+-- hex_hantera_ny_kolumn() (tvåstegsmönstret) stöter på en tabell
 -- vars geometrikolumn har SRID ≠ 3007. Tabellen bör ej finnas kvar
 -- i databasen – data i fel koordinatsystem måste transformeras och
 -- skrivas om innan det är giltigt för produktion.
 --
 -- Livscykel:
---   INSERT/UPDATE: hantera_ny_tabell()        — tabell skapad direkt med fel SRID
---   INSERT/UPDATE: hantera_kolumntillagg()    — geometrikolumn tillagd med fel SRID (tvåsteg)
---   DELETE:        hantera_borttagen_tabell() — tabellen droppas (oavsett anledning)
+--   INSERT/UPDATE: hex_hantera_ny_tabell()        — tabell skapad direkt med fel SRID
+--   INSERT/UPDATE: hex_hantera_ny_kolumn()    — geometrikolumn tillagd med fel SRID (tvåsteg)
+--   DELETE:        hex_hantera_borttagen_tabell() — tabellen droppas (oavsett anledning)
 --
 -- En kvarliggande rad innebär att tabellen fortfarande finns i databasen
 -- med ett avvikande koordinatsystem.
 --
--- Skapas av:   hantera_ny_tabell(), hantera_kolumntillagg()
--- Raderas av:  hantera_borttagen_tabell()
+-- Skapas av:   hex_hantera_ny_tabell(), hex_hantera_ny_kolumn()
+-- Raderas av:  hex_hantera_borttagen_tabell()
 
 CREATE TABLE IF NOT EXISTS public.hex_avvikande_srid (
     schema_namn     text         NOT NULL,
@@ -39,7 +39,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON public.hex_avvikande_srid TO PUBLIC;
 COMMENT ON TABLE public.hex_avvikande_srid IS
     'Granskningstabell för geometritabeller med avvikande koordinatsystem (SRID ≠ 3007).
      Registreras automatiskt vid CREATE TABLE eller ALTER TABLE ADD COLUMN geom när
-     SRID inte är 3007 (SWEREF99 12 00). Tabellen raderas av hantera_borttagen_tabell()
+     SRID inte är 3007 (SWEREF99 12 00). Tabellen raderas av hex_hantera_borttagen_tabell()
      om den droppas. Kvarliggande rader indikerar tabeller i databasen med fel
      koordinatsystem – dessa måste transformeras och skrivas om före produktionsbruk.';
 

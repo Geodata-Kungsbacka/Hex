@@ -20,9 +20,9 @@ AS $BODY$
  * Loggar (via RAISE NOTICE) varje beviljad och hoppats-över rad med orsak.
  * Idempotent – kan köras upprepade gånger utan biverkningar.
  *
- * SECURITY DEFINER: Körs med ägarrollens (system_owner) rättigheter.
- * system_owner har ADMIN OPTION på alla Hex-schemaroller (beviljas i
- * hantera_hex_standardiserade_roller vid skapandet), vilket krävs för att
+ * SECURITY DEFINER: Körs med ägarrollens (hex_systemagare) rättigheter.
+ * hex_systemagare har ADMIN OPTION på alla Hex-schemaroller (beviljas i
+ * hex_hantera_std_roller vid skapandet), vilket krävs för att
  * kunna GRANT:a dessa roller vidare till AD-grupproller.
  *
  * Anropas manuellt av DBA efter att rader lagts till i hex_grupprattigheter:

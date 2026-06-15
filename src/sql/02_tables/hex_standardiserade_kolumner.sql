@@ -47,6 +47,6 @@ VALUES
 ON CONFLICT (kolumnnamn) DO NOTHING;
 
 -- Any database user who creates tables needs to read these configuration tables,
--- since the trigger functions (hantera_ny_tabell, hantera_kolumntillagg) run
+-- since the trigger functions (hex_hantera_ny_tabell, hex_hantera_ny_kolumn) run
 -- as SECURITY INVOKER (the calling user's privileges).
 GRANT SELECT ON public.hex_standardiserade_kolumner TO PUBLIC;

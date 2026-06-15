@@ -1,6 +1,6 @@
-DROP FUNCTION IF EXISTS public.validera_geometri(geometry, float);
+DROP FUNCTION IF EXISTS public.hex_validera_geometri(geometry, float);
 
-CREATE OR REPLACE FUNCTION public.validera_geometri(
+CREATE OR REPLACE FUNCTION public.hex_validera_geometri(
     geom geometry
 )
     RETURNS boolean
@@ -25,7 +25,7 @@ AS $BODY$
  *
  * ANVÄNDNING:
  *   ALTER TABLE schema.tabell ADD CONSTRAINT validera_geom_tabellnamn
- *       CHECK (validera_geometri(geom));
+ *       CHECK (hex_validera_geometri(geom));
  *
  * NOTERA:
  *   - Används endast för _kba_-scheman (manuellt redigerade data)
@@ -45,10 +45,10 @@ BEGIN
 END;
 $BODY$;
 
-ALTER FUNCTION public.validera_geometri(geometry)
+ALTER FUNCTION public.hex_validera_geometri(geometry)
     OWNER TO postgres;
 
-COMMENT ON FUNCTION public.validera_geometri(geometry)
+COMMENT ON FUNCTION public.hex_validera_geometri(geometry)
     IS 'Validerar geometrikvalitet för _kba_-scheman. Kontrollerar OGC-validitet,
 icke-tomhet, inga exakta konsekutiva duplicerade punkter (ST_RemoveRepeatedPoints),
 samt att geometrin inte innehåller kurvsegment (ST_HasArc).

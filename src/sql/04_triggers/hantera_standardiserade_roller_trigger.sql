@@ -6,7 +6,7 @@ DROP EVENT TRIGGER IF EXISTS hantera_hex_standardiserade_roller_trigger;
 
 CREATE EVENT TRIGGER hantera_hex_standardiserade_roller_trigger ON DDL_COMMAND_END
     WHEN TAG IN ('CREATE SCHEMA')
-    EXECUTE PROCEDURE public.hantera_hex_standardiserade_roller();
+    EXECUTE PROCEDURE public.hex_hantera_std_roller();
 
 ALTER EVENT TRIGGER hantera_hex_standardiserade_roller_trigger
     OWNER TO postgres;

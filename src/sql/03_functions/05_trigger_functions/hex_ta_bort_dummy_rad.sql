@@ -1,6 +1,6 @@
--- FUNCTION: public.ta_bort_dummy_rad()
+-- FUNCTION: public.hex_ta_bort_dummy_rad()
 
-CREATE OR REPLACE FUNCTION public.ta_bort_dummy_rad()
+CREATE OR REPLACE FUNCTION public.hex_ta_bort_dummy_rad()
     RETURNS trigger
     LANGUAGE 'plpgsql'
     COST 100
@@ -11,7 +11,7 @@ AS $BODY$
  * första riktiga raden läggs till i en geometritabell.
  *
  * Triggernamn på varje tabell: hex_ta_bort_dummy
- * Installeras av: lagg_till_dummy_geometri()
+ * Installeras av: hex_lagg_till_dummy_geometri()
  *
  * Flöde:
  *   1. Om hex_dummy_geometrier inte har poster för denna tabell – gör ingenting.
@@ -61,7 +61,7 @@ BEGIN
           AND tabell_namn = tabell_n
           AND gid = dummy_gid;
 
-        RAISE NOTICE '[ta_bort_dummy_rad] ✓ Dummy-rad borttagen ur %.% (gid: %)',
+        RAISE NOTICE '[hex_ta_bort_dummy_rad] ✓ Dummy-rad borttagen ur %.% (gid: %)',
             schema_n, tabell_n, dummy_gid;
     END LOOP;
 
@@ -69,12 +69,12 @@ BEGIN
 END;
 $BODY$;
 
-ALTER FUNCTION public.ta_bort_dummy_rad()
+ALTER FUNCTION public.hex_ta_bort_dummy_rad()
     OWNER TO postgres;
 
-COMMENT ON FUNCTION public.ta_bort_dummy_rad()
+COMMENT ON FUNCTION public.hex_ta_bort_dummy_rad()
     IS 'AFTER INSERT trigger som tar bort Hex-dummy-geometriraden när den första
 riktiga raden läggs in i en geometritabell. Installeras automatiskt av
-lagg_till_dummy_geometri() via hantera_ny_tabell() och hantera_kolumntillagg().
+hex_lagg_till_dummy_geometri() via hex_hantera_ny_tabell() och hex_hantera_ny_kolumn().
 Triggernamn per tabell: hex_ta_bort_dummy. Triggern är harmlös efter att dummyn
 tagits bort (hex_dummy_geometrier tom → tidig retur utan åtgärd).';

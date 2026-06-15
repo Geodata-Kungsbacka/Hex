@@ -1,8 +1,8 @@
--- FUNCTION: public.spara_kolumnegenskaper(text, text)
+-- FUNCTION: public.hex_spara_kolumnegenskaper(text, text)
 
--- DROP FUNCTION IF EXISTS public.spara_kolumnegenskaper(text, text);
+-- DROP FUNCTION IF EXISTS public.hex_spara_kolumnegenskaper(text, text);
 
-CREATE OR REPLACE FUNCTION public.spara_kolumnegenskaper(
+CREATE OR REPLACE FUNCTION public.hex_spara_kolumnegenskaper(
 	p_schema_namn text,
 	p_tabell_namn text)
     RETURNS hex_kolumnegenskaper
@@ -34,7 +34,7 @@ AS $BODY$
  *    - Format: kolumnnamn;definition
  *
  * Loggningsstrategi:
- * - Alla meddelanden prefixas med [spara_kolumnegenskaper]
+ * - Alla meddelanden prefixas med [hex_spara_kolumnegenskaper]
  * - Tydliga steg-markörer visar progression
  * - Detaljerad information för varje egenskap
  * - Slutresultat sammanfattas
@@ -47,18 +47,18 @@ DECLARE
     antal_check integer;        -- För statistik
     antal_identity integer;     -- För statistik
 BEGIN
-    RAISE NOTICE E'[spara_kolumnegenskaper] === START ===';
-    RAISE NOTICE '[spara_kolumnegenskaper] Analyserar hex_kolumnegenskaper för %.%', p_schema_namn, p_tabell_namn;
+    RAISE NOTICE E'[hex_spara_kolumnegenskaper] === START ===';
+    RAISE NOTICE '[hex_spara_kolumnegenskaper] Analyserar hex_kolumnegenskaper för %.%', p_schema_namn, p_tabell_namn;
     
     -- Steg 1: Hämta tabellens OID (via regclass för korrekt hantering av
     -- specialtecken som åäö i tabell-/schemanamn)
-    RAISE NOTICE '[spara_kolumnegenskaper] Steg 1: Hämtar tabellidentifierare';
+    RAISE NOTICE '[hex_spara_kolumnegenskaper] Steg 1: Hämtar tabellidentifierare';
     tabell_oid := format('%I.%I', p_schema_namn, p_tabell_namn)::regclass::oid;
 
-    RAISE NOTICE '[spara_kolumnegenskaper]   » Tabell-OID: %', tabell_oid;
+    RAISE NOTICE '[hex_spara_kolumnegenskaper]   » Tabell-OID: %', tabell_oid;
 
     -- Steg 2: Spara DEFAULT-värden
-    RAISE NOTICE '[spara_kolumnegenskaper] Steg 2: Analyserar DEFAULT-värden';
+    RAISE NOTICE '[hex_spara_kolumnegenskaper] Steg 2: Analyserar DEFAULT-värden';
     WITH default_data AS (
         SELECT format('%s;%s', 
             attname, 
@@ -76,16 +76,16 @@ BEGIN
     FROM default_data;
 
     IF antal_default > 0 THEN
-        RAISE NOTICE '[spara_kolumnegenskaper]   » Hittade % DEFAULT-värden:', antal_default;
+        RAISE NOTICE '[hex_spara_kolumnegenskaper]   » Hittade % DEFAULT-värden:', antal_default;
         FOR i IN 1..antal_default LOOP
-            RAISE NOTICE '[spara_kolumnegenskaper]     #%: %', i, resultat.default_defs[i];
+            RAISE NOTICE '[hex_spara_kolumnegenskaper]     #%: %', i, resultat.default_defs[i];
         END LOOP;
     ELSE
-        RAISE NOTICE '[spara_kolumnegenskaper]   » Inga DEFAULT-värden hittades';
+        RAISE NOTICE '[hex_spara_kolumnegenskaper]   » Inga DEFAULT-värden hittades';
     END IF;
 
     -- Steg 3: Spara NOT NULL-begränsningar 
-    RAISE NOTICE '[spara_kolumnegenskaper] Steg 3: Analyserar NOT NULL-begränsningar';
+    RAISE NOTICE '[hex_spara_kolumnegenskaper] Steg 3: Analyserar NOT NULL-begränsningar';
     WITH notnull_data AS (
         SELECT attname
         FROM pg_attribute
@@ -99,16 +99,16 @@ BEGIN
     FROM notnull_data;
 
     IF antal_notnull > 0 THEN
-        RAISE NOTICE '[spara_kolumnegenskaper]   » Hittade % NOT NULL-begränsningar:', antal_notnull;
+        RAISE NOTICE '[hex_spara_kolumnegenskaper]   » Hittade % NOT NULL-begränsningar:', antal_notnull;
         FOR i IN 1..antal_notnull LOOP
-            RAISE NOTICE '[spara_kolumnegenskaper]     #%: %', i, resultat.notnull_defs[i];
+            RAISE NOTICE '[hex_spara_kolumnegenskaper]     #%: %', i, resultat.notnull_defs[i];
         END LOOP;
     ELSE
-        RAISE NOTICE '[spara_kolumnegenskaper]   » Inga NOT NULL-begränsningar hittades';
+        RAISE NOTICE '[hex_spara_kolumnegenskaper]   » Inga NOT NULL-begränsningar hittades';
     END IF;
 
     -- Steg 4: Spara kolumnspecifika CHECK-begränsningar
-    RAISE NOTICE '[spara_kolumnegenskaper] Steg 4: Analyserar kolumnspecifika CHECK-begränsningar';
+    RAISE NOTICE '[hex_spara_kolumnegenskaper] Steg 4: Analyserar kolumnspecifika CHECK-begränsningar';
     
     -- Hitta CHECK-begränsningar som bara refererar en kolumn
     WITH check_data AS (
@@ -136,16 +136,16 @@ BEGIN
     FROM check_data;
 
     IF antal_check > 0 THEN
-        RAISE NOTICE '[spara_kolumnegenskaper]   » Hittade % kolumnspecifika CHECK-begränsningar:', antal_check;
+        RAISE NOTICE '[hex_spara_kolumnegenskaper]   » Hittade % kolumnspecifika CHECK-begränsningar:', antal_check;
         FOR i IN 1..antal_check LOOP
-            RAISE NOTICE '[spara_kolumnegenskaper]     #%: %', i, resultat.check_defs[i];
+            RAISE NOTICE '[hex_spara_kolumnegenskaper]     #%: %', i, resultat.check_defs[i];
         END LOOP;
     ELSE
-        RAISE NOTICE '[spara_kolumnegenskaper]   » Inga kolumnspecifika CHECK-begränsningar hittades';
+        RAISE NOTICE '[hex_spara_kolumnegenskaper]   » Inga kolumnspecifika CHECK-begränsningar hittades';
     END IF;
 
     -- Steg 5: Spara IDENTITY-definitioner
-    RAISE NOTICE '[spara_kolumnegenskaper] Steg 5: Analyserar IDENTITY-kolumner';
+    RAISE NOTICE '[hex_spara_kolumnegenskaper] Steg 5: Analyserar IDENTITY-kolumner';
     SELECT
         array_agg(format('%s;%s',
             attname,
@@ -164,48 +164,48 @@ BEGIN
     AND attidentity != '';  -- '' = not identity, 'a' = always, 'd' = default
 
     IF antal_identity > 0 THEN
-        RAISE NOTICE '[spara_kolumnegenskaper]   » Hittade % IDENTITY-kolumner:', antal_identity;
+        RAISE NOTICE '[hex_spara_kolumnegenskaper]   » Hittade % IDENTITY-kolumner:', antal_identity;
         FOR i IN 1..antal_identity LOOP
-            RAISE NOTICE '[spara_kolumnegenskaper]     #%: %', i, resultat.identity_defs[i];
+            RAISE NOTICE '[hex_spara_kolumnegenskaper]     #%: %', i, resultat.identity_defs[i];
         END LOOP;
     ELSE
-        RAISE NOTICE '[spara_kolumnegenskaper]   » Inga IDENTITY-kolumner hittades';
+        RAISE NOTICE '[hex_spara_kolumnegenskaper]   » Inga IDENTITY-kolumner hittades';
     END IF;
 
     -- Summera resultatet
-    RAISE NOTICE '[spara_kolumnegenskaper] Sammanfattning:';
-    RAISE NOTICE '[spara_kolumnegenskaper]   » DEFAULT-värden:      %', COALESCE(antal_default, 0);
-    RAISE NOTICE '[spara_kolumnegenskaper]   » NOT NULL:            %', COALESCE(antal_notnull, 0);
-    RAISE NOTICE '[spara_kolumnegenskaper]   » Kolumn-CHECK:        %', COALESCE(antal_check, 0);
-    RAISE NOTICE '[spara_kolumnegenskaper]   » IDENTITY-kolumner:   %', COALESCE(antal_identity, 0);
-    RAISE NOTICE '[spara_kolumnegenskaper] === SLUT ===';
+    RAISE NOTICE '[hex_spara_kolumnegenskaper] Sammanfattning:';
+    RAISE NOTICE '[hex_spara_kolumnegenskaper]   » DEFAULT-värden:      %', COALESCE(antal_default, 0);
+    RAISE NOTICE '[hex_spara_kolumnegenskaper]   » NOT NULL:            %', COALESCE(antal_notnull, 0);
+    RAISE NOTICE '[hex_spara_kolumnegenskaper]   » Kolumn-CHECK:        %', COALESCE(antal_check, 0);
+    RAISE NOTICE '[hex_spara_kolumnegenskaper]   » IDENTITY-kolumner:   %', COALESCE(antal_identity, 0);
+    RAISE NOTICE '[hex_spara_kolumnegenskaper] === SLUT ===';
 
     RETURN resultat;
 
 EXCEPTION
     WHEN NO_DATA_FOUND THEN
-        RAISE NOTICE '[spara_kolumnegenskaper] !!! FEL UPPSTOD !!!';
-        RAISE EXCEPTION '[spara_kolumnegenskaper] Tabell %.% existerar inte', 
+        RAISE NOTICE '[hex_spara_kolumnegenskaper] !!! FEL UPPSTOD !!!';
+        RAISE EXCEPTION '[hex_spara_kolumnegenskaper] Tabell %.% existerar inte', 
             p_schema_namn, p_tabell_namn;
     WHEN TOO_MANY_ROWS THEN
-        RAISE NOTICE '[spara_kolumnegenskaper] !!! FEL UPPSTOD !!!';
-        RAISE EXCEPTION '[spara_kolumnegenskaper] Flera tabeller matchade %.% - kontakta databasadmin', 
+        RAISE NOTICE '[hex_spara_kolumnegenskaper] !!! FEL UPPSTOD !!!';
+        RAISE EXCEPTION '[hex_spara_kolumnegenskaper] Flera tabeller matchade %.% - kontakta databasadmin', 
             p_schema_namn, p_tabell_namn;
     WHEN OTHERS THEN
-        RAISE NOTICE '[spara_kolumnegenskaper] !!! FEL UPPSTOD !!!';
-        RAISE NOTICE '[spara_kolumnegenskaper]   - Schema: %', p_schema_namn;
-        RAISE NOTICE '[spara_kolumnegenskaper]   - Tabell: %', p_tabell_namn;
-        RAISE NOTICE '[spara_kolumnegenskaper]   - Felkod: %', SQLSTATE;
-        RAISE NOTICE '[spara_kolumnegenskaper]   - Felmeddelande: %', SQLERRM;
-        RAISE NOTICE '[spara_kolumnegenskaper]   - Kontext: %', PG_EXCEPTION_CONTEXT;
+        RAISE NOTICE '[hex_spara_kolumnegenskaper] !!! FEL UPPSTOD !!!';
+        RAISE NOTICE '[hex_spara_kolumnegenskaper]   - Schema: %', p_schema_namn;
+        RAISE NOTICE '[hex_spara_kolumnegenskaper]   - Tabell: %', p_tabell_namn;
+        RAISE NOTICE '[hex_spara_kolumnegenskaper]   - Felkod: %', SQLSTATE;
+        RAISE NOTICE '[hex_spara_kolumnegenskaper]   - Felmeddelande: %', SQLERRM;
+        RAISE NOTICE '[hex_spara_kolumnegenskaper]   - Kontext: %', PG_EXCEPTION_CONTEXT;
         RAISE;
 END;
 $BODY$;
 
-ALTER FUNCTION public.spara_kolumnegenskaper(text, text)
+ALTER FUNCTION public.hex_spara_kolumnegenskaper(text, text)
     OWNER TO postgres;
 
-COMMENT ON FUNCTION public.spara_kolumnegenskaper(text, text)
+COMMENT ON FUNCTION public.hex_spara_kolumnegenskaper(text, text)
     IS 'Sparar kolumnspecifika egenskaper från PostgreSQL:s systemtabeller.
 Hanterar DEFAULT-värden, NOT NULL, kolumnspecifika CHECK-begränsningar och 
 IDENTITY-definitioner. Del av uppdelningen mellan hex_tabellregler och hex_kolumnegenskaper

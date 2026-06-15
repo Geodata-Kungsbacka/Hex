@@ -1,4 +1,4 @@
-CREATE OR REPLACE FUNCTION public.notifiera_geoserver()
+CREATE OR REPLACE FUNCTION public.hex_notifiera_gs()
     RETURNS event_trigger
     LANGUAGE 'plpgsql'
     COST 100
@@ -34,19 +34,19 @@ DECLARE
     schema_prefix text;
     antal_notifieringar integer := 0;
 BEGIN
-    RAISE NOTICE E'[notifiera_geoserver] === START ===';
-    RAISE NOTICE '[notifiera_geoserver] Kontrollerar om nytt schema ska publiceras till GeoServer';
+    RAISE NOTICE E'[hex_notifiera_gs] === START ===';
+    RAISE NOTICE '[hex_notifiera_gs] Kontrollerar om nytt schema ska publiceras till GeoServer';
 
     FOR kommando IN SELECT * FROM pg_event_trigger_ddl_commands()
     WHERE command_tag = 'CREATE SCHEMA'
     LOOP
         schema_namn := replace(split_part(kommando.object_identity, '.', 1), '"', '');
 
-        RAISE NOTICE '[notifiera_geoserver] Bearbetar schema: %', schema_namn;
+        RAISE NOTICE '[hex_notifiera_gs] Bearbetar schema: %', schema_namn;
 
         -- Hoppa over systemscheman
         IF schema_namn IN ('public', 'information_schema') OR schema_namn ~ '^pg_' THEN
-            RAISE NOTICE '[notifiera_geoserver]   Hoppar over systemschema: %', schema_namn;
+            RAISE NOTICE '[hex_notifiera_gs]   Hoppar over systemschema: %', schema_namn;
             CONTINUE;
         END IF;
 
@@ -57,37 +57,37 @@ BEGIN
           AND schema_namn LIKE prefix || '_%';
 
         IF schema_prefix IS NULL THEN
-            RAISE NOTICE '[notifiera_geoserver]   Schema "%" har ingen GeoServer-publicerad skyddsnivå - hoppar over', schema_namn;
+            RAISE NOTICE '[hex_notifiera_gs]   Schema "%" har ingen GeoServer-publicerad skyddsnivå - hoppar over', schema_namn;
             CONTINUE;
         END IF;
 
         -- Skicka notifiering till Python-lyssnaren
-        RAISE NOTICE '[notifiera_geoserver]   Skickar notifiering for schema: % (prefix: %)', schema_namn, schema_prefix;
+        RAISE NOTICE '[hex_notifiera_gs]   Skickar notifiering for schema: % (prefix: %)', schema_namn, schema_prefix;
         PERFORM pg_notify('geoserver_schema', schema_namn);
         antal_notifieringar := antal_notifieringar + 1;
 
-        RAISE NOTICE '[notifiera_geoserver]   Notifiering skickad till kanal "geoserver_schema"';
+        RAISE NOTICE '[hex_notifiera_gs]   Notifiering skickad till kanal "geoserver_schema"';
     END LOOP;
 
-    RAISE NOTICE '[notifiera_geoserver] Sammanfattning:';
-    RAISE NOTICE '[notifiera_geoserver]   Notifieringar skickade: %', antal_notifieringar;
-    RAISE NOTICE '[notifiera_geoserver] === SLUT ===';
+    RAISE NOTICE '[hex_notifiera_gs] Sammanfattning:';
+    RAISE NOTICE '[hex_notifiera_gs]   Notifieringar skickade: %', antal_notifieringar;
+    RAISE NOTICE '[hex_notifiera_gs] === SLUT ===';
 
 EXCEPTION
     WHEN OTHERS THEN
-        RAISE NOTICE '[notifiera_geoserver] !!! FEL UPPSTOD !!!';
-        RAISE NOTICE '[notifiera_geoserver]   Schema: %', COALESCE(schema_namn, 'okant');
-        RAISE NOTICE '[notifiera_geoserver]   Felkod: %', SQLSTATE;
-        RAISE NOTICE '[notifiera_geoserver]   Felmeddelande: %', SQLERRM;
+        RAISE NOTICE '[hex_notifiera_gs] !!! FEL UPPSTOD !!!';
+        RAISE NOTICE '[hex_notifiera_gs]   Schema: %', COALESCE(schema_namn, 'okant');
+        RAISE NOTICE '[hex_notifiera_gs]   Felkod: %', SQLSTATE;
+        RAISE NOTICE '[hex_notifiera_gs]   Felmeddelande: %', SQLERRM;
         -- Notifiering ar inte kritisk - lat inte felet stoppa schema-skapandet
-        RAISE WARNING '[notifiera_geoserver] GeoServer-notifiering misslyckades, men schemat skapades korrekt: %', SQLERRM;
+        RAISE WARNING '[hex_notifiera_gs] GeoServer-notifiering misslyckades, men schemat skapades korrekt: %', SQLERRM;
 END;
 $BODY$;
 
-ALTER FUNCTION public.notifiera_geoserver()
+ALTER FUNCTION public.hex_notifiera_gs()
     OWNER TO postgres;
 
-COMMENT ON FUNCTION public.notifiera_geoserver()
+COMMENT ON FUNCTION public.hex_notifiera_gs()
     IS 'Event trigger-funktion som skickar pg_notify till GeoServer-lyssnaren vid CREATE SCHEMA.
 Publicerar scheman vars skyddsnivå har publiceras_geoserver = true i hex_standardiserade_skyddsnivaer
 (standardkonfiguration: sk0 och sk1). Notifieringen används av en extern Python-process

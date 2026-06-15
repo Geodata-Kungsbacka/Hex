@@ -1,6 +1,6 @@
--- FUNCTION: public.blockera_schema_namnbyte()
+-- FUNCTION: public.hex_blockera_schema_namnbyte()
 
-CREATE OR REPLACE FUNCTION public.blockera_schema_namnbyte()
+CREATE OR REPLACE FUNCTION public.hex_blockera_schema_namnbyte()
     RETURNS event_trigger
     LANGUAGE 'plpgsql'
     COST 100
@@ -45,8 +45,8 @@ DECLARE
     kommando        record;
     schema_namn     text;
 BEGIN
-    RAISE NOTICE E'[blockera_schema_namnbyte] ======== START ========';
-    RAISE NOTICE '[blockera_schema_namnbyte] Kontrollerar ALTER SCHEMA-sats';
+    RAISE NOTICE E'[hex_blockera_schema_namnbyte] ======== START ========';
+    RAISE NOTICE '[hex_blockera_schema_namnbyte] Kontrollerar ALTER SCHEMA-sats';
 
     -- Kontrollera om detta är ett RENAME-kommando
     IF current_query() ~* '\mRENAME\s+TO\M' THEN
@@ -57,11 +57,11 @@ BEGIN
         LOOP
             schema_namn := replace(split_part(kommando.object_identity, '.', 1), '"', '');
 
-            RAISE NOTICE '[blockera_schema_namnbyte] RENAME TO detekterat för schema: %', schema_namn;
-            RAISE NOTICE '[blockera_schema_namnbyte] !!! BLOCKERAR NAMNBYTE !!!';
+            RAISE NOTICE '[hex_blockera_schema_namnbyte] RENAME TO detekterat för schema: %', schema_namn;
+            RAISE NOTICE '[hex_blockera_schema_namnbyte] !!! BLOCKERAR NAMNBYTE !!!';
 
             RAISE EXCEPTION
-                E'[blockera_schema_namnbyte] ALTER SCHEMA ... RENAME TO är inte tillåtet i Hex.\n\n'
+                E'[hex_blockera_schema_namnbyte] ALTER SCHEMA ... RENAME TO är inte tillåtet i Hex.\n\n'
                 'Schemanamnet är identitetsnyckeln för ett helt ekosystem av beroenden:\n'
                 '  • GeoServer-workspace (namnges identiskt med schemat)\n'
                 '  • Databasroller r_%% och w_%% (härleds från schemanamnet)\n'
@@ -77,24 +77,24 @@ BEGIN
 
     END IF;
 
-    RAISE NOTICE '[blockera_schema_namnbyte] Ingen RENAME TO-sats – tillåter ALTER SCHEMA';
-    RAISE NOTICE E'[blockera_schema_namnbyte] ======== SLUT ========';
+    RAISE NOTICE '[hex_blockera_schema_namnbyte] Ingen RENAME TO-sats – tillåter ALTER SCHEMA';
+    RAISE NOTICE E'[hex_blockera_schema_namnbyte] ======== SLUT ========';
 
 EXCEPTION
     WHEN OTHERS THEN
-        RAISE NOTICE E'[blockera_schema_namnbyte] !!! FEL UPPSTOD !!!';
-        RAISE NOTICE '[blockera_schema_namnbyte]   - Schema: %', COALESCE(schema_namn, 'okänt');
-        RAISE NOTICE '[blockera_schema_namnbyte]   - Felkod: %', SQLSTATE;
-        RAISE NOTICE '[blockera_schema_namnbyte]   - Felmeddelande: %', SQLERRM;
-        RAISE NOTICE E'[blockera_schema_namnbyte] ======== AVBRUTEN ========';
+        RAISE NOTICE E'[hex_blockera_schema_namnbyte] !!! FEL UPPSTOD !!!';
+        RAISE NOTICE '[hex_blockera_schema_namnbyte]   - Schema: %', COALESCE(schema_namn, 'okänt');
+        RAISE NOTICE '[hex_blockera_schema_namnbyte]   - Felkod: %', SQLSTATE;
+        RAISE NOTICE '[hex_blockera_schema_namnbyte]   - Felmeddelande: %', SQLERRM;
+        RAISE NOTICE E'[hex_blockera_schema_namnbyte] ======== AVBRUTEN ========';
         RAISE;
 END;
 $BODY$;
 
-ALTER FUNCTION public.blockera_schema_namnbyte()
+ALTER FUNCTION public.hex_blockera_schema_namnbyte()
     OWNER TO postgres;
 
-COMMENT ON FUNCTION public.blockera_schema_namnbyte()
+COMMENT ON FUNCTION public.hex_blockera_schema_namnbyte()
     IS 'Event trigger-funktion som blockerar ALTER SCHEMA ... RENAME TO.
 Schemanamnet är identitetsnyckeln för GeoServer-workspace, databasroller,
 autentiseringsuppgifter i hex_role_credentials och poster i hex_metadata.

@@ -1,8 +1,8 @@
--- FUNCTION: public.spara_tabellregler(text, text)
+-- FUNCTION: public.hex_spara_tabellregler(text, text)
 
--- DROP FUNCTION IF EXISTS public.spara_tabellregler(text, text);
+-- DROP FUNCTION IF EXISTS public.hex_spara_tabellregler(text, text);
 
-CREATE OR REPLACE FUNCTION public.spara_tabellregler(
+CREATE OR REPLACE FUNCTION public.hex_spara_tabellregler(
 	p_schema_namn text,
 	p_tabell_namn text)
     RETURNS hex_tabellregler
@@ -15,7 +15,7 @@ AS $BODY$
  * Denna funktion sparar tabellövergripande regler som sedan kan återskapas
  * vid omstrukturering av tabeller. Funktionen har anpassats för att endast
  * hantera äkta hex_tabellregler, medan hex_kolumnegenskaper hanteras separat av
- * spara_kolumnegenskaper().
+ * hex_spara_kolumnegenskaper().
  *
  * Funktionen sparar:
  * 1. Index
@@ -33,10 +33,10 @@ AS $BODY$
  *    - Format: konstraintnamn;definition
  *
  * Kolumnegenskaper (DEFAULT, NOT NULL, enkla CHECK, IDENTITY) hanteras nu
- * av funktionen spara_kolumnegenskaper().
+ * av funktionen hex_spara_kolumnegenskaper().
  *
  * Loggningsstrategi:
- * - Alla meddelanden prefixas med [spara_tabellregler]
+ * - Alla meddelanden prefixas med [hex_spara_tabellregler]
  * - Tydliga steg-markörer visar progression
  * - Detaljerad regelinformation loggas
  * - Slutresultat sammanfattas
@@ -48,18 +48,18 @@ DECLARE
     antal_fk integer;         -- För statistik
     antal_constr integer;     -- För statistik
 BEGIN
-    RAISE NOTICE E'[spara_tabellregler] === START ===';
-    RAISE NOTICE '[spara_tabellregler] Analyserar regler för %.%', p_schema_namn, p_tabell_namn;
+    RAISE NOTICE E'[hex_spara_tabellregler] === START ===';
+    RAISE NOTICE '[hex_spara_tabellregler] Analyserar regler för %.%', p_schema_namn, p_tabell_namn;
     
     -- Steg 1: Hämta tabellens OID (via regclass för korrekt hantering av
     -- specialtecken som åäö i tabell-/schemanamn)
-    RAISE NOTICE '[spara_tabellregler] Steg 1: Hämtar tabellidentifierare';
+    RAISE NOTICE '[hex_spara_tabellregler] Steg 1: Hämtar tabellidentifierare';
     tabell_oid := format('%I.%I', p_schema_namn, p_tabell_namn)::regclass::oid;
 
-    RAISE NOTICE '[spara_tabellregler]   » Tabell-OID: %', tabell_oid;
+    RAISE NOTICE '[hex_spara_tabellregler]   » Tabell-OID: %', tabell_oid;
 
     -- Steg 2: Spara index
-    RAISE NOTICE '[spara_tabellregler] Steg 2: Analyserar index';
+    RAISE NOTICE '[hex_spara_tabellregler] Steg 2: Analyserar index';
     WITH index_data AS (
         SELECT pg_get_indexdef(i.indexrelid) as indexdef
         FROM pg_index i
@@ -73,16 +73,16 @@ BEGIN
     FROM index_data;
 
     IF antal_index > 0 THEN
-        RAISE NOTICE '[spara_tabellregler]   » Hittade % index:', antal_index;
+        RAISE NOTICE '[hex_spara_tabellregler]   » Hittade % index:', antal_index;
         FOR i IN 1..antal_index LOOP
-            RAISE NOTICE '[spara_tabellregler]     #%: %', i, resultat.index_defs[i];
+            RAISE NOTICE '[hex_spara_tabellregler]     #%: %', i, resultat.index_defs[i];
         END LOOP;
     ELSE
-        RAISE NOTICE '[spara_tabellregler]   » Inga index hittades';
+        RAISE NOTICE '[hex_spara_tabellregler]   » Inga index hittades';
     END IF;
 
     -- Steg 3: Spara foreign keys
-    RAISE NOTICE '[spara_tabellregler] Steg 3: Analyserar foreign keys';
+    RAISE NOTICE '[hex_spara_tabellregler] Steg 3: Analyserar foreign keys';
     WITH fk_data AS (
         SELECT format('%s;%s', 
             conname, 
@@ -97,16 +97,16 @@ BEGIN
     FROM fk_data;
 
     IF antal_fk > 0 THEN
-        RAISE NOTICE '[spara_tabellregler]   » Hittade % foreign keys:', antal_fk;
+        RAISE NOTICE '[hex_spara_tabellregler]   » Hittade % foreign keys:', antal_fk;
         FOR i IN 1..antal_fk LOOP
-            RAISE NOTICE '[spara_tabellregler]     #%: %', i, resultat.fk_defs[i];
+            RAISE NOTICE '[hex_spara_tabellregler]     #%: %', i, resultat.fk_defs[i];
         END LOOP;
     ELSE
-        RAISE NOTICE '[spara_tabellregler]   » Inga foreign keys hittades';
+        RAISE NOTICE '[hex_spara_tabellregler]   » Inga foreign keys hittades';
     END IF;
 
     -- Steg 4: Spara tabellövergripande constraints (CHECK och UNIQUE)
-    RAISE NOTICE '[spara_tabellregler] Steg 4: Analyserar tabellövergripande constraints';
+    RAISE NOTICE '[hex_spara_tabellregler] Steg 4: Analyserar tabellövergripande constraints';
     WITH constraint_data AS (
         SELECT 
             conname,
@@ -130,47 +130,47 @@ BEGIN
     FROM constraint_data;
     
     IF antal_constr > 0 THEN
-        RAISE NOTICE '[spara_tabellregler]   » Hittade % tabellövergripande constraints:', antal_constr;
+        RAISE NOTICE '[hex_spara_tabellregler]   » Hittade % tabellövergripande constraints:', antal_constr;
         FOR i IN 1..antal_constr LOOP
-            RAISE NOTICE '[spara_tabellregler]     #%: %', i, resultat.constraint_defs[i];
+            RAISE NOTICE '[hex_spara_tabellregler]     #%: %', i, resultat.constraint_defs[i];
         END LOOP;
     ELSE
-        RAISE NOTICE '[spara_tabellregler]   » Inga tabellövergripande constraints hittades';
+        RAISE NOTICE '[hex_spara_tabellregler]   » Inga tabellövergripande constraints hittades';
     END IF;
 
     -- Summera resultatet
-    RAISE NOTICE '[spara_tabellregler] Sammanfattning:';
-    RAISE NOTICE '[spara_tabellregler]   » Index:         %', COALESCE(antal_index, 0);
-    RAISE NOTICE '[spara_tabellregler]   » Foreign Keys:  %', COALESCE(antal_fk, 0);
-    RAISE NOTICE '[spara_tabellregler]   » Constraints:   %', COALESCE(antal_constr, 0);
-    RAISE NOTICE '[spara_tabellregler] === SLUT ===';
+    RAISE NOTICE '[hex_spara_tabellregler] Sammanfattning:';
+    RAISE NOTICE '[hex_spara_tabellregler]   » Index:         %', COALESCE(antal_index, 0);
+    RAISE NOTICE '[hex_spara_tabellregler]   » Foreign Keys:  %', COALESCE(antal_fk, 0);
+    RAISE NOTICE '[hex_spara_tabellregler]   » Constraints:   %', COALESCE(antal_constr, 0);
+    RAISE NOTICE '[hex_spara_tabellregler] === SLUT ===';
 
     RETURN resultat;
 
 EXCEPTION
     WHEN NO_DATA_FOUND THEN
-        RAISE NOTICE '[spara_tabellregler] !!! FEL UPPSTOD !!!';
-        RAISE EXCEPTION '[spara_tabellregler] Tabell %.% existerar inte', 
+        RAISE NOTICE '[hex_spara_tabellregler] !!! FEL UPPSTOD !!!';
+        RAISE EXCEPTION '[hex_spara_tabellregler] Tabell %.% existerar inte', 
             p_schema_namn, p_tabell_namn;
     WHEN TOO_MANY_ROWS THEN
-        RAISE NOTICE '[spara_tabellregler] !!! FEL UPPSTOD !!!';
-        RAISE EXCEPTION '[spara_tabellregler] Flera tabeller matchade %.% - kontakta databasadmin', 
+        RAISE NOTICE '[hex_spara_tabellregler] !!! FEL UPPSTOD !!!';
+        RAISE EXCEPTION '[hex_spara_tabellregler] Flera tabeller matchade %.% - kontakta databasadmin', 
             p_schema_namn, p_tabell_namn;
     WHEN OTHERS THEN
-        RAISE NOTICE '[spara_tabellregler] !!! FEL UPPSTOD !!!';
-        RAISE NOTICE '[spara_tabellregler]   - Schema: %', p_schema_namn;
-        RAISE NOTICE '[spara_tabellregler]   - Tabell: %', p_tabell_namn;
-        RAISE NOTICE '[spara_tabellregler]   - Felkod: %', SQLSTATE;
-        RAISE NOTICE '[spara_tabellregler]   - Felmeddelande: %', SQLERRM;
-        RAISE NOTICE '[spara_tabellregler]   - Kontext: %', PG_EXCEPTION_CONTEXT;
+        RAISE NOTICE '[hex_spara_tabellregler] !!! FEL UPPSTOD !!!';
+        RAISE NOTICE '[hex_spara_tabellregler]   - Schema: %', p_schema_namn;
+        RAISE NOTICE '[hex_spara_tabellregler]   - Tabell: %', p_tabell_namn;
+        RAISE NOTICE '[hex_spara_tabellregler]   - Felkod: %', SQLSTATE;
+        RAISE NOTICE '[hex_spara_tabellregler]   - Felmeddelande: %', SQLERRM;
+        RAISE NOTICE '[hex_spara_tabellregler]   - Kontext: %', PG_EXCEPTION_CONTEXT;
         RAISE;
 END;
 $BODY$;
 
-ALTER FUNCTION public.spara_tabellregler(text, text)
+ALTER FUNCTION public.hex_spara_tabellregler(text, text)
     OWNER TO postgres;
 
-COMMENT ON FUNCTION public.spara_tabellregler(text, text)
+COMMENT ON FUNCTION public.hex_spara_tabellregler(text, text)
     IS 'Sparar tabellövergripande regler från PostgreSQL:s systemtabeller.
 Hanterar nu endast äkta hex_tabellregler (index, FK, multikolumns-constraints),
 medan hex_kolumnegenskaper har flyttats till en separat funktion. Del av uppdelningen 

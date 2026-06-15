@@ -6,15 +6,15 @@
 -- lägga till geometrin via ALTER TABLE ... ADD COLUMN geom ...
 --
 -- Livscykel:
---   INSERT: hantera_ny_tabell()        — systemanvändare skapar tabell med suffix men utan geom
---   DELETE: hantera_kolumntillagg()    — geometrikolumnen har lagts till, posten städas bort
---   DELETE: hantera_borttagen_tabell() — tabellen droppades innan geometrin hann läggas till
+--   INSERT: hex_hantera_ny_tabell()        — systemanvändare skapar tabell med suffix men utan geom
+--   DELETE: hex_hantera_ny_kolumn()    — geometrikolumnen har lagts till, posten städas bort
+--   DELETE: hex_hantera_borttagen_tabell() — tabellen droppades innan geometrin hann läggas till
 --
 -- En rad som dröjer kvar längre tid indikerar att verktyget aldrig slutförde
 -- sitt andra steg. Sådana tabeller bör granskas och vid behov droppas manuellt.
 --
--- Skapas av:   hantera_ny_tabell()
--- Raderas av:  hantera_kolumntillagg(), hantera_borttagen_tabell()
+-- Skapas av:   hex_hantera_ny_tabell()
+-- Raderas av:  hex_hantera_ny_kolumn(), hex_hantera_borttagen_tabell()
 
 CREATE TABLE IF NOT EXISTS public.hex_afvaktande_geometri (
     schema_namn     text         NOT NULL,
@@ -32,8 +32,8 @@ GRANT SELECT, INSERT, DELETE ON public.hex_afvaktande_geometri TO PUBLIC;
 
 COMMENT ON TABLE public.hex_afvaktande_geometri IS
     'Tabeller skapade av systemanvändare med geometrisuffix men utan geometrikolumn.
-     Registreras av hantera_ny_tabell() och tas bort av hantera_kolumntillagg()
-     när geometrikolumnen läggs till, eller av hantera_borttagen_tabell() om
+     Registreras av hex_hantera_ny_tabell() och tas bort av hex_hantera_ny_kolumn()
+     när geometrikolumnen läggs till, eller av hex_hantera_borttagen_tabell() om
      tabellen droppas innan geometrin hunnit läggas till. Kvarliggande rader
      indikerar att verktyget aldrig slutförde sitt andra steg.';
 

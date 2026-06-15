@@ -1,6 +1,6 @@
--- FUNCTION: public.validera_vynamn(text, text)
+-- FUNCTION: public.hex_validera_vynamn(text, text)
 
-CREATE OR REPLACE FUNCTION public.validera_vynamn(
+CREATE OR REPLACE FUNCTION public.hex_validera_vynamn(
     p_schema_namn text,
     p_vy_namn text)
     RETURNS void
@@ -32,7 +32,7 @@ DECLARE
    begart_suffix text;      -- Suffixet som användaren försöker använda
    har_transformation boolean; -- Om vyn innehåller ST_-funktioner
 BEGIN
-   RAISE NOTICE E'\n=== START validera_vynamn() ===';
+   RAISE NOTICE E'\n=== START hex_validera_vynamn() ===';
    RAISE NOTICE 'Validerar vy %.%', p_schema_namn, p_vy_namn;
 
    -- Extrahera önskat suffix från vynamnet (sista två tecknen)
@@ -102,9 +102,9 @@ BEGIN
        END IF;
    END IF;
 
-   RAISE NOTICE '=== SLUT validera_vynamn() ===\n';
+   RAISE NOTICE '=== SLUT hex_validera_vynamn() ===\n';
 END;
 $BODY$;
 
-ALTER FUNCTION public.validera_vynamn(text, text)
+ALTER FUNCTION public.hex_validera_vynamn(text, text)
     OWNER TO postgres;

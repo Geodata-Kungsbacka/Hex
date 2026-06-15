@@ -1,4 +1,4 @@
-CREATE OR REPLACE FUNCTION public.underhall_hex()
+CREATE OR REPLACE FUNCTION public.hex_underhall()
     RETURNS TABLE (
         schema_namn  text,
         tabell_namn  text,
@@ -29,7 +29,7 @@ AS $BODY$
  *                        väljer eget gid via OVERRIDING SYSTEM VALUE.
  *
  *   hex_kontrollera_geom BEFORE INSERT OR UPDATE på geometritabeller vars
- *                        datakategori har validera_geometri = true.
+ *                        datakategori har hex_validera_geometri = true.
  *                        Validerar OGC-giltighet.
  *
  *   hex_ta_bort_dummy    AFTER INSERT på geometritabeller som fortfarande har
@@ -55,7 +55,7 @@ AS $BODY$
  *   (rollmedlemskap)     hex_role_credentials) är i hex_geoserver_roller.
  *                        Tar bort NOLOGIN-roller som felaktigt hamnat där.
  *
- *   schemabehörigheter   Kör tilldela_rollrattigheter för NOLOGIN-roller och
+ *   schemabehörigheter   Kör hex_tilldela_rollrattigheter för NOLOGIN-roller och
  *                        säkerställer GRANT arvs_fran för gs_*-roller.
  *                        Idempotent.
  *
@@ -135,7 +135,7 @@ BEGIN
             EXECUTE format(
                 'CREATE TRIGGER hex_tvinga_gid'
                 ' BEFORE INSERT ON %I.%I'
-                ' FOR EACH ROW EXECUTE FUNCTION public.tvinga_gid_fran_sekvens()',
+                ' FOR EACH ROW EXECUTE FUNCTION public.hex_tvinga_gid_fran_sekvens()',
                 r.s, r.t
             );
             atgard := 'skapad';
@@ -148,7 +148,7 @@ BEGIN
 
     -- -------------------------------------------------------------------------
     -- 2. hex_kontrollera_geom
-    --    Scheman vars datakategori har validera_geometri = true i
+    --    Scheman vars datakategori har hex_validera_geometri = true i
     --    hex_standardiserade_datakategorier, med en kolumn 'geom' av PostGIS-typ.
     --    Historiktabeller (har h_typ-kolumn) undantas.
     -- -------------------------------------------------------------------------
@@ -159,7 +159,7 @@ BEGIN
         WHERE  c.relkind = 'r'
           AND  EXISTS (
                    SELECT 1 FROM public.hex_standardiserade_datakategorier d
-                   WHERE  d.validera_geometri = true
+                   WHERE  d.hex_validera_geometri = true
                      AND  n.nspname ~ (schema_regex || d.prefix || '_')
                )
           AND  EXISTS (
@@ -198,7 +198,7 @@ BEGIN
             EXECUTE format(
                 'CREATE TRIGGER hex_kontrollera_geom'
                 ' BEFORE INSERT OR UPDATE ON %I.%I'
-                ' FOR EACH ROW EXECUTE FUNCTION public.kontrollera_geometri_trigger()',
+                ' FOR EACH ROW EXECUTE FUNCTION public.hex_kontrollera_geometri_trigger()',
                 r.s, r.t
             );
             atgard := 'skapad';
@@ -251,7 +251,7 @@ BEGIN
             EXECUTE format(
                 'CREATE TRIGGER hex_ta_bort_dummy'
                 ' AFTER INSERT ON %I.%I'
-                ' FOR EACH ROW EXECUTE FUNCTION public.ta_bort_dummy_rad()',
+                ' FOR EACH ROW EXECUTE FUNCTION public.hex_ta_bort_dummy_rad()',
                 r.s, r.t
             );
             atgard := 'skapad';
@@ -344,7 +344,7 @@ BEGIN
     --      c) Allt korrekt             → 'redan korrekt'
     --
     --    Alltid säkerställs: behörigheter (NOLOGIN), arvs_fran-grant (LOGIN),
-    --    hex_role_credentials-post, system_owner-grant (NOLOGIN).
+    --    hex_role_credentials-post, hex_systemagare-grant (NOLOGIN).
     -- -------------------------------------------------------------------------
     FOR r IN
         SELECT DISTINCT n.nspname AS s
@@ -382,8 +382,8 @@ BEGIN
                     VALUES (rollnamn_full, NULL, false)
                     ON CONFLICT (rolname) DO UPDATE
                         SET rolcanlogin = false, password = NULL, created_at = now();
-                    EXECUTE format('GRANT %I TO %I', rollnamn_full, system_owner());
-                    PERFORM tilldela_rollrattigheter(r.s, rollnamn_full, rol.rolltyp);
+                    EXECUTE format('GRANT %I TO %I', rollnamn_full, hex_systemagare());
+                    PERFORM hex_tilldela_rollrattigheter(r.s, rollnamn_full, rol.rolltyp);
                     atgard := 'NOLOGIN-grupp skapad';
 
                 ELSIF EXISTS (
@@ -406,17 +406,17 @@ BEGIN
                     VALUES (rollnamn_full, NULL, false)
                     ON CONFLICT (rolname) DO UPDATE
                         SET rolcanlogin = false, password = NULL, created_at = now();
-                    -- Säkerställ system_owner-grant
+                    -- Säkerställ hex_systemagare-grant
                     IF NOT EXISTS (
                         SELECT 1 FROM pg_auth_members am
                         JOIN pg_roles grp ON grp.oid = am.roleid
                         JOIN pg_roles mem ON mem.oid = am.member
                         WHERE grp.rolname = rollnamn_full
-                          AND mem.rolname = system_owner()
+                          AND mem.rolname = hex_systemagare()
                     ) THEN
-                        EXECUTE format('GRANT %I TO %I', rollnamn_full, system_owner());
+                        EXECUTE format('GRANT %I TO %I', rollnamn_full, hex_systemagare());
                     END IF;
-                    PERFORM tilldela_rollrattigheter(r.s, rollnamn_full, rol.rolltyp);
+                    PERFORM hex_tilldela_rollrattigheter(r.s, rollnamn_full, rol.rolltyp);
                     atgard := 'LOGIN→NOLOGIN migrerad';
 
                 ELSE
@@ -425,17 +425,17 @@ BEGIN
                     VALUES (rollnamn_full, NULL, false)
                     ON CONFLICT (rolname) DO UPDATE
                         SET rolcanlogin = false, password = NULL;
-                    -- Säkerställ system_owner-grant
+                    -- Säkerställ hex_systemagare-grant
                     IF NOT EXISTS (
                         SELECT 1 FROM pg_auth_members am
                         JOIN pg_roles grp ON grp.oid = am.roleid
                         JOIN pg_roles mem ON mem.oid = am.member
                         WHERE grp.rolname = rollnamn_full
-                          AND mem.rolname = system_owner()
+                          AND mem.rolname = hex_systemagare()
                     ) THEN
-                        EXECUTE format('GRANT %I TO %I', rollnamn_full, system_owner());
+                        EXECUTE format('GRANT %I TO %I', rollnamn_full, hex_systemagare());
                     END IF;
-                    PERFORM tilldela_rollrattigheter(r.s, rollnamn_full, rol.rolltyp);
+                    PERFORM hex_tilldela_rollrattigheter(r.s, rollnamn_full, rol.rolltyp);
                     atgard := 'redan NOLOGIN';
                 END IF;
 
@@ -597,7 +597,7 @@ BEGIN
 
     -- -------------------------------------------------------------------------
     -- 7. Schemabehörigheter
-    --    För NOLOGIN-roller: kör tilldela_rollrattigheter (idempotent).
+    --    För NOLOGIN-roller: kör hex_tilldela_rollrattigheter (idempotent).
     --    För LOGIN-roller med arvs_fran: säkerställ GRANT arvs_fran TO roll
     --    i stället för direkta grants – gs_*-roller ärver via gruppmedlemskap.
     -- -------------------------------------------------------------------------
@@ -633,7 +633,7 @@ BEGIN
 
             IF NOT rol.with_login THEN
                 -- NOLOGIN-roll: direkta schemabehörigheter
-                PERFORM tilldela_rollrattigheter(r.s, rollnamn_full, rol.rolltyp);
+                PERFORM hex_tilldela_rollrattigheter(r.s, rollnamn_full, rol.rolltyp);
                 atgard := 'behörigheter uppdaterade';
             ELSE
                 -- LOGIN-tjänstekonto: säkerställ arvs_fran-grant
@@ -653,7 +653,7 @@ BEGIN
                         atgard := 'arvs_fran redan beviljad';
                     END IF;
                 ELSE
-                    PERFORM tilldela_rollrattigheter(r.s, rollnamn_full, rol.rolltyp);
+                    PERFORM hex_tilldela_rollrattigheter(r.s, rollnamn_full, rol.rolltyp);
                     atgard := 'behörigheter uppdaterade';
                 END IF;
             END IF;
@@ -699,14 +699,14 @@ BEGIN
 END;
 $BODY$;
 
-ALTER FUNCTION public.underhall_hex()
+ALTER FUNCTION public.hex_underhall()
     OWNER TO postgres;
 
 -- Bakåtkompatibelt alias: ta bort gamla funktionen om den finns kvar sedan
 -- en tidigare installation (kan ha ett annat returschema och kraschar annars).
 DROP FUNCTION IF EXISTS public.reparera_rad_triggers();
 
-COMMENT ON FUNCTION public.underhall_hex()
+COMMENT ON FUNCTION public.hex_underhall()
     IS 'Reparerar och verifierar hela Hex-strukturen för alla scheman.
 Uppgraderar tabellscheman (hex_role_credentials, hex_standardiserade_roller) idempotent.
 Återkopplar saknade rad-nivå-triggers (hex_tvinga_gid, hex_kontrollera_geom,
@@ -717,7 +717,7 @@ Verifierar och reparerar alla fyra roller per schema:
 Hanterar migrering från äldre config (r_*/w_* som LOGIN → NOLOGIN, skapar gs_*).
 Säkerställer hex_geoserver_roller-medlemskap (enbart gs_*) och tar bort
 NOLOGIN-roller som felaktigt hamnat där.
-Reparerar schemabehörigheter (NOLOGIN: tilldela_rollrattigheter,
+Reparerar schemabehörigheter (NOLOGIN: hex_tilldela_rollrattigheter,
 LOGIN: GRANT arvs_fran).
 Skickar pg_notify för GeoServer-publicering (gs_r_-uppgifter krävs).
 Schemaprefix hämtas från hex_standardiserade_skyddsnivaer – egna prefix fungerar

@@ -1,4 +1,4 @@
-CREATE OR REPLACE FUNCTION public.hantera_hex_standardiserade_roller()
+CREATE OR REPLACE FUNCTION public.hex_hantera_std_roller()
     RETURNS event_trigger
     LANGUAGE 'plpgsql'
     COST 100
@@ -51,8 +51,8 @@ DECLARE
     generated_password  text;
     antal_roller        integer := 0;
 BEGIN
-    RAISE NOTICE E'[hantera_hex_standardiserade_roller] === START ===';
-    RAISE NOTICE '[hantera_hex_standardiserade_roller] Hanterar rollskapande för nya scheman';
+    RAISE NOTICE E'[hex_hantera_std_roller] === START ===';
+    RAISE NOTICE '[hex_hantera_std_roller] Hanterar rollskapande för nya scheman';
 
     -- Hantera alla CREATE SCHEMA-kommandon
     FOR kommando IN SELECT * FROM pg_event_trigger_ddl_commands()
@@ -60,12 +60,12 @@ BEGIN
     LOOP
         schema_namn := replace(split_part(kommando.object_identity, '.', 1), '"', '');
 
-        RAISE NOTICE E'[hantera_hex_standardiserade_roller] ================';
-        RAISE NOTICE '[hantera_hex_standardiserade_roller] Bearbetar schema: %', schema_namn;
+        RAISE NOTICE E'[hex_hantera_std_roller] ================';
+        RAISE NOTICE '[hex_hantera_std_roller] Bearbetar schema: %', schema_namn;
 
         -- Hoppa över systemscheman
         IF schema_namn IN ('public', 'information_schema') OR schema_namn ~ '^pg_' THEN
-            RAISE NOTICE '[hantera_hex_standardiserade_roller] Hoppar över systemschema: %', schema_namn;
+            RAISE NOTICE '[hex_hantera_std_roller] Hoppar över systemschema: %', schema_namn;
             CONTINUE;
         END IF;
 
@@ -73,19 +73,19 @@ BEGIN
         FOR rollkonfiguration IN
             SELECT * FROM hex_standardiserade_roller ORDER BY gid
         LOOP
-            RAISE NOTICE '[hantera_hex_standardiserade_roller] Testar rollkonfiguration: % (typ: %, login: %)',
+            RAISE NOTICE '[hex_hantera_std_roller] Testar rollkonfiguration: % (typ: %, login: %)',
                 rollkonfiguration.rollnamn, rollkonfiguration.rolltyp, rollkonfiguration.with_login;
 
             -- Testa om schema_uttryck matchar detta schema
             BEGIN
                 EXECUTE format('SELECT %L %s', schema_namn, rollkonfiguration.schema_uttryck) INTO matchar;
-                RAISE NOTICE '[hantera_hex_standardiserade_roller]   Schema_uttryck "%" matchar: %',
+                RAISE NOTICE '[hex_hantera_std_roller]   Schema_uttryck "%" matchar: %',
                     rollkonfiguration.schema_uttryck, matchar;
 
                 IF matchar THEN
                     -- Ersätt {schema} med faktiskt schemanamn
                     slutligt_rollnamn := replace(rollkonfiguration.rollnamn, '{schema}', schema_namn);
-                    RAISE NOTICE '[hantera_hex_standardiserade_roller]   Slutligt rollnamn: %', slutligt_rollnamn;
+                    RAISE NOTICE '[hex_hantera_std_roller]   Slutligt rollnamn: %', slutligt_rollnamn;
 
                     IF NOT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = slutligt_rollnamn) THEN
 
@@ -117,14 +117,14 @@ BEGIN
                             IF rollkonfiguration.arvs_fran IS NOT NULL THEN
                                 arvs_rollnamn := replace(rollkonfiguration.arvs_fran, '{schema}', schema_namn);
                                 EXECUTE format('GRANT %I TO %I', arvs_rollnamn, slutligt_rollnamn);
-                                RAISE NOTICE '[hantera_hex_standardiserade_roller]   ✓ Ärver behörigheter från: %', arvs_rollnamn;
+                                RAISE NOTICE '[hex_hantera_std_roller]   ✓ Ärver behörigheter från: %', arvs_rollnamn;
                             ELSE
-                                PERFORM tilldela_rollrattigheter(schema_namn, slutligt_rollnamn, rollkonfiguration.rolltyp);
+                                PERFORM hex_tilldela_rollrattigheter(schema_namn, slutligt_rollnamn, rollkonfiguration.rolltyp);
                             END IF;
 
-                            -- gs_*-roller tilldelas INTE system_owner – de är systeminterna
+                            -- gs_*-roller tilldelas INTE hex_systemagare – de är systeminterna
                             -- och ska inte kunna vidaredelegeras manuellt
-                            RAISE NOTICE '[hantera_hex_standardiserade_roller]   ✓ Skapade LOGIN-tjänstekonto: %', slutligt_rollnamn;
+                            RAISE NOTICE '[hex_hantera_std_roller]   ✓ Skapade LOGIN-tjänstekonto: %', slutligt_rollnamn;
 
                         ELSE
                             -- -------------------------------------------------------
@@ -141,23 +141,23 @@ BEGIN
                                     created_at  = now();
 
                             -- Direkta schemabehörigheter på behörighetsgruppen
-                            PERFORM tilldela_rollrattigheter(schema_namn, slutligt_rollnamn, rollkonfiguration.rolltyp);
+                            PERFORM hex_tilldela_rollrattigheter(schema_namn, slutligt_rollnamn, rollkonfiguration.rolltyp);
 
                             -- Ge ägarrollen rättighet att tilldela denna grupp till AD-användare
-                            EXECUTE format('GRANT %I TO %I', slutligt_rollnamn, system_owner());
+                            EXECUTE format('GRANT %I TO %I', slutligt_rollnamn, hex_systemagare());
 
-                            RAISE NOTICE '[hantera_hex_standardiserade_roller]   ✓ Skapade NOLOGIN-behörighetsgrupp: %', slutligt_rollnamn;
+                            RAISE NOTICE '[hex_hantera_std_roller]   ✓ Skapade NOLOGIN-behörighetsgrupp: %', slutligt_rollnamn;
                         END IF;
 
                         antal_roller := antal_roller + 1;
 
                     ELSE
-                        RAISE NOTICE '[hantera_hex_standardiserade_roller]   - Roll finns redan: %', slutligt_rollnamn;
+                        RAISE NOTICE '[hex_hantera_std_roller]   - Roll finns redan: %', slutligt_rollnamn;
 
                         -- Säkerställ att befintlig NOLOGIN-roll ändå får rätt behörigheter
                         -- (t.ex. om tabeller skapades innan rollen fick rättigheter)
                         IF NOT rollkonfiguration.with_login THEN
-                            PERFORM tilldela_rollrattigheter(schema_namn, slutligt_rollnamn, rollkonfiguration.rolltyp);
+                            PERFORM hex_tilldela_rollrattigheter(schema_namn, slutligt_rollnamn, rollkonfiguration.rolltyp);
                         ELSE
                             -- Säkerställ att befintlig LOGIN-roll är i hex_geoserver_roller
                             -- (kan saknas om rollen överlevde en avinstallation eller skapades manuellt)
@@ -169,46 +169,46 @@ BEGIN
                                   AND mem.rolname = slutligt_rollnamn
                             ) THEN
                                 EXECUTE format('GRANT hex_geoserver_roller TO %I', slutligt_rollnamn);
-                                RAISE NOTICE '[hantera_hex_standardiserade_roller]   ✓ Lade till befintlig LOGIN-roll i hex_geoserver_roller: %', slutligt_rollnamn;
+                                RAISE NOTICE '[hex_hantera_std_roller]   ✓ Lade till befintlig LOGIN-roll i hex_geoserver_roller: %', slutligt_rollnamn;
                             END IF;
                         END IF;
                     END IF;
                 ELSE
-                    RAISE NOTICE '[hantera_hex_standardiserade_roller]   - Schema_uttryck matchade inte, hoppar över';
+                    RAISE NOTICE '[hex_hantera_std_roller]   - Schema_uttryck matchade inte, hoppar över';
                 END IF;
 
             EXCEPTION
                 WHEN OTHERS THEN
-                    RAISE WARNING '[hantera_hex_standardiserade_roller] Fel vid evaluering av schema_uttryck för roll %: %',
+                    RAISE WARNING '[hex_hantera_std_roller] Fel vid evaluering av schema_uttryck för roll %: %',
                         rollkonfiguration.rollnamn, SQLERRM;
             END;
         END LOOP;
 
         -- Sammanfattning för detta schema
-        RAISE NOTICE '[hantera_hex_standardiserade_roller] Sammanfattning för schema %:', schema_namn;
-        RAISE NOTICE '[hantera_hex_standardiserade_roller]   » Roller skapade: %', antal_roller;
+        RAISE NOTICE '[hex_hantera_std_roller] Sammanfattning för schema %:', schema_namn;
+        RAISE NOTICE '[hex_hantera_std_roller]   » Roller skapade: %', antal_roller;
 
         -- Återställ räknare för nästa schema
         antal_roller := 0;
     END LOOP;
 
-    RAISE NOTICE '[hantera_hex_standardiserade_roller] === SLUT ===';
+    RAISE NOTICE '[hex_hantera_std_roller] === SLUT ===';
 
 EXCEPTION
     WHEN OTHERS THEN
-        RAISE NOTICE '[hantera_hex_standardiserade_roller] !!! FEL UPPSTOD !!!';
-        RAISE NOTICE '[hantera_hex_standardiserade_roller]   - Schema: %', schema_namn;
-        RAISE NOTICE '[hantera_hex_standardiserade_roller]   - Rollkonfiguration: %', rollkonfiguration.rollnamn;
-        RAISE NOTICE '[hantera_hex_standardiserade_roller]   - Felkod: %', SQLSTATE;
-        RAISE NOTICE '[hantera_hex_standardiserade_roller]   - Felmeddelande: %', SQLERRM;
+        RAISE NOTICE '[hex_hantera_std_roller] !!! FEL UPPSTOD !!!';
+        RAISE NOTICE '[hex_hantera_std_roller]   - Schema: %', schema_namn;
+        RAISE NOTICE '[hex_hantera_std_roller]   - Rollkonfiguration: %', rollkonfiguration.rollnamn;
+        RAISE NOTICE '[hex_hantera_std_roller]   - Felkod: %', SQLSTATE;
+        RAISE NOTICE '[hex_hantera_std_roller]   - Felmeddelande: %', SQLERRM;
         RAISE;
 END;
 $BODY$;
 
-ALTER FUNCTION public.hantera_hex_standardiserade_roller()
+ALTER FUNCTION public.hex_hantera_std_roller()
     OWNER TO postgres;
 
-COMMENT ON FUNCTION public.hantera_hex_standardiserade_roller()
+COMMENT ON FUNCTION public.hex_hantera_std_roller()
     IS 'Event trigger-funktion för automatisk rollskapande vid CREATE SCHEMA.
     Skapar fyra roller per schema:
       r_{schema}    NOLOGIN behörighetsgrupp (läs) – tilldelas AD-användare/grupper

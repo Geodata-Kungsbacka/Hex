@@ -1,8 +1,8 @@
--- FUNCTION: public.hantera_ny_vy()
+-- FUNCTION: public.hex_hantera_ny_vy()
 
--- DROP FUNCTION IF EXISTS public.hantera_ny_vy();
+-- DROP FUNCTION IF EXISTS public.hex_hantera_ny_vy();
 
-CREATE OR REPLACE FUNCTION public.hantera_ny_vy()
+CREATE OR REPLACE FUNCTION public.hex_hantera_ny_vy()
     RETURNS event_trigger
     LANGUAGE 'plpgsql'
     COST 100
@@ -29,7 +29,7 @@ DECLARE
     schema_namn text;          -- Schema där vyn skapas
     vy_namn text;             -- Namnet på vyn som skapas
 BEGIN
-    RAISE NOTICE E'\n=== START hantera_ny_vy() ===';
+    RAISE NOTICE E'\n=== START hex_hantera_ny_vy() ===';
     
     -- Loopa genom alla CREATE VIEW-kommandon
     FOR kommando IN SELECT * FROM pg_event_trigger_ddl_commands()
@@ -49,25 +49,25 @@ BEGIN
         
         -- Validera vynamnet
         -- Detta anrop kontrollerar prefix och suffix baserat på geometriinnehåll
-        PERFORM validera_vynamn(schema_namn, vy_namn);
+        PERFORM hex_validera_vynamn(schema_namn, vy_namn);
         
         RAISE NOTICE 'Vy %.% validerad och godkänd', schema_namn, vy_namn;
     END LOOP;
     
-    RAISE NOTICE '=== SLUT hantera_ny_vy() ===\n';
+    RAISE NOTICE '=== SLUT hex_hantera_ny_vy() ===\n';
 
 EXCEPTION
     WHEN OTHERS THEN
         -- Skicka vidare felet utan extra meddelanden
-        -- Detta ger tydligare felmeddelanden från validera_vynamn
+        -- Detta ger tydligare felmeddelanden från hex_validera_vynamn
         RAISE;
 END;
 $BODY$;
 
-ALTER FUNCTION public.hantera_ny_vy()
+ALTER FUNCTION public.hex_hantera_ny_vy()
     OWNER TO postgres;
 
-COMMENT ON FUNCTION public.hantera_ny_vy()
+COMMENT ON FUNCTION public.hex_hantera_ny_vy()
     IS 'Triggerfunktion som körs vid CREATE VIEW för att validera vynamn enligt
 standardiserad namngivning. Vyerna måste följa mönstret schema_v_namn
 med suffix baserat på geometriinnehåll (_p, _l, _y eller _g).';

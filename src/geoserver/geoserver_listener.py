@@ -1002,7 +1002,7 @@ def _load_schema_pattern(cur):
         )
 
 # pg_notify-kanalnamn. Måste överensstämma med SQL-funktionerna
-# notifiera_geoserver() och notifiera_geoserver_borttagning().
+# hex_notifiera_gs() och hex_notifiera_gs_borttagning().
 CHANNEL_SCHEMA_CREATE = "geoserver_schema"
 CHANNEL_SCHEMA_DROP   = "geoserver_schema_drop"
 

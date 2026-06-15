@@ -1,4 +1,4 @@
-CREATE OR REPLACE FUNCTION public.hamta_kolumnstandard(
+CREATE OR REPLACE FUNCTION public.hex_hamta_kolumnstandard(
     p_schema_namn text,
     p_tabell_namn text,
     p_geometriinfo hex_geom_info)
@@ -17,7 +17,7 @@ AS $BODY$
  * Funktionen returnerar kolumner för: (gid, meter_till_berg, skapad_tidpunkt, geom)
  * Där gid och skapad_tidpunkt kommer från hex_standardiserade_kolumner
  *
- * ANVÄNDS AV: hantera_ny_tabell() för att omstrukturera tabeller automatiskt
+ * ANVÄNDS AV: hex_hantera_ny_tabell() för att omstrukturera tabeller automatiskt
  *
  * PARAMETRAR:
  * - p_schema_namn: Namnet på schemat (t.ex. "sk0_ext_sgu", "sk1_kba_mh_bygg")
@@ -98,31 +98,31 @@ DECLARE
     antal_filtrerade integer;         -- Antal kolumner efter schema-filtrering
     antal_tabellkolumner integer;     -- Totalt antal kolumner
 BEGIN
-    RAISE NOTICE E'[hamta_kolumnstandard] === START ===';
+    RAISE NOTICE E'[hex_hamta_kolumnstandard] === START ===';
     
     -- Steg 1: Analysera geometriinformation om sådan finns
-    RAISE NOTICE '[hamta_kolumnstandard] Steg 1: Analyserar geometriinformation';
+    RAISE NOTICE '[hex_hamta_kolumnstandard] Steg 1: Analyserar geometriinformation';
     IF p_geometriinfo IS NOT NULL THEN
-        RAISE NOTICE '[hamta_kolumnstandard]   - Kolumnnamn:      %', p_geometriinfo.kolumnnamn;
-        RAISE NOTICE '[hamta_kolumnstandard]   - Typ:             %', p_geometriinfo.typ_ursprunglig;
-        RAISE NOTICE '[hamta_kolumnstandard]   - Basal typ:       %', p_geometriinfo.typ_basal;
-        RAISE NOTICE '[hamta_kolumnstandard]   - Dimensioner:     %', p_geometriinfo.dimensioner;
-        RAISE NOTICE '[hamta_kolumnstandard]   - Definition:      %', p_geometriinfo.definition;
+        RAISE NOTICE '[hex_hamta_kolumnstandard]   - Kolumnnamn:      %', p_geometriinfo.kolumnnamn;
+        RAISE NOTICE '[hex_hamta_kolumnstandard]   - Typ:             %', p_geometriinfo.typ_ursprunglig;
+        RAISE NOTICE '[hex_hamta_kolumnstandard]   - Basal typ:       %', p_geometriinfo.typ_basal;
+        RAISE NOTICE '[hex_hamta_kolumnstandard]   - Dimensioner:     %', p_geometriinfo.dimensioner;
+        RAISE NOTICE '[hex_hamta_kolumnstandard]   - Definition:      %', p_geometriinfo.definition;
     ELSE
-        RAISE NOTICE '[hamta_kolumnstandard]   - Ingen geometriinformation tillgänglig';
+        RAISE NOTICE '[hex_hamta_kolumnstandard]   - Ingen geometriinformation tillgänglig';
     END IF;
 
     -- Steg 2: Räkna standardkolumner för statistik
-    RAISE NOTICE '[hamta_kolumnstandard] Steg 2: Räknar standardkolumner';
+    RAISE NOTICE '[hex_hamta_kolumnstandard] Steg 2: Räknar standardkolumner';
     SELECT COUNT(*) INTO antal_standardkolumner 
     FROM hex_standardiserade_kolumner;
-    RAISE NOTICE '[hamta_kolumnstandard]   - Totalt antal standardkolumner: %', antal_standardkolumner;
+    RAISE NOTICE '[hex_hamta_kolumnstandard]   - Totalt antal standardkolumner: %', antal_standardkolumner;
 
     -- STEG 3: Hitta vilka standardkolumner som passar detta schema
     -- Vi loopar genom alla standardkolumner och testar om de matchar schemat.
     -- T.ex. kolumn "extern_id" med uttryck "LIKE '%_ext_%'" matchar "sk0_ext_sgu"
     -- men inte "sk1_kba_mh_bygg". Matchande kolumner sparas i temp_filtrerade_standardkolumner.
-    RAISE NOTICE '[hamta_kolumnstandard] Steg 3: Filtrerar standardkolumner baserat på schema_uttryck';
+    RAISE NOTICE '[hex_hamta_kolumnstandard] Steg 3: Filtrerar standardkolumner baserat på schema_uttryck';
     
     -- Skapa temporär tabell för filtrerade standardkolumner (nu med historik_qa och default_varde)
     CREATE TEMP TABLE temp_filtrerade_standardkolumner AS
@@ -152,26 +152,26 @@ BEGIN
                     standardkolumn.default_varde
                 );
                 
-                RAISE NOTICE '[hamta_kolumnstandard]   ✓ Kolumn % matchade schema_uttryck: %', 
+                RAISE NOTICE '[hex_hamta_kolumnstandard]   ✓ Kolumn % matchade schema_uttryck: %', 
                     standardkolumn.kolumnnamn, standardkolumn.schema_uttryck;
             ELSE
-                RAISE NOTICE '[hamta_kolumnstandard]   - Kolumn % matchade INTE schema_uttryck: %', 
+                RAISE NOTICE '[hex_hamta_kolumnstandard]   - Kolumn % matchade INTE schema_uttryck: %', 
                     standardkolumn.kolumnnamn, standardkolumn.schema_uttryck;
             END IF;
         EXCEPTION
             WHEN OTHERS THEN
-                RAISE WARNING '[hamta_kolumnstandard] Fel vid evaluering av schema_uttryck för kolumn %: % (Fel: %)', 
+                RAISE WARNING '[hex_hamta_kolumnstandard] Fel vid evaluering av schema_uttryck för kolumn %: % (Fel: %)', 
                     standardkolumn.kolumnnamn, standardkolumn.schema_uttryck, SQLERRM;
         END;
     END LOOP;
 
     -- Debug: visa vad som finns i temp_filtrerade_standardkolumner
-    RAISE NOTICE '[hamta_kolumnstandard] Debug - Innehåll i temp_filtrerade_standardkolumner:';
+    RAISE NOTICE '[hex_hamta_kolumnstandard] Debug - Innehåll i temp_filtrerade_standardkolumner:';
     FOR standardkolumn IN 
         SELECT * FROM temp_filtrerade_standardkolumner
         ORDER BY ordinal_position
     LOOP
-        RAISE NOTICE '[hamta_kolumnstandard]   % | % | % | historik_qa=% | default_varde=%',
+        RAISE NOTICE '[hex_hamta_kolumnstandard]   % | % | % | historik_qa=% | default_varde=%',
             standardkolumn.kolumnnamn,
             standardkolumn.ordinal_position,
             standardkolumn.datatyp,
@@ -181,7 +181,7 @@ BEGIN
 
     -- Räkna hur många kolumner som matchade
     SELECT COUNT(*) INTO antal_filtrerade FROM temp_filtrerade_standardkolumner;
-    RAISE NOTICE '[hamta_kolumnstandard]   - Antal kolumner som matchade schema %: %', 
+    RAISE NOTICE '[hex_hamta_kolumnstandard]   - Antal kolumner som matchade schema %: %', 
         p_schema_namn, antal_filtrerade;
 
     -- STEG 4: Sätt ihop alla kolumner i rätt ordning
@@ -194,7 +194,7 @@ BEGIN
     -- 2. Användarens CREATE TABLE-kolumner - t.ex. meter_till_berg
     -- 3. Filtrerade standardkolumner (negativa ordinal_position) - t.ex. skapad_tidpunkt  
     -- 4. Geometrikolumn sist om den finns - t.ex. geom
-    RAISE NOTICE '[hamta_kolumnstandard] Steg 4: Sammanställer alla kolumner i korrekt ordning';
+    RAISE NOTICE '[hex_hamta_kolumnstandard] Steg 4: Sammanställer alla kolumner i korrekt ordning';
     
     CREATE TEMP TABLE temp_kolumner_till_fardig_tabell AS
         -- DEL 1: Standardkolumner som ska komma FÖRST (positiv ordinal_position)
@@ -281,9 +281,9 @@ BEGIN
         WHERE p_geometriinfo IS NOT NULL;
 
     -- Steg 5: Räkna totalt antal kolumner för statistik
-    RAISE NOTICE '[hamta_kolumnstandard] Steg 5: Analyserar slutliga kolumner';
+    RAISE NOTICE '[hex_hamta_kolumnstandard] Steg 5: Analyserar slutliga kolumner';
     SELECT COUNT(*) INTO antal_tabellkolumner FROM temp_kolumner_till_fardig_tabell;
-    RAISE NOTICE '[hamta_kolumnstandard]   - Totalt antal kolumner efter sammansättning: %', antal_tabellkolumner;
+    RAISE NOTICE '[hex_hamta_kolumnstandard]   - Totalt antal kolumner efter sammansättning: %', antal_tabellkolumner;
 
     -- Varna om användaren har egna IDENTITY-kolumner (gid läggs alltid till som IDENTITY)
     IF EXISTS (
@@ -293,7 +293,7 @@ BEGIN
         AND a.attname != 'gid'
         AND NOT a.attisdropped
     ) THEN
-        RAISE WARNING '[hamta_kolumnstandard] OBS: Tabellen %.% har en egen IDENTITY-kolumn. '
+        RAISE WARNING '[hex_hamta_kolumnstandard] OBS: Tabellen %.% har en egen IDENTITY-kolumn. '
             'Hex lägger automatiskt till "gid" som IDENTITY-primärnyckel. '
             'Detta resulterar i två sekvenser per tabell. '
             'Överväg att använda en vanlig integer-kolumn istället.',
@@ -301,17 +301,17 @@ BEGIN
     END IF;
 
     -- Steg 6: Logga kolumnerna och deras definitioner
-    RAISE NOTICE '[hamta_kolumnstandard] Steg 6: Loggar slutliga kolumner';
+    RAISE NOTICE '[hex_hamta_kolumnstandard] Steg 6: Loggar slutliga kolumner';
     FOR create_kolumn IN 
         SELECT * FROM temp_kolumner_till_fardig_tabell 
         ORDER BY ordinal_position
     LOOP
         IF create_kolumn.is_generated THEN
-            RAISE NOTICE '[hamta_kolumnstandard]   - Kolumn: % (GENERATED med uttryck: %)',
+            RAISE NOTICE '[hex_hamta_kolumnstandard]   - Kolumn: % (GENERATED med uttryck: %)',
                 create_kolumn.kolumnnamn,
                 create_kolumn.generated_expr;
         ELSE
-            RAISE NOTICE '[hamta_kolumnstandard]   - Kolumn: % (Typ: %)',
+            RAISE NOTICE '[hex_hamta_kolumnstandard]   - Kolumn: % (Typ: %)',
                 create_kolumn.kolumnnamn,
                 create_kolumn.datatyp;
         END IF;
@@ -321,13 +321,13 @@ BEGIN
     -- array_agg(): Samlar alla rader till en array
     -- ROW()::hex_kolumnkonfig: Skapar en struct av typen hex_kolumnkonfig från varje rad
     -- Ordningen kommer från UNION ALL-sekvensen ovan (ingen ORDER BY behövs)
-    RAISE NOTICE '[hamta_kolumnstandard] Steg 7: Skapar resultatarray';
+    RAISE NOTICE '[hex_hamta_kolumnstandard] Steg 7: Skapar resultatarray';
     SELECT array_agg(ROW(kolumnnamn, ordinal_position, datatyp)::hex_kolumnkonfig)
     INTO resultat 
     FROM temp_kolumner_till_fardig_tabell;
 
     -- Steg 8: Visa den kompletta CREATE TABLE-satsen
-    RAISE NOTICE '[hamta_kolumnstandard] Steg 8: Genererar CREATE TABLE-sats för felsökning';
+    RAISE NOTICE '[hex_hamta_kolumnstandard] Steg 8: Genererar CREATE TABLE-sats för felsökning';
     SELECT string_agg(
         format('%I %s', kolumnnamn, datatyp),
         E',\n    '
@@ -335,15 +335,15 @@ BEGIN
     ) INTO sql_sats 
     FROM temp_kolumner_till_fardig_tabell;
     
-    RAISE NOTICE E'[hamta_kolumnstandard] Resulterande CREATE TABLE-sats:\n  (\n    %\n  )', sql_sats;
+    RAISE NOTICE E'[hex_hamta_kolumnstandard] Resulterande CREATE TABLE-sats:\n  (\n    %\n  )', sql_sats;
 
     -- Städa upp och returnera resultat
     DROP TABLE IF EXISTS temp_filtrerade_standardkolumner;
     DROP TABLE IF EXISTS temp_kolumner_till_fardig_tabell;
     
-    RAISE NOTICE '[hamta_kolumnstandard]   - Hämtade % kolumner för schema %', antal_tabellkolumner, p_schema_namn;
-    RAISE NOTICE '[hamta_kolumnstandard]   - Varav % kom från filtrerade standardkolumner', antal_filtrerade;
-    RAISE NOTICE '[hamta_kolumnstandard] === SLUT ===';
+    RAISE NOTICE '[hex_hamta_kolumnstandard]   - Hämtade % kolumner för schema %', antal_tabellkolumner, p_schema_namn;
+    RAISE NOTICE '[hex_hamta_kolumnstandard]   - Varav % kom från filtrerade standardkolumner', antal_filtrerade;
+    RAISE NOTICE '[hex_hamta_kolumnstandard] === SLUT ===';
     
     RETURN resultat;
 
@@ -353,20 +353,20 @@ EXCEPTION
         DROP TABLE IF EXISTS temp_filtrerade_standardkolumner;
         DROP TABLE IF EXISTS temp_kolumner_till_fardig_tabell;
         
-        RAISE NOTICE '[hamta_kolumnstandard] !!! FEL UPPSTOD !!!';
-        RAISE NOTICE '[hamta_kolumnstandard]   - Schema: %', p_schema_namn;
-        RAISE NOTICE '[hamta_kolumnstandard]   - Tabell: %', p_tabell_namn;
-        RAISE NOTICE '[hamta_kolumnstandard]   - Felkod: %', SQLSTATE;
-        RAISE NOTICE '[hamta_kolumnstandard]   - Felmeddelande: %', SQLERRM;
-        RAISE NOTICE '[hamta_kolumnstandard] === AVBRUTEN ===';
+        RAISE NOTICE '[hex_hamta_kolumnstandard] !!! FEL UPPSTOD !!!';
+        RAISE NOTICE '[hex_hamta_kolumnstandard]   - Schema: %', p_schema_namn;
+        RAISE NOTICE '[hex_hamta_kolumnstandard]   - Tabell: %', p_tabell_namn;
+        RAISE NOTICE '[hex_hamta_kolumnstandard]   - Felkod: %', SQLSTATE;
+        RAISE NOTICE '[hex_hamta_kolumnstandard]   - Felmeddelande: %', SQLERRM;
+        RAISE NOTICE '[hex_hamta_kolumnstandard] === AVBRUTEN ===';
         RAISE;
 END;
 $BODY$;
 
-ALTER FUNCTION public.hamta_kolumnstandard(text, text, hex_geom_info)
+ALTER FUNCTION public.hex_hamta_kolumnstandard(text, text, hex_geom_info)
     OWNER TO postgres;
 
-COMMENT ON FUNCTION public.hamta_kolumnstandard(text, text, hex_geom_info)
+COMMENT ON FUNCTION public.hex_hamta_kolumnstandard(text, text, hex_geom_info)
     IS 'Sammanställer en komplett kolumnlista för en tabell genom att kombinera 
 kolumner från hex_standardiserade_kolumner (filtrerade baserat på schema_uttryck) 
 och originaltabellen samt eventuell geometri. Hanterar historik_qa-flaggan för

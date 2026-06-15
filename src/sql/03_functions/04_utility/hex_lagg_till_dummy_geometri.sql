@@ -1,6 +1,6 @@
--- FUNCTION: public.lagg_till_dummy_geometri(text, text, hex_geom_info)
+-- FUNCTION: public.hex_lagg_till_dummy_geometri(text, text, hex_geom_info)
 
-CREATE OR REPLACE FUNCTION public.lagg_till_dummy_geometri(
+CREATE OR REPLACE FUNCTION public.hex_lagg_till_dummy_geometri(
     p_schema_namn  text,
     p_tabell_namn  text,
     p_geometriinfo hex_geom_info
@@ -22,7 +22,7 @@ AS $BODY$
  *
  * Dummy-koordinater (EPSG 3007, SWEREF99 12 00, Kungsbacka-området):
  *   Punkt/linje/polygon centrerad kring (160000, 6395000).
- *   Geometrin är 100 × 100 m och uppfyller validera_geometri()-kravet
+ *   Geometrin är 100 × 100 m och uppfyller hex_validera_geometri()-kravet
  *   på _kba_-tabeller (giltig, ej tom, inga duplicerade punkter,
  *   inga kurvsegment).
  *
@@ -78,32 +78,32 @@ BEGIN
     EXECUTE format(
         'CREATE TRIGGER hex_ta_bort_dummy'
         ' AFTER INSERT ON %I.%I'
-        ' FOR EACH ROW EXECUTE FUNCTION public.ta_bort_dummy_rad()',
+        ' FOR EACH ROW EXECUTE FUNCTION public.hex_ta_bort_dummy_rad()',
         p_schema_namn, p_tabell_namn
     );
 
-    RAISE NOTICE '[lagg_till_dummy_geometri] ✓ Dummy-geometri tillagd i %.% (gid: %, typ: %, srid: %)',
+    RAISE NOTICE '[hex_lagg_till_dummy_geometri] ✓ Dummy-geometri tillagd i %.% (gid: %, typ: %, srid: %)',
         p_schema_namn, p_tabell_namn, dummy_gid,
         p_geometriinfo.typ_basal, p_geometriinfo.srid;
 
 EXCEPTION
     WHEN OTHERS THEN
         -- Stoppar inte tabellskapandet – loggar bara problemet
-        RAISE NOTICE '[lagg_till_dummy_geometri] ⚠ Kunde inte lägga till dummy i %.%: %',
+        RAISE NOTICE '[hex_lagg_till_dummy_geometri] ⚠ Kunde inte lägga till dummy i %.%: %',
             p_schema_namn, p_tabell_namn, SQLERRM;
-        RAISE NOTICE '[lagg_till_dummy_geometri]   Trolig orsak: obligatorisk kolumn utan standardvärde.';
-        RAISE NOTICE '[lagg_till_dummy_geometri]   Tabellen kan kräva manuell specifikation i QGIS.';
+        RAISE NOTICE '[hex_lagg_till_dummy_geometri]   Trolig orsak: obligatorisk kolumn utan standardvärde.';
+        RAISE NOTICE '[hex_lagg_till_dummy_geometri]   Tabellen kan kräva manuell specifikation i QGIS.';
 END;
 $BODY$;
 
-ALTER FUNCTION public.lagg_till_dummy_geometri(text, text, hex_geom_info)
+ALTER FUNCTION public.hex_lagg_till_dummy_geometri(text, text, hex_geom_info)
     OWNER TO postgres;
 
-COMMENT ON FUNCTION public.lagg_till_dummy_geometri(text, text, hex_geom_info)
+COMMENT ON FUNCTION public.hex_lagg_till_dummy_geometri(text, text, hex_geom_info)
     IS 'Lägger till en minimal dummy-geometrirad i en geometritabell för att QGIS
 ska kunna identifiera geometritypen via normal DB-anslutning (utan manuell dialog).
 Dummy-koordinaterna ligger i Kungsbacka-området (EPSG 3007, ~160000 6395000) och
-uppfyller alla validera_geometri()-krav. Dummy-gid registreras i hex_dummy_geometrier
+uppfyller alla hex_validera_geometri()-krav. Dummy-gid registreras i hex_dummy_geometrier
 och en AFTER INSERT-trigger (hex_ta_bort_dummy) läggs till för att automatiskt
 städa bort dummyn när den första riktiga raden infogats. Fel loggas som NOTICE
 och stoppar inte tabellskapandet.';

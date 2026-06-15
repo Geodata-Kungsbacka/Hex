@@ -6,7 +6,7 @@ DROP EVENT TRIGGER IF EXISTS notifiera_geoserver_trigger;
 
 CREATE EVENT TRIGGER notifiera_geoserver_trigger ON DDL_COMMAND_END
     WHEN TAG IN ('CREATE SCHEMA')
-    EXECUTE PROCEDURE public.notifiera_geoserver();
+    EXECUTE PROCEDURE public.hex_notifiera_gs();
 
 ALTER EVENT TRIGGER notifiera_geoserver_trigger
     OWNER TO postgres;

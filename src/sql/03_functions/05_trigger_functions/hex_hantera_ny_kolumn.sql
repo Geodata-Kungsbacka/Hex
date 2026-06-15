@@ -1,8 +1,8 @@
--- FUNCTION: public.hantera_kolumntillagg()
+-- FUNCTION: public.hex_hantera_ny_kolumn()
 
--- DROP FUNCTION IF EXISTS public.hantera_kolumntillagg();
+-- DROP FUNCTION IF EXISTS public.hex_hantera_ny_kolumn();
 
-CREATE OR REPLACE FUNCTION public.hantera_kolumntillagg()
+CREATE OR REPLACE FUNCTION public.hex_hantera_ny_kolumn()
     RETURNS event_trigger
     LANGUAGE 'plpgsql'
     COST 100
@@ -64,28 +64,28 @@ DECLARE
     qa_trigger_inaktiverad boolean := false;  -- Flagga för QA-trigger status
     afvaktande_tabell boolean := false;       -- Om nuvarande tabell väntar på geometri (FME-tvåstegsmönster)
 BEGIN
-    RAISE NOTICE E'[hantera_kolumntillagg] ======== START ========';
+    RAISE NOTICE E'[hex_hantera_ny_kolumn] ======== START ========';
     
     -- Steg 1: Hantera rekursion
     -- Detta förhindrar oändliga loopar när vi modifierar tabellen
-    RAISE NOTICE '[hantera_kolumntillagg] (1/4) Kontrollerar rekursionsflagga';
+    RAISE NOTICE '[hex_hantera_ny_kolumn] (1/4) Kontrollerar rekursionsflagga';
     SELECT COALESCE(current_setting('temp.reorganization_in_progress', true), 'false')
     INTO flagg_varde;
     
     IF flagg_varde = 'true' THEN
-        RAISE NOTICE '[hantera_kolumntillagg] Rekursion upptäckt - avbryter för att undvika oändlig loop';
+        RAISE NOTICE '[hex_hantera_ny_kolumn] Rekursion upptäckt - avbryter för att undvika oändlig loop';
         RETURN;
     END IF;
 
-    -- Kontrollera om hantera_ny_tabell pågår - avbryt för att inte störa
+    -- Kontrollera om hex_hantera_ny_tabell pågår - avbryt för att inte störa
     -- steg 8 (GiST-index) och steg 9 (geometrivalidering)
     IF current_setting('temp.tabellstrukturering_pagar', true) = 'true' THEN
-        RAISE NOTICE '[hantera_kolumntillagg] hantera_ny_tabell pågår - avbryter';
+        RAISE NOTICE '[hex_hantera_ny_kolumn] hex_hantera_ny_tabell pågår - avbryter';
         RETURN;
     END IF;
 
     PERFORM set_config('temp.reorganization_in_progress', 'true', true);
-    RAISE NOTICE '[hantera_kolumntillagg] Rekursionsflagga satt - påbörjar omstrukturering';
+    RAISE NOTICE '[hex_hantera_ny_kolumn] Rekursionsflagga satt - påbörjar omstrukturering';
 
     -- ----------------------------------------------------------------
     -- Specialfall: ALTER TABLE ... RENAME TO
@@ -121,11 +121,11 @@ BEGIN
                         history_table = ny_historik
                     WHERE parent_oid = kommando.objid;
 
-                    RAISE NOTICE '[hantera_kolumntillagg] ✓ Historiktabell omdöpt: % → % (tabell omdöpt: % → %)',
+                    RAISE NOTICE '[hex_hantera_ny_kolumn] ✓ Historiktabell omdöpt: % → % (tabell omdöpt: % → %)',
                         meta_rad.history_table, ny_historik,
                         meta_rad.parent_table, tabell_namn;
                 ELSE
-                    RAISE NOTICE '[hantera_kolumntillagg] Ingen historiktabell registrerad för OID % (tabell %, har troligen ingen historik)',
+                    RAISE NOTICE '[hex_hantera_ny_kolumn] Ingen historiktabell registrerad för OID % (tabell %, har troligen ingen historik)',
                         kommando.objid, tabell_namn;
                 END IF;
             END;
@@ -136,16 +136,16 @@ BEGIN
     -- Detektera FME-anslutning för utökad felsökningsloggning
     ar_fme := (lower(coalesce(current_setting('application_name', true), '')) = 'fme');
     IF ar_fme THEN
-        RAISE NOTICE '[hantera_kolumntillagg] *** FME-ANSLUTNING DETEKTERAD ***';
-        RAISE NOTICE '[hantera_kolumntillagg] Sessionsinformation:';
-        RAISE NOTICE '[hantera_kolumntillagg]   » application_name: %', current_setting('application_name', true);
-        RAISE NOTICE '[hantera_kolumntillagg]   » session_user: %', session_user;
-        RAISE NOTICE '[hantera_kolumntillagg]   » inet_client_addr: %', inet_client_addr();
-        RAISE NOTICE '[hantera_kolumntillagg]   » backend_pid: %', pg_backend_pid();
+        RAISE NOTICE '[hex_hantera_ny_kolumn] *** FME-ANSLUTNING DETEKTERAD ***';
+        RAISE NOTICE '[hex_hantera_ny_kolumn] Sessionsinformation:';
+        RAISE NOTICE '[hex_hantera_ny_kolumn]   » application_name: %', current_setting('application_name', true);
+        RAISE NOTICE '[hex_hantera_ny_kolumn]   » session_user: %', session_user;
+        RAISE NOTICE '[hex_hantera_ny_kolumn]   » inet_client_addr: %', inet_client_addr();
+        RAISE NOTICE '[hex_hantera_ny_kolumn]   » backend_pid: %', pg_backend_pid();
     END IF;
 
     -- Steg 2: Identifiera och hantera tabeller
-    RAISE NOTICE '[hantera_kolumntillagg] (2/4) Börjar identifiera modifierade tabeller';
+    RAISE NOTICE '[hex_hantera_ny_kolumn] (2/4) Börjar identifiera modifierade tabeller';
     FOR kommando IN SELECT * FROM pg_event_trigger_ddl_commands()
     WHERE command_tag = 'ALTER TABLE'
     LOOP
@@ -154,12 +154,12 @@ BEGIN
         tabell_namn := replace(split_part(kommando.object_identity, '.', 2), '"', '');
         geometriinfo := NULL;  -- Återställ per iteration (förhindrar spill från föregående tabell)
 
-        RAISE NOTICE E'[hantera_kolumntillagg] --------------------------------------------------';
-        RAISE NOTICE '[hantera_kolumntillagg] Bearbetar tabell %.%', schema_namn, tabell_namn;
+        RAISE NOTICE E'[hex_hantera_ny_kolumn] --------------------------------------------------';
+        RAISE NOTICE '[hex_hantera_ny_kolumn] Bearbetar tabell %.%', schema_namn, tabell_namn;
 
         -- FME-debug: Visa aktuella kolumner innan omstrukturering
         IF ar_fme THEN
-            RAISE NOTICE '[hantera_kolumntillagg] [FME-DEBUG] Kolumner i %.% innan omstrukturering:', schema_namn, tabell_namn;
+            RAISE NOTICE '[hex_hantera_ny_kolumn] [FME-DEBUG] Kolumner i %.% innan omstrukturering:', schema_namn, tabell_namn;
             DECLARE
                 fme_kol record;
             BEGIN
@@ -169,7 +169,7 @@ BEGIN
                     WHERE table_schema = schema_namn AND table_name = tabell_namn
                     ORDER BY ordinal_position
                 LOOP
-                    RAISE NOTICE '[hantera_kolumntillagg] [FME-DEBUG]   #% % (%)', fme_kol.ordinal_position, fme_kol.column_name, fme_kol.data_type;
+                    RAISE NOTICE '[hex_hantera_ny_kolumn] [FME-DEBUG]   #% % (%)', fme_kol.ordinal_position, fme_kol.column_name, fme_kol.data_type;
                 END LOOP;
             END;
         END IF;
@@ -185,7 +185,7 @@ BEGIN
                 AND table_name = tabell_namn
                 AND column_name LIKE '%_temp0001'
         ) THEN
-            RAISE NOTICE '[hantera_kolumntillagg] Hoppar över tabell: %', 
+            RAISE NOTICE '[hex_hantera_ny_kolumn] Hoppar över tabell: %', 
                 CASE 
                     WHEN schema_namn = 'public' THEN 'public-schema'
                     ELSE 'temporär operation pågår'
@@ -203,16 +203,16 @@ BEGIN
             EXECUTE format('ALTER TABLE %I.%I DISABLE TRIGGER trg_%s_qa',
                 schema_namn, tabell_namn, tabell_namn);
             qa_trigger_inaktiverad := true;
-            RAISE NOTICE '[hantera_kolumntillagg] QA-trigger inaktiverad inför omstrukturering';
+            RAISE NOTICE '[hex_hantera_ny_kolumn] QA-trigger inaktiverad inför omstrukturering';
         EXCEPTION
             WHEN OTHERS THEN
-                RAISE NOTICE '[hantera_kolumntillagg] Ingen QA-trigger att inaktivera (eller fel): %', SQLERRM;
+                RAISE NOTICE '[hex_hantera_ny_kolumn] Ingen QA-trigger att inaktivera (eller fel): %', SQLERRM;
         END;
 
         -- Steg 3: Hämta standardkolumner som ska flyttas (filtrerade per schema_uttryck)
-        -- Speglar hamta_kolumnstandard: evaluera schema_uttryck dynamiskt per kolumn
+        -- Speglar hex_hamta_kolumnstandard: evaluera schema_uttryck dynamiskt per kolumn
         -- så att t.ex. skapad_av (LIKE '%_kba_%') inte försöks flyttas på _ext_-tabeller.
-        RAISE NOTICE '[hantera_kolumntillagg] (3/4) Identifierar kolumner som ska flyttas';
+        RAISE NOTICE '[hex_hantera_ny_kolumn] (3/4) Identifierar kolumner som ska flyttas';
         DECLARE
             stdkol       record;
             kol_matchar  boolean;
@@ -247,22 +247,22 @@ BEGIN
         END;
 
         IF array_length(flyttkolumner, 1) > 0 THEN
-            RAISE NOTICE '[hantera_kolumntillagg] Hittade % standardkolumner att flytta', array_length(flyttkolumner, 1);
+            RAISE NOTICE '[hex_hantera_ny_kolumn] Hittade % standardkolumner att flytta', array_length(flyttkolumner, 1);
             -- Lista kolumnerna som ska flyttas
             FOR i IN 1..array_length(flyttkolumner, 1) LOOP
-                RAISE NOTICE '[hantera_kolumntillagg]   #%: % (position: %)', 
+                RAISE NOTICE '[hex_hantera_ny_kolumn]   #%: % (position: %)', 
                     i, flyttkolumner[i].kolumnnamn, flyttkolumner[i].ordinal_position;
             END LOOP;
         ELSE
-            RAISE NOTICE '[hantera_kolumntillagg] Inga standardkolumner att flytta';
+            RAISE NOTICE '[hex_hantera_ny_kolumn] Inga standardkolumner att flytta';
         END IF;
 
         -- Steg 4: Flytta varje standardkolumn
         FOR i IN 1..COALESCE(array_length(flyttkolumner, 1), 0) LOOP
             IF i <= array_length(flyttkolumner, 1) THEN
                 kolumn := flyttkolumner[i];
-                RAISE NOTICE E'[hantera_kolumntillagg] ----------';
-                RAISE NOTICE '[hantera_kolumntillagg] Flyttar kolumn %/% - %',
+                RAISE NOTICE E'[hex_hantera_ny_kolumn] ----------';
+                RAISE NOTICE '[hex_hantera_ny_kolumn] Flyttar kolumn %/% - %',
                     i, array_length(flyttkolumner, 1), kolumn.kolumnnamn;
 
                 -- Kontrollera att originalkolumnen faktiskt finns innan vi försöker flytta den.
@@ -274,7 +274,7 @@ BEGIN
                       AND table_name   = tabell_namn
                       AND column_name  = kolumn.kolumnnamn
                 ) THEN
-                    RAISE NOTICE '[hantera_kolumntillagg]   Kolumn "%" saknas i tabellen – hoppar över flytt', kolumn.kolumnnamn;
+                    RAISE NOTICE '[hex_hantera_ny_kolumn]   Kolumn "%" saknas i tabellen – hoppar över flytt', kolumn.kolumnnamn;
                     CONTINUE;
                 END IF;
 
@@ -286,9 +286,9 @@ BEGIN
                         schema_namn, tabell_namn,
                         kolumn.kolumnnamn, kolumn.datatyp
                     );
-                    RAISE NOTICE '[hantera_kolumntillagg]   SQL [1/4]: %', sql_sats;
+                    RAISE NOTICE '[hex_hantera_ny_kolumn]   SQL [1/4]: %', sql_sats;
                     EXECUTE sql_sats;
-                    RAISE NOTICE '[hantera_kolumntillagg]   Temporär kolumn skapad';
+                    RAISE NOTICE '[hex_hantera_ny_kolumn]   Temporär kolumn skapad';
 
                     -- Steg 4.2: Kopiera data till temporär kolumn
                     op_steg := 'kopierar data';
@@ -297,9 +297,9 @@ BEGIN
                         schema_namn, tabell_namn,
                         kolumn.kolumnnamn, kolumn.kolumnnamn
                     );
-                    RAISE NOTICE '[hantera_kolumntillagg]   SQL [2/4]: %', sql_sats;
+                    RAISE NOTICE '[hex_hantera_ny_kolumn]   SQL [2/4]: %', sql_sats;
                     EXECUTE sql_sats;
-                    RAISE NOTICE '[hantera_kolumntillagg]   Data kopierad';
+                    RAISE NOTICE '[hex_hantera_ny_kolumn]   Data kopierad';
 
                     -- Steg 4.3: Ta bort originalkolumnen
                     op_steg := 'tar bort originalkolumn';
@@ -308,9 +308,9 @@ BEGIN
                         schema_namn, tabell_namn,
                         kolumn.kolumnnamn
                     );
-                    RAISE NOTICE '[hantera_kolumntillagg]   SQL [3/4]: %', sql_sats;
+                    RAISE NOTICE '[hex_hantera_ny_kolumn]   SQL [3/4]: %', sql_sats;
                     EXECUTE sql_sats;
-                    RAISE NOTICE '[hantera_kolumntillagg]   Originalkolumn borttagen';
+                    RAISE NOTICE '[hex_hantera_ny_kolumn]   Originalkolumn borttagen';
 
                     -- Steg 4.4: Döp om temporär kolumn till originalnamn
                     op_steg := 'döper om temporär kolumn';
@@ -319,41 +319,41 @@ BEGIN
                         schema_namn, tabell_namn,
                         kolumn.kolumnnamn, kolumn.kolumnnamn
                     );
-                    RAISE NOTICE '[hantera_kolumntillagg]   SQL [4/4]: %', sql_sats;
+                    RAISE NOTICE '[hex_hantera_ny_kolumn]   SQL [4/4]: %', sql_sats;
                     EXECUTE sql_sats;
-                    RAISE NOTICE '[hantera_kolumntillagg]   Kolumn omdöpt till %', kolumn.kolumnnamn;
+                    RAISE NOTICE '[hex_hantera_ny_kolumn]   Kolumn omdöpt till %', kolumn.kolumnnamn;
 
                     antal_flyttade := antal_flyttade + 1;
-                    RAISE NOTICE '[hantera_kolumntillagg]   Kolumnflytt slutförd';
+                    RAISE NOTICE '[hex_hantera_ny_kolumn]   Kolumnflytt slutförd';
                 EXCEPTION
                     WHEN OTHERS THEN
                         antal_fel := antal_fel + 1;
-                        RAISE WARNING '[hantera_kolumntillagg] FEL vid flyttning av standardkolumn "%"', kolumn.kolumnnamn;
-                        RAISE WARNING '[hantera_kolumntillagg] Operation: %', op_steg;
-                        RAISE WARNING '[hantera_kolumntillagg] SQL: %', sql_sats;
-                        RAISE WARNING '[hantera_kolumntillagg] Felmeddelande: %', SQLERRM;
+                        RAISE WARNING '[hex_hantera_ny_kolumn] FEL vid flyttning av standardkolumn "%"', kolumn.kolumnnamn;
+                        RAISE WARNING '[hex_hantera_ny_kolumn] Operation: %', op_steg;
+                        RAISE WARNING '[hex_hantera_ny_kolumn] SQL: %', sql_sats;
+                        RAISE WARNING '[hex_hantera_ny_kolumn] Felmeddelande: %', SQLERRM;
                 END;
             END IF;
         END LOOP;
 
         -- Steg 5: Hantera geometrikolumnen
-        RAISE NOTICE E'[hantera_kolumntillagg] ----------';
-        RAISE NOTICE '[hantera_kolumntillagg] Kontrollerar om geometrikolumn finns...';
+        RAISE NOTICE E'[hex_hantera_ny_kolumn] ----------';
+        RAISE NOTICE '[hex_hantera_ny_kolumn] Kontrollerar om geometrikolumn finns...';
         IF EXISTS (
             SELECT 1 FROM geometry_columns
             WHERE f_table_schema = schema_namn
             AND f_table_name = tabell_namn
             AND f_geometry_column = 'geom'
         ) THEN
-            RAISE NOTICE '[hantera_kolumntillagg] Geometrikolumn "geom" hittad';
-            RAISE NOTICE '[hantera_kolumntillagg] Hämtar geometridefinition (detaljerad analys sker i hjälpfunktion)';
+            RAISE NOTICE '[hex_hantera_ny_kolumn] Geometrikolumn "geom" hittad';
+            RAISE NOTICE '[hex_hantera_ny_kolumn] Hämtar geometridefinition (detaljerad analys sker i hjälpfunktion)';
             
             -- Hämta strukturerad geometriinformation
-            geometriinfo := hamta_geometri_definition(schema_namn, tabell_namn);
+            geometriinfo := hex_hamta_geometri_definition(schema_namn, tabell_namn);
             
             -- Flytta geometrikolumnen om vi fick en korrekt definition
             IF geometriinfo IS NOT NULL AND geometriinfo.definition IS NOT NULL THEN
-                RAISE NOTICE '[hantera_kolumntillagg] Använder geometridefinition: %', geometriinfo.definition;
+                RAISE NOTICE '[hex_hantera_ny_kolumn] Använder geometridefinition: %', geometriinfo.definition;
                 
                 BEGIN
                     -- Steg 5.1: Skapa temporär geometrikolumn
@@ -362,9 +362,9 @@ BEGIN
                         'ALTER TABLE %I.%I ADD COLUMN geom_temp0001 %s',
                         schema_namn, tabell_namn, geometriinfo.definition
                     );
-                    RAISE NOTICE '[hantera_kolumntillagg]   SQL [1/4]: %', sql_sats;
+                    RAISE NOTICE '[hex_hantera_ny_kolumn]   SQL [1/4]: %', sql_sats;
                     EXECUTE sql_sats;
-                    RAISE NOTICE '[hantera_kolumntillagg]   Temporär geometrikolumn skapad';
+                    RAISE NOTICE '[hex_hantera_ny_kolumn]   Temporär geometrikolumn skapad';
                     
                     -- Steg 5.2: Kopiera geometridata
                     op_steg := 'kopierar geometridata';
@@ -372,9 +372,9 @@ BEGIN
                         'UPDATE %I.%I SET geom_temp0001 = geom',
                         schema_namn, tabell_namn
                     );
-                    RAISE NOTICE '[hantera_kolumntillagg]   SQL [2/4]: %', sql_sats;
+                    RAISE NOTICE '[hex_hantera_ny_kolumn]   SQL [2/4]: %', sql_sats;
                     EXECUTE sql_sats;
-                    RAISE NOTICE '[hantera_kolumntillagg]   Geometridata kopierad';
+                    RAISE NOTICE '[hex_hantera_ny_kolumn]   Geometridata kopierad';
                     
                     -- Steg 5.3: Ta bort original geometrikolumn
                     op_steg := 'tar bort originalgeometri';
@@ -382,9 +382,9 @@ BEGIN
                         'ALTER TABLE %I.%I DROP COLUMN geom',
                         schema_namn, tabell_namn
                     );
-                    RAISE NOTICE '[hantera_kolumntillagg]   SQL [3/4]: %', sql_sats;
+                    RAISE NOTICE '[hex_hantera_ny_kolumn]   SQL [3/4]: %', sql_sats;
                     EXECUTE sql_sats;
-                    RAISE NOTICE '[hantera_kolumntillagg]   Original geometrikolumn borttagen';
+                    RAISE NOTICE '[hex_hantera_ny_kolumn]   Original geometrikolumn borttagen';
                     
                     -- Steg 5.4: Döp om temporär kolumn
                     op_steg := 'döper om temporär geometrikolumn';
@@ -392,44 +392,44 @@ BEGIN
                         'ALTER TABLE %I.%I RENAME COLUMN geom_temp0001 TO geom',
                         schema_namn, tabell_namn
                     );
-                    RAISE NOTICE '[hantera_kolumntillagg]   SQL [4/4]: %', sql_sats;
+                    RAISE NOTICE '[hex_hantera_ny_kolumn]   SQL [4/4]: %', sql_sats;
                     EXECUTE sql_sats;
-                    RAISE NOTICE '[hantera_kolumntillagg]   Geometrikolumn omdöpt till "geom"';
+                    RAISE NOTICE '[hex_hantera_ny_kolumn]   Geometrikolumn omdöpt till "geom"';
                     
                     antal_flyttade := antal_flyttade + 1;
-                    RAISE NOTICE '[hantera_kolumntillagg]   Geometriflytt slutförd';
+                    RAISE NOTICE '[hex_hantera_ny_kolumn]   Geometriflytt slutförd';
                 EXCEPTION
                     WHEN OTHERS THEN
                         antal_fel := antal_fel + 1;
-                        RAISE WARNING '[hantera_kolumntillagg] FEL vid flyttning av geometrikolumn';
-                        RAISE WARNING '[hantera_kolumntillagg] Operation: %', op_steg;
-                        RAISE WARNING '[hantera_kolumntillagg] SQL: %', sql_sats;
-                        RAISE WARNING '[hantera_kolumntillagg] Geometriinfo: %',
+                        RAISE WARNING '[hex_hantera_ny_kolumn] FEL vid flyttning av geometrikolumn';
+                        RAISE WARNING '[hex_hantera_ny_kolumn] Operation: %', op_steg;
+                        RAISE WARNING '[hex_hantera_ny_kolumn] SQL: %', sql_sats;
+                        RAISE WARNING '[hex_hantera_ny_kolumn] Geometriinfo: %',
                             coalesce(geometriinfo.definition, 'NULL');
-                        RAISE WARNING '[hantera_kolumntillagg] Felmeddelande: %', SQLERRM;
+                        RAISE WARNING '[hex_hantera_ny_kolumn] Felmeddelande: %', SQLERRM;
                 END;
             ELSE
-                RAISE WARNING '[hantera_kolumntillagg] ⚠ Geometrikolumn hittad men ingen giltig definition returnerades';
-                RAISE WARNING '[hantera_kolumntillagg] ⚠ Geometriinfo: %', geometriinfo;
+                RAISE WARNING '[hex_hantera_ny_kolumn] ⚠ Geometrikolumn hittad men ingen giltig definition returnerades';
+                RAISE WARNING '[hex_hantera_ny_kolumn] ⚠ Geometriinfo: %', geometriinfo;
                 antal_fel := antal_fel + 1;
             END IF;
         ELSE
-            RAISE NOTICE '[hantera_kolumntillagg] Ingen geometrikolumn att hantera';
+            RAISE NOTICE '[hex_hantera_ny_kolumn] Ingen geometrikolumn att hantera';
         END IF;
 
         -- Steg 5b: Slutför afvaktande tabell om geometrikolumn precis anlände
-        -- Om tabellen registrerades i hex_afvaktande_geometri av hantera_ny_tabell()
+        -- Om tabellen registrerades i hex_afvaktande_geometri av hex_hantera_ny_tabell()
         -- (dvs. systemanvändare skapade tabellen utan geom), kör vi nu de steg som
         -- hoppades över då: suffixvalidering, GiST-index och geometrivalidering.
-        RAISE NOTICE E'[hantera_kolumntillagg] ----------';
-        RAISE NOTICE '[hantera_kolumntillagg] Kontrollerar hex_afvaktande_geometri...';
+        RAISE NOTICE E'[hex_hantera_ny_kolumn] ----------';
+        RAISE NOTICE '[hex_hantera_ny_kolumn] Kontrollerar hex_afvaktande_geometri...';
         -- EXECUTE USING krävs: kolumnnamnen i hex_afvaktande_geometri (schema_namn, tabell_namn)
         -- är identiska med de lokala variabelnamnen. PostgreSQL tolkar annars $1/$2 (USING)
         -- som PL/pgSQL-variabler oförväxlingsbart – ingen kolumnambiguitet möjlig.
         EXECUTE 'SELECT EXISTS (SELECT 1 FROM public.hex_afvaktande_geometri WHERE schema_namn = $1 AND tabell_namn = $2)'
             INTO afvaktande_tabell USING schema_namn, tabell_namn;
         IF afvaktande_tabell THEN
-            RAISE NOTICE '[hantera_kolumntillagg] Tabell %.% är afvaktande – slutför geometrihantering',
+            RAISE NOTICE '[hex_hantera_ny_kolumn] Tabell %.% är afvaktande – slutför geometrihantering',
                 schema_namn, tabell_namn;
 
             -- Steg 5b.1: Validera att suffixet stämmer med faktisk geometrityp
@@ -455,12 +455,12 @@ BEGIN
 
                     IF faktiskt_suffix IS NOT NULL AND faktiskt_suffix <> forvantat_suffix THEN
                         RAISE EXCEPTION
-                            '[hantera_kolumntillagg] Suffixkollision för afvaktande tabell %.%: '
+                            '[hex_hantera_ny_kolumn] Suffixkollision för afvaktande tabell %.%: '
                             'tabellnamnet antyder % men geometritypen är % (förväntar %).',
                             schema_namn, tabell_namn,
                             faktiskt_suffix, geometriinfo.typ_basal, forvantat_suffix;
                     END IF;
-                    RAISE NOTICE '[hantera_kolumntillagg]   ✓ Suffix % stämmer med geometrityp %',
+                    RAISE NOTICE '[hex_hantera_ny_kolumn]   ✓ Suffix % stämmer med geometrityp %',
                         coalesce(faktiskt_suffix, '(inget suffix)'), geometriinfo.typ_basal;
                 END;
             END IF;
@@ -470,7 +470,7 @@ BEGIN
                AND geometriinfo.srid <> 3007
             THEN
                 RAISE WARNING
-                    '[hantera_kolumntillagg] Tabell %.% har SRID % – förväntar 3007 (SWEREF99 12 00). '
+                    '[hex_hantera_ny_kolumn] Tabell %.% har SRID % – förväntar 3007 (SWEREF99 12 00). '
                     'Data i fel koordinatsystem måste transformeras innan produktionsbruk. '
                     'Tabellen registreras i hex_avvikande_srid för granskning.',
                     schema_namn, tabell_namn, geometriinfo.srid;
@@ -499,22 +499,22 @@ BEGIN
                           AND indexname  <> index_namn
                     LOOP
                         EXECUTE format('DROP INDEX %I.%I', schema_namn, r.indexname);
-                        RAISE NOTICE '[hantera_kolumntillagg]   ✓ Dubblerat GiST-index borttaget: %', r.indexname;
+                        RAISE NOTICE '[hex_hantera_ny_kolumn]   ✓ Dubblerat GiST-index borttaget: %', r.indexname;
                     END LOOP;
                     EXECUTE format(
                         'CREATE INDEX IF NOT EXISTS %I ON %I.%I USING GIST (%I)',
                         index_namn, schema_namn, tabell_namn, geometriinfo.kolumnnamn
                     );
-                    RAISE NOTICE '[hantera_kolumntillagg]   ✓ GiST-index skapat: %', index_namn;
+                    RAISE NOTICE '[hex_hantera_ny_kolumn]   ✓ GiST-index skapat: %', index_namn;
                 END;
             END IF;
 
             -- Steg 5b.4: Lägg till geometrivalidering för scheman vars datakategori
-            --            har validera_geometri = true i hex_standardiserade_datakategorier
+            --            har hex_validera_geometri = true i hex_standardiserade_datakategorier
             IF geometriinfo IS NOT NULL AND geometriinfo.kolumnnamn IS NOT NULL
                AND EXISTS (
                    SELECT 1 FROM public.hex_standardiserade_datakategorier d
-                   WHERE d.validera_geometri = true
+                   WHERE d.hex_validera_geometri = true
                      AND schema_namn ~ (public.hex_schema_regex() || d.prefix || '_')
                )
             THEN
@@ -523,10 +523,10 @@ BEGIN
                 BEGIN
                     op_steg := 'lägger till geometrivalidering (afvaktande tabell)';
                     EXECUTE format(
-                        'ALTER TABLE %I.%I ADD CONSTRAINT %I CHECK (public.validera_geometri(geom))',
+                        'ALTER TABLE %I.%I ADD CONSTRAINT %I CHECK (public.hex_validera_geometri(geom))',
                         schema_namn, tabell_namn, constraint_namn
                     );
-                    RAISE NOTICE '[hantera_kolumntillagg]   ✓ Geometrivalidering tillagd: %', constraint_namn;
+                    RAISE NOTICE '[hex_hantera_ny_kolumn]   ✓ Geometrivalidering tillagd: %', constraint_namn;
                     op_steg := 'lägger till geometritrigger (afvaktande tabell)';
                     IF NOT EXISTS (
                         SELECT 1 FROM pg_trigger t
@@ -539,12 +539,12 @@ BEGIN
                         EXECUTE format(
                             'CREATE TRIGGER hex_kontrollera_geom'
                             ' BEFORE INSERT OR UPDATE ON %I.%I'
-                            ' FOR EACH ROW EXECUTE FUNCTION public.kontrollera_geometri_trigger()',
+                            ' FOR EACH ROW EXECUTE FUNCTION public.hex_kontrollera_geometri_trigger()',
                             schema_namn, tabell_namn
                         );
-                        RAISE NOTICE '[hantera_kolumntillagg]   ✓ Geometritrigger tillagd: hex_kontrollera_geom';
+                        RAISE NOTICE '[hex_hantera_ny_kolumn]   ✓ Geometritrigger tillagd: hex_kontrollera_geom';
                     ELSE
-                        RAISE NOTICE '[hantera_kolumntillagg]   ✓ Geometritrigger finns redan: hex_kontrollera_geom';
+                        RAISE NOTICE '[hex_hantera_ny_kolumn]   ✓ Geometritrigger finns redan: hex_kontrollera_geom';
                     END IF;
                 END;
             END IF;
@@ -553,14 +553,14 @@ BEGIN
             -- (EXECUTE USING av samma skäl som EXISTS-kontrollen ovan)
             EXECUTE 'DELETE FROM public.hex_afvaktande_geometri WHERE schema_namn = $1 AND tabell_namn = $2'
                 USING schema_namn, tabell_namn;
-            RAISE NOTICE '[hantera_kolumntillagg]   ✓ Tabell %.% borttagen ur hex_afvaktande_geometri',
+            RAISE NOTICE '[hex_hantera_ny_kolumn]   ✓ Tabell %.% borttagen ur hex_afvaktande_geometri',
                 schema_namn, tabell_namn;
 
             -- Steg 5b.6: Lägg till dummy-geometrirad för QGIS-kompatibilitet
             IF geometriinfo IS NOT NULL AND geometriinfo.kolumnnamn IS NOT NULL THEN
                 op_steg := 'dummy-geometri för QGIS (afvaktande tabell)';
-                PERFORM lagg_till_dummy_geometri(schema_namn, tabell_namn, geometriinfo);
-                RAISE NOTICE '[hantera_kolumntillagg]   ✓ Dummy-geometrirad tillagd';
+                PERFORM hex_lagg_till_dummy_geometri(schema_namn, tabell_namn, geometriinfo);
+                RAISE NOTICE '[hex_hantera_ny_kolumn]   ✓ Dummy-geometrirad tillagd';
             END IF;
         ELSIF geometriinfo IS NOT NULL
               AND NOT EXISTS (
@@ -584,7 +584,7 @@ BEGIN
             --      Om suffixet är fel: RAISE EXCEPTION → ALTER TABLE rullas tillbaka,
             --      tabellen finns kvar utan geom-kolumnen.
             --   b) Om suffix är korrekt: kör geometrisetup (GiST, validering, dummy).
-            RAISE NOTICE '[hantera_kolumntillagg] ⚠ Tabell %.% har ny geom utan föregående Hex-hantering – validerar suffix och kör geometrisetup',
+            RAISE NOTICE '[hex_hantera_ny_kolumn] ⚠ Tabell %.% har ny geom utan föregående Hex-hantering – validerar suffix och kör geometrisetup',
                 schema_namn, tabell_namn;
             DECLARE
                 forvantat_suffix text;
@@ -598,26 +598,26 @@ BEGIN
 
                 IF NOT tabell_namn LIKE '%' || forvantat_suffix THEN
                     RAISE EXCEPTION
-                        E'[hantera_kolumntillagg] Tabellen %.% innehåller geometri (%) men saknar korrekt suffix.\n'
-                        '[hantera_kolumntillagg] Kräver suffix: %\n'
-                        '[hantera_kolumntillagg] Föreslaget namn: "%"\n'
-                        '[hantera_kolumntillagg]\n'
-                        '[hantera_kolumntillagg] Geometrikolumnen har INTE lagts till (ändringen är återställd).\n'
-                        '[hantera_kolumntillagg] Åtgärd: döp om tabellen med rätt suffix och försök igen,\n'
-                        '[hantera_kolumntillagg]         eller radera tabellen och skapa om den med rätt namn.',
+                        E'[hex_hantera_ny_kolumn] Tabellen %.% innehåller geometri (%) men saknar korrekt suffix.\n'
+                        '[hex_hantera_ny_kolumn] Kräver suffix: %\n'
+                        '[hex_hantera_ny_kolumn] Föreslaget namn: "%"\n'
+                        '[hex_hantera_ny_kolumn]\n'
+                        '[hex_hantera_ny_kolumn] Geometrikolumnen har INTE lagts till (ändringen är återställd).\n'
+                        '[hex_hantera_ny_kolumn] Åtgärd: döp om tabellen med rätt suffix och försök igen,\n'
+                        '[hex_hantera_ny_kolumn]         eller radera tabellen och skapa om den med rätt namn.',
                         schema_namn, tabell_namn,
                         geometriinfo.typ_basal,
                         forvantat_suffix,
                         regexp_replace(tabell_namn, '_[plyg]$', '') || forvantat_suffix;
                 END IF;
 
-                RAISE NOTICE '[hantera_kolumntillagg]   ✓ Suffix % stämmer med geometrityp %',
+                RAISE NOTICE '[hex_hantera_ny_kolumn]   ✓ Suffix % stämmer med geometrityp %',
                     forvantat_suffix, geometriinfo.typ_basal;
 
                 -- SRID-kontroll
                 IF geometriinfo.srid IS NOT NULL AND geometriinfo.srid <> 3007 THEN
                     RAISE WARNING
-                        '[hantera_kolumntillagg] Tabell %.% har SRID % – förväntar 3007 (SWEREF99 12 00). '
+                        '[hex_hantera_ny_kolumn] Tabell %.% har SRID % – förväntar 3007 (SWEREF99 12 00). '
                         'Tabellen registreras i hex_avvikande_srid.',
                         schema_namn, tabell_namn, geometriinfo.srid;
                     INSERT INTO public.hex_avvikande_srid (schema_namn, tabell_namn, srid)
@@ -643,19 +643,19 @@ BEGIN
                           AND indexname  <> index_namn
                     LOOP
                         EXECUTE format('DROP INDEX %I.%I', schema_namn, r.indexname);
-                        RAISE NOTICE '[hantera_kolumntillagg]   ✓ Dubblerat GiST-index borttaget: %', r.indexname;
+                        RAISE NOTICE '[hex_hantera_ny_kolumn]   ✓ Dubblerat GiST-index borttaget: %', r.indexname;
                     END LOOP;
                     EXECUTE format(
                         'CREATE INDEX IF NOT EXISTS %I ON %I.%I USING GIST (%I)',
                         index_namn, schema_namn, tabell_namn, geometriinfo.kolumnnamn
                     );
-                    RAISE NOTICE '[hantera_kolumntillagg]   ✓ GiST-index skapat: %', index_namn;
+                    RAISE NOTICE '[hex_hantera_ny_kolumn]   ✓ GiST-index skapat: %', index_namn;
                 END;
 
-                -- Geometrivalidering (datakategorier med validera_geometri = true)
+                -- Geometrivalidering (datakategorier med hex_validera_geometri = true)
                 IF EXISTS (
                     SELECT 1 FROM public.hex_standardiserade_datakategorier d
-                    WHERE d.validera_geometri = true
+                    WHERE d.hex_validera_geometri = true
                       AND schema_namn ~ (public.hex_schema_regex() || d.prefix || '_')
                 ) THEN
                     DECLARE
@@ -663,10 +663,10 @@ BEGIN
                     BEGIN
                         op_steg := 'lägger till geometrivalidering (ny geom utan afvaktande)';
                         EXECUTE format(
-                            'ALTER TABLE %I.%I ADD CONSTRAINT %I CHECK (public.validera_geometri(geom))',
+                            'ALTER TABLE %I.%I ADD CONSTRAINT %I CHECK (public.hex_validera_geometri(geom))',
                             schema_namn, tabell_namn, constraint_namn
                         );
-                        RAISE NOTICE '[hantera_kolumntillagg]   ✓ Geometrivalidering tillagd: %', constraint_namn;
+                        RAISE NOTICE '[hex_hantera_ny_kolumn]   ✓ Geometrivalidering tillagd: %', constraint_namn;
                         op_steg := 'lägger till geometritrigger (ny geom utan afvaktande)';
                         IF NOT EXISTS (
                             SELECT 1 FROM pg_trigger t
@@ -679,28 +679,28 @@ BEGIN
                             EXECUTE format(
                                 'CREATE TRIGGER hex_kontrollera_geom'
                                 ' BEFORE INSERT OR UPDATE ON %I.%I'
-                                ' FOR EACH ROW EXECUTE FUNCTION public.kontrollera_geometri_trigger()',
+                                ' FOR EACH ROW EXECUTE FUNCTION public.hex_kontrollera_geometri_trigger()',
                                 schema_namn, tabell_namn
                             );
-                            RAISE NOTICE '[hantera_kolumntillagg]   ✓ Geometritrigger tillagd: hex_kontrollera_geom';
+                            RAISE NOTICE '[hex_hantera_ny_kolumn]   ✓ Geometritrigger tillagd: hex_kontrollera_geom';
                         ELSE
-                            RAISE NOTICE '[hantera_kolumntillagg]   ✓ Geometritrigger finns redan: hex_kontrollera_geom';
+                            RAISE NOTICE '[hex_hantera_ny_kolumn]   ✓ Geometritrigger finns redan: hex_kontrollera_geom';
                         END IF;
                     END;
                 END IF;
 
                 -- Dummy-geometri för QGIS
                 op_steg := 'dummy-geometri för QGIS (ny geom utan afvaktande)';
-                PERFORM lagg_till_dummy_geometri(schema_namn, tabell_namn, geometriinfo);
-                RAISE NOTICE '[hantera_kolumntillagg]   ✓ Dummy-geometrirad tillagd';
+                PERFORM hex_lagg_till_dummy_geometri(schema_namn, tabell_namn, geometriinfo);
+                RAISE NOTICE '[hex_hantera_ny_kolumn]   ✓ Dummy-geometrirad tillagd';
             END;
         ELSE
-            RAISE NOTICE '[hantera_kolumntillagg] Tabell ej afvaktande, inget extra steg behövs';
+            RAISE NOTICE '[hex_hantera_ny_kolumn] Tabell ej afvaktande, inget extra steg behövs';
         END IF;
 
         -- Steg 6: Kontrollera historiktabell och synkronisera automatiskt
-        RAISE NOTICE E'[hantera_kolumntillagg] ----------';
-        RAISE NOTICE '[hantera_kolumntillagg] (4/4) Kontrollerar historiktabellsynkronisering';
+        RAISE NOTICE E'[hex_hantera_ny_kolumn] ----------';
+        RAISE NOTICE '[hex_hantera_ny_kolumn] (4/4) Kontrollerar historiktabellsynkronisering';
         
         -- Bestäm historiktabellnamn (hoppa över om detta redan ÄR en historiktabell)
         historik_tabell_namn := tabell_namn || '_h';
@@ -714,7 +714,7 @@ BEGIN
             ) INTO har_historiktabell;
             
             IF har_historiktabell THEN
-                RAISE NOTICE '[hantera_kolumntillagg] Hittade historiktabell %.% - analyserar och synkroniserar',
+                RAISE NOTICE '[hex_hantera_ny_kolumn] Hittade historiktabell %.% - analyserar och synkroniserar',
                     schema_namn, historik_tabell_namn;
                 
                 -- Analysera strukturskillnader mellan moder- och historiktabell
@@ -782,17 +782,17 @@ BEGIN
                             EXECUTE format('ALTER TABLE %I.%I DISABLE TRIGGER trg_%s_qa', 
                                 schema_namn, tabell_namn, tabell_namn);
                             qa_trigger_inaktiverad := true;
-                            RAISE NOTICE '[hantera_kolumntillagg] QA-trigger tillfälligt inaktiverad för säker strukturändring';
+                            RAISE NOTICE '[hex_hantera_ny_kolumn] QA-trigger tillfälligt inaktiverad för säker strukturändring';
                         EXCEPTION
                             WHEN OTHERS THEN
-                                RAISE NOTICE '[hantera_kolumntillagg] Kunde inte inaktivera QA-trigger: %', SQLERRM;
+                                RAISE NOTICE '[hex_hantera_ny_kolumn] Kunde inte inaktivera QA-trigger: %', SQLERRM;
                                 -- Fortsätt ändå, men varna användaren extra
                         END;
                     END IF;
                     
                     -- NYTT: Lägg automatiskt till saknade kolumner i historiktabellen
                     IF array_length(saknade_i_historik, 1) > 0 THEN
-                        RAISE NOTICE '[hantera_kolumntillagg] Lägger till % saknade kolumner i historiktabell:',
+                        RAISE NOTICE '[hex_hantera_ny_kolumn] Lägger till % saknade kolumner i historiktabell:',
                             array_length(saknade_i_historik, 1);
                         
                         FOR kolumn_info IN 
@@ -822,22 +822,22 @@ BEGIN
                                     schema_namn, historik_tabell_namn,
                                     kolumn_info.column_name, kolumn_info.full_data_type
                                 );
-                                RAISE NOTICE '[hantera_kolumntillagg]   SQL: %', sql_sats;
+                                RAISE NOTICE '[hex_hantera_ny_kolumn]   SQL: %', sql_sats;
                                 EXECUTE sql_sats;
                                 antal_tillagda := antal_tillagda + 1;
-                                RAISE NOTICE '[hantera_kolumntillagg]   ✓ Lade till kolumn: %', kolumn_info.column_name;
+                                RAISE NOTICE '[hex_hantera_ny_kolumn]   ✓ Lade till kolumn: %', kolumn_info.column_name;
                             EXCEPTION
                                 WHEN OTHERS THEN
-                                    RAISE WARNING '[hantera_kolumntillagg]   ✗ Kunde inte lägga till kolumn %: %', 
+                                    RAISE WARNING '[hex_hantera_ny_kolumn]   ✗ Kunde inte lägga till kolumn %: %', 
                                         kolumn_info.column_name, SQLERRM;
                             END;
                         END LOOP;
                         
-                        RAISE NOTICE '[hantera_kolumntillagg] Historiktabell synkroniserad: % kolumner tillagda', antal_tillagda;
+                        RAISE NOTICE '[hex_hantera_ny_kolumn] Historiktabell synkroniserad: % kolumner tillagda', antal_tillagda;
                         
                         -- Regenerera trigger-funktionen med uppdaterad kolumnlista
                         IF antal_tillagda > 0 THEN
-                            RAISE NOTICE '[hantera_kolumntillagg] Regenererar trigger-funktion för att inkludera nya kolumner...';
+                            RAISE NOTICE '[hex_hantera_ny_kolumn] Regenererar trigger-funktion för att inkludera nya kolumner...';
                             
                             DECLARE
                                 ny_kolumn_lista text;
@@ -916,15 +916,15 @@ BEGIN
                                     schema_namn, historik_tabell_namn, ny_kolumn_lista
                                 );
                                 
-                                RAISE NOTICE '[hantera_kolumntillagg]   ✓ Trigger-funktion % regenererad', trigger_funktionsnamn;
+                                RAISE NOTICE '[hex_hantera_ny_kolumn]   ✓ Trigger-funktion % regenererad', trigger_funktionsnamn;
                             EXCEPTION
                                 WHEN OTHERS THEN
-                                    RAISE WARNING '[hantera_kolumntillagg]   ✗ Kunde inte regenerera trigger-funktion: %', SQLERRM;
+                                    RAISE WARNING '[hex_hantera_ny_kolumn]   ✗ Kunde inte regenerera trigger-funktion: %', SQLERRM;
                             END;
                         END IF;
                         
                         -- Flytta standardkolumner med negativ ordinal_position till rätt plats i historiktabellen
-                        RAISE NOTICE '[hantera_kolumntillagg] Reorganiserar standardkolumner i historiktabellen...';
+                        RAISE NOTICE '[hex_hantera_ny_kolumn] Reorganiserar standardkolumner i historiktabellen...';
                         
                         DECLARE
                             h_kolumn record;
@@ -978,12 +978,12 @@ BEGIN
                                     schema_namn, historik_tabell_namn, h_kolumn.kolumnnamn, h_kolumn.kolumnnamn
                                 );
                                 
-                                RAISE NOTICE '[hantera_kolumntillagg]   ✓ Flyttade % till slutet av %', 
+                                RAISE NOTICE '[hex_hantera_ny_kolumn]   ✓ Flyttade % till slutet av %', 
                                     h_kolumn.kolumnnamn, historik_tabell_namn;
                             END LOOP;
                         EXCEPTION
                             WHEN OTHERS THEN
-                                RAISE WARNING '[hantera_kolumntillagg]   ✗ Kunde inte reorganisera standardkolumner i historiktabell: %', SQLERRM;
+                                RAISE WARNING '[hex_hantera_ny_kolumn]   ✗ Kunde inte reorganisera standardkolumner i historiktabell: %', SQLERRM;
                         END;
                         
                         -- Flytta geom till slutet av historiktabellen om den finns
@@ -993,7 +993,7 @@ BEGIN
                             AND table_name = historik_tabell_namn
                             AND column_name = 'geom'
                         ) THEN
-                            RAISE NOTICE '[hantera_kolumntillagg] Flyttar geom till slutet av historiktabellen...';
+                            RAISE NOTICE '[hex_hantera_ny_kolumn] Flyttar geom till slutet av historiktabellen...';
                             
                             DECLARE
                                 h_geom_def text;
@@ -1033,40 +1033,40 @@ BEGIN
                                         schema_namn, historik_tabell_namn
                                     );
                                     
-                                    RAISE NOTICE '[hantera_kolumntillagg]   ✓ geom flyttad till slutet av %', historik_tabell_namn;
+                                    RAISE NOTICE '[hex_hantera_ny_kolumn]   ✓ geom flyttad till slutet av %', historik_tabell_namn;
                                 END IF;
                             EXCEPTION
                                 WHEN OTHERS THEN
-                                    RAISE WARNING '[hantera_kolumntillagg]   ✗ Kunde inte flytta geom i historiktabell: %', SQLERRM;
+                                    RAISE WARNING '[hex_hantera_ny_kolumn]   ✗ Kunde inte flytta geom i historiktabell: %', SQLERRM;
                             END;
                         END IF;
                     END IF;
                     
                     -- Visa kolumner som finns extra i historik (bara info, ingen åtgärd)
                     IF array_length(extra_i_historik, 1) > 0 THEN
-                        RAISE NOTICE '[hantera_kolumntillagg] Extra kolumner i historik (behålls): %',
+                        RAISE NOTICE '[hex_hantera_ny_kolumn] Extra kolumner i historik (behålls): %',
                             array_to_string(extra_i_historik, ', ');
                     END IF;
                     
                     -- Visa kolumner med olika datatyper (kräver manuell åtgärd)
                     IF array_length(typ_skillnader, 1) > 0 THEN
-                        RAISE WARNING '[hantera_kolumntillagg] Olika datatyper (kräver manuell åtgärd): %',
+                        RAISE WARNING '[hex_hantera_ny_kolumn] Olika datatyper (kräver manuell åtgärd): %',
                             array_to_string(typ_skillnader, ', ');
                     END IF;
                     
                     IF antal_skillnader = 0 THEN
                         -- Inga skillnader - tabellerna är synkroniserade
-                        RAISE NOTICE '[hantera_kolumntillagg] Historiktabell %.% är redan synkroniserad',
+                        RAISE NOTICE '[hex_hantera_ny_kolumn] Historiktabell %.% är redan synkroniserad',
                             schema_namn, historik_tabell_namn;
                     END IF;
                 END;
             ELSE
-                RAISE NOTICE '[hantera_kolumntillagg] Ingen historiktabell hittades - ingen ytterligare åtgärd krävs';
+                RAISE NOTICE '[hex_hantera_ny_kolumn] Ingen historiktabell hittades - ingen ytterligare åtgärd krävs';
                 antal_skillnader := 0;  -- Inga skillnader att rapportera
             END IF;
         ELSE
             -- Detta är redan en historiktabell
-            RAISE NOTICE '[hantera_kolumntillagg] Detta är en historiktabell - inga varningar behövs';
+            RAISE NOTICE '[hex_hantera_ny_kolumn] Detta är en historiktabell - inga varningar behövs';
             antal_skillnader := 0;  -- Historiktabeller analyseras inte
         END IF;
 
@@ -1075,19 +1075,19 @@ BEGIN
             BEGIN
                 EXECUTE format('ALTER TABLE %I.%I ENABLE TRIGGER trg_%s_qa', 
                     schema_namn, tabell_namn, tabell_namn);
-                RAISE NOTICE '[hantera_kolumntillagg] QA-trigger återaktiverad efter strukturändring';
+                RAISE NOTICE '[hex_hantera_ny_kolumn] QA-trigger återaktiverad efter strukturändring';
                 
             EXCEPTION
                 WHEN OTHERS THEN
-                    RAISE WARNING '[hantera_kolumntillagg] KRITISKT: Kunde inte återaktivera QA-trigger: %', SQLERRM;
-                    RAISE WARNING '[hantera_kolumntillagg] Du måste manuellt aktivera: ALTER TABLE %I.%I ENABLE TRIGGER trg_%I_qa;', 
+                    RAISE WARNING '[hex_hantera_ny_kolumn] KRITISKT: Kunde inte återaktivera QA-trigger: %', SQLERRM;
+                    RAISE WARNING '[hex_hantera_ny_kolumn] Du måste manuellt aktivera: ALTER TABLE %I.%I ENABLE TRIGGER trg_%I_qa;', 
                         schema_namn, tabell_namn, tabell_namn;
             END;
         END IF;
 
         -- FME-debug: Visa slutgiltig kolumnordning
         IF ar_fme THEN
-            RAISE NOTICE '[hantera_kolumntillagg] [FME-DEBUG] Slutgiltig kolumnordning i %.%:', schema_namn, tabell_namn;
+            RAISE NOTICE '[hex_hantera_ny_kolumn] [FME-DEBUG] Slutgiltig kolumnordning i %.%:', schema_namn, tabell_namn;
             DECLARE
                 fme_kol record;
             BEGIN
@@ -1097,24 +1097,24 @@ BEGIN
                     WHERE table_schema = schema_namn AND table_name = tabell_namn
                     ORDER BY ordinal_position
                 LOOP
-                    RAISE NOTICE '[hantera_kolumntillagg] [FME-DEBUG]   #% % (%)', fme_kol.ordinal_position, fme_kol.column_name, fme_kol.data_type;
+                    RAISE NOTICE '[hex_hantera_ny_kolumn] [FME-DEBUG]   #% % (%)', fme_kol.ordinal_position, fme_kol.column_name, fme_kol.data_type;
                 END LOOP;
             END;
         END IF;
 
         -- Sammanfattning för denna tabell
-        RAISE NOTICE E'[hantera_kolumntillagg] ----------';
-        RAISE NOTICE '[hantera_kolumntillagg] Sammanfattning för tabell %.%:', schema_namn, tabell_namn;
-        RAISE NOTICE '[hantera_kolumntillagg]   » Flyttade kolumner: %', antal_flyttade;
-        RAISE NOTICE '[hantera_kolumntillagg]   » Problem uppstod: %', antal_fel;
-        RAISE NOTICE '[hantera_kolumntillagg]   » Historiktabell: %',
+        RAISE NOTICE E'[hex_hantera_ny_kolumn] ----------';
+        RAISE NOTICE '[hex_hantera_ny_kolumn] Sammanfattning för tabell %.%:', schema_namn, tabell_namn;
+        RAISE NOTICE '[hex_hantera_ny_kolumn]   » Flyttade kolumner: %', antal_flyttade;
+        RAISE NOTICE '[hex_hantera_ny_kolumn]   » Problem uppstod: %', antal_fel;
+        RAISE NOTICE '[hex_hantera_ny_kolumn]   » Historiktabell: %',
             CASE WHEN NOT tabell_namn ~ '_h$' AND har_historiktabell
                  THEN 'Synkroniserad'
                  WHEN NOT tabell_namn ~ '_h$' AND NOT har_historiktabell
                  THEN 'Ingen historik'
                  ELSE 'Historiktabell'
             END;
-        RAISE NOTICE '[hantera_kolumntillagg]   » Status: %',
+        RAISE NOTICE '[hex_hantera_ny_kolumn]   » Status: %',
             CASE WHEN antal_fel = 0 THEN 'Slutförd utan fel'
                  ELSE format('Slutförd med %s fel', antal_fel)
             END;
@@ -1127,35 +1127,35 @@ BEGIN
     END LOOP;
 
     -- Återställ flaggan
-    RAISE NOTICE '[hantera_kolumntillagg] Återställer rekursionsflagga';
+    RAISE NOTICE '[hex_hantera_ny_kolumn] Återställer rekursionsflagga';
     PERFORM set_config('temp.reorganization_in_progress', 'false', true);
 
-    RAISE NOTICE '[hantera_kolumntillagg] ======== SLUT ========';
+    RAISE NOTICE '[hex_hantera_ny_kolumn] ======== SLUT ========';
 
 EXCEPTION
     WHEN OTHERS THEN
         -- Återställ flaggan och ge detaljerad felinformation
         PERFORM set_config('temp.reorganization_in_progress', 'false', true);
         
-        RAISE NOTICE E'[hantera_kolumntillagg] !!!!! KRITISKT FEL !!!!!';
-        RAISE NOTICE '[hantera_kolumntillagg] Senaste kontext:';
-        RAISE NOTICE '[hantera_kolumntillagg]   - Schema: %', schema_namn;
-        RAISE NOTICE '[hantera_kolumntillagg]   - Tabell: %', tabell_namn;
-        RAISE NOTICE '[hantera_kolumntillagg]   - Operation: %', op_steg;
-        RAISE NOTICE '[hantera_kolumntillagg]   - SQL: %', coalesce(sql_sats, 'Ingen SQL');
-        RAISE NOTICE '[hantera_kolumntillagg]   - Status: % kolumner flyttade, % fel innan kraschen',
+        RAISE NOTICE E'[hex_hantera_ny_kolumn] !!!!! KRITISKT FEL !!!!!';
+        RAISE NOTICE '[hex_hantera_ny_kolumn] Senaste kontext:';
+        RAISE NOTICE '[hex_hantera_ny_kolumn]   - Schema: %', schema_namn;
+        RAISE NOTICE '[hex_hantera_ny_kolumn]   - Tabell: %', tabell_namn;
+        RAISE NOTICE '[hex_hantera_ny_kolumn]   - Operation: %', op_steg;
+        RAISE NOTICE '[hex_hantera_ny_kolumn]   - SQL: %', coalesce(sql_sats, 'Ingen SQL');
+        RAISE NOTICE '[hex_hantera_ny_kolumn]   - Status: % kolumner flyttade, % fel innan kraschen',
             antal_flyttade, antal_fel;
-        RAISE NOTICE '[hantera_kolumntillagg] Tekniska feldetaljer:';
-        RAISE NOTICE '[hantera_kolumntillagg]   - Felkod: %', SQLSTATE;
-        RAISE NOTICE '[hantera_kolumntillagg]   - Felmeddelande: %', SQLERRM;
+        RAISE NOTICE '[hex_hantera_ny_kolumn] Tekniska feldetaljer:';
+        RAISE NOTICE '[hex_hantera_ny_kolumn]   - Felkod: %', SQLSTATE;
+        RAISE NOTICE '[hex_hantera_ny_kolumn]   - Felmeddelande: %', SQLERRM;
         RAISE;
 END;
 $BODY$;
 
-ALTER FUNCTION public.hantera_kolumntillagg()
+ALTER FUNCTION public.hex_hantera_ny_kolumn()
     OWNER TO postgres;
 
-COMMENT ON FUNCTION public.hantera_kolumntillagg()
+COMMENT ON FUNCTION public.hex_hantera_ny_kolumn()
     IS 'Event trigger-funktion som triggas vid ALTER TABLE-operationer. Funktionen:
 
 1. Omstrukturerar tabeller genom att flytta standardkolumner med negativ 

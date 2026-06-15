@@ -1,4 +1,4 @@
-CREATE OR REPLACE FUNCTION public.hantera_borttagen_tabell()
+CREATE OR REPLACE FUNCTION public.hex_hantera_borttagen_tabell()
     RETURNS event_trigger
     LANGUAGE 'plpgsql'
     COST 100
@@ -17,7 +17,7 @@ AS $BODY$
  *      geometrikolumnen hann läggas till via ALTER TABLE)
  *
  * REKURSIONSSKYDD:
- * - Hoppar över om tabellstrukturering pågår (byt_ut_tabell droppar
+ * - Hoppar över om tabellstrukturering pågår (hex_byt_ut_tabell droppar
  *   tabeller internt som del av omstruktureringen)
  * - Hoppar över om historikborttagning redan pågår (förhindrar rekursion
  *   när _h-tabellen droppas av denna funktion)
@@ -35,7 +35,7 @@ DECLARE
     historik_tabell text;
     trigger_funktion text;
 BEGIN
-    -- Hoppa över under omstrukturering (byt_ut_tabell droppar tabeller internt)
+    -- Hoppa över under omstrukturering (hex_byt_ut_tabell droppar tabeller internt)
     IF current_setting('temp.tabellstrukturering_pagar', true) = 'true' THEN
         RETURN;
     END IF;
@@ -85,7 +85,7 @@ BEGIN
             AND table_name = historik_tabell
         ) THEN
             EXECUTE format('DROP TABLE %I.%I', schema_namn, historik_tabell);
-            RAISE NOTICE '[hantera_borttagen_tabell] ✓ Historiktabell borttagen: %.%',
+            RAISE NOTICE '[hex_hantera_borttagen_tabell] ✓ Historiktabell borttagen: %.%',
                 schema_namn, historik_tabell;
         END IF;
 
@@ -97,7 +97,7 @@ BEGIN
             AND p.proname = trigger_funktion
         ) THEN
             EXECUTE format('DROP FUNCTION %I.%I()', schema_namn, trigger_funktion);
-            RAISE NOTICE '[hantera_borttagen_tabell] ✓ Triggerfunktion borttagen: %.%()',
+            RAISE NOTICE '[hex_hantera_borttagen_tabell] ✓ Triggerfunktion borttagen: %.%()',
                 schema_namn, trigger_funktion;
         END IF;
 
@@ -111,7 +111,7 @@ BEGIN
         EXECUTE 'DELETE FROM public.hex_afvaktande_geometri WHERE schema_namn = $1 AND tabell_namn = $2'
             USING schema_namn, tabell_namn;
         IF FOUND THEN
-            RAISE NOTICE '[hantera_borttagen_tabell] ✓ Afvaktande geometripost borttagen: %.%',
+            RAISE NOTICE '[hex_hantera_borttagen_tabell] ✓ Afvaktande geometripost borttagen: %.%',
                 schema_namn, tabell_namn;
         END IF;
 
@@ -119,7 +119,7 @@ BEGIN
         EXECUTE 'DELETE FROM public.hex_avvikande_srid WHERE schema_namn = $1 AND tabell_namn = $2'
             USING schema_namn, tabell_namn;
         IF FOUND THEN
-            RAISE NOTICE '[hantera_borttagen_tabell] ✓ SRID-avvikelsepost borttagen: %.%',
+            RAISE NOTICE '[hex_hantera_borttagen_tabell] ✓ SRID-avvikelsepost borttagen: %.%',
                 schema_namn, tabell_namn;
         END IF;
 
@@ -128,7 +128,7 @@ BEGIN
         EXECUTE 'DELETE FROM public.hex_dummy_geometrier WHERE schema_namn = $1 AND tabell_namn = $2'
             USING schema_namn, tabell_namn;
         IF FOUND THEN
-            RAISE NOTICE '[hantera_borttagen_tabell] ✓ Dummy-geometripost borttagen: %.%',
+            RAISE NOTICE '[hex_hantera_borttagen_tabell] ✓ Dummy-geometripost borttagen: %.%',
                 schema_namn, tabell_namn;
         END IF;
     END LOOP;
@@ -138,21 +138,21 @@ BEGIN
 EXCEPTION
     WHEN OTHERS THEN
         PERFORM set_config('temp.historikborttagning_pagar', 'false', true);
-        RAISE NOTICE '[hantera_borttagen_tabell] !!! FEL UPPSTOD !!!';
-        RAISE NOTICE '[hantera_borttagen_tabell]   - Schema: %', schema_namn;
-        RAISE NOTICE '[hantera_borttagen_tabell]   - Tabell: %', tabell_namn;
-        RAISE NOTICE '[hantera_borttagen_tabell]   - Fel: %', SQLERRM;
+        RAISE NOTICE '[hex_hantera_borttagen_tabell] !!! FEL UPPSTOD !!!';
+        RAISE NOTICE '[hex_hantera_borttagen_tabell]   - Schema: %', schema_namn;
+        RAISE NOTICE '[hex_hantera_borttagen_tabell]   - Tabell: %', tabell_namn;
+        RAISE NOTICE '[hex_hantera_borttagen_tabell]   - Fel: %', SQLERRM;
         RAISE;
 END;
 $BODY$;
 
-ALTER FUNCTION public.hantera_borttagen_tabell()
+ALTER FUNCTION public.hex_hantera_borttagen_tabell()
     OWNER TO postgres;
 
-COMMENT ON FUNCTION public.hantera_borttagen_tabell()
+COMMENT ON FUNCTION public.hex_hantera_borttagen_tabell()
     IS 'Händelsetriggerfunktion som körs vid DROP TABLE och automatiskt tar bort
 tillhörande historiktabell (_h), QA-triggerfunktion (trg_fn_*_qa) samt eventuell
 afvaktande geometripost i hex_afvaktande_geometri (uppstår vid FME-tvåstegsmönster
 om tabellen droppas innan geometrikolumnen hunnit läggas till). Hoppar över under
-tabellomstrukturering (byt_ut_tabell) och förhindrar rekursion vid borttagning
+tabellomstrukturering (hex_byt_ut_tabell) och förhindrar rekursion vid borttagning
 av historiktabeller.';

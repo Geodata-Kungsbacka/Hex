@@ -69,40 +69,40 @@ INSTALL_ORDER = [
     "src/sql/02_tables/hex_avvikande_srid.sql",
     "src/sql/02_tables/hex_role_credentials.sql",
     # Funktioner - Struktur
-    "src/sql/03_functions/01_structure/hamta_geometri_definition.sql",
-    "src/sql/03_functions/01_structure/hamta_kolumnstandard.sql",
+    "src/sql/03_functions/01_structure/hex_hamta_geometri_definition.sql",
+    "src/sql/03_functions/01_structure/hex_hamta_kolumnstandard.sql",
     # Funktioner - Validering
-    "src/sql/03_functions/02_validation/validera_tabell.sql",
-    "src/sql/03_functions/02_validation/validera_vynamn.sql",
-    "src/sql/03_functions/02_validation/validera_schemanamn.sql",
-    "src/sql/03_functions/02_validation/blockera_schema_namnbyte.sql",
-    "src/sql/03_functions/02_validation/validera_geometri.sql",
-    "src/sql/03_functions/02_validation/forklara_geometrifel.sql",
+    "src/sql/03_functions/02_validation/hex_validera_tabell.sql",
+    "src/sql/03_functions/02_validation/hex_validera_vynamn.sql",
+    "src/sql/03_functions/02_validation/hex_validera_schemanamn.sql",
+    "src/sql/03_functions/02_validation/hex_blockera_schema_namnbyte.sql",
+    "src/sql/03_functions/02_validation/hex_validera_geometri.sql",
+    "src/sql/03_functions/02_validation/hex_forklara_geometrifel.sql",
     # Funktioner - Regler
-    "src/sql/03_functions/03_rules/spara_tabellregler.sql",
-    "src/sql/03_functions/03_rules/spara_kolumnegenskaper.sql",
-    "src/sql/03_functions/03_rules/aterskapa_tabellregler.sql",
-    "src/sql/03_functions/03_rules/aterskapa_kolumnegenskaper.sql",
+    "src/sql/03_functions/03_rules/hex_spara_tabellregler.sql",
+    "src/sql/03_functions/03_rules/hex_spara_kolumnegenskaper.sql",
+    "src/sql/03_functions/03_rules/hex_aterskapa_tabellregler.sql",
+    "src/sql/03_functions/03_rules/hex_aterskapa_kolumnegenskaper.sql",
     # Funktioner - Verktyg
-    "src/sql/03_functions/04_utility/byt_ut_tabell.sql",
-    "src/sql/03_functions/04_utility/uppdatera_sekvensnamn.sql",
-    "src/sql/03_functions/04_utility/skapa_historik_qa.sql",
-    "src/sql/03_functions/04_utility/tilldela_rollrattigheter.sql",
-    "src/sql/03_functions/04_utility/tillampa_grupprattigheter.sql",
-    "src/sql/03_functions/04_utility/tvinga_gid_fran_sekvens.sql",
-    "src/sql/03_functions/04_utility/underhall_hex.sql",
+    "src/sql/03_functions/04_utility/hex_byt_ut_tabell.sql",
+    "src/sql/03_functions/04_utility/hex_uppdatera_sekvensnamn.sql",
+    "src/sql/03_functions/04_utility/hex_skapa_historik_qa.sql",
+    "src/sql/03_functions/04_utility/hex_tilldela_rollrattigheter.sql",
+    "src/sql/03_functions/04_utility/hex_tillampa_grupprattigheter.sql",
+    "src/sql/03_functions/04_utility/hex_tvinga_gid_fran_sekvens.sql",
+    "src/sql/03_functions/04_utility/hex_underhall.sql",
     # Funktioner - Triggerfunktioner
-    "src/sql/03_functions/05_trigger_functions/ta_bort_dummy_rad.sql",
-    "src/sql/03_functions/04_utility/lagg_till_dummy_geometri.sql",
-    "src/sql/03_functions/05_trigger_functions/kontrollera_geometri.sql",
-    "src/sql/03_functions/05_trigger_functions/hantera_ny_tabell.sql",
-    "src/sql/03_functions/05_trigger_functions/hantera_kolumntillagg.sql",
-    "src/sql/03_functions/05_trigger_functions/hantera_ny_vy.sql",
-    "src/sql/03_functions/05_trigger_functions/ta_bort_schemaroller.sql",
-    "src/sql/03_functions/05_trigger_functions/hantera_hex_standardiserade_roller.sql",
-    "src/sql/03_functions/05_trigger_functions/hantera_borttagen_tabell.sql",
-    "src/sql/03_functions/05_trigger_functions/notifiera_geoserver.sql",
-    "src/sql/03_functions/05_trigger_functions/notifiera_geoserver_borttagning.sql",
+    "src/sql/03_functions/05_trigger_functions/hex_ta_bort_dummy_rad.sql",
+    "src/sql/03_functions/04_utility/hex_lagg_till_dummy_geometri.sql",
+    "src/sql/03_functions/05_trigger_functions/hex_kontrollera_geometri.sql",
+    "src/sql/03_functions/05_trigger_functions/hex_hantera_ny_tabell.sql",
+    "src/sql/03_functions/05_trigger_functions/hex_hantera_ny_kolumn.sql",
+    "src/sql/03_functions/05_trigger_functions/hex_hantera_ny_vy.sql",
+    "src/sql/03_functions/05_trigger_functions/hex_ta_bort_schemaroller.sql",
+    "src/sql/03_functions/05_trigger_functions/hex_hantera_std_roller.sql",
+    "src/sql/03_functions/05_trigger_functions/hex_hantera_borttagen_tabell.sql",
+    "src/sql/03_functions/05_trigger_functions/hex_notifiera_gs.sql",
+    "src/sql/03_functions/05_trigger_functions/hex_notifiera_gs_borttagning.sql",
     # Triggers
     "src/sql/04_triggers/hantera_ny_tabell_trigger.sql",
     "src/sql/04_triggers/hantera_kolumntillagg_trigger.sql",
@@ -134,49 +134,49 @@ DROP EVENT TRIGGER IF EXISTS hantera_ny_tabell_trigger;
 DROP EVENT TRIGGER IF EXISTS hantera_borttagen_tabell_trigger;
 
 -- Triggerfunktioner
-DROP FUNCTION IF EXISTS public.notifiera_geoserver_borttagning();
-DROP FUNCTION IF EXISTS public.notifiera_geoserver();
-DROP FUNCTION IF EXISTS public.hantera_hex_standardiserade_roller();
-DROP FUNCTION IF EXISTS public.ta_bort_schemaroller();
-DROP FUNCTION IF EXISTS public.hantera_ny_vy();
-DROP FUNCTION IF EXISTS public.hantera_kolumntillagg();
-DROP FUNCTION IF EXISTS public.hantera_ny_tabell();
-DROP FUNCTION IF EXISTS public.hantera_borttagen_tabell();
-DROP FUNCTION IF EXISTS public.kontrollera_geometri_trigger() CASCADE;
+DROP FUNCTION IF EXISTS public.hex_notifiera_gs_borttagning();
+DROP FUNCTION IF EXISTS public.hex_notifiera_gs();
+DROP FUNCTION IF EXISTS public.hex_hantera_std_roller();
+DROP FUNCTION IF EXISTS public.hex_ta_bort_schemaroller();
+DROP FUNCTION IF EXISTS public.hex_hantera_ny_vy();
+DROP FUNCTION IF EXISTS public.hex_hantera_ny_kolumn();
+DROP FUNCTION IF EXISTS public.hex_hantera_ny_tabell();
+DROP FUNCTION IF EXISTS public.hex_hantera_borttagen_tabell();
+DROP FUNCTION IF EXISTS public.hex_kontrollera_geometri_trigger() CASCADE;
 
 -- Hjälpfunktioner
 DROP FUNCTION IF EXISTS public.tillämpa_grupprattigheter();
-DROP FUNCTION IF EXISTS public.lagg_till_dummy_geometri(text, text, hex_geom_info);
-DROP FUNCTION IF EXISTS public.ta_bort_dummy_rad() CASCADE;
-DROP FUNCTION IF EXISTS public.tvinga_gid_fran_sekvens() CASCADE;
-DROP FUNCTION IF EXISTS public.underhall_hex();
+DROP FUNCTION IF EXISTS public.hex_lagg_till_dummy_geometri(text, text, hex_geom_info);
+DROP FUNCTION IF EXISTS public.hex_ta_bort_dummy_rad() CASCADE;
+DROP FUNCTION IF EXISTS public.hex_tvinga_gid_fran_sekvens() CASCADE;
+DROP FUNCTION IF EXISTS public.hex_underhall();
 DROP FUNCTION IF EXISTS public.reparera_rad_triggers();
-DROP FUNCTION IF EXISTS public.tilldela_rollrattigheter(text, text, text);
-DROP FUNCTION IF EXISTS public.skapa_historik_qa(text, text);
-DROP FUNCTION IF EXISTS public.uppdatera_sekvensnamn(text, text, text);
-DROP FUNCTION IF EXISTS public.byt_ut_tabell(text, text, text);
+DROP FUNCTION IF EXISTS public.hex_tilldela_rollrattigheter(text, text, text);
+DROP FUNCTION IF EXISTS public.hex_skapa_historik_qa(text, text);
+DROP FUNCTION IF EXISTS public.hex_uppdatera_sekvensnamn(text, text, text);
+DROP FUNCTION IF EXISTS public.hex_byt_ut_tabell(text, text, text);
 
 -- Regelfunktioner
-DROP FUNCTION IF EXISTS public.aterskapa_kolumnegenskaper(text, text, hex_kolumnegenskaper);
-DROP FUNCTION IF EXISTS public.aterskapa_tabellregler(text, text, hex_tabellregler);
-DROP FUNCTION IF EXISTS public.spara_kolumnegenskaper(text, text);
-DROP FUNCTION IF EXISTS public.spara_tabellregler(text, text);
+DROP FUNCTION IF EXISTS public.hex_aterskapa_kolumnegenskaper(text, text, hex_kolumnegenskaper);
+DROP FUNCTION IF EXISTS public.hex_aterskapa_tabellregler(text, text, hex_tabellregler);
+DROP FUNCTION IF EXISTS public.hex_spara_kolumnegenskaper(text, text);
+DROP FUNCTION IF EXISTS public.hex_spara_tabellregler(text, text);
 
 -- Valideringsfunktioner
-DROP FUNCTION IF EXISTS public.forklara_geometrifel(geometry);
-DROP FUNCTION IF EXISTS public.validera_geometri(geometry) CASCADE;
-DROP FUNCTION IF EXISTS public.validera_schemanamn();
-DROP FUNCTION IF EXISTS public.blockera_schema_namnbyte();
-DROP FUNCTION IF EXISTS public.validera_vynamn(text, text);
-DROP FUNCTION IF EXISTS public.validera_tabell(text, text);
+DROP FUNCTION IF EXISTS public.hex_forklara_geometrifel(geometry);
+DROP FUNCTION IF EXISTS public.hex_validera_geometri(geometry) CASCADE;
+DROP FUNCTION IF EXISTS public.hex_validera_schemanamn();
+DROP FUNCTION IF EXISTS public.hex_blockera_schema_namnbyte();
+DROP FUNCTION IF EXISTS public.hex_validera_vynamn(text, text);
+DROP FUNCTION IF EXISTS public.hex_validera_tabell(text, text);
 
 -- Strukturfunktioner
-DROP FUNCTION IF EXISTS public.hamta_kolumnstandard(text, text, hex_geom_info);
-DROP FUNCTION IF EXISTS public.hamta_geometri_definition(text, text);
+DROP FUNCTION IF EXISTS public.hex_hamta_kolumnstandard(text, text, hex_geom_info);
+DROP FUNCTION IF EXISTS public.hex_hamta_geometri_definition(text, text);
 
 -- Konfigurationsfunktioner
 DROP FUNCTION IF EXISTS public.hex_schema_regex();
-DROP FUNCTION IF EXISTS public.system_owner();
+DROP FUNCTION IF EXISTS public.hex_systemagare();
 -- OBS: hex_geoserver_roller tas INTE bort här. Rollen är kluster-nivå och delas
 -- av alla databaser som kör Hex. Om du avinstallerar Hex från alla databaser och
 -- vill ta bort rollen helt, kör manuellt: DROP ROLE hex_geoserver_roller;
@@ -213,7 +213,7 @@ PRESERVE_CONFIG = {
     },
     "hex_standardiserade_datakategorier": {
         "key": "prefix",
-        "restore": ["beskrivning", "validera_geometri"],
+        "restore": ["beskrivning", "hex_validera_geometri"],
     },
     "hex_standardiserade_kolumner": {
         "key": "kolumnnamn",
@@ -517,7 +517,7 @@ def install(db: dict, base_path="."):
         print("Kontrollerar PostGIS-tillägget...")
         cur.execute("CREATE EXTENSION IF NOT EXISTS postgis")
 
-        # Säkerställ att pgcrypto finns (krävs av hantera_hex_standardiserade_roller
+        # Säkerställ att pgcrypto finns (krävs av hex_hantera_std_roller
         # för gen_random_bytes() vid lösenordsgenerering)
         print("Kontrollerar pgcrypto-tillägget...")
         cur.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto")
@@ -528,9 +528,9 @@ def install(db: dict, base_path="."):
         if not cur.fetchone():
             raise ValueError(f"owner_role '{effective_owner}' finns inte i databasen")
 
-        # Skapa system_owner()-funktionen dynamiskt
+        # Skapa hex_systemagare()-funktionen dynamiskt
         system_owner_sql = f"""
-CREATE OR REPLACE FUNCTION public.system_owner()
+CREATE OR REPLACE FUNCTION public.hex_systemagare()
     RETURNS text
     LANGUAGE 'sql'
     IMMUTABLE
@@ -538,12 +538,12 @@ AS $BODY$
     SELECT '{effective_owner}'::text;
 $BODY$;
 
-ALTER FUNCTION public.system_owner() OWNER TO postgres;
+ALTER FUNCTION public.hex_systemagare() OWNER TO postgres;
 
-COMMENT ON FUNCTION public.system_owner()
+COMMENT ON FUNCTION public.hex_systemagare()
     IS 'Returnerar ägarrollen för Hex-skapade roller. Genererad av installer.';
 """
-        print("Installerar system_owner()...")
+        print("Installerar hex_systemagare()...")
         cur.execute(system_owner_sql)
         installed += 1
 
@@ -570,7 +570,7 @@ COMMENT ON FUNCTION public.system_owner()
         try:
             cur.execute(
                 "SELECT schema_namn, tabell_namn, trigger_namn, atgard"
-                " FROM public.underhall_hex()"
+                " FROM public.hex_underhall()"
             )
             rows = cur.fetchall()
             conn.commit()
@@ -585,7 +585,7 @@ COMMENT ON FUNCTION public.system_owner()
         except Exception as repair_err:
             conn.rollback()
             print(f"  Varning: underhåll misslyckades: {repair_err}")
-            print("  Hex är installerat. Kör SELECT * FROM public.underhall_hex() manuellt.")
+            print("  Hex är installerat. Kör SELECT * FROM public.hex_underhall() manuellt.")
 
         print("+++Anthill Inside+++")
 

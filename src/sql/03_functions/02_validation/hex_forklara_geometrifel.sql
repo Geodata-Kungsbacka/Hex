@@ -1,6 +1,6 @@
-DROP FUNCTION IF EXISTS public.forklara_geometrifel(geometry, float);
+DROP FUNCTION IF EXISTS public.hex_forklara_geometrifel(geometry, float);
 
-CREATE OR REPLACE FUNCTION public.forklara_geometrifel(
+CREATE OR REPLACE FUNCTION public.hex_forklara_geometrifel(
     geom geometry
 )
     RETURNS text
@@ -10,7 +10,7 @@ AS $BODY$
 /******************************************************************************
  * Diagnostiserar geometriproblem och returnerar en läsbar förklaring.
  *
- * Kontrollerar i prioritetsordning (speglar validera_geometri):
+ * Kontrollerar i prioritetsordning (speglar hex_validera_geometri):
  * 1. ST_IsValid       - Geometrin följer OGC-specifikationen
  * 2. ST_IsEmpty       - Geometrin innehåller faktiska koordinater
  * 3. Duplicerade pts  - Inga exakt identiska konsekutiva punkter
@@ -24,7 +24,7 @@ AS $BODY$
  *   text - Förklaring av det första problemet som hittades
  *
  * ANVÄNDNING:
- *   Anropas av kontrollera_geometri_trigger() för att ge QGIS-användare
+ *   Anropas av hex_kontrollera_geometri_trigger() för att ge QGIS-användare
  *   ett meningsfullt felmeddelande istället för ett generiskt constraint-fel.
  ******************************************************************************/
 BEGIN
@@ -55,12 +55,12 @@ BEGIN
 END;
 $BODY$;
 
-ALTER FUNCTION public.forklara_geometrifel(geometry)
+ALTER FUNCTION public.hex_forklara_geometrifel(geometry)
     OWNER TO postgres;
 
-COMMENT ON FUNCTION public.forklara_geometrifel(geometry)
+COMMENT ON FUNCTION public.hex_forklara_geometrifel(geometry)
     IS 'Diagnostiserar geometriproblem och returnerar en läsbar förklaring på svenska.
 Returnerar NULL om geometrin är giltig, annars en text som beskriver det första problemet.
-Speglar kontrollerna i validera_geometri() men ger specifika felmeddelanden istället för
-en boolean. Används av kontrollera_geometri_trigger() för meningsfulla QGIS-felmeddelanden.
+Speglar kontrollerna i hex_validera_geometri() men ger specifika felmeddelanden istället för
+en boolean. Används av hex_kontrollera_geometri_trigger() för meningsfulla QGIS-felmeddelanden.
 Kontrollerar: OGC-validitet, tomhet, exakta duplicerade punkter samt kurvsegment (CIRCULARSTRING m.m.).';

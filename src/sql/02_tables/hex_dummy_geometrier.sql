@@ -20,10 +20,10 @@
 -- identifierbar via sin gid som inte längre finns i tabellen.
 --
 -- Livscykel:
---   INSERT: lagg_till_dummy_geometri()   — anropas av hantera_ny_tabell()
---                                          och hantera_kolumntillagg()
---   DELETE: ta_bort_dummy_rad()          — automatisk, vid första riktiga INSERT
---   DELETE: hantera_borttagen_tabell()   — tabellen droppas
+--   INSERT: hex_lagg_till_dummy_geometri()   — anropas av hex_hantera_ny_tabell()
+--                                          och hex_hantera_ny_kolumn()
+--   DELETE: hex_ta_bort_dummy_rad()          — automatisk, vid första riktiga INSERT
+--   DELETE: hex_hantera_borttagen_tabell()   — tabellen droppas
 
 CREATE TABLE IF NOT EXISTS public.hex_dummy_geometrier (
     schema_namn text        NOT NULL,
@@ -43,7 +43,7 @@ COMMENT ON TABLE public.hex_dummy_geometrier IS
     'Spårar dummy-geometrirader som Hex sätter in i tomma geometritabeller
      för att QGIS ska kunna identifiera geometrityp via normal DB-anslutning.
      Raden tas automatiskt bort (av triggern hex_ta_bort_dummy) när den
-     första riktiga raden läggs in. Posten raderas även av hantera_borttagen_tabell
+     första riktiga raden läggs in. Posten raderas även av hex_hantera_borttagen_tabell
      om tabellen droppas.';
 
 COMMENT ON COLUMN public.hex_dummy_geometrier.schema_namn IS

@@ -4,7 +4,7 @@ DROP EVENT TRIGGER IF EXISTS ta_bort_schemaroller_trigger;
 
 CREATE EVENT TRIGGER ta_bort_schemaroller_trigger ON SQL_DROP
     WHEN TAG IN ('DROP SCHEMA')
-    EXECUTE PROCEDURE public.ta_bort_schemaroller();
+    EXECUTE PROCEDURE public.hex_ta_bort_schemaroller();
 
 ALTER EVENT TRIGGER ta_bort_schemaroller_trigger
     OWNER TO postgres;

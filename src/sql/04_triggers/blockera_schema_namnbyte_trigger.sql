@@ -4,7 +4,7 @@ DROP EVENT TRIGGER IF EXISTS blockera_schema_namnbyte_trigger;
 
 CREATE EVENT TRIGGER blockera_schema_namnbyte_trigger ON ddl_command_end
     WHEN TAG IN ('ALTER SCHEMA')
-    EXECUTE PROCEDURE public.blockera_schema_namnbyte();
+    EXECUTE PROCEDURE public.hex_blockera_schema_namnbyte();
 
 ALTER EVENT TRIGGER blockera_schema_namnbyte_trigger
     OWNER TO postgres;

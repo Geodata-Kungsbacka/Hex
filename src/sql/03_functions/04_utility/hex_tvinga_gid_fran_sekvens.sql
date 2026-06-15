@@ -1,4 +1,4 @@
-CREATE OR REPLACE FUNCTION public.tvinga_gid_fran_sekvens()
+CREATE OR REPLACE FUNCTION public.hex_tvinga_gid_fran_sekvens()
     RETURNS trigger
     LANGUAGE plpgsql
 AS $BODY$
@@ -52,11 +52,11 @@ BEGIN
 END;
 $BODY$;
 
-ALTER FUNCTION public.tvinga_gid_fran_sekvens()
+ALTER FUNCTION public.hex_tvinga_gid_fran_sekvens()
     OWNER TO postgres;
 
-COMMENT ON FUNCTION public.tvinga_gid_fran_sekvens()
+COMMENT ON FUNCTION public.hex_tvinga_gid_fran_sekvens()
     IS 'BEFORE INSERT-trigger som alltid åsidosätter klientens gid-värde med
 nästa sekvensvärde. Förhindrar att klienter (t.ex. QGIS med OVERRIDING SYSTEM
 VALUE) kan välja ett godtyckligt gid. Triggeranropet hex_tvinga_gid skapas
-automatiskt av hantera_ny_tabell() på alla Hex-hanterade tabeller.';
+automatiskt av hex_hantera_ny_tabell() på alla Hex-hanterade tabeller.';
