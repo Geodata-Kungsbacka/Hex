@@ -104,16 +104,16 @@ INSTALL_ORDER = [
     "src/sql/03_functions/05_trigger_functions/hex_notifiera_gs.sql",
     "src/sql/03_functions/05_trigger_functions/hex_notifiera_gs_borttagning.sql",
     # Triggers
-    "src/sql/04_triggers/hantera_ny_tabell_trigger.sql",
-    "src/sql/04_triggers/hantera_kolumntillagg_trigger.sql",
-    "src/sql/04_triggers/hantera_ny_vy_trigger.sql",
-    "src/sql/04_triggers/ta_bort_schemaroller_trigger.sql",
-    "src/sql/04_triggers/hantera_hex_standardiserade_roller_trigger.sql",
-    "src/sql/04_triggers/hantera_borttagen_tabell_trigger.sql",
-    "src/sql/04_triggers/validera_schemanamn_trigger.sql",
-    "src/sql/04_triggers/blockera_schema_namnbyte_trigger.sql",
-    "src/sql/04_triggers/notifiera_geoserver_trigger.sql",
-    "src/sql/04_triggers/notifiera_geoserver_borttagning_trigger.sql",
+    "src/sql/04_triggers/hex_hantera_ny_tabell_trigger.sql",
+    "src/sql/04_triggers/hex_hantera_ny_kolumn_trigger.sql",
+    "src/sql/04_triggers/hex_hantera_ny_vy_trigger.sql",
+    "src/sql/04_triggers/hex_ta_bort_schemaroller_trigger.sql",
+    "src/sql/04_triggers/hex_hantera_std_roller_trigger.sql",
+    "src/sql/04_triggers/hex_hantera_borttagen_tabell_trigger.sql",
+    "src/sql/04_triggers/hex_validera_schemanamn_trigger.sql",
+    "src/sql/04_triggers/hex_blockera_schema_namnbyte_trigger.sql",
+    "src/sql/04_triggers/hex_notifiera_gs_trigger.sql",
+    "src/sql/04_triggers/hex_notifiera_gs_borttagning_trigger.sql",
 ]
 
 # =============================================================================
@@ -122,16 +122,16 @@ INSTALL_ORDER = [
 
 UNINSTALL_SQL = """
 -- Event-triggers (måste tas bort först)
-DROP EVENT TRIGGER IF EXISTS notifiera_geoserver_borttagning_trigger;
-DROP EVENT TRIGGER IF EXISTS notifiera_geoserver_trigger;
-DROP EVENT TRIGGER IF EXISTS validera_schemanamn_trigger;
-DROP EVENT TRIGGER IF EXISTS blockera_schema_namnbyte_trigger;
-DROP EVENT TRIGGER IF EXISTS hantera_hex_standardiserade_roller_trigger;
-DROP EVENT TRIGGER IF EXISTS ta_bort_schemaroller_trigger;
-DROP EVENT TRIGGER IF EXISTS hantera_ny_vy_trigger;
-DROP EVENT TRIGGER IF EXISTS hantera_kolumntillagg_trigger;
-DROP EVENT TRIGGER IF EXISTS hantera_ny_tabell_trigger;
-DROP EVENT TRIGGER IF EXISTS hantera_borttagen_tabell_trigger;
+DROP EVENT TRIGGER IF EXISTS hex_notifiera_gs_borttagning_trigger;
+DROP EVENT TRIGGER IF EXISTS hex_notifiera_gs_trigger;
+DROP EVENT TRIGGER IF EXISTS hex_validera_schemanamn_trigger;
+DROP EVENT TRIGGER IF EXISTS hex_blockera_schema_namnbyte_trigger;
+DROP EVENT TRIGGER IF EXISTS hex_hantera_std_roller_trigger;
+DROP EVENT TRIGGER IF EXISTS hex_ta_bort_schemaroller_trigger;
+DROP EVENT TRIGGER IF EXISTS hex_hantera_ny_vy_trigger;
+DROP EVENT TRIGGER IF EXISTS hex_hantera_ny_kolumn_trigger;
+DROP EVENT TRIGGER IF EXISTS hex_hantera_ny_tabell_trigger;
+DROP EVENT TRIGGER IF EXISTS hex_hantera_borttagen_tabell_trigger;
 
 -- Triggerfunktioner
 DROP FUNCTION IF EXISTS public.hex_notifiera_gs_borttagning();

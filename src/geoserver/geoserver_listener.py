@@ -5,14 +5,14 @@ GeoServer Schema Listener - Lyssnar på pg_notify och hanterar workspace/store i
 Processen lyssnar på två PostgreSQL-kanaler och hanterar schema-händelser automatiskt:
 
   Kanal 'geoserver_schema'  (utlöses av CREATE SCHEMA via SQL-triggern
-                             notifiera_geoserver_trigger):
+                             hex_notifiera_gs_trigger):
     1. Skapar en workspace i GeoServer med samma namn som schemat.
     2. Hämtar autentiseringsuppgifter för läsrollen (r_{schema}) från
        tabellen hex_role_credentials.
     3. Skapar en direkt PostGIS-datastore i workspace med dessa uppgifter.
 
   Kanal 'geoserver_schema_drop'  (utlöses av DROP SCHEMA via SQL-triggern
-                                  notifiera_geoserver_borttagning_trigger):
+                                  hex_notifiera_gs_borttagning_trigger):
     1. Tar bort workspace från GeoServer med recurse=true, vilket raderar
        alla datastores och publicerade lager i workspace.
        Det förhindrar att GeoServer gör upprepade anrop mot ett schema
