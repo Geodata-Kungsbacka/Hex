@@ -1224,6 +1224,7 @@ def _fetch_publishable_schemas(db_config):
             user=db_config["user"],
             password=db_config["password"],
             connect_timeout=10,
+            client_encoding="utf8",
         )
         try:
             with conn.cursor() as cur:
@@ -1428,6 +1429,7 @@ def _periodic_reconcile_loop(db_config, gs_client, stop_event, interval_seconds,
                 user=db_config["user"],
                 password=db_config["password"],
                 connect_timeout=10,
+                client_encoding="utf8",
             )
             conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
             try:
@@ -1539,6 +1541,7 @@ def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None, notifier
                 user=db_config["user"],
                 password=db_config["password"],
                 connect_timeout=10,
+                client_encoding="utf8",
             )
             conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
 
