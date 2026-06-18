@@ -18,11 +18,18 @@ AS $BODY$
  * Schemaprefix hämtas dynamiskt från hex_standardiserade_skyddsnivaer, så att
  * egna prefix (t.ex. sc1, sk3) fungerar utan kodändringar.
  *
- * Hanterar nio åtgärdstyper:
+ * Hanterar tio åtgärdstyper:
  *
  *   schemamigrering      Uppgraderar hex_role_credentials och hex_standardiserade_roller
  *                        till aktuellt schema idempotent (ADD COLUMN IF NOT EXISTS).
  *                        Körs alltid först.
+ *
+ *   ägarskapsöverföring  Säkerställer att scheman, tabeller, sekvenser och
+ *                        funktioner i Hex-hanterade scheman ägs av
+ *                        hex_systemagare(). Fångar objekt skapade av
+ *                        superusers (t.ex. postgres) innan ägarskapsöverföringen
+ *                        lades till i hex_hantera_std_roller och
+ *                        hex_hantera_ny_tabell. Körs efter schemamigrering.
  *
  *   hex_tvinga_gid       BEFORE INSERT på alla Hex-tabeller med en gid
  *                        IDENTITY-kolumn. Förhindrar att klienter (t.ex. QGIS)
@@ -96,6 +103,109 @@ BEGIN
     SELECT '^(' || string_agg(prefix, '|') || ')_'
     INTO   schema_regex
     FROM   public.hex_standardiserade_skyddsnivaer;
+
+    -- -------------------------------------------------------------------------
+    -- 0b. Ägarskapsöverföring
+    --     Säkerställer att alla Hex-hanterade objekt ägs av hex_systemagare().
+    --     Fångar scheman och tabeller skapade av superusers innan
+    --     hex_hantera_std_roller och hex_hantera_ny_tabell fick inbyggd
+    --     ägarskapsöverföring.
+    -- -------------------------------------------------------------------------
+
+    -- 0b-i. Scheman
+    FOR r IN
+        SELECT n.nspname AS s
+        FROM   pg_namespace n
+        JOIN   pg_roles     own ON own.oid = n.nspowner
+        WHERE  n.nspname ~ schema_regex
+          AND  own.rolname != hex_systemagare()
+        ORDER BY n.nspname
+    LOOP
+        EXECUTE format('ALTER SCHEMA %I OWNER TO %I', r.s, hex_systemagare());
+        schema_namn  := r.s;
+        tabell_namn  := '-';
+        trigger_namn := 'ägarskapsöverföring';
+        atgard       := 'schema: ägare uppdaterad';
+        RETURN NEXT;
+    END LOOP;
+
+    -- 0b-ii. Tabeller
+    FOR r IN
+        SELECT n.nspname AS s, c.relname AS t
+        FROM   pg_class     c
+        JOIN   pg_namespace n   ON n.oid = c.relnamespace
+        JOIN   pg_roles     own ON own.oid = c.relowner
+        WHERE  c.relkind = 'r'
+          AND  n.nspname ~ schema_regex
+          AND  own.rolname != hex_systemagare()
+        ORDER BY n.nspname, c.relname
+    LOOP
+        EXECUTE format('ALTER TABLE %I.%I OWNER TO %I', r.s, r.t, hex_systemagare());
+        schema_namn  := r.s;
+        tabell_namn  := r.t;
+        trigger_namn := 'ägarskapsöverföring';
+        atgard       := 'tabell: ägare uppdaterad';
+        RETURN NEXT;
+    END LOOP;
+
+    -- 0b-iii. Sekvenser
+    FOR r IN
+        SELECT n.nspname AS s, c.relname AS t
+        FROM   pg_class     c
+        JOIN   pg_namespace n   ON n.oid = c.relnamespace
+        JOIN   pg_roles     own ON own.oid = c.relowner
+        WHERE  c.relkind = 'S'
+          AND  n.nspname ~ schema_regex
+          AND  own.rolname != hex_systemagare()
+        ORDER BY n.nspname, c.relname
+    LOOP
+        EXECUTE format('ALTER SEQUENCE %I.%I OWNER TO %I', r.s, r.t, hex_systemagare());
+        schema_namn  := r.s;
+        tabell_namn  := r.t;
+        trigger_namn := 'ägarskapsöverföring';
+        atgard       := 'sekvens: ägare uppdaterad';
+        RETURN NEXT;
+    END LOOP;
+
+    -- 0b-iv. Funktioner (t.ex. trg_fn_*_qa som lever i användarscheman)
+    FOR r IN
+        SELECT n.nspname AS s,
+               p.proname AS t,
+               pg_get_function_identity_arguments(p.oid) AS args
+        FROM   pg_proc      p
+        JOIN   pg_namespace n   ON n.oid = p.pronamespace
+        JOIN   pg_roles     own ON own.oid = p.proowner
+        WHERE  n.nspname ~ schema_regex
+          AND  own.rolname != hex_systemagare()
+        ORDER BY n.nspname, p.proname
+    LOOP
+        EXECUTE format('ALTER FUNCTION %I.%I(%s) OWNER TO %I',
+            r.s, r.t, r.args, hex_systemagare());
+        schema_namn  := r.s;
+        tabell_namn  := r.t;
+        trigger_namn := 'ägarskapsöverföring';
+        atgard       := 'funktion: ägare uppdaterad';
+        RETURN NEXT;
+    END LOOP;
+
+    -- 0b-v. Vyer
+    FOR r IN
+        SELECT n.nspname AS s, c.relname AS t
+        FROM   pg_class     c
+        JOIN   pg_namespace n   ON n.oid = c.relnamespace
+        JOIN   pg_roles     own ON own.oid = c.relowner
+        WHERE  c.relkind = 'v'
+          AND  n.nspname ~ schema_regex
+          AND  own.rolname != hex_systemagare()
+        ORDER BY n.nspname, c.relname
+    LOOP
+        EXECUTE format('ALTER VIEW %I.%I OWNER TO %I', r.s, r.t, hex_systemagare());
+        schema_namn  := r.s;
+        tabell_namn  := r.t;
+        trigger_namn := 'ägarskapsöverföring';
+        atgard       := 'vy: ägare uppdaterad';
+        RETURN NEXT;
+    END LOOP;
 
     -- -------------------------------------------------------------------------
     -- 1. hex_tvinga_gid
@@ -709,6 +819,9 @@ DROP FUNCTION IF EXISTS public.reparera_rad_triggers();
 COMMENT ON FUNCTION public.hex_underhall()
     IS 'Reparerar och verifierar hela Hex-strukturen för alla scheman.
 Uppgraderar tabellscheman (hex_role_credentials, hex_standardiserade_roller) idempotent.
+Överför ägarskap av scheman, tabeller, sekvenser, funktioner och vyer till hex_systemagare()
+  – fångar objekt skapade av superusers innan ägarskapsöverföringen lades till i
+  hex_hantera_std_roller/hex_hantera_ny_tabell.
 Återkopplar saknade rad-nivå-triggers (hex_tvinga_gid, hex_kontrollera_geom,
 hex_ta_bort_dummy, trg_<tabell>_qa).
 Verifierar och reparerar alla fyra roller per schema:
