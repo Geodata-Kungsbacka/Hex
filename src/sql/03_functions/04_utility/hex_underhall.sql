@@ -28,6 +28,12 @@ AS $BODY$
  *                        IDENTITY-kolumn. Förhindrar att klienter (t.ex. QGIS)
  *                        väljer eget gid via OVERRIDING SYSTEM VALUE.
  *
+ *   hex_tvinga_auditkolumner
+ *                        BEFORE INSERT på _kba_-tabeller med auditkolumner.
+ *                        Skriver alltid över skapad_av, skapad_tidpunkt,
+ *                        andrad_av och andrad_tidpunkt med session_user/NOW()
+ *                        oavsett vad klienten (t.ex. FME) skickar.
+ *
  *   hex_kontrollera_geom BEFORE INSERT OR UPDATE på geometritabeller vars
  *                        datakategori har hex_validera_geometri = true.
  *                        Validerar OGC-giltighet.
@@ -136,6 +142,65 @@ BEGIN
                 'CREATE TRIGGER hex_tvinga_gid'
                 ' BEFORE INSERT ON %I.%I'
                 ' FOR EACH ROW EXECUTE FUNCTION public.hex_tvinga_gid_fran_sekvens()',
+                r.s, r.t
+            );
+            atgard := 'skapad';
+        ELSE
+            atgard := 'redan finns';
+        END IF;
+
+        RETURN NEXT;
+    END LOOP;
+
+    -- -------------------------------------------------------------------------
+    -- 1b. hex_tvinga_auditkolumner
+    --     _kba_-tabeller med kolumnerna skapad_av, skapad_tidpunkt, andrad_av
+    --     och andrad_tidpunkt. Triggersfunktionen skriver alltid över klientens
+    --     inskickade värden vid INSERT med session_user och NOW().
+    -- -------------------------------------------------------------------------
+    FOR r IN
+        SELECT n.nspname AS s, c.relname AS t
+        FROM   pg_class     c
+        JOIN   pg_namespace n ON n.oid = c.relnamespace
+        WHERE  c.relkind = 'r'
+          AND  n.nspname ~ schema_regex
+          AND  EXISTS (
+                   SELECT 1 FROM pg_attribute a
+                   WHERE  a.attrelid = c.oid AND a.attname = 'skapad_av'    AND NOT a.attisdropped
+               )
+          AND  EXISTS (
+                   SELECT 1 FROM pg_attribute a
+                   WHERE  a.attrelid = c.oid AND a.attname = 'skapad_tidpunkt' AND NOT a.attisdropped
+               )
+          AND  EXISTS (
+                   SELECT 1 FROM pg_attribute a
+                   WHERE  a.attrelid = c.oid AND a.attname = 'andrad_av'    AND NOT a.attisdropped
+               )
+          AND  EXISTS (
+                   SELECT 1 FROM pg_attribute a
+                   WHERE  a.attrelid = c.oid AND a.attname = 'andrad_tidpunkt' AND NOT a.attisdropped
+               )
+        ORDER BY n.nspname, c.relname
+    LOOP
+        SELECT EXISTS (
+            SELECT 1
+            FROM   pg_trigger   t
+            JOIN   pg_class     c ON c.oid = t.tgrelid
+            JOIN   pg_namespace n ON n.oid = c.relnamespace
+            WHERE  n.nspname = r.s
+              AND  c.relname = r.t
+              AND  t.tgname  = 'hex_tvinga_auditkolumner'
+        ) INTO trig_exists;
+
+        schema_namn  := r.s;
+        tabell_namn  := r.t;
+        trigger_namn := 'hex_tvinga_auditkolumner';
+
+        IF NOT trig_exists THEN
+            EXECUTE format(
+                'CREATE TRIGGER hex_tvinga_auditkolumner'
+                ' BEFORE INSERT ON %I.%I'
+                ' FOR EACH ROW EXECUTE FUNCTION public.hex_tvinga_auditkolumner()',
                 r.s, r.t
             );
             atgard := 'skapad';
@@ -709,7 +774,7 @@ DROP FUNCTION IF EXISTS public.reparera_rad_triggers();
 COMMENT ON FUNCTION public.hex_underhall()
     IS 'Reparerar och verifierar hela Hex-strukturen för alla scheman.
 Uppgraderar tabellscheman (hex_role_credentials, hex_standardiserade_roller) idempotent.
-Återkopplar saknade rad-nivå-triggers (hex_tvinga_gid, hex_kontrollera_geom,
+Återkopplar saknade rad-nivå-triggers (hex_tvinga_gid, hex_tvinga_auditkolumner, hex_kontrollera_geom,
 hex_ta_bort_dummy, trg_<tabell>_qa).
 Verifierar och reparerar alla fyra roller per schema:
   r_{schema}/w_{schema}       NOLOGIN behörighetsgrupper – tilldelas AD-användare
