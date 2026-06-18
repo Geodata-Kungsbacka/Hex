@@ -3,6 +3,8 @@ CREATE OR REPLACE FUNCTION public.hex_hantera_ny_tabell()
     LANGUAGE 'plpgsql'
     COST 100
     VOLATILE NOT LEAKPROOF
+    SECURITY DEFINER
+    SET search_path = public
 AS $BODY$
 /******************************************************************************
  * Denna funktion hanterar omstrukturering av tabeller när de skapas. Den:
@@ -140,7 +142,7 @@ BEGIN
             -- efterbearbetning (GiST-index, geometrivalidering) sker i
             -- hex_hantera_ny_kolumn() när geom-kolumnen dyker upp.
             op_steg := 'validering';
-            RAISE NOTICE 'Steg 1/10: Validerar tabell';
+            RAISE NOTICE 'Steg 1/11: Validerar tabell';
 
             IF ar_systemanvandare
                AND tabell_namn ~ '_[plyg]$'
@@ -201,13 +203,13 @@ BEGIN
 
             -- Steg 2: Spara hex_tabellregler och hex_kolumnegenskaper
             op_steg := 'spara regler';
-            RAISE NOTICE 'Steg 2/10: Sparar hex_tabellregler och hex_kolumnegenskaper';
+            RAISE NOTICE 'Steg 2/11: Sparar hex_tabellregler och hex_kolumnegenskaper';
             tabell_regler := hex_spara_tabellregler(schema_namn, tabell_namn);
             kolumn_egenskaper := hex_spara_kolumnegenskaper(schema_namn, tabell_namn);
             
             -- Steg 3: Bestäm kolumner
             op_steg := 'kolumnstruktur';
-            RAISE NOTICE 'Steg 3/10: Bestämmer kolumnstruktur';
+            RAISE NOTICE 'Steg 3/11: Bestämmer kolumnstruktur';
             standardkolumner := hex_hamta_kolumnstandard(schema_namn, tabell_namn, geometriinfo);
 
             -- FME-debug: Visa bestämd kolumnstruktur
@@ -226,7 +228,7 @@ BEGIN
 
             -- Steg 4: Skapa temporär tabell
             op_steg := 'skapa temporär tabell';
-            RAISE NOTICE 'Steg 4/10: Skapar temporär tabell';
+            RAISE NOTICE 'Steg 4/11: Skapar temporär tabell';
             DECLARE
                 kolumn_sql text;
             BEGIN
@@ -247,7 +249,7 @@ BEGIN
             
             -- Steg 5: Byt ut tabeller
             op_steg := 'byt tabeller';
-            RAISE NOTICE 'Steg 5/10: Byter ut tabeller';
+            RAISE NOTICE 'Steg 5/11: Byter ut tabeller';
             PERFORM hex_byt_ut_tabell(schema_namn, tabell_namn, temp_tabellnamn);
 
             -- FME-debug: Visa slutgiltig tabellstruktur efter byte
@@ -267,6 +269,27 @@ BEGIN
                 END;
             END IF;
 
+            -- Steg 5.5: Överför ägarskap till hex_systemagare()
+            op_steg := 'överför ägarskap';
+            RAISE NOTICE 'Steg 5.5/11: Överför ägarskap till %', hex_systemagare();
+            EXECUTE format('ALTER TABLE %I.%I OWNER TO %I',
+                schema_namn, tabell_namn, hex_systemagare());
+            DECLARE
+                seq record;
+            BEGIN
+                FOR seq IN
+                    SELECT sequence_name
+                    FROM information_schema.sequences
+                    WHERE sequence_schema = schema_namn
+                      AND sequence_name LIKE tabell_namn || '_%'
+                LOOP
+                    EXECUTE format('ALTER SEQUENCE %I.%I OWNER TO %I',
+                        schema_namn, seq.sequence_name, hex_systemagare());
+                    RAISE NOTICE '  ✓ Sekvens ägarskap överförd: %', seq.sequence_name;
+                END LOOP;
+            END;
+            RAISE NOTICE '  ✓ Tabell ägarskap överförd till %', hex_systemagare();
+
             -- Hantera sekvenser
             DECLARE
                 antal_sekvenser integer;
@@ -279,12 +302,12 @@ BEGIN
             
             -- Steg 6: Återskapa hex_tabellregler
             op_steg := 'återskapa regler';
-            RAISE NOTICE 'Steg 6/10: Återskapar hex_tabellregler';
+            RAISE NOTICE 'Steg 6/11: Återskapar hex_tabellregler';
             PERFORM hex_aterskapa_tabellregler(schema_namn, tabell_namn, tabell_regler);
             
             -- Steg 7: Återskapa hex_kolumnegenskaper
             op_steg := 'återskapa egenskaper';
-            RAISE NOTICE 'Steg 7/10: Återskapar hex_kolumnegenskaper';
+            RAISE NOTICE 'Steg 7/11: Återskapar hex_kolumnegenskaper';
             PERFORM hex_aterskapa_kolumnegenskaper(schema_namn, tabell_namn, kolumn_egenskaper);
             
             -- Steg 7.5: Tvinga gid att alltid hämtas från sekvensen
@@ -303,7 +326,7 @@ BEGIN
 
             -- Steg 8: Skapa GiST-index för geometrikolumn (alla scheman med geometri)
             op_steg := 'skapa gist-index';
-            RAISE NOTICE 'Steg 8/10: Kontrollerar GiST-index';
+            RAISE NOTICE 'Steg 8/11: Kontrollerar GiST-index';
             RAISE NOTICE '  Debug: geometriinfo.kolumnnamn = %', geometriinfo.kolumnnamn;
             IF geometriinfo IS NOT NULL AND geometriinfo.kolumnnamn IS NOT NULL THEN
                 DECLARE
@@ -339,7 +362,7 @@ BEGIN
             -- Steg 9: Lägg till geometrivalidering för scheman vars datakategori
             --         har hex_validera_geometri = true i hex_standardiserade_datakategorier
             op_steg := 'geometrivalidering';
-            RAISE NOTICE 'Steg 9/10: Kontrollerar geometrivalidering';
+            RAISE NOTICE 'Steg 9/11: Kontrollerar geometrivalidering';
             RAISE NOTICE '  - geometriinfo.kolumnnamn: %', geometriinfo.kolumnnamn;
             IF geometriinfo IS NOT NULL AND geometriinfo.kolumnnamn IS NOT NULL AND EXISTS (
                 SELECT 1 FROM public.hex_standardiserade_datakategorier d
@@ -428,12 +451,14 @@ ALTER FUNCTION public.hex_hantera_ny_tabell()
 
 COMMENT ON FUNCTION public.hex_hantera_ny_tabell()
     IS 'Event trigger-funktion som körs vid CREATE TABLE för att validera och
-omstrukturera tabeller enligt standardiserade kolumner. Kända systemanvändare
-(hex_systemanvandare, t.ex. FME) stödjer ett tvåstegsmönster: tabell skapas
-utan geometrikolumn och registreras i hex_afvaktande_geometri; GiST-index och
-geometrivalidering slutförs av hex_hantera_ny_kolumn när geom-kolumnen läggs
-till via ALTER TABLE. PRIMARY KEY-constraints från den ursprungliga tabellen
-återställs inte – Hex tillhandahåller alltid sin egen PK via gid-kolumnen.
-Geometritabeller får en dummy-geometrirad via hex_lagg_till_dummy_geometri() för
-att QGIS ska kunna identifiera geometritypen utan manuell dialog. Dummyn tas
-automatiskt bort av triggern hex_ta_bort_dummy när riktig data läggs in.';
+omstrukturera tabeller enligt standardiserade kolumner. Kör som SECURITY DEFINER
+(postgres) för att alltid kunna överföra ägarskap till hex_systemagare() oavsett
+vilken roll som skapar tabellen. Kända systemanvändare (hex_systemanvandare,
+t.ex. FME) stödjer ett tvåstegsmönster: tabell skapas utan geometrikolumn och
+registreras i hex_afvaktande_geometri; GiST-index och geometrivalidering
+slutförs av hex_hantera_ny_kolumn när geom-kolumnen läggs till via ALTER TABLE.
+PRIMARY KEY-constraints från den ursprungliga tabellen återställs inte – Hex
+tillhandahåller alltid sin egen PK via gid-kolumnen. Geometritabeller får en
+dummy-geometrirad via hex_lagg_till_dummy_geometri() för att QGIS ska kunna
+identifiera geometritypen utan manuell dialog. Dummyn tas automatiskt bort av
+triggern hex_ta_bort_dummy när riktig data läggs in.';

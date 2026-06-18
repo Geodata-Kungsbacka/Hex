@@ -591,6 +591,26 @@ DROP TABLE IF EXISTS sk1_kba_test.standardkol_kba_y;
 DROP SCHEMA IF EXISTS sk2_ext_rolltest CASCADE;
 CREATE SCHEMA sk2_ext_rolltest;
 
+-- 9k: Schemat ska ägas av hex_systemagare(), inte av superuser som körde CREATE SCHEMA
+DO $$
+DECLARE
+    schema_agare text;
+    forvantad_agare text;
+BEGIN
+    SELECT rolname INTO schema_agare
+    FROM pg_namespace n
+    JOIN pg_roles r ON r.oid = n.nspowner
+    WHERE n.nspname = 'sk2_ext_rolltest';
+
+    forvantad_agare := public.hex_systemagare();
+
+    IF schema_agare = forvantad_agare THEN
+        RAISE NOTICE 'TEST 9k PASSED: Schema sk2_ext_rolltest ägs av % (hex_systemagare)', schema_agare;
+    ELSE
+        RAISE WARNING 'TEST 9k FAILED: Schema ägs av % – förväntade %', schema_agare, forvantad_agare;
+    END IF;
+END $$;
+
 -- 9a: r_ och w_ ska vara NOLOGIN
 DO $$
 DECLARE

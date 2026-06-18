@@ -233,8 +233,8 @@ hex_hantera_std_roller()
   │           │               ├── GRANT USAGE ON SCHEMA
   │           │               ├── read:  GRANT SELECT ON ALL TABLES
   │           │               │          ALTER DEFAULT PRIVILEGES … GRANT SELECT
-  │           │               └── write: GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES
-  │           │                          ALTER DEFAULT PRIVILEGES … GRANT SELECT, INSERT, UPDATE, DELETE
+  │           │               └── write: GRANT ALL ON ALL TABLES
+  │           │                          ALTER DEFAULT PRIVILEGES … GRANT ALL
   │
   └── Resultat för sk0_kba_bygg:
         NOLOGIN: r_sk0_kba_bygg  (AD-behörighetsgrupp, läs)
@@ -398,6 +398,13 @@ hex_hantera_ny_tabell()
   │     → hex_uppdatera_sekvensnamn(schema, tabell)
   │           ├── Letar sekvenser som ägs av tabellen och innehåller '_temp_0001_'
   │           └── Döper om: tar bort '_temp_0001_'-delen från sekvensnamnet
+  │
+  ├── [5.5] ÖVERFÖR ÄGARSKAP
+  │     ├── ALTER TABLE <tabell> OWNER TO hex_systemagare()
+  │     │     (körs alltid, oavsett vem som skapade tabellen)
+  │     │     (möjligt eftersom hex_hantera_ny_tabell är SECURITY DEFINER)
+  │     └── ALTER SEQUENCE <sekvens> OWNER TO hex_systemagare()
+  │           (för alla sekvenser i schemat som tillhör tabellen)
   │
   ├── [6] ÅTERSKAPA TABELLREGLER
   │     → hex_aterskapa_tabellregler(schema, tabell, regler)
@@ -1018,7 +1025,7 @@ det utlöser i sin tur nya eventutlösare. Tre flaggor förhindrar oändliga ked
 | `hex_byt_ut_tabell(schema, tabell, temp)` | `hex_hantera_ny_tabell` | DROP original + RENAME temp |
 | `hex_uppdatera_sekvensnamn(schema, tabell)` | `hex_hantera_ny_tabell` | Döper om IDENTITY-sekvenser |
 | `hex_skapa_historik_qa(schema, tabell)` | `hex_hantera_ny_tabell` | Skapar historiktabell + QA-trigger |
-| `hex_tilldela_rollrattigheter(schema, roll, typ)` | `hex_hantera_std_roller` | GRANT USAGE/SELECT/INSERT/UPDATE/DELETE |
+| `hex_tilldela_rollrattigheter(schema, roll, typ)` | `hex_hantera_std_roller` | GRANT USAGE + SELECT (read) eller GRANT ALL (write) på tabeller |
 
 ### Anpassade typer
 

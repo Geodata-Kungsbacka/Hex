@@ -15,7 +15,7 @@ AS $BODY$
  * PARAMETRAR:
  * - p_schema_namn: Namnet på schemat som rollen ska få rättigheter på
  * - p_rollnamn: Namnet på rollen som ska få rättigheter
- * - p_rolltyp: 'read' (SELECT) eller 'write' (SELECT, INSERT, UPDATE, DELETE)
+ * - p_rolltyp: 'read' (SELECT) eller 'write' (ALL)
  *
  * ANVÄNDNING:
  * Anropas automatiskt av hex_hantera_std_roller() när nya roller skapas.
@@ -41,14 +41,14 @@ BEGIN
         RAISE NOTICE '[hex_tilldela_rollrattigheter] SELECT-rättigheter beviljade (inkl. DEFAULT PRIVILEGES för %)', hex_systemagare();
 
     ELSIF p_rolltyp = 'write' THEN
-        -- Skrivrättigheter: SELECT, INSERT, UPDATE, DELETE på tabeller
-        EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA %I TO %I',
+        -- Alla tabellrättigheter (inkl. TRUNCATE, REFERENCES, TRIGGER)
+        EXECUTE format('GRANT ALL ON ALL TABLES IN SCHEMA %I TO %I',
                       p_schema_namn, p_rollnamn);
         -- DEFAULT PRIVILEGES för postgres (tabeller)
-        EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA %I GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO %I',
+        EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA %I GRANT ALL ON TABLES TO %I',
                       p_schema_namn, p_rollnamn);
         -- DEFAULT PRIVILEGES för ägarrollen (tabeller)
-        EXECUTE format('ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO %I',
+        EXECUTE format('ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I GRANT ALL ON TABLES TO %I',
                       hex_systemagare(), p_schema_namn, p_rollnamn);
         -- Skrivrättigheter på sekvenser (krävs för INSERT med seriella/identity-kolumner)
         EXECUTE format('GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA %I TO %I',
@@ -71,7 +71,7 @@ ALTER FUNCTION public.hex_tilldela_rollrattigheter(text, text, text)
 
 COMMENT ON FUNCTION public.hex_tilldela_rollrattigheter(text, text, text)
     IS 'Tilldelar rättigheter till roller baserat på rolltyp. Hanterar både read (SELECT)
-    och write (SELECT, INSERT, UPDATE, DELETE på tabeller samt USAGE, SELECT på sekvenser)
+    och write (ALL på tabeller samt USAGE, SELECT på sekvenser)
     med DEFAULT PRIVILEGES för framtida objekt. Sätter DEFAULT PRIVILEGES både för postgres
     och hex_systemagare() (ägarrollen) så att tabeller och sekvenser skapade av t.ex. FME eller
     QGIS automatiskt får korrekta rättigheter.';

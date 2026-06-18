@@ -429,12 +429,13 @@ src/sql/04_triggers/hex_notifiera_gs_borttagning_trigger.sql
 #### `hex_hantera_ny_tabell()`
 **Syfte**: Huvudfunktion som omstrukturerar nyskapade tabeller.
 
-**Process (10 steg)**:
+**Process (11 steg)**:
 1. Validerar tabellnamn och geometri
 2. Sparar befintliga regler och egenskaper
 3. Bestämmer ny kolumnstruktur
 4. Skapar temporär tabell med ny struktur
 5. Byter ut tabellerna
+5.5. Överför ägarskap på tabell och sekvenser till hex_systemagare()
 6. Återskapar alla regler
 7. Återskapar alla egenskaper
 8. Skapar GiST-index för geometrikolumn

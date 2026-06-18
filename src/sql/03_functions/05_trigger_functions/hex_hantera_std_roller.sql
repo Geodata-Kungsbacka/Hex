@@ -69,6 +69,11 @@ BEGIN
             CONTINUE;
         END IF;
 
+        -- Flytta ägarskapet till hex_systemagare() oavsett vilken roll som körde CREATE SCHEMA.
+        -- Utan detta ägs schemat av den som körde kommandot (t.ex. postgres/superuser).
+        EXECUTE format('ALTER SCHEMA %I OWNER TO %I', schema_namn, hex_systemagare());
+        RAISE NOTICE '[hex_hantera_std_roller] Ägarskap överfört till % för schema: %', hex_systemagare(), schema_namn;
+
         -- Loopa genom alla rollkonfigurationer (i gid-ordning, r_/w_ skapas före gs_r_/gs_w_)
         FOR rollkonfiguration IN
             SELECT * FROM hex_standardiserade_roller ORDER BY gid

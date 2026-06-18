@@ -3,7 +3,7 @@
 --
 -- Verifies that hex_tilldela_rollrattigheter() correctly grants:
 --   r_ roles: USAGE on schema, SELECT on tables (+ default privs)
---   w_ roles: USAGE on schema, SELECT/INSERT/UPDATE/DELETE on tables,
+--   w_ roles: USAGE on schema, ALL on tables (incl. TRUNCATE),
 --             USAGE+SELECT on sequences (+ default privs for both)
 --
 -- Schema used: sk1_kba_permtest
@@ -142,19 +142,30 @@ BEGIN
     END IF;
 END $$;
 
--- W2: SELECT, INSERT, UPDATE, DELETE on existing table
+-- W2: SELECT, INSERT, UPDATE, DELETE, TRUNCATE on existing table
 DO $$
 DECLARE missing text := '';
 BEGIN
-    IF NOT has_table_privilege('w_sk1_kba_permtest', 'sk1_kba_permtest.testobj_y', 'SELECT') THEN missing := missing || 'SELECT '; END IF;
-    IF NOT has_table_privilege('w_sk1_kba_permtest', 'sk1_kba_permtest.testobj_y', 'INSERT') THEN missing := missing || 'INSERT '; END IF;
-    IF NOT has_table_privilege('w_sk1_kba_permtest', 'sk1_kba_permtest.testobj_y', 'UPDATE') THEN missing := missing || 'UPDATE '; END IF;
-    IF NOT has_table_privilege('w_sk1_kba_permtest', 'sk1_kba_permtest.testobj_y', 'DELETE') THEN missing := missing || 'DELETE '; END IF;
+    IF NOT has_table_privilege('w_sk1_kba_permtest', 'sk1_kba_permtest.testobj_y', 'SELECT')   THEN missing := missing || 'SELECT ';   END IF;
+    IF NOT has_table_privilege('w_sk1_kba_permtest', 'sk1_kba_permtest.testobj_y', 'INSERT')   THEN missing := missing || 'INSERT ';   END IF;
+    IF NOT has_table_privilege('w_sk1_kba_permtest', 'sk1_kba_permtest.testobj_y', 'UPDATE')   THEN missing := missing || 'UPDATE ';   END IF;
+    IF NOT has_table_privilege('w_sk1_kba_permtest', 'sk1_kba_permtest.testobj_y', 'DELETE')   THEN missing := missing || 'DELETE ';   END IF;
+    IF NOT has_table_privilege('w_sk1_kba_permtest', 'sk1_kba_permtest.testobj_y', 'TRUNCATE') THEN missing := missing || 'TRUNCATE '; END IF;
 
     IF missing = '' THEN
-        RAISE NOTICE 'TEST W2 PASSED: w_ has SELECT/INSERT/UPDATE/DELETE on existing table';
+        RAISE NOTICE 'TEST W2 PASSED: w_ has SELECT/INSERT/UPDATE/DELETE/TRUNCATE on existing table';
     ELSE
         RAISE WARNING 'TEST W2 FAILED: w_ missing [%] on testobj_y', missing;
+    END IF;
+END $$;
+
+-- W2b: TRUNCATE explicitly (core fix — FME truncate-and-reload pattern)
+DO $$
+BEGIN
+    IF has_table_privilege('w_sk1_kba_permtest', 'sk1_kba_permtest.testobj_y', 'TRUNCATE') THEN
+        RAISE NOTICE 'TEST W2b PASSED: w_ has TRUNCATE on existing table';
+    ELSE
+        RAISE WARNING 'TEST W2b FAILED: w_ missing TRUNCATE — FME truncate-and-reload will fail';
     END IF;
 END $$;
 
@@ -204,13 +215,17 @@ BEGIN
     END IF;
 END $$;
 
--- W5: DEFAULT PRIVILEGES on tables — INSERT on table created after role setup
+-- W5: DEFAULT PRIVILEGES on tables — INSERT + TRUNCATE on table created after role setup
 DO $$
+DECLARE missing text := '';
 BEGIN
-    IF has_table_privilege('w_sk1_kba_permtest', 'sk1_kba_permtest.testobjb_p', 'INSERT') THEN
-        RAISE NOTICE 'TEST W5 PASSED: w_ has INSERT on table created after role setup (DEFAULT PRIVILEGES on tables work)';
+    IF NOT has_table_privilege('w_sk1_kba_permtest', 'sk1_kba_permtest.testobjb_p', 'INSERT')   THEN missing := missing || 'INSERT ';   END IF;
+    IF NOT has_table_privilege('w_sk1_kba_permtest', 'sk1_kba_permtest.testobjb_p', 'TRUNCATE') THEN missing := missing || 'TRUNCATE '; END IF;
+
+    IF missing = '' THEN
+        RAISE NOTICE 'TEST W5 PASSED: w_ has INSERT/TRUNCATE on table created after role setup (DEFAULT PRIVILEGES on tables work)';
     ELSE
-        RAISE WARNING 'TEST W5 FAILED: w_ missing INSERT on testobjb_p — DEFAULT PRIVILEGES on tables not working';
+        RAISE WARNING 'TEST W5 FAILED: w_ missing [%] on testobjb_p — DEFAULT PRIVILEGES on tables not working', missing;
     END IF;
 END $$;
 
