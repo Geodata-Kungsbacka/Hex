@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS public.hex_standardiserade_kolumner
     default_varde text,   
     schema_uttryck text COLLATE pg_catalog."default" NOT NULL DEFAULT 'IS NOT NULL',
     historik_qa boolean DEFAULT false,
+    anvandare_kan_redigera boolean DEFAULT true,
     beskrivning text COLLATE pg_catalog."default",
     
     CONSTRAINT hex_standardiserade_kolumner_kolumnnamn_key UNIQUE (kolumnnamn),
@@ -37,14 +38,19 @@ COMMENT ON COLUMN public.hex_standardiserade_kolumner.schema_uttryck
 -- Lägg till grundläggande standardkolumner
 -- ÄNDRING: Använder session_user istället för current_user för att fånga faktisk autentiserad användare
 INSERT INTO public.hex_standardiserade_kolumner(
-    kolumnnamn, ordinal_position, datatyp, default_varde, beskrivning, schema_uttryck, historik_qa)
+    kolumnnamn, ordinal_position, datatyp, default_varde, beskrivning, schema_uttryck, historik_qa, anvandare_kan_redigera)
 VALUES
-    ('gid', 1, 'integer GENERATED ALWAYS AS IDENTITY', NULL, 'Primärnyckel', 'IS NOT NULL', false),
-	('skapad_tidpunkt', -4, 'timestamptz', 'NOW()', 'Tidpunkt då raden skapades', 'IS NOT NULL', false),
-	('skapad_av', -3, 'character varying', 'session_user', 'Användare som skapade raden', 'LIKE ''%_kba_%''', false),
-	('andrad_tidpunkt', -2, 'timestamptz', 'NOW()', 'Senaste ändringstidpunkt', 'LIKE ''%_kba_%''', true),
-	('andrad_av', -1, 'character varying', 'session_user', 'Användare som senast ändrade', 'LIKE ''%_kba_%''', true)
-ON CONFLICT (kolumnnamn) DO NOTHING;
+    ('gid',              1, 'integer GENERATED ALWAYS AS IDENTITY', NULL,           'Primärnyckel',                  'IS NOT NULL',       false, false),
+    ('skapad_tidpunkt', -4, 'timestamptz',                          'NOW()',         'Tidpunkt då raden skapades',    'IS NOT NULL',       false, false),
+    ('skapad_av',       -3, 'character varying',                    'session_user',  'Användare som skapade raden',   'LIKE ''%_kba_%''',  false, false),
+    ('andrad_tidpunkt', -2, 'timestamptz',                          'NOW()',         'Senaste ändringstidpunkt',      'LIKE ''%_kba_%''',  true,  false),
+    ('andrad_av',       -1, 'character varying',                    'session_user',  'Användare som senast ändrade',  'LIKE ''%_kba_%''',  true,  false)
+ON CONFLICT (kolumnnamn) DO UPDATE SET
+    anvandare_kan_redigera = EXCLUDED.anvandare_kan_redigera;
+
+-- Migrering: lägg till anvandare_kan_redigera om kolumnen saknas (idempotent).
+ALTER TABLE IF EXISTS public.hex_standardiserade_kolumner
+    ADD COLUMN IF NOT EXISTS anvandare_kan_redigera boolean DEFAULT true;
 
 -- Any database user who creates tables needs to read these configuration tables,
 -- since the trigger functions (hex_hantera_ny_tabell, hex_hantera_ny_kolumn) run

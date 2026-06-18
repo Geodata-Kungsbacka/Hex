@@ -31,7 +31,14 @@ DECLARE
     antal_qa_kolumner integer := 0;
     antal_original_kolumner integer := 0;
     op_steg text;  -- För felhantering
-    
+
+    -- Variabler för INSERT-trigger (anvandare_kan_redigera = false)
+    insert_kolumner text[];
+    insert_uttryck text[];
+    insert_satser text := '';
+    antal_insert_kolumner integer := 0;
+    insert_funktionsnamn text;
+
     -- Nya variabler för geometrihantering
     har_geometri boolean := false;
     geometriinfo hex_geom_info;
@@ -278,6 +285,64 @@ BEGIN
     );
     RAISE NOTICE '[hex_skapa_historik_qa]   ✓ Trigger skapad: trg_%_qa', p_tabell_namn;
     
+    -- Steg 8.5: Skapa INSERT-trigger för kolumner med anvandare_kan_redigera = false
+    -- Kolumner utan default_varde (t.ex. gid) hoppas över – de hanteras av egna triggers.
+    op_steg := 'skapa insert-trigger';
+    RAISE NOTICE '[hex_skapa_historik_qa] Steg 8.5: Skapar INSERT-trigger för låsta kolumner';
+
+    SELECT
+        array_agg(sk.kolumnnamn ORDER BY sk.ordinal_position),
+        array_agg(sk.default_varde ORDER BY sk.ordinal_position)
+    INTO insert_kolumner, insert_uttryck
+    FROM hex_standardiserade_kolumner sk
+    WHERE sk.anvandare_kan_redigera = false
+    AND sk.default_varde IS NOT NULL
+    AND EXISTS (
+        SELECT 1 FROM information_schema.columns c
+        WHERE c.table_schema = p_schema_namn
+        AND c.table_name = p_tabell_namn
+        AND c.column_name = sk.kolumnnamn
+    );
+
+    antal_insert_kolumner := COALESCE(array_length(insert_kolumner, 1), 0);
+
+    IF antal_insert_kolumner > 0 THEN
+        RAISE NOTICE '[hex_skapa_historik_qa]   » % kolumner att låsa vid INSERT: %',
+            antal_insert_kolumner, array_to_string(insert_kolumner, ', ');
+
+        FOR i IN 1..antal_insert_kolumner LOOP
+            insert_satser := insert_satser || format(
+                E'        NEW.%I := %s;\n',
+                insert_kolumner[i], insert_uttryck[i]
+            );
+        END LOOP;
+
+        insert_funktionsnamn := 'trg_fn_' || p_tabell_namn || '_insert_audit';
+
+        EXECUTE format($TRIG$
+            CREATE OR REPLACE FUNCTION %I.%I()
+            RETURNS TRIGGER AS $$
+            BEGIN
+%s                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql;
+        $TRIG$,
+            p_schema_namn, insert_funktionsnamn,
+            insert_satser
+        );
+
+        EXECUTE format(
+            'CREATE TRIGGER hex_tvinga_anvandarvarden'
+            ' BEFORE INSERT ON %I.%I'
+            ' FOR EACH ROW EXECUTE FUNCTION %I.%I()',
+            p_schema_namn, p_tabell_namn,
+            p_schema_namn, insert_funktionsnamn
+        );
+        RAISE NOTICE '[hex_skapa_historik_qa]   ✓ INSERT-trigger hex_tvinga_anvandarvarden skapad';
+    ELSE
+        RAISE NOTICE '[hex_skapa_historik_qa]   - Inga låsta kolumner med default_varde hittades';
+    END IF;
+
     -- Steg 9: Dokumentera
     op_steg := 'dokumentera';
     RAISE NOTICE '[hex_skapa_historik_qa] Steg 9: Lägger till dokumentation';
@@ -294,7 +359,9 @@ BEGIN
     -- Sammanfattning
     RAISE NOTICE '[hex_skapa_historik_qa] Sammanfattning:';
     RAISE NOTICE '[hex_skapa_historik_qa]   » Historiktabell:     %.%_h', p_schema_namn, p_tabell_namn;
-    RAISE NOTICE '[hex_skapa_historik_qa]   » Triggerfunktion:    %', trigger_funktionsnamn;
+    RAISE NOTICE '[hex_skapa_historik_qa]   » QA-triggerfunktion: %', trigger_funktionsnamn;
+    RAISE NOTICE '[hex_skapa_historik_qa]   » INSERT-trigger:     %',
+        CASE WHEN antal_insert_kolumner > 0 THEN 'hex_tvinga_anvandarvarden (' || array_to_string(insert_kolumner, ', ') || ')' ELSE 'ej skapad' END;
     RAISE NOTICE '[hex_skapa_historik_qa]   » QA-kolumner:        %', array_to_string(qa_kolumner, ', ');
     RAISE NOTICE '[hex_skapa_historik_qa]   » Geometri:           %',
         CASE WHEN har_geometri THEN geometriinfo.definition ELSE 'Ingen' END;

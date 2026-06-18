@@ -409,17 +409,6 @@ BEGIN
             RAISE NOTICE 'Steg 10/11: Kontrollerar historik/QA-behov';
             IF hex_skapa_historik_qa(schema_namn, tabell_namn) THEN
                 RAISE NOTICE '  ✓ Historiktabell och QA-triggers skapade';
-
-                -- Skapa INSERT-trigger som alltid skriver över auditkolumner.
-                -- Klienter (FME, QGIS m.fl.) kan skicka egna värden – dessa kastas tyst.
-                op_steg := 'tvinga auditkolumner vid insert';
-                EXECUTE format(
-                    'CREATE TRIGGER hex_tvinga_auditkolumner'
-                    ' BEFORE INSERT ON %I.%I'
-                    ' FOR EACH ROW EXECUTE FUNCTION public.hex_tvinga_auditkolumner()',
-                    schema_namn, tabell_namn
-                );
-                RAISE NOTICE '  ✓ Trigger hex_tvinga_auditkolumner skapad';
             ELSE
                 RAISE NOTICE '  - Ingen historik/QA behövs';
             END IF;
