@@ -1,6 +1,0 @@
--- Denna fil är inte längre i bruk.
---
--- INSERT-skyddet för kolumner med anvandare_kan_redigera = false hanteras nu
--- av per-tabell-genererade triggerfunktioner (trg_fn_<tabell>_insert_audit)
--- som skapas av hex_skapa_historik_qa(). Konfigurationen styrs av kolumnen
--- anvandare_kan_redigera i hex_standardiserade_kolumner.
