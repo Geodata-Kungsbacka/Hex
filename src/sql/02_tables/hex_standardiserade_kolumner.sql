@@ -40,12 +40,14 @@ COMMENT ON COLUMN public.hex_standardiserade_kolumner.schema_uttryck
 INSERT INTO public.hex_standardiserade_kolumner(
     kolumnnamn, ordinal_position, datatyp, default_varde, beskrivning, schema_uttryck, historik_qa, anvandare_kan_redigera)
 VALUES
-    ('gid',              1, 'integer GENERATED ALWAYS AS IDENTITY', NULL,           'Primärnyckel',                  'IS NOT NULL',       false, false),
-    ('skapad_tidpunkt', -4, 'timestamptz',                          'NOW()',         'Tidpunkt då raden skapades',    'IS NOT NULL',       false, false),
-    ('skapad_av',       -3, 'character varying',                    'session_user',  'Användare som skapade raden',   'LIKE ''%_kba_%''',  false, false),
-    ('andrad_tidpunkt', -2, 'timestamptz',                          'NOW()',         'Senaste ändringstidpunkt',      'LIKE ''%_kba_%''',  true,  false),
-    ('andrad_av',       -1, 'character varying',                    'session_user',  'Användare som senast ändrade',  'LIKE ''%_kba_%''',  true,  false)
+    ('gid',              1, 'integer GENERATED ALWAYS AS IDENTITY', NULL,                'Primärnyckel',                  'IS NOT NULL',       false, false),
+    ('skapad_tidpunkt', -4, 'timestamptz',                          'NOW()',             'Tidpunkt då raden skapades',    'IS NOT NULL',       false, false),
+    ('skapad_av',       -3, 'character varying',                    'session_user',      'Användare som skapade raden',   'LIKE ''%_kba_%''',  false, false),
+    ('andrad_tidpunkt', -2, 'timestamptz',                          'clock_timestamp()', 'Senaste ändringstidpunkt',      'LIKE ''%_kba_%''',  true,  false),
+    ('andrad_av',       -1, 'character varying',                    'session_user',      'Användare som senast ändrade',  'LIKE ''%_kba_%''',  true,  false)
 ON CONFLICT (kolumnnamn) DO UPDATE SET
+    default_varde          = EXCLUDED.default_varde,
+    historik_qa            = EXCLUDED.historik_qa,
     anvandare_kan_redigera = EXCLUDED.anvandare_kan_redigera;
 
 -- Migrering: lägg till anvandare_kan_redigera om kolumnen saknas (idempotent).

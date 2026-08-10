@@ -550,12 +550,16 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 
 -- Återställ standardkolumner efter test 33
-INSERT INTO hex_standardiserade_kolumner (kolumnnamn, ordinal_position, datatyp, default_varde, beskrivning, schema_uttryck, historik_qa) VALUES
-    ('gid',             1,  'integer GENERATED ALWAYS AS IDENTITY', NULL,           'Primärnyckel',               'IS NOT NULL',    false),
-    ('skapad_tidpunkt', -4, 'timestamptz',  'NOW()',        'Tidpunkt då raden skapades',   'IS NOT NULL',    false),
-    ('skapad_av',       -3, 'character varying', 'session_user', 'Användare som skapade raden',  'LIKE ''%_kba_%''', false),
-    ('andrad_tidpunkt', -2, 'timestamptz',  'NOW()',        'Senaste ändringstidpunkt',     'LIKE ''%_kba_%''', true),
-    ('andrad_av',       -1, 'character varying', 'session_user', 'Användare som senast ändrade', 'LIKE ''%_kba_%''', true);
+INSERT INTO hex_standardiserade_kolumner (kolumnnamn, ordinal_position, datatyp, default_varde, beskrivning, schema_uttryck, historik_qa, anvandare_kan_redigera) VALUES
+    ('gid',             1,  'integer GENERATED ALWAYS AS IDENTITY', NULL,                'Primärnyckel',               'IS NOT NULL',    false, false),
+    ('skapad_tidpunkt', -4, 'timestamptz',  'NOW()',             'Tidpunkt då raden skapades',   'IS NOT NULL',    false, false),
+    ('skapad_av',       -3, 'character varying', 'session_user', 'Användare som skapade raden',  'LIKE ''%_kba_%''', false, false),
+    ('andrad_tidpunkt', -2, 'timestamptz',  'clock_timestamp()', 'Senaste ändringstidpunkt',     'LIKE ''%_kba_%''', true,  false),
+    ('andrad_av',       -1, 'character varying', 'session_user', 'Användare som senast ändrade', 'LIKE ''%_kba_%''', true,  false)
+ON CONFLICT (kolumnnamn) DO UPDATE SET
+    default_varde          = EXCLUDED.default_varde,
+    historik_qa            = EXCLUDED.historik_qa,
+    anvandare_kan_redigera = EXCLUDED.anvandare_kan_redigera;
 
 -- TEST 34: Töm hex_standardiserade_roller – schema skapas men får inga roller
 DO $$ BEGIN
@@ -573,10 +577,17 @@ EXCEPTION WHEN OTHERS THEN
     PERFORM _fail(34, 'Konfig: tom hex_standardiserade_roller', SQLERRM);
 END $$;
 
--- Återställ standardroller
-INSERT INTO hex_standardiserade_roller (rollnamn, rolltyp, schema_uttryck, with_login, beskrivning) VALUES
-    ('r_{schema}', 'read',  'IS NOT NULL', true, 'Schemaspecifik läsroll'),
-    ('w_{schema}', 'write', 'IS NOT NULL', true, 'Schemaspecifik skrivroll');
+-- Återställ standardroller (alla fyra roller med korrekta värden)
+INSERT INTO hex_standardiserade_roller (rollnamn, rolltyp, schema_uttryck, with_login, arvs_fran, beskrivning) VALUES
+    ('r_{schema}',    'read',  'IS NOT NULL', false, NULL,          'Läsbehörighetsgrupp – tilldelas AD-användare och AD-grupper'),
+    ('w_{schema}',    'write', 'IS NOT NULL', false, NULL,          'Skrivbehörighetsgrupp – tilldelas AD-användare och AD-grupper'),
+    ('gs_r_{schema}', 'read',  'IS NOT NULL', true,  'r_{schema}',  'GeoServer läs-tjänstekonto – ärver behörigheter från r_{schema}'),
+    ('gs_w_{schema}', 'write', 'IS NOT NULL', true,  'w_{schema}',  'GeoServer skriv-tjänstekonto – ärver behörigheter från w_{schema}')
+ON CONFLICT (rollnamn) DO UPDATE SET
+    with_login  = EXCLUDED.with_login,
+    arvs_fran   = EXCLUDED.arvs_fran,
+    rolltyp     = EXCLUDED.rolltyp,
+    beskrivning = EXCLUDED.beskrivning;
 
 -- TEST 35: Ogiltig rolltyp blockeras av CHECK-villkor (ska blockeras)
 DO $$ BEGIN
