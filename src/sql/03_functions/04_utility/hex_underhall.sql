@@ -35,6 +35,12 @@ AS $BODY$
  *                        IDENTITY-kolumn. Förhindrar att klienter (t.ex. QGIS)
  *                        väljer eget gid via OVERRIDING SYSTEM VALUE.
  *
+ *   hex_tvinga_anvandarvarden
+ *                        BEFORE INSERT på tabeller med kolumner där
+ *                        anvandare_kan_redigera = false. Identifieras via
+ *                        trg_fn_*_insert_audit-funktioner i respektive schema.
+ *                        Klientvärden kastas tyst; default_varde används.
+ *
  *   hex_kontrollera_geom BEFORE INSERT OR UPDATE på geometritabeller vars
  *                        datakategori har hex_validera_geometri = true.
  *                        Validerar OGC-giltighet.
@@ -247,6 +253,63 @@ BEGIN
                 ' BEFORE INSERT ON %I.%I'
                 ' FOR EACH ROW EXECUTE FUNCTION public.hex_tvinga_gid_fran_sekvens()',
                 r.s, r.t
+            );
+            atgard := 'skapad';
+        ELSE
+            atgard := 'redan finns';
+        END IF;
+
+        RETURN NEXT;
+    END LOOP;
+
+    -- -------------------------------------------------------------------------
+    -- 1b. hex_tvinga_anvandarvarden
+    --     Tabeller med en trg_fn_*_insert_audit-funktion i respektive schema.
+    --     Förhindrar att klienter (t.ex. FME) sätter kolumner med
+    --     anvandare_kan_redigera = false (skapad_av, skapad_tidpunkt,
+    --     andrad_av, andrad_tidpunkt) vid INSERT.
+    -- -------------------------------------------------------------------------
+    FOR r IN
+        SELECT n.nspname AS s, p.proname AS fn
+        FROM   pg_proc      p
+        JOIN   pg_namespace n ON n.oid = p.pronamespace
+        WHERE  n.nspname ~ schema_regex
+          AND  p.proname  ~ '^trg_fn_.+_insert_audit$'
+        ORDER BY n.nspname, p.proname
+    LOOP
+        tabell := substring(r.fn FROM '^trg_fn_(.+)_insert_audit$');
+
+        IF NOT EXISTS (
+            SELECT 1
+            FROM   pg_class     c
+            JOIN   pg_namespace n ON n.oid = c.relnamespace
+            WHERE  n.nspname = r.s
+              AND  c.relname = tabell
+              AND  c.relkind = 'r'
+        ) THEN
+            CONTINUE;
+        END IF;
+
+        SELECT EXISTS (
+            SELECT 1
+            FROM   pg_trigger   t
+            JOIN   pg_class     c ON c.oid = t.tgrelid
+            JOIN   pg_namespace n ON n.oid = c.relnamespace
+            WHERE  n.nspname = r.s
+              AND  c.relname = tabell
+              AND  t.tgname  = 'hex_tvinga_anvandarvarden'
+        ) INTO trig_exists;
+
+        schema_namn  := r.s;
+        tabell_namn  := tabell;
+        trigger_namn := 'hex_tvinga_anvandarvarden';
+
+        IF NOT trig_exists THEN
+            EXECUTE format(
+                'CREATE TRIGGER hex_tvinga_anvandarvarden'
+                ' BEFORE INSERT ON %I.%I'
+                ' FOR EACH ROW EXECUTE FUNCTION %I.%I()',
+                r.s, tabell, r.s, r.fn
             );
             atgard := 'skapad';
         ELSE
@@ -822,7 +885,7 @@ Uppgraderar tabellscheman (hex_role_credentials, hex_standardiserade_roller) ide
 Överför ägarskap av scheman, tabeller, sekvenser, funktioner och vyer till hex_systemagare()
   – fångar objekt skapade av superusers innan ägarskapsöverföringen lades till i
   hex_hantera_std_roller/hex_hantera_ny_tabell.
-Återkopplar saknade rad-nivå-triggers (hex_tvinga_gid, hex_kontrollera_geom,
+Återkopplar saknade rad-nivå-triggers (hex_tvinga_gid, hex_tvinga_anvandarvarden, hex_kontrollera_geom,
 hex_ta_bort_dummy, trg_<tabell>_qa).
 Verifierar och reparerar alla fyra roller per schema:
   r_{schema}/w_{schema}       NOLOGIN behörighetsgrupper – tilldelas AD-användare
