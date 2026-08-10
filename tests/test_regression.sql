@@ -82,7 +82,12 @@ BEGIN
     END IF;
 END $$;
 
--- Verify invalid geometry is blocked (empty geometry)
+-- Verify invalid geometry is blocked (empty geometry).
+-- hex_kontrollera_geom (a BEFORE INSERT trigger) fires before the CHECK
+-- constraint and rejects it first with a plain RAISE EXCEPTION (SQLSTATE
+-- P0001), so this is normally caught as hex_kontrollera_geom's own message,
+-- not as a check_violation (23514) -- the CHECK constraint is a second line
+-- of defense that would only fire if the trigger were somehow missing.
 DO $$
 BEGIN
     INSERT INTO sk1_kba_test.test_validering_y (namn, geom)
@@ -91,6 +96,12 @@ BEGIN
 EXCEPTION
     WHEN check_violation THEN
         RAISE NOTICE 'TEST 1b PASSED: Empty geometry correctly blocked by CHECK constraint';
+    WHEN OTHERS THEN
+        IF SQLERRM LIKE '%Ogiltig geometri%' THEN
+            RAISE NOTICE 'TEST 1b PASSED: Empty geometry correctly blocked by hex_kontrollera_geom';
+        ELSE
+            RAISE WARNING 'TEST 1b FAILED: Empty geometry rejected, but by an unexpected error: %', SQLERRM;
+        END IF;
 END $$;
 
 -- Cleanup

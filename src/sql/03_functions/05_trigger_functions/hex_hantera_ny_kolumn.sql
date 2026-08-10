@@ -133,6 +133,24 @@ BEGIN
         RETURN;  -- Inget kolumnarbete behövs vid rename
     END IF;
 
+    -- ----------------------------------------------------------------
+    -- Specialfall: ALTER TABLE ... OWNER TO (bästa-försök-optimering)
+    -- Ägarbyten ändrar inga kolumner - hoppa över all kolumnhantering när vi
+    -- kan avgöra det. Samma mönster som RENAME TO-undantaget ovan.
+    --
+    -- BEGRÄNSNING: current_query() returnerar den YTTERSTA satsen som
+    -- klienten skickade, inte en nästlad sats körd via EXECUTE inuti en
+    -- PL/pgSQL-funktion. Denna kontroll fångar alltså bara ett direkt
+    -- `ALTER TABLE x OWNER TO y;` från en klient (t.ex. en DBA i psql) - inte
+    -- hex_underhall()'s `EXECUTE format('ALTER TABLE %I.%I OWNER TO %I', ...)`.
+    -- Det verkliga skyddet mot att ägarbyten kraschar historiktabeller ligger
+    -- i _h-undantaget i Steg 5c nedan, som fungerar oavsett nästling.
+    -- ----------------------------------------------------------------
+    IF current_query() ~* '\mOWNER\s+TO\M' THEN
+        RAISE NOTICE '[hex_hantera_ny_kolumn] ALTER TABLE ... OWNER TO – inga kolumner att hantera, hoppar över';
+        RETURN;
+    END IF;
+
     -- Detektera FME-anslutning för utökad felsökningsloggning
     ar_fme := (lower(coalesce(current_setting('application_name', true), '')) = 'fme');
     IF ar_fme THEN
@@ -563,6 +581,7 @@ BEGIN
                 RAISE NOTICE '[hex_hantera_ny_kolumn]   ✓ Dummy-geometrirad tillagd';
             END IF;
         ELSIF geometriinfo IS NOT NULL
+              AND NOT tabell_namn ~ '_h$'
               AND NOT EXISTS (
                   SELECT 1 FROM pg_indexes
                   WHERE schemaname = schema_namn
@@ -578,6 +597,16 @@ BEGIN
             -- icke-geometritabeller) och lägger sedan till geom via ALTER TABLE.
             -- Det innebär att suffixvalidering, GiST-index, geometrivalidering och
             -- dummy alla hoppades över.
+            --
+            -- NOT tabell_namn ~ '_h$': historiktabeller undantas helt. De har alltid
+            -- en geom-kolumn (kopierad från modertabellen för historik) men får
+            -- aldrig ett GiST-index (behövs inte för historik) och följer aldrig
+            -- p/l/y/g-suffixkonventionen (de heter alltid <modertabell>_h). Utan
+            -- detta undantag tolkas "geom utan GiST-index" felaktigt som "ny,
+            -- obehandlad geometrikolumn" och RAISE EXCEPTION nedan avvisar
+            -- historiktabellens namn – vilket kraschar VARJE ALTER TABLE på en
+            -- historiktabell med geometri, inklusive t.ex. hex_underhall()'s
+            -- ägarskapsöverföring (ALTER TABLE ... OWNER TO).
             --
             -- Åtgärd:
             --   a) Validera att tabellnamnet har korrekt suffix för geometritypen.
