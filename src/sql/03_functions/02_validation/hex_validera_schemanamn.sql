@@ -30,7 +30,16 @@ AS $BODY$
  *   - information_schema
  *   - pg_* (PostgreSQL-systemscheman)
  *
- * TRIGGER: Körs vid CREATE SCHEMA, innan rollskapande
+ * TRIGGER: Körs vid CREATE SCHEMA. PostgreSQL kör flera event triggers på
+ * samma event i alfabetisk ordning efter triggernamn, så
+ * hex_validera_schemanamn_trigger körs SIST av Hex tre CREATE SCHEMA-triggers
+ * (efter hex_hantera_std_roller_trigger och hex_notifiera_gs_trigger, eftersom
+ * "h" och "n" < "v"). Ett ogiltigt namn upptäcks alltså efter att roller redan
+ * skapats och en eventuell GeoServer-notifiering köats – men eftersom hela
+ * DDL:n körs i en transaktion rullar EXCEPTION här tillbaka schemat, rollerna
+ * och den okommitterade pg_notify (som PostgreSQL inte levererar förrän vid
+ * COMMIT) i ett svep. Se hex_hantera_std_roller() och hex_notifiera_gs() för
+ * motsvarande ordningsanmärkning.
  ******************************************************************************/
 DECLARE
     kommando record;

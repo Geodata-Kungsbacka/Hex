@@ -6,21 +6,43 @@
 
 ## Bakgrund
 
-Hex skapar automatiskt roller för varje schema när det skapas. Vilka roller
-som skapas beror på schemats säkerhetsnivå:
+Hex skapar automatiskt fyra roller för **varje** schema när det skapas,
+oavsett säkerhetsnivå (sk0/sk1/sk2/skx):
 
-| Roll | Skapas för | Rättigheter |
-|------|-----------|-------------|
-| `r_sk0_global` | Alla `sk0`-scheman | Läsrättigheter på hela sk0 (global roll) |
-| `r_sk1_global` | Alla `sk1`-scheman | Läsrättigheter på hela sk1 (global roll) |
-| `r_<schema>` | `sk2`-scheman | Läsrättigheter på detta specifika schema |
-| `w_<schema>` | Alla scheman | Läs- och skrivrättigheter på detta schema |
+| Roll | Typ | Rättigheter | Tilldelas till |
+|------|-----|-------------|-----------------|
+| `r_<schema>` | NOLOGIN grupproll | Läsrättigheter på detta specifika schema | AD-användare/AD-grupper |
+| `w_<schema>` | NOLOGIN grupproll | Läs- och skrivrättigheter på detta specifika schema | AD-användare/AD-grupper |
+| `gs_r_<schema>` | LOGIN-tjänstekonto | Ärver läsrättigheter från `r_<schema>` | GeoServer (autogenererat lösenord i `hex_role_credentials`) |
+| `gs_w_<schema>` | LOGIN-tjänstekonto | Ärver skrivrättigheter från `w_<schema>` | GeoServer (autogenererat lösenord i `hex_role_credentials`) |
 
-> För sk0 och sk1 finns **inga separata läsroller per schema** – alla med
-> `r_sk0_global`/`r_sk1_global` kan läsa samtliga scheman på den nivån.
+> **Det finns inga längre globala läsroller som spänner över flera scheman.**
+> Tidigare fanns `r_sk0_global`/`r_sk1_global` – en delad läsroll per
+> säkerhetsnivå (`schema_uttryck LIKE 'sk0_%'` respektive `'sk1_%'`) som gav
+> läsåtkomst till samtliga scheman på den nivån utan separat tilldelning per
+> schema. De togs bort när rollkonfigurationen förenklades till en roll per
+> schema (`schema_uttryck = 'IS NOT NULL'`, commit `1c8e36d`), och rollerna
+> delades sedan upp i dagens NOLOGIN/LOGIN-par för att hindra AD-användare
+> från att av misstag hamna i `hex_geoserver_roller` (4-rollsstrukturen,
+> commit `da9934b`). Idag skapas alltså `r_<schema>`/`w_<schema>` per
+> schema utan undantag – det finns ingen roll som automatiskt täcker "alla
+> sk0-scheman" eller liknande.
+>
+> Behöver en AD-grupp läsåtkomst till många scheman på en gång (det
+> `r_sk0_global` gav gratis), är ersättningen `hex_grupprattigheter`: en
+> DBA-hanterad mappningstabell där varje rad kopplar en AD-synkad grupproll
+> till en enskild Hex-schemaroll (`r_<schema>`). Lägg till en rad per schema
+> gruppen ska kunna läsa, och applicera mappningarna med
+> `SELECT tillämpa_grupprattigheter();`. Se
+> `src/sql/02_tables/hex_grupprattigheter.sql` och
+> `src/sql/03_functions/04_utility/hex_tillampa_grupprattigheter.sql`.
+
+`gs_r_<schema>`/`gs_w_<schema>` är systemkonton avsedda för GeoServer och
+ska normalt **inte** tilldelas till personers AD-konton — tilldela
+`r_<schema>`/`w_<schema>` till användare och grupper istället.
 
 En ny användare skapas som en PostgreSQL-inloggningsroll och placeras sedan
-i relevant grupproll.
+i relevant grupproll (`r_<schema>` och/eller `w_<schema>`).
 
 ---
 
@@ -58,14 +80,9 @@ GRANT CONNECT ON DATABASE <databasnamn> TO fme;
 
 ## Tilldela åtkomst till schema
 
-**Läsrättigheter på alla öppna (sk0) scheman:**
+**Läsrättigheter på ett specifikt schema:**
 ```sql
-GRANT r_sk0_global TO annand;
-```
-
-**Läsrättigheter på alla kommunala (sk1) scheman:**
-```sql
-GRANT r_sk1_global TO annand;
+GRANT r_sk0_ext_sgu TO annand;
 ```
 
 **Skrivrättigheter på ett specifikt schema (alla säkerhetsnivåer):**
@@ -73,15 +90,16 @@ GRANT r_sk1_global TO annand;
 GRANT w_sk1_kba_bygg TO annand;
 ```
 
-**Läsrättigheter på ett specifikt sk2-schema:**
-```sql
-GRANT r_sk2_sys_admin TO annand;
-```
-
 Flera roller kan tilldelas i en sats:
 ```sql
-GRANT r_sk1_global, w_sk1_kba_bygg TO annand;
+GRANT r_sk0_ext_sgu, w_sk1_kba_bygg TO annand;
 ```
+
+**Läsrättigheter på flera scheman på en gång** (t.ex. alla öppna sk0-scheman
+för en AD-grupp): det finns ingen längre en enda roll som täcker detta
+automatiskt — lägg istället till en rad per schema i
+`hex_grupprattigheter` och applicera med `tillämpa_grupprattigheter()`,
+se [Bakgrund](#bakgrund) ovan.
 
 ---
 

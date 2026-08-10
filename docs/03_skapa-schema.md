@@ -6,11 +6,20 @@
 
 ## Bakgrund
 
-När ett schema skapas triggar Hex automatiskt:
+När ett schema skapas triggar Hex automatiskt tre saker:
 
-1. **Namnvalidering** – ogiltiga namn blockeras direkt.
-2. **Rollskapande** – läs- och skrivrättighetsroller skapas enligt konfigurationen i `hex_standardiserade_roller`.
-3. **GeoServer-publicering** – för `sk0`- och `sk1`-scheman skickas en notifiering till GeoServer-lyssnaren som skapar en workspace och PostGIS-datastore.
+- **Rollskapande** – läs- och skrivrättighetsroller skapas enligt konfigurationen i `hex_standardiserade_roller`.
+- **GeoServer-publicering** – för `sk0`- och `sk1`-scheman skickas en notifiering till GeoServer-lyssnaren som skapar en workspace och PostGIS-datastore.
+- **Namnvalidering** – ogiltiga namn blockeras, vilket river tillbaka schemat och allt ovanstående i samma transaktion.
+
+> **Körordning:** PostgreSQL kör Hex tre `CREATE SCHEMA`-triggers i alfabetisk
+> ordning efter triggernamn, inte i den ordning man logiskt skulle förvänta
+> sig – rollskapande och GeoServer-notifiering körs faktiskt **före**
+> namnvalideringen, inte efter. Det märks inte i praktiken: ett ogiltigt namn
+> gör att hela `CREATE SCHEMA`-satsen (schema, roller och en eventuell köad
+> GeoServer-notifiering) rullas tillbaka som en enhet, eftersom `pg_notify`
+> inte levereras till lyssnare förrän vid `COMMIT`. Se LOGIC_MAP.md avsnitt 2
+> för den exakta körordningen och varför.
 
 ---
 
@@ -65,8 +74,12 @@ WHERE rolname LIKE '%_parkering%'
 ORDER BY rolname;
 ```
 
-Du bör se `w_sk1_kba_parkering` (skrivrollen per schema) och de globala rollerna
-`r_sk1_global`, `r_sk1_global_pub` m.fl. (läsroller skapas globalt för sk1, inte per schema, baserat på `hex_standardiserade_roller`).
+Du bör se fyra roller: `r_sk1_kba_parkering` och `w_sk1_kba_parkering`
+(NOLOGIN-behörighetsgrupper för AD-användare) samt `gs_r_sk1_kba_parkering`
+och `gs_w_sk1_kba_parkering` (LOGIN-tjänstekonton för GeoServer, med
+lösenord i `hex_role_credentials`). Alla fyra skapas per schema – det finns
+inga delade roller som spänner över flera scheman, se
+[02_lagg-till-databasanvandare.md](02_lagg-till-databasanvandare.md#bakgrund).
 
 ### 3. Ge användare åtkomst
 

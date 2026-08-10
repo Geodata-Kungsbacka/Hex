@@ -483,8 +483,8 @@ src/sql/04_triggers/hex_notifiera_gs_borttagning_trigger.sql
 **Funktionalitet**:
 - Läser rollkonfiguration från `hex_standardiserade_roller`-tabellen
 - Evaluerar `schema_uttryck` för att avgöra vilka roller som ska skapas
-- Skapar både NOLOGIN-grupproller och LOGIN-roller för specifika applikationer
-- Stöder globala roller (sk0_global) och schemaspecifika roller
+- Skapar NOLOGIN-grupproller (`r_`/`w_`) och LOGIN-tjänstekonton för GeoServer (`gs_r_`/`gs_w_`), per schema
+- Ingen roll är längre global över flera scheman; åtkomst till flera scheman på en gång hanteras via `hex_grupprattigheter`
 
 **Trigger**: Körs vid CREATE SCHEMA via `hex_hantera_std_roller_trigger`.
 

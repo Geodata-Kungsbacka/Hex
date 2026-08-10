@@ -62,7 +62,11 @@ AS $BODY$
  *                          gs_w_{schema} LOGIN GeoServer skriv-tjänstekonto
  *                        Hanterar migrering från äldre installationer där r_- och w_-roller
  *                        skapades som LOGIN-roller (konverteras till NOLOGIN och
- *                        gs_*-konton skapas). Idempotent.
+ *                        gs_*-konton skapas). Uppgraderar även befintliga
+ *                        hex_systemagare()-grants till WITH ADMIN OPTION om de
+ *                        beviljades av en äldre Hex-version utan den flaggan (behövs
+ *                        på PG16+ för att ägarrollen ska kunna GRANT:a r_/w_ vidare
+ *                        utan superuser). Idempotent.
  *
  *   hex_geoserver_roller Säkerställer att gs_*-roller (rolcanlogin=true i
  *   (rollmedlemskap)     hex_role_credentials) är i hex_geoserver_roller.
@@ -555,7 +559,9 @@ BEGIN
                     VALUES (rollnamn_full, NULL, false)
                     ON CONFLICT (rolname) DO UPDATE
                         SET rolcanlogin = false, password = NULL, created_at = now();
-                    EXECUTE format('GRANT %I TO %I', rollnamn_full, hex_systemagare());
+                    -- WITH ADMIN OPTION: ägarrollen (t.ex. gis_admin) behöver detta för att
+                    -- själv kunna GRANT:a rollen vidare till AD-användare, utan superuser.
+                    EXECUTE format('GRANT %I TO %I WITH ADMIN OPTION', rollnamn_full, hex_systemagare());
                     PERFORM hex_tilldela_rollrattigheter(r.s, rollnamn_full, rol.rolltyp);
                     atgard := 'NOLOGIN-grupp skapad';
 
@@ -579,15 +585,19 @@ BEGIN
                     VALUES (rollnamn_full, NULL, false)
                     ON CONFLICT (rolname) DO UPDATE
                         SET rolcanlogin = false, password = NULL, created_at = now();
-                    -- Säkerställ hex_systemagare-grant
+                    -- Säkerställ hex_systemagare-grant MED ADMIN OPTION. Kontrollerar
+                    -- admin_option specifikt (inte bara medlemskap) så att en roll som
+                    -- redan finns som vanlig medlem utan ADMIN OPTION (t.ex. beviljad av en
+                    -- äldre Hex-version) uppgraderas i stället för att hoppas över.
                     IF NOT EXISTS (
                         SELECT 1 FROM pg_auth_members am
                         JOIN pg_roles grp ON grp.oid = am.roleid
                         JOIN pg_roles mem ON mem.oid = am.member
                         WHERE grp.rolname = rollnamn_full
                           AND mem.rolname = hex_systemagare()
+                          AND am.admin_option
                     ) THEN
-                        EXECUTE format('GRANT %I TO %I', rollnamn_full, hex_systemagare());
+                        EXECUTE format('GRANT %I TO %I WITH ADMIN OPTION', rollnamn_full, hex_systemagare());
                     END IF;
                     PERFORM hex_tilldela_rollrattigheter(r.s, rollnamn_full, rol.rolltyp);
                     atgard := 'LOGIN→NOLOGIN migrerad';
@@ -598,18 +608,22 @@ BEGIN
                     VALUES (rollnamn_full, NULL, false)
                     ON CONFLICT (rolname) DO UPDATE
                         SET rolcanlogin = false, password = NULL;
-                    -- Säkerställ hex_systemagare-grant
+                    -- Säkerställ hex_systemagare-grant MED ADMIN OPTION (se motsvarande
+                    -- kommentar i Fall b ovan för varför admin_option kontrolleras explicit).
                     IF NOT EXISTS (
                         SELECT 1 FROM pg_auth_members am
                         JOIN pg_roles grp ON grp.oid = am.roleid
                         JOIN pg_roles mem ON mem.oid = am.member
                         WHERE grp.rolname = rollnamn_full
                           AND mem.rolname = hex_systemagare()
+                          AND am.admin_option
                     ) THEN
-                        EXECUTE format('GRANT %I TO %I', rollnamn_full, hex_systemagare());
+                        EXECUTE format('GRANT %I TO %I WITH ADMIN OPTION', rollnamn_full, hex_systemagare());
+                        atgard := 'ADMIN OPTION tillagd';
+                    ELSE
+                        atgard := 'redan NOLOGIN';
                     END IF;
                     PERFORM hex_tilldela_rollrattigheter(r.s, rollnamn_full, rol.rolltyp);
-                    atgard := 'redan NOLOGIN';
                 END IF;
 
             ELSE
@@ -891,6 +905,8 @@ Verifierar och reparerar alla fyra roller per schema:
   r_{schema}/w_{schema}       NOLOGIN behörighetsgrupper – tilldelas AD-användare
   gs_r_{schema}/gs_w_{schema} LOGIN GeoServer-tjänstekonton – i hex_geoserver_roller
 Hanterar migrering från äldre config (r_*/w_* som LOGIN → NOLOGIN, skapar gs_*).
+Uppgraderar hex_systemagare()-medlemskap på r_/w_-roller till WITH ADMIN OPTION
+om det saknas, så att ägarrollen kan GRANT:a dem vidare utan superuser.
 Säkerställer hex_geoserver_roller-medlemskap (enbart gs_*) och tar bort
 NOLOGIN-roller som felaktigt hamnat där.
 Reparerar schemabehörigheter (NOLOGIN: hex_tilldela_rollrattigheter,
