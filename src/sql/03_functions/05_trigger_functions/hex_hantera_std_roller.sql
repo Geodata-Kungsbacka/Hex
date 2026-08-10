@@ -39,6 +39,14 @@ AS $BODY$
  *   kan de fritt tilldelas AD-användare utan att störa pg_hba.conf-logiken.
  *   Transitiv gruppmedlemskap via r_- och w_-grupper når aldrig hex_geoserver_roller.
  *
+ * DAGLIG DRIFT UTAN SUPERUSER:
+ *   r_{schema} och w_{schema} beviljas till hex_systemagare() (ägarrollen,
+ *   t.ex. gis_admin) MED ADMIN OPTION. Det gör att ägarrollen — som normalt
+ *   bara har CREATEROLE, inte SUPERUSER — själv kan GRANT:a dessa roller
+ *   vidare till AD-användare/AD-grupper utan att en superuser behöver
+ *   koppla upp sig. Utan ADMIN OPTION räcker inte CREATEROLE ensamt för
+ *   detta på PostgreSQL 16+.
+ *
  * TRIGGER: Körs automatiskt vid CREATE SCHEMA. PostgreSQL kör flera event
  * triggers på samma event i alfabetisk ordning efter triggernamn, så
  * hex_hantera_std_roller_trigger körs FÖRST av Hex tre CREATE SCHEMA-triggers
@@ -154,8 +162,11 @@ BEGIN
                             -- Direkta schemabehörigheter på behörighetsgruppen
                             PERFORM hex_tilldela_rollrattigheter(schema_namn, slutligt_rollnamn, rollkonfiguration.rolltyp);
 
-                            -- Ge ägarrollen rättighet att tilldela denna grupp till AD-användare
-                            EXECUTE format('GRANT %I TO %I', slutligt_rollnamn, hex_systemagare());
+                            -- Ge ägarrollen rättighet att tilldela denna grupp till AD-användare.
+                            -- WITH ADMIN OPTION krävs (särskilt på PG16+, som knöt GRANT-rätt på
+                            -- rollmedlemskap till ADMIN OPTION snarare än CREATEROLE ensamt) för att
+                            -- ägarrollen ska kunna GRANT:a denna roll vidare utan superuser-inblandning.
+                            EXECUTE format('GRANT %I TO %I WITH ADMIN OPTION', slutligt_rollnamn, hex_systemagare());
 
                             RAISE NOTICE '[hex_hantera_std_roller]   ✓ Skapade NOLOGIN-behörighetsgrupp: %', slutligt_rollnamn;
                         END IF;
