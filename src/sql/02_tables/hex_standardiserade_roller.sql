@@ -22,6 +22,17 @@ EXCEPTION
 END;
 $$;
 
+-- Backfill the arvs_fran column added in the 4-role refactor.
+-- CREATE TABLE IF NOT EXISTS does not alter existing tables, so upgrades need this.
+DO $$
+BEGIN
+    ALTER TABLE public.hex_standardiserade_roller
+        ADD COLUMN arvs_fran text DEFAULT NULL;
+EXCEPTION
+    WHEN duplicate_column THEN NULL;
+END;
+$$;
+
 ALTER TABLE public.hex_standardiserade_roller
     OWNER TO postgres;
 
@@ -48,7 +59,11 @@ INSERT INTO hex_standardiserade_roller (rollnamn, rolltyp, schema_uttryck, with_
     ('w_{schema}',    'write', 'IS NOT NULL', false, NULL,          'Skrivbehörighetsgrupp – tilldelas AD-användare och AD-grupper'),
     ('gs_r_{schema}', 'read',  'IS NOT NULL', true,  'r_{schema}',  'GeoServer läs-tjänstekonto – ärver behörigheter från r_{schema}'),
     ('gs_w_{schema}', 'write', 'IS NOT NULL', true,  'w_{schema}',  'GeoServer skriv-tjänstekonto – ärver behörigheter från w_{schema}')
-ON CONFLICT (rollnamn) DO NOTHING;
+ON CONFLICT (rollnamn) DO UPDATE
+    SET with_login  = EXCLUDED.with_login,
+        arvs_fran   = EXCLUDED.arvs_fran,
+        rolltyp     = EXCLUDED.rolltyp,
+        beskrivning = EXCLUDED.beskrivning;
 
 -- Any database user who creates tables needs to read these configuration tables,
 -- since the trigger functions (hex_hantera_ny_tabell, hex_hantera_ny_kolumn) run
