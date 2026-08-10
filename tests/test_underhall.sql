@@ -1,57 +1,58 @@
 /******************************************************************************
- * TEST SUITE FOR hex_underhall()
+ * TESTSVIT FÖR hex_underhall()
  *
- * hex_underhall() is Hex's repair/maintenance function, run automatically
- * by the installer after every install/upgrade. It is meant to be the thing
- * a DBA can always fall back on to bring a Hex installation back to a known
- * good state -- so this suite works by deliberately damaging a schema (wrong
- * ownership, dropped triggers, broken role state) and then asserting that a
- * single hex_underhall() call repairs everything, including functionally
- * (not just "the trigger object exists" but "the trigger actually rejects
- * bad input again").
+ * hex_underhall() är Hex reparations-/underhållsfunktion, körs automatiskt
+ * av installeraren efter varje installation/uppgradering. Den är tänkt att
+ * vara det en DBA alltid kan falla tillbaka på för att återställa en
+ * Hex-installation till ett känt gott skick -- så den här svit fungerar
+ * genom att medvetet skada ett schema (fel ägarskap, borttagna triggers,
+ * trasigt rolltillstånd) och sedan verifiera att ett enda hex_underhall()-
+ * anrop reparerar allt, även funktionellt (inte bara "triggerobjektet
+ * finns" utan "triggern avvisar faktiskt felaktig indata igen").
  *
- * Tests cover:
- *   A. Ownership sweep: schema, table, history table, sequence, view,
- *      and function all get reassigned to the owner role.
- *   B. Row-level trigger reattachment, each verified functionally:
+ * Testerna täcker:
+ *   A. Ägarskapsöverföring: schema, tabell, historiktabell, sekvens, vy
+ *      och funktion får alla ägarskapet överfört till ägarrollen.
+ *   B. Återkoppling av rad-nivå-triggers, var och en verifierad funktionellt:
  *      hex_tvinga_gid, hex_tvinga_anvandarvarden, hex_kontrollera_geom,
- *      trg_<tabell>_qa (history), hex_ta_bort_dummy.
- *   C. hex_dummy_geometrier edge case: a stale entry pointing at a table
- *      that no longer exists must be skipped, not error.
- *   D. Role structure repair: a role missing entirely (Fall a), a role
- *      migrated back from a stale pre-4-role LOGIN state (Fall b),
- *      hex_geoserver_roller membership drift, and arvs_fran inheritance
- *      drift for a GeoServer service account.
+ *      trg_<tabell>_qa (historik), hex_ta_bort_dummy.
+ *   C. hex_dummy_geometrier-specialfall: en föråldrad post som pekar på en
+ *      tabell som inte längre finns ska hoppas över, inte ge fel.
+ *   D. Reparation av rollstruktur: en roll som saknas helt (Fall a), en
+ *      roll som migreras tillbaka från ett föråldrat pre-4-rolls
+ *      LOGIN-tillstånd (Fall b), avvikande hex_geoserver_roller-
+ *      medlemskap, samt avvikande arvs_fran-arv för ett GeoServer-
+ *      tjänstekonto.
  *
- * A single hex_underhall() call is used to repair everything at once
- * (matching real disaster-recovery usage), then each area is asserted
- * independently.
+ * Ett enda hex_underhall()-anrop används för att reparera allt på en gång
+ * (motsvarar verklig felåterställning i praktiken), och sedan verifieras
+ * varje område för sig.
  *
- * PREREQUISITES:
- *   - Hex must be installed in the target database (all functions deployed)
- *   - PostGIS extension must be available
- *   - Run as a superuser or the Hex system owner
+ * FÖRUTSÄTTNINGAR:
+ *   - Hex måste vara installerat i måldatabasen (alla funktioner utrullade)
+ *   - PostGIS-tillägget måste vara tillgängligt
+ *   - Kör som en superanvändare eller Hex systemägare
  *
- * USAGE:
- *   psql -d your_database -f test_underhall.sql
+ * ANVÄNDNING:
+ *   psql -d din_databas -f test_underhall.sql
  *
- * The test cleans up after itself using DROP SCHEMA ... CASCADE at the end.
- * The test is idempotent -- safe to run multiple times.
+ * Testet städar upp efter sig med DROP SCHEMA ... CASCADE på slutet.
+ * Testet är idempotent -- säkert att köra flera gånger.
  ******************************************************************************/
 
 \echo '============================================================'
-\echo 'HEX hex_underhall() TEST SUITE'
+\echo 'HEX hex_underhall() TESTSVIT'
 \echo '============================================================'
 
 ------------------------------------------------------------------------
--- SETUP: a _kba_ table with geometry gets the full Hex treatment --
--- history table, QA trigger, audit trigger, geometry trigger, gid
--- trigger, and a dummy row -- in one CREATE TABLE. A dependent view is
--- added too, since views are a normal part of a Hex schema and the
--- ownership sweep needs to reach them as well.
+-- FÖRBEREDELSE: en _kba_-tabell med geometri får hela Hex-behandlingen --
+-- historiktabell, QA-trigger, audit-trigger, geometritrigger, gid-
+-- trigger och en dummy-rad -- i en enda CREATE TABLE. En beroende vy
+-- läggs också till, eftersom vyer är en normal del av ett Hex-schema och
+-- ägarskapsöverföringen behöver nå dem också.
 ------------------------------------------------------------------------
 \echo ''
-\echo '--- Setup ---'
+\echo '--- Förberedelse ---'
 
 SET client_min_messages = 'warning';
 
@@ -68,27 +69,27 @@ CREATE TABLE sk1_kba_underhalltest.testobj_y (
 CREATE VIEW sk1_kba_underhalltest.v_testobj_y AS
     SELECT * FROM sk1_kba_underhalltest.testobj_y;
 
--- A stale hex_dummy_geometrier row pointing at a table that was never
--- created. hex_underhall()'s dummy-trigger repair loop must skip this
--- silently (see its own "hoppar over om tabellen inte langre existerar"
--- comment) rather than error out.
+-- En föråldrad hex_dummy_geometrier-rad som pekar på en tabell som aldrig
+-- skapades. hex_underhall()'s reparationsloop för dummy-triggern ska hoppa
+-- över den tyst (se dess egen kommentar "hoppar over om tabellen inte
+-- langre existerar") snarare än att ge fel.
 INSERT INTO hex_dummy_geometrier (schema_namn, tabell_namn, gid)
 VALUES ('sk1_kba_underhalltest', 'ghost_table_xyz', 999999);
 
 RESET client_min_messages;
 
 ------------------------------------------------------------------------
--- DAMAGE: everything below is done in one pass, mirroring a real
--- "something's broken, run maintenance" scenario rather than testing
--- each break in isolation with its own repair call.
+-- SKADA: allt nedan görs i en enda omgång, för att efterlikna ett
+-- verkligt "något är trasigt, kör underhåll"-scenario snarare än att
+-- testa varje skada isolerat med ett eget reparationsanrop.
 ------------------------------------------------------------------------
 \echo ''
-\echo '--- Damaging the schema ---'
+\echo '--- Skadar schemat ---'
 
 SET client_min_messages = 'warning';
 
--- A. Ownership damage: simulate objects touched/created by a superuser
--- session (e.g. FME or a DBA connecting directly as postgres).
+-- A. Ägarskapsskada: simulerar objekt som skapats/rörts av en
+-- superanvändarsession (t.ex. FME eller en DBA som ansluter direkt som postgres).
 ALTER SCHEMA sk1_kba_underhalltest OWNER TO postgres;
 ALTER TABLE sk1_kba_underhalltest.testobj_y OWNER TO postgres;
 ALTER TABLE sk1_kba_underhalltest.testobj_y_h OWNER TO postgres;
@@ -96,22 +97,23 @@ ALTER SEQUENCE sk1_kba_underhalltest.testobj_y_gid_seq OWNER TO postgres;
 ALTER VIEW sk1_kba_underhalltest.v_testobj_y OWNER TO postgres;
 ALTER FUNCTION sk1_kba_underhalltest.trg_fn_testobj_y_qa() OWNER TO postgres;
 
--- B. Trigger damage: drop every row-level trigger Hex attached at CREATE TABLE.
+-- B. Triggerskada: ta bort varje rad-nivå-trigger Hex kopplade vid CREATE TABLE.
 DROP TRIGGER IF EXISTS hex_tvinga_gid          ON sk1_kba_underhalltest.testobj_y;
 DROP TRIGGER IF EXISTS hex_tvinga_anvandarvarden ON sk1_kba_underhalltest.testobj_y;
 DROP TRIGGER IF EXISTS hex_kontrollera_geom    ON sk1_kba_underhalltest.testobj_y;
 DROP TRIGGER IF EXISTS trg_testobj_y_qa        ON sk1_kba_underhalltest.testobj_y;
 DROP TRIGGER IF EXISTS hex_ta_bort_dummy       ON sk1_kba_underhalltest.testobj_y;
 
--- D. Role damage, spread across the four roles so each scenario is isolated:
---   r_  -- missing entirely (Fall a: DROP OWNED BY + DROP ROLE, like a role
---         that got manually removed or never survived a restore)
---   w_  -- stale pre-4-role install: was LOGIN, wrongly in hex_geoserver_roller
---         (Fall b: the exact scenario commit 95ead68 fixed)
---   gs_r_ -- hex_geoserver_roller membership revoked (breaks pg_hba.conf
---            matching for the GeoServer read account)
---   gs_w_ -- arvs_fran inheritance broken (no longer inherits from w_,
---            so it would silently lose write access)
+-- D. Rollskada, spridd över de fyra rollerna så att varje scenario är isolerat:
+--   r_    -- saknas helt (Fall a: DROP OWNED BY + DROP ROLE, som en roll
+--            som tagits bort manuellt eller inte överlevt en återställning)
+--   w_    -- föråldrad pre-4-rolls installation: var LOGIN, felaktigt i
+--            hex_geoserver_roller (Fall b: exakt det scenario commit
+--            95ead68 fixade)
+--   gs_r_ -- hex_geoserver_roller-medlemskap återkallat (bryter
+--            pg_hba.conf-matchning för GeoServers läskonto)
+--   gs_w_ -- arvs_fran-arv trasigt (ärver inte längre från w_, så
+--            skrivåtkomsten skulle tyst gå förlorad)
 DROP OWNED BY r_sk1_kba_underhalltest;
 DROP ROLE r_sk1_kba_underhalltest;
 
@@ -125,26 +127,26 @@ REVOKE w_sk1_kba_underhalltest FROM gs_w_sk1_kba_underhalltest;
 RESET client_min_messages;
 
 ------------------------------------------------------------------------
--- REPAIR: one hex_underhall() call fixes all of the above.
+-- REPARATION: ett hex_underhall()-anrop fixar allt ovanstående.
 ------------------------------------------------------------------------
 \echo ''
-\echo '--- Running hex_underhall() ---'
+\echo '--- Kör hex_underhall() ---'
 
 SET client_min_messages = 'warning';
-SELECT count(*) AS repair_actions FROM hex_underhall();
+SELECT count(*) AS reparationsatgarder FROM hex_underhall();
 RESET client_min_messages;
 
 ------------------------------------------------------------------------
--- A: Ownership sweep
+-- A: Ägarskapsöverföring
 ------------------------------------------------------------------------
 \echo ''
-\echo '--- A: Ownership sweep ---'
+\echo '--- A: Ägarskapsöverföring ---'
 
 DO $$
 DECLARE
-    wrong_owner text[];
+    fel_agare text[];
 BEGIN
-    SELECT array_agg(relname) INTO wrong_owner
+    SELECT array_agg(relname) INTO fel_agare
     FROM pg_class c
     JOIN pg_namespace n ON n.oid = c.relnamespace
     JOIN pg_roles r ON r.oid = c.relowner
@@ -152,248 +154,249 @@ BEGIN
       AND c.relkind IN ('r', 'v', 'S')
       AND r.rolname <> public.hex_systemagare();
 
-    IF wrong_owner IS NULL THEN
-        RAISE NOTICE 'TEST A1 PASSED: all tables/views/sequences owned by %', public.hex_systemagare();
+    IF fel_agare IS NULL THEN
+        RAISE NOTICE 'TEST A1 PASSED: alla tabeller/vyer/sekvenser ägs av %', public.hex_systemagare();
     ELSE
-        RAISE WARNING 'TEST A1 FAILED: still wrongly owned: %', array_to_string(wrong_owner, ', ');
+        RAISE WARNING 'TEST A1 FAILED: fortfarande felaktigt ägda: %', array_to_string(fel_agare, ', ');
     END IF;
 END $$;
 
 DO $$
 DECLARE
-    schema_owner text;
-    fn_owner text;
+    schema_agare text;
+    fn_agare text;
 BEGIN
-    SELECT r.rolname INTO schema_owner
+    SELECT r.rolname INTO schema_agare
     FROM pg_namespace n JOIN pg_roles r ON r.oid = n.nspowner
     WHERE n.nspname = 'sk1_kba_underhalltest';
 
-    SELECT r.rolname INTO fn_owner
+    SELECT r.rolname INTO fn_agare
     FROM pg_proc p
     JOIN pg_namespace n ON n.oid = p.pronamespace
     JOIN pg_roles r ON r.oid = p.proowner
     WHERE n.nspname = 'sk1_kba_underhalltest' AND p.proname = 'trg_fn_testobj_y_qa';
 
-    IF schema_owner = public.hex_systemagare() AND fn_owner = public.hex_systemagare() THEN
-        RAISE NOTICE 'TEST A2 PASSED: schema and QA trigger function owned by %', public.hex_systemagare();
+    IF schema_agare = public.hex_systemagare() AND fn_agare = public.hex_systemagare() THEN
+        RAISE NOTICE 'TEST A2 PASSED: schema och QA-triggerfunktion ägs av %', public.hex_systemagare();
     ELSE
-        RAISE WARNING 'TEST A2 FAILED: schema_owner=%, fn_owner=% (both should be %)',
-            schema_owner, fn_owner, public.hex_systemagare();
+        RAISE WARNING 'TEST A2 FAILED: schema_agare=%, fn_agare=% (båda ska vara %)',
+            schema_agare, fn_agare, public.hex_systemagare();
     END IF;
 END $$;
 
 ------------------------------------------------------------------------
--- B: Row-level trigger reattachment, verified functionally
+-- B: Återkoppling av rad-nivå-triggers, verifierat funktionellt
 ------------------------------------------------------------------------
 \echo ''
-\echo '--- B: Trigger reattachment ---'
+\echo '--- B: Triggeråterkoppling ---'
 
--- B1: hex_tvinga_gid -- client-supplied gid via OVERRIDING SYSTEM VALUE
--- must still be silently replaced by the sequence's next value.
+-- B1: hex_tvinga_gid -- klientangivet gid via OVERRIDING SYSTEM VALUE ska
+-- fortfarande tyst ersättas med sekvensens nästa värde.
 DO $$
 DECLARE
-    got_gid integer;
+    fatt_gid integer;
 BEGIN
     INSERT INTO sk1_kba_underhalltest.testobj_y (gid, beskrivning, geom)
         OVERRIDING SYSTEM VALUE
         VALUES (999999, 'test-b1-gid', ST_GeomFromText('POLYGON((0 0,1 0,1 1,0 1,0 0))', 3007))
-        RETURNING gid INTO got_gid;
+        RETURNING gid INTO fatt_gid;
 
-    IF got_gid IS DISTINCT FROM 999999 THEN
-        RAISE NOTICE 'TEST B1 PASSED: hex_tvinga_gid reattached, client gid 999999 overridden to %', got_gid;
+    IF fatt_gid IS DISTINCT FROM 999999 THEN
+        RAISE NOTICE 'TEST B1 PASSED: hex_tvinga_gid återkopplad, klientens gid 999999 åsidosattes till %', fatt_gid;
     ELSE
-        RAISE WARNING 'TEST B1 FAILED: client-supplied gid 999999 was accepted -- hex_tvinga_gid missing';
+        RAISE WARNING 'TEST B1 FAILED: klientangivet gid 999999 accepterades -- hex_tvinga_gid saknas';
     END IF;
 END $$;
 
--- B2: hex_tvinga_anvandarvarden -- client-supplied skapad_av must still be
--- silently overridden with the session user.
+-- B2: hex_tvinga_anvandarvarden -- klientangivet skapad_av ska fortfarande
+-- tyst åsidosättas med sessionsanvändaren.
 DO $$
 DECLARE
-    got_skapad_av text;
+    fatt_skapad_av text;
 BEGIN
     INSERT INTO sk1_kba_underhalltest.testobj_y (beskrivning, skapad_av, geom)
         VALUES ('test-b2-audit', 'fake_user', ST_GeomFromText('POLYGON((0 0,1 0,1 1,0 1,0 0))', 3007))
-        RETURNING skapad_av INTO got_skapad_av;
+        RETURNING skapad_av INTO fatt_skapad_av;
 
-    IF got_skapad_av IS DISTINCT FROM 'fake_user' THEN
-        RAISE NOTICE 'TEST B2 PASSED: hex_tvinga_anvandarvarden reattached, skapad_av overridden to %', got_skapad_av;
+    IF fatt_skapad_av IS DISTINCT FROM 'fake_user' THEN
+        RAISE NOTICE 'TEST B2 PASSED: hex_tvinga_anvandarvarden återkopplad, skapad_av åsidosattes till %', fatt_skapad_av;
     ELSE
-        RAISE WARNING 'TEST B2 FAILED: client-supplied skapad_av ''fake_user'' was accepted -- hex_tvinga_anvandarvarden missing';
+        RAISE WARNING 'TEST B2 FAILED: klientangivet skapad_av ''fake_user'' accepterades -- hex_tvinga_anvandarvarden saknas';
     END IF;
 END $$;
 
--- B3: hex_kontrollera_geom -- an invalid (self-intersecting) geometry must
--- still be rejected with Hex's own message, not just PostgreSQL's generic
--- CHECK constraint violation (proves the TRIGGER fired, not only the CHECK).
+-- B3: hex_kontrollera_geom -- en ogiltig (självkorsande) geometri ska
+-- fortfarande avvisas med Hex eget meddelande, inte bara PostgreSQLs
+-- generiska CHECK-brott (bevisar att TRIGGERN avfyrades, inte bara CHECK:en).
 DO $$
 BEGIN
     INSERT INTO sk1_kba_underhalltest.testobj_y (beskrivning, geom)
         VALUES ('test-b3-geom', ST_GeomFromText('POLYGON((0 0,10 10,10 0,0 10,0 0))', 3007));
-    RAISE WARNING 'TEST B3 FAILED: self-intersecting geometry was accepted';
+    RAISE WARNING 'TEST B3 FAILED: självkorsande geometri accepterades';
 EXCEPTION
     WHEN OTHERS THEN
         IF SQLERRM LIKE '%Ogiltig geometri i tabellen%' THEN
-            RAISE NOTICE 'TEST B3 PASSED: hex_kontrollera_geom reattached, rejected with Hex message';
+            RAISE NOTICE 'TEST B3 PASSED: hex_kontrollera_geom återkopplad, avvisad med Hex-meddelande';
         ELSE
-            RAISE WARNING 'TEST B3 PARTIAL: geometry rejected, but not by hex_kontrollera_geom (got: %)', SQLERRM;
+            RAISE WARNING 'TEST B3 PARTIAL: geometri avvisad, men inte av hex_kontrollera_geom (fick: %)', SQLERRM;
         END IF;
 END $$;
 
--- B4: trg_testobj_y_qa -- an UPDATE must still write a history row.
+-- B4: trg_testobj_y_qa -- en UPDATE ska fortfarande skriva en historikrad.
 DO $$
 DECLARE
-    history_rows_before integer;
-    history_rows_after integer;
+    historikrader_fore integer;
+    historikrader_efter integer;
 BEGIN
-    SELECT count(*) INTO history_rows_before FROM sk1_kba_underhalltest.testobj_y_h;
+    SELECT count(*) INTO historikrader_fore FROM sk1_kba_underhalltest.testobj_y_h;
 
-    UPDATE sk1_kba_underhalltest.testobj_y SET beskrivning = 'test-b4-updated' WHERE beskrivning = 'test-b1-gid';
+    UPDATE sk1_kba_underhalltest.testobj_y SET beskrivning = 'test-b4-uppdaterad' WHERE beskrivning = 'test-b1-gid';
 
-    SELECT count(*) INTO history_rows_after FROM sk1_kba_underhalltest.testobj_y_h;
+    SELECT count(*) INTO historikrader_efter FROM sk1_kba_underhalltest.testobj_y_h;
 
-    IF history_rows_after > history_rows_before THEN
-        RAISE NOTICE 'TEST B4 PASSED: trg_testobj_y_qa reattached, UPDATE wrote a history row (% -> %)',
-            history_rows_before, history_rows_after;
+    IF historikrader_efter > historikrader_fore THEN
+        RAISE NOTICE 'TEST B4 PASSED: trg_testobj_y_qa återkopplad, UPDATE skrev en historikrad (% -> %)',
+            historikrader_fore, historikrader_efter;
     ELSE
-        RAISE WARNING 'TEST B4 FAILED: UPDATE did not write a history row -- trg_testobj_y_qa missing';
+        RAISE WARNING 'TEST B4 FAILED: UPDATE skrev ingen historikrad -- trg_testobj_y_qa saknas';
     END IF;
 END $$;
 
--- B5: hex_ta_bort_dummy -- the original dummy row (registered at CREATE
--- TABLE time) must still be removed automatically by the first real INSERT.
--- All the inserts in B1/B2/B3 above were "real" rows, so by this point the
--- dummy should already be gone.
+-- B5: hex_ta_bort_dummy -- den ursprungliga dummy-raden (registrerad vid
+-- CREATE TABLE) ska fortfarande tas bort automatiskt av första riktiga
+-- INSERT. Alla insättningar i B1/B2/B3 ovan var "riktiga" rader, så vid
+-- det här laget bör dummyn redan vara borta.
 DO $$
 DECLARE
-    dummy_gone boolean;
+    dummy_borta boolean;
 BEGIN
     SELECT NOT EXISTS (
         SELECT 1 FROM hex_dummy_geometrier
         WHERE schema_namn = 'sk1_kba_underhalltest' AND tabell_namn = 'testobj_y'
-    ) INTO dummy_gone;
+    ) INTO dummy_borta;
 
-    IF dummy_gone THEN
-        RAISE NOTICE 'TEST B5 PASSED: hex_ta_bort_dummy reattached, dummy row was cleaned up on first real INSERT';
+    IF dummy_borta THEN
+        RAISE NOTICE 'TEST B5 PASSED: hex_ta_bort_dummy återkopplad, dummy-raden städades bort vid första riktiga INSERT';
     ELSE
-        RAISE WARNING 'TEST B5 FAILED: dummy row still registered after real inserts -- hex_ta_bort_dummy missing';
+        RAISE WARNING 'TEST B5 FAILED: dummy-raden är fortfarande registrerad efter riktiga insättningar -- hex_ta_bort_dummy saknas';
     END IF;
 END $$;
 
 ------------------------------------------------------------------------
--- C: hex_dummy_geometrier edge case -- stale entry for a nonexistent table
+-- C: hex_dummy_geometrier-specialfall -- föråldrad post för obefintlig tabell
 ------------------------------------------------------------------------
 \echo ''
-\echo '--- C: Stale dummy-geometry entry ---'
+\echo '--- C: Föråldrad dummy-geometripost ---'
 
 DO $$
 DECLARE
-    still_there boolean;
+    finns_kvar boolean;
 BEGIN
-    -- The mere fact that we got this far (past hex_underhall() above)
-    -- without an unhandled exception already proves the stale entry didn't
-    -- crash the repair run. Also confirm it's simply left alone.
+    -- Att vi över huvud taget kommit hit (förbi hex_underhall() ovan) utan
+    -- ett ohanterat undantag bevisar redan att den föråldrade posten inte
+    -- kraschade reparationskörningen. Bekräfta även att den bara lämnas ifred.
     SELECT EXISTS (
         SELECT 1 FROM hex_dummy_geometrier
         WHERE schema_namn = 'sk1_kba_underhalltest' AND tabell_namn = 'ghost_table_xyz'
-    ) INTO still_there;
+    ) INTO finns_kvar;
 
-    IF still_there THEN
-        RAISE NOTICE 'TEST C1 PASSED: stale hex_dummy_geometrier entry for a nonexistent table was skipped without error';
+    IF finns_kvar THEN
+        RAISE NOTICE 'TEST C1 PASSED: föråldrad hex_dummy_geometrier-post för en obefintlig tabell hoppades över utan fel';
     ELSE
-        RAISE WARNING 'TEST C1 NOTE: stale entry was removed rather than skipped (not necessarily wrong, just unexpected)';
+        RAISE WARNING 'TEST C1 NOTE: den föråldrade posten togs bort i stället för att hoppas över (inte nödvändigtvis fel, bara oväntat)';
     END IF;
 END $$;
 
 ------------------------------------------------------------------------
--- D: Role structure repair
+-- D: Reparation av rollstruktur
 ------------------------------------------------------------------------
 \echo ''
-\echo '--- D: Role structure repair ---'
+\echo '--- D: Reparation av rollstruktur ---'
 
--- D1 (Fall a): r_ was DROP ROLE'd entirely -- must be recreated as NOLOGIN
--- with schema grants and ADMIN OPTION for the owner role.
+-- D1 (Fall a): r_ togs bort helt med DROP ROLE -- ska återskapas som
+-- NOLOGIN med schemarättigheter och ADMIN OPTION för ägarrollen.
 DO $$
 DECLARE
-    r_exists boolean;
+    r_finns boolean;
     r_login boolean;
     r_admin_option boolean;
-    r_has_select boolean;
+    r_har_select boolean;
 BEGIN
-    SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'r_sk1_kba_underhalltest') INTO r_exists;
+    SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'r_sk1_kba_underhalltest') INTO r_finns;
 
-    IF NOT r_exists THEN
-        RAISE WARNING 'TEST D1 FAILED: r_sk1_kba_underhalltest was not recreated after DROP ROLE';
+    IF NOT r_finns THEN
+        RAISE WARNING 'TEST D1 FAILED: r_sk1_kba_underhalltest återskapades inte efter DROP ROLE';
         RETURN;
     END IF;
 
     SELECT rolcanlogin INTO r_login FROM pg_roles WHERE rolname = 'r_sk1_kba_underhalltest';
-    SELECT has_table_privilege('r_sk1_kba_underhalltest', 'sk1_kba_underhalltest.testobj_y', 'SELECT') INTO r_has_select;
+    SELECT has_table_privilege('r_sk1_kba_underhalltest', 'sk1_kba_underhalltest.testobj_y', 'SELECT') INTO r_har_select;
     SELECT am.admin_option INTO r_admin_option
     FROM pg_auth_members am
     JOIN pg_roles grp ON grp.oid = am.roleid
     JOIN pg_roles mem ON mem.oid = am.member
     WHERE grp.rolname = 'r_sk1_kba_underhalltest' AND mem.rolname = public.hex_systemagare();
 
-    IF r_login IS DISTINCT FROM true AND r_has_select AND r_admin_option THEN
-        RAISE NOTICE 'TEST D1 PASSED: r_ recreated as NOLOGIN with SELECT grants and ADMIN OPTION for %', public.hex_systemagare();
+    IF r_login IS DISTINCT FROM true AND r_har_select AND r_admin_option THEN
+        RAISE NOTICE 'TEST D1 PASSED: r_ återskapad som NOLOGIN med SELECT-rättigheter och ADMIN OPTION för %', public.hex_systemagare();
     ELSE
-        RAISE WARNING 'TEST D1 FAILED: r_login=%, r_has_select=%, r_admin_option=%', r_login, r_has_select, r_admin_option;
+        RAISE WARNING 'TEST D1 FAILED: r_login=%, r_har_select=%, r_admin_option=%', r_login, r_har_select, r_admin_option;
     END IF;
 END $$;
 
--- D2 (Fall b): w_ was a stale pre-4-role LOGIN role wrongly in
--- hex_geoserver_roller -- must be migrated back to NOLOGIN and removed
--- from hex_geoserver_roller (this is the exact bug commit 95ead68 fixed).
+-- D2 (Fall b): w_ var en föråldrad pre-4-rolls LOGIN-roll, felaktigt i
+-- hex_geoserver_roller -- ska migreras tillbaka till NOLOGIN och tas bort
+-- ur hex_geoserver_roller (detta är exakt den bugg commit 95ead68 fixade).
 DO $$
 DECLARE
     w_login boolean;
-    w_in_geoserver_roller boolean;
+    w_i_geoserver_roller boolean;
 BEGIN
     SELECT rolcanlogin INTO w_login FROM pg_roles WHERE rolname = 'w_sk1_kba_underhalltest';
-    SELECT pg_has_role('w_sk1_kba_underhalltest', 'hex_geoserver_roller', 'member') INTO w_in_geoserver_roller;
+    SELECT pg_has_role('w_sk1_kba_underhalltest', 'hex_geoserver_roller', 'member') INTO w_i_geoserver_roller;
 
-    IF w_login IS DISTINCT FROM true AND NOT w_in_geoserver_roller THEN
-        RAISE NOTICE 'TEST D2 PASSED: w_ migrated back to NOLOGIN and removed from hex_geoserver_roller';
+    IF w_login IS DISTINCT FROM true AND NOT w_i_geoserver_roller THEN
+        RAISE NOTICE 'TEST D2 PASSED: w_ migrerad tillbaka till NOLOGIN och borttagen ur hex_geoserver_roller';
     ELSE
-        RAISE WARNING 'TEST D2 FAILED: w_login=%, w_in_geoserver_roller=% (expected false, false)', w_login, w_in_geoserver_roller;
+        RAISE WARNING 'TEST D2 FAILED: w_login=%, w_i_geoserver_roller=% (förväntade false, false)', w_login, w_i_geoserver_roller;
     END IF;
 END $$;
 
--- D3: gs_r_ had hex_geoserver_roller membership revoked -- must be restored
--- (this is what makes pg_hba.conf matching work for the GeoServer account).
+-- D3: gs_r_ hade fått hex_geoserver_roller-medlemskapet återkallat -- ska
+-- återställas (detta är det som gör att pg_hba.conf-matchning fungerar
+-- för GeoServer-kontot).
 DO $$
 DECLARE
-    gsr_in_geoserver_roller boolean;
+    gsr_i_geoserver_roller boolean;
 BEGIN
-    SELECT pg_has_role('gs_r_sk1_kba_underhalltest', 'hex_geoserver_roller', 'member') INTO gsr_in_geoserver_roller;
+    SELECT pg_has_role('gs_r_sk1_kba_underhalltest', 'hex_geoserver_roller', 'member') INTO gsr_i_geoserver_roller;
 
-    IF gsr_in_geoserver_roller THEN
-        RAISE NOTICE 'TEST D3 PASSED: gs_r_ hex_geoserver_roller membership restored';
+    IF gsr_i_geoserver_roller THEN
+        RAISE NOTICE 'TEST D3 PASSED: gs_r_ medlemskap i hex_geoserver_roller återställt';
     ELSE
-        RAISE WARNING 'TEST D3 FAILED: gs_r_ is not a member of hex_geoserver_roller';
+        RAISE WARNING 'TEST D3 FAILED: gs_r_ är inte medlem i hex_geoserver_roller';
     END IF;
 END $$;
 
--- D4: gs_w_ had its arvs_fran inheritance from w_ broken -- must be restored.
+-- D4: gs_w_ hade fått sitt arvs_fran-arv från w_ trasigt -- ska återställas.
 DO $$
 DECLARE
-    gsw_inherits_w boolean;
+    gsw_arver_w boolean;
 BEGIN
-    SELECT pg_has_role('gs_w_sk1_kba_underhalltest', 'w_sk1_kba_underhalltest', 'member') INTO gsw_inherits_w;
+    SELECT pg_has_role('gs_w_sk1_kba_underhalltest', 'w_sk1_kba_underhalltest', 'member') INTO gsw_arver_w;
 
-    IF gsw_inherits_w THEN
-        RAISE NOTICE 'TEST D4 PASSED: gs_w_ inheritance from w_ (arvs_fran) restored';
+    IF gsw_arver_w THEN
+        RAISE NOTICE 'TEST D4 PASSED: gs_w_ arv från w_ (arvs_fran) återställt';
     ELSE
-        RAISE WARNING 'TEST D4 FAILED: gs_w_ does not inherit from w_';
+        RAISE WARNING 'TEST D4 FAILED: gs_w_ ärver inte från w_';
     END IF;
 END $$;
 
 ------------------------------------------------------------------------
--- Cleanup
+-- Städning
 ------------------------------------------------------------------------
 \echo ''
-\echo '--- Cleanup ---'
+\echo '--- Städning ---'
 
 SET client_min_messages = 'warning';
 DROP SCHEMA sk1_kba_underhalltest CASCADE;
@@ -402,5 +405,5 @@ RESET client_min_messages;
 
 \echo ''
 \echo '============================================================'
-\echo 'hex_underhall() tests complete.'
+\echo 'hex_underhall()-tester klara.'
 \echo '============================================================'

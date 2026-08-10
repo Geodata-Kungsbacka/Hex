@@ -1,94 +1,94 @@
 -- ============================================================
--- TEST: Role permission grants on w_ and r_ roles
+-- TEST: Rollrättigheter på w_- och r_-roller
 --
--- Verifies that hex_tilldela_rollrattigheter() correctly grants:
---   r_ roles: USAGE on schema, SELECT on tables (+ default privs)
---   w_ roles: USAGE on schema, ALL on tables (incl. TRUNCATE),
---             USAGE+SELECT on sequences (+ default privs for both)
+-- Verifierar att hex_tilldela_rollrattigheter() korrekt beviljar:
+--   r_-roller: USAGE på schema, SELECT på tabeller (+ default privs)
+--   w_-roller: USAGE på schema, ALL på tabeller (inkl. TRUNCATE),
+--              USAGE+SELECT på sekvenser (+ default privs för båda)
 --
--- Schema used: sk1_kba_permtest
+-- Schema som används: sk1_kba_permtest
 -- Konvention: NOTICE = PASSED, WARNING = FAILED
 -- ============================================================
 
 \echo ''
 \echo '============================================================'
-\echo 'TEST: Role permission grants (r_ and w_ roles)'
+\echo 'TEST: Rollrättigheter (r_- och w_-roller)'
 \echo '============================================================'
 
 -- ============================================================
--- Cleanup
+-- Städning
 -- ============================================================
 DROP SCHEMA IF EXISTS sk1_kba_permtest CASCADE;
 DROP ROLE IF EXISTS r_sk1_kba_permtest;
 DROP ROLE IF EXISTS w_sk1_kba_permtest;
 
 -- ============================================================
--- Setup: CREATE SCHEMA triggers hex_hantera_std_roller,
--- which calls hex_tilldela_rollrattigheter for each role.
+-- Förberedelse: CREATE SCHEMA utlöser hex_hantera_std_roller,
+-- som anropar hex_tilldela_rollrattigheter för varje roll.
 -- ============================================================
 CREATE SCHEMA sk1_kba_permtest;
 
--- Let Hex add standard columns via the event trigger (no gid declared).
--- Use a sk1_kba schema + _y suffix so Hex fully processes the table.
+-- Låt Hex lägga till standardkolumner via event triggern (inget gid deklarerat).
+-- Använd ett sk1_kba-schema + _y-suffix så att Hex bearbetar tabellen fullt ut.
 CREATE TABLE sk1_kba_permtest.testobj_y (
     namn text,
     geom geometry(Polygon, 3007)
 );
 
 -- ============================================================
--- Verify roles were created
+-- Verifiera att rollerna skapades
 -- ============================================================
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'r_sk1_kba_permtest') THEN
-        RAISE NOTICE 'SETUP: r_sk1_kba_permtest exists';
+        RAISE NOTICE 'SETUP: r_sk1_kba_permtest finns';
     ELSE
-        RAISE WARNING 'SETUP FAILED: r_sk1_kba_permtest missing — event trigger may not have fired';
+        RAISE WARNING 'SETUP FAILED: r_sk1_kba_permtest saknas — event triggern kanske inte avfyrades';
     END IF;
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'w_sk1_kba_permtest') THEN
-        RAISE NOTICE 'SETUP: w_sk1_kba_permtest exists';
+        RAISE NOTICE 'SETUP: w_sk1_kba_permtest finns';
     ELSE
-        RAISE WARNING 'SETUP FAILED: w_sk1_kba_permtest missing — event trigger may not have fired';
+        RAISE WARNING 'SETUP FAILED: w_sk1_kba_permtest saknas — event triggern kanske inte avfyrades';
     END IF;
 END $$;
 
 -- ============================================================
--- R_ ROLE TESTS
+-- TESTER FÖR R_-ROLLEN
 -- ============================================================
 \echo ''
-\echo '--- r_ role (read) ---'
+\echo '--- r_-roll (läs) ---'
 
--- R1: USAGE on schema
+-- R1: USAGE på schema
 DO $$
 BEGIN
     IF has_schema_privilege('r_sk1_kba_permtest', 'sk1_kba_permtest', 'USAGE') THEN
-        RAISE NOTICE 'TEST R1 PASSED: r_ has USAGE on schema';
+        RAISE NOTICE 'TEST R1 PASSED: r_ har USAGE på schema';
     ELSE
-        RAISE WARNING 'TEST R1 FAILED: r_ missing USAGE on schema sk1_kba_permtest';
+        RAISE WARNING 'TEST R1 FAILED: r_ saknar USAGE på schema sk1_kba_permtest';
     END IF;
 END $$;
 
--- R2: SELECT on existing table
+-- R2: SELECT på befintlig tabell
 DO $$
 BEGIN
     IF has_table_privilege('r_sk1_kba_permtest', 'sk1_kba_permtest.testobj_y', 'SELECT') THEN
-        RAISE NOTICE 'TEST R2 PASSED: r_ has SELECT on existing table';
+        RAISE NOTICE 'TEST R2 PASSED: r_ har SELECT på befintlig tabell';
     ELSE
-        RAISE WARNING 'TEST R2 FAILED: r_ missing SELECT on sk1_kba_permtest.testobj_y';
+        RAISE WARNING 'TEST R2 FAILED: r_ saknar SELECT på sk1_kba_permtest.testobj_y';
     END IF;
 END $$;
 
--- R3: no INSERT (read-only sanity check)
+-- R3: ingen INSERT (rimlighetskontroll för läsroll)
 DO $$
 BEGIN
     IF NOT has_table_privilege('r_sk1_kba_permtest', 'sk1_kba_permtest.testobj_y', 'INSERT') THEN
-        RAISE NOTICE 'TEST R3 PASSED: r_ correctly has no INSERT on table';
+        RAISE NOTICE 'TEST R3 PASSED: r_ har korrekt ingen INSERT på tabellen';
     ELSE
-        RAISE WARNING 'TEST R3 FAILED: r_ has INSERT — should be read-only';
+        RAISE WARNING 'TEST R3 FAILED: r_ har INSERT — ska vara skrivskyddad';
     END IF;
 END $$;
 
--- R4: no USAGE on sequence (read roles don't need to call nextval)
+-- R4: ingen USAGE på sekvens (läsroller behöver inte anropa nextval)
 DO $$
 DECLARE seq_name text;
 BEGIN
@@ -99,19 +99,19 @@ BEGIN
     LIMIT 1;
 
     IF seq_name IS NULL THEN
-        RAISE NOTICE 'TEST R4 SKIPPED: no sequence found in sk1_kba_permtest';
+        RAISE NOTICE 'TEST R4 SKIPPED: ingen sekvens hittades i sk1_kba_permtest';
         RETURN;
     END IF;
 
     IF NOT has_sequence_privilege('r_sk1_kba_permtest',
             'sk1_kba_permtest.' || seq_name, 'USAGE') THEN
-        RAISE NOTICE 'TEST R4 PASSED: r_ has no USAGE on sequence (correct for read-only)';
+        RAISE NOTICE 'TEST R4 PASSED: r_ har ingen USAGE på sekvens (korrekt för skrivskyddad roll)';
     ELSE
-        RAISE WARNING 'TEST R4 NOTE: r_ has USAGE on sequence (unexpected but not blocking)';
+        RAISE WARNING 'TEST R4 NOTE: r_ har USAGE på sekvens (oväntat men inte blockerande)';
     END IF;
 END $$;
 
--- R5: DEFAULT PRIVILEGES — create a second table AFTER role setup, verify SELECT propagates
+-- R5: DEFAULT PRIVILEGES — skapa en andra tabell EFTER rolluppsättning, verifiera att SELECT sprids
 CREATE TABLE sk1_kba_permtest.testobjb_p (
     kod text,
     geom geometry(Point, 3007)
@@ -120,56 +120,56 @@ CREATE TABLE sk1_kba_permtest.testobjb_p (
 DO $$
 BEGIN
     IF has_table_privilege('r_sk1_kba_permtest', 'sk1_kba_permtest.testobjb_p', 'SELECT') THEN
-        RAISE NOTICE 'TEST R5 PASSED: r_ has SELECT on table created after role setup (DEFAULT PRIVILEGES work)';
+        RAISE NOTICE 'TEST R5 PASSED: r_ har SELECT på tabell skapad efter rolluppsättning (DEFAULT PRIVILEGES fungerar)';
     ELSE
-        RAISE WARNING 'TEST R5 FAILED: r_ missing SELECT on testobjb_p — DEFAULT PRIVILEGES not working';
+        RAISE WARNING 'TEST R5 FAILED: r_ saknar SELECT på testobjb_p — DEFAULT PRIVILEGES fungerar inte';
     END IF;
 END $$;
 
 -- ============================================================
--- W_ ROLE TESTS
+-- TESTER FÖR W_-ROLLEN
 -- ============================================================
 \echo ''
-\echo '--- w_ role (write) ---'
+\echo '--- w_-roll (skriv) ---'
 
--- W1: USAGE on schema
+-- W1: USAGE på schema
 DO $$
 BEGIN
     IF has_schema_privilege('w_sk1_kba_permtest', 'sk1_kba_permtest', 'USAGE') THEN
-        RAISE NOTICE 'TEST W1 PASSED: w_ has USAGE on schema';
+        RAISE NOTICE 'TEST W1 PASSED: w_ har USAGE på schema';
     ELSE
-        RAISE WARNING 'TEST W1 FAILED: w_ missing USAGE on schema sk1_kba_permtest';
+        RAISE WARNING 'TEST W1 FAILED: w_ saknar USAGE på schema sk1_kba_permtest';
     END IF;
 END $$;
 
--- W2: SELECT, INSERT, UPDATE, DELETE, TRUNCATE on existing table
+-- W2: SELECT, INSERT, UPDATE, DELETE, TRUNCATE på befintlig tabell
 DO $$
-DECLARE missing text := '';
+DECLARE saknas text := '';
 BEGIN
-    IF NOT has_table_privilege('w_sk1_kba_permtest', 'sk1_kba_permtest.testobj_y', 'SELECT')   THEN missing := missing || 'SELECT ';   END IF;
-    IF NOT has_table_privilege('w_sk1_kba_permtest', 'sk1_kba_permtest.testobj_y', 'INSERT')   THEN missing := missing || 'INSERT ';   END IF;
-    IF NOT has_table_privilege('w_sk1_kba_permtest', 'sk1_kba_permtest.testobj_y', 'UPDATE')   THEN missing := missing || 'UPDATE ';   END IF;
-    IF NOT has_table_privilege('w_sk1_kba_permtest', 'sk1_kba_permtest.testobj_y', 'DELETE')   THEN missing := missing || 'DELETE ';   END IF;
-    IF NOT has_table_privilege('w_sk1_kba_permtest', 'sk1_kba_permtest.testobj_y', 'TRUNCATE') THEN missing := missing || 'TRUNCATE '; END IF;
+    IF NOT has_table_privilege('w_sk1_kba_permtest', 'sk1_kba_permtest.testobj_y', 'SELECT')   THEN saknas := saknas || 'SELECT ';   END IF;
+    IF NOT has_table_privilege('w_sk1_kba_permtest', 'sk1_kba_permtest.testobj_y', 'INSERT')   THEN saknas := saknas || 'INSERT ';   END IF;
+    IF NOT has_table_privilege('w_sk1_kba_permtest', 'sk1_kba_permtest.testobj_y', 'UPDATE')   THEN saknas := saknas || 'UPDATE ';   END IF;
+    IF NOT has_table_privilege('w_sk1_kba_permtest', 'sk1_kba_permtest.testobj_y', 'DELETE')   THEN saknas := saknas || 'DELETE ';   END IF;
+    IF NOT has_table_privilege('w_sk1_kba_permtest', 'sk1_kba_permtest.testobj_y', 'TRUNCATE') THEN saknas := saknas || 'TRUNCATE '; END IF;
 
-    IF missing = '' THEN
-        RAISE NOTICE 'TEST W2 PASSED: w_ has SELECT/INSERT/UPDATE/DELETE/TRUNCATE on existing table';
+    IF saknas = '' THEN
+        RAISE NOTICE 'TEST W2 PASSED: w_ har SELECT/INSERT/UPDATE/DELETE/TRUNCATE på befintlig tabell';
     ELSE
-        RAISE WARNING 'TEST W2 FAILED: w_ missing [%] on testobj_y', missing;
+        RAISE WARNING 'TEST W2 FAILED: w_ saknar [%] på testobj_y', saknas;
     END IF;
 END $$;
 
--- W2b: TRUNCATE explicitly (core fix — FME truncate-and-reload pattern)
+-- W2b: TRUNCATE explicit (kärnfixen — FMEs truncate-and-reload-mönster)
 DO $$
 BEGIN
     IF has_table_privilege('w_sk1_kba_permtest', 'sk1_kba_permtest.testobj_y', 'TRUNCATE') THEN
-        RAISE NOTICE 'TEST W2b PASSED: w_ has TRUNCATE on existing table';
+        RAISE NOTICE 'TEST W2b PASSED: w_ har TRUNCATE på befintlig tabell';
     ELSE
-        RAISE WARNING 'TEST W2b FAILED: w_ missing TRUNCATE — FME truncate-and-reload will fail';
+        RAISE WARNING 'TEST W2b FAILED: w_ saknar TRUNCATE — FMEs truncate-and-reload kommer att misslyckas';
     END IF;
 END $$;
 
--- W3: USAGE on sequence — the core fix (INSERT with identity column requires this)
+-- W3: USAGE på sekvens — kärnfixen (INSERT med identity-kolumn kräver detta)
 DO $$
 DECLARE seq_name text;
 BEGIN
@@ -180,19 +180,19 @@ BEGIN
     ORDER BY s.relname LIMIT 1;
 
     IF seq_name IS NULL THEN
-        RAISE WARNING 'TEST W3 SKIPPED: no sequence found in sk1_kba_permtest';
+        RAISE WARNING 'TEST W3 SKIPPED: ingen sekvens hittades i sk1_kba_permtest';
         RETURN;
     END IF;
 
     IF has_sequence_privilege('w_sk1_kba_permtest',
             'sk1_kba_permtest.' || seq_name, 'USAGE') THEN
-        RAISE NOTICE 'TEST W3 PASSED: w_ has USAGE on sequence % (INSERT on identity columns will work)', seq_name;
+        RAISE NOTICE 'TEST W3 PASSED: w_ har USAGE på sekvens % (INSERT på identity-kolumner kommer att fungera)', seq_name;
     ELSE
-        RAISE WARNING 'TEST W3 FAILED: w_ missing USAGE on sequence % — INSERT will fail', seq_name;
+        RAISE WARNING 'TEST W3 FAILED: w_ saknar USAGE på sekvens % — INSERT kommer att misslyckas', seq_name;
     END IF;
 END $$;
 
--- W4: SELECT on sequence
+-- W4: SELECT på sekvens
 DO $$
 DECLARE seq_name text;
 BEGIN
@@ -203,33 +203,33 @@ BEGIN
     ORDER BY s.relname LIMIT 1;
 
     IF seq_name IS NULL THEN
-        RAISE NOTICE 'TEST W4 SKIPPED: no sequence found';
+        RAISE NOTICE 'TEST W4 SKIPPED: ingen sekvens hittades';
         RETURN;
     END IF;
 
     IF has_sequence_privilege('w_sk1_kba_permtest',
             'sk1_kba_permtest.' || seq_name, 'SELECT') THEN
-        RAISE NOTICE 'TEST W4 PASSED: w_ has SELECT on sequence %', seq_name;
+        RAISE NOTICE 'TEST W4 PASSED: w_ har SELECT på sekvens %', seq_name;
     ELSE
-        RAISE WARNING 'TEST W4 FAILED: w_ missing SELECT on sequence %', seq_name;
+        RAISE WARNING 'TEST W4 FAILED: w_ saknar SELECT på sekvens %', seq_name;
     END IF;
 END $$;
 
--- W5: DEFAULT PRIVILEGES on tables — INSERT + TRUNCATE on table created after role setup
+-- W5: DEFAULT PRIVILEGES på tabeller — INSERT + TRUNCATE på tabell skapad efter rolluppsättning
 DO $$
-DECLARE missing text := '';
+DECLARE saknas text := '';
 BEGIN
-    IF NOT has_table_privilege('w_sk1_kba_permtest', 'sk1_kba_permtest.testobjb_p', 'INSERT')   THEN missing := missing || 'INSERT ';   END IF;
-    IF NOT has_table_privilege('w_sk1_kba_permtest', 'sk1_kba_permtest.testobjb_p', 'TRUNCATE') THEN missing := missing || 'TRUNCATE '; END IF;
+    IF NOT has_table_privilege('w_sk1_kba_permtest', 'sk1_kba_permtest.testobjb_p', 'INSERT')   THEN saknas := saknas || 'INSERT ';   END IF;
+    IF NOT has_table_privilege('w_sk1_kba_permtest', 'sk1_kba_permtest.testobjb_p', 'TRUNCATE') THEN saknas := saknas || 'TRUNCATE '; END IF;
 
-    IF missing = '' THEN
-        RAISE NOTICE 'TEST W5 PASSED: w_ has INSERT/TRUNCATE on table created after role setup (DEFAULT PRIVILEGES on tables work)';
+    IF saknas = '' THEN
+        RAISE NOTICE 'TEST W5 PASSED: w_ har INSERT/TRUNCATE på tabell skapad efter rolluppsättning (DEFAULT PRIVILEGES på tabeller fungerar)';
     ELSE
-        RAISE WARNING 'TEST W5 FAILED: w_ missing [%] on testobjb_p — DEFAULT PRIVILEGES on tables not working', missing;
+        RAISE WARNING 'TEST W5 FAILED: w_ saknar [%] på testobjb_p — DEFAULT PRIVILEGES på tabeller fungerar inte', saknas;
     END IF;
 END $$;
 
--- W6: DEFAULT PRIVILEGES on sequences — USAGE on sequence from testobjb_p (created after role setup)
+-- W6: DEFAULT PRIVILEGES på sekvenser — USAGE på sekvensen för testobjb_p (skapad efter rolluppsättning)
 DO $$
 DECLARE seq_name text;
 BEGIN
@@ -244,26 +244,26 @@ BEGIN
     LIMIT 1;
 
     IF seq_name IS NULL THEN
-        RAISE NOTICE 'TEST W6 SKIPPED: no sequence linked to testobjb_p found';
+        RAISE NOTICE 'TEST W6 SKIPPED: ingen sekvens kopplad till testobjb_p hittades';
         RETURN;
     END IF;
 
     IF has_sequence_privilege('w_sk1_kba_permtest',
             'sk1_kba_permtest.' || seq_name, 'USAGE') THEN
-        RAISE NOTICE 'TEST W6 PASSED: w_ has USAGE on sequence % of table created after role setup (DEFAULT PRIVILEGES on sequences work)', seq_name;
+        RAISE NOTICE 'TEST W6 PASSED: w_ har USAGE på sekvens % för tabell skapad efter rolluppsättning (DEFAULT PRIVILEGES på sekvenser fungerar)', seq_name;
     ELSE
-        RAISE WARNING 'TEST W6 FAILED: w_ missing USAGE on sequence % — DEFAULT PRIVILEGES on sequences not working', seq_name;
+        RAISE WARNING 'TEST W6 FAILED: w_ saknar USAGE på sekvens % — DEFAULT PRIVILEGES på sekvenser fungerar inte', seq_name;
     END IF;
 END $$;
 
 -- ============================================================
--- Cleanup
+-- Städning
 -- ============================================================
 \echo ''
-\echo '--- Cleanup ---'
+\echo '--- Städning ---'
 DROP SCHEMA sk1_kba_permtest CASCADE;
 
 \echo ''
 \echo '============================================================'
-\echo 'Role permission tests complete.'
+\echo 'Rollrättighetstester klara.'
 \echo '============================================================'

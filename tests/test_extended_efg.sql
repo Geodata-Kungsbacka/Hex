@@ -1,42 +1,42 @@
 -- ============================================================
--- HEX EXTENDED TEST SUITE — GROUPS E, F & G
+-- HEX UTÖKAD TESTSVIT — GRUPPERNA E, F & G
 --
--- E  Historiktabell-synkronisering (ALTER TABLE ADD COLUMN on kba table)
---    E0  Precondition: history table exists before sync tests
---    E1  ADD COLUMN synced to history table automatically
---    E2  geom stays last in both main and history table after sync
---    E3  Adding second column: both appear in history table
---    E4  ADD COLUMN twice when already in sync: no duplicates
+-- E  Historiktabell-synkronisering (ALTER TABLE ADD COLUMN på kba-tabell)
+--    E0  Förutsättning: historiktabellen finns innan synktesterna
+--    E1  ADD COLUMN synkas automatiskt till historiktabellen
+--    E2  geom förblir sist i både huvud- och historiktabellen efter synk
+--    E3  Att lägga till en andra kolumn: båda syns i historiktabellen
+--    E4  ADD COLUMN två gånger när redan synkat: inga dubbletter
 --
--- F  Dataöverlevnad (existing rows survive ADD COLUMN restructuring)
---    F1  Existing rows and numeric values intact after ADD COLUMN
---    F2  Geometry values valid and intact after ADD COLUMN
---    F3  QA trigger works after ADD COLUMN: UPDATE writes history + bumps andrad_tidpunkt
---    F4  DELETE writes to history table with h_typ='D'
+-- F  Dataöverlevnad (befintliga rader överlever ADD COLUMN-omstrukturering)
+--    F1  Befintliga rader och numeriska värden intakta efter ADD COLUMN
+--    F2  Geometrivärden giltiga och intakta efter ADD COLUMN
+--    F3  QA-trigger fungerar efter ADD COLUMN: UPDATE skriver historik + uppdaterar andrad_tidpunkt
+--    F4  DELETE skriver till historiktabellen med h_typ='D'
 --
 -- G  QA-trigger-säkerhet vid ADD COLUMN (kolumnordningsfix)
---    G0  Precondition: history table and QA trigger exist
---    G1  First ADD COLUMN: no orphaned _temp0001 columns
---    G2  New column before geom in main table
---    G3  New column before geom in history table
---    G4  QA trigger re-enabled after ADD COLUMN (UPDATE writes history)
---    G5  Second ADD COLUMN also places column before geom
---    G6  No orphaned _temp0001 after four ADD COLUMNs in sequence
---    G7  geom last in both tables after four ADD COLUMNs
---    G8  ADD COLUMN on table with existing rows: data intact, no crash
---    G9  ext-schema ADD COLUMN (no QA trigger): column before geom, no orphans
+--    G0  Förutsättning: historiktabell och QA-trigger finns
+--    G1  Första ADD COLUMN: inga föräldralösa _temp0001-kolumner
+--    G2  Ny kolumn före geom i huvudtabellen
+--    G3  Ny kolumn före geom i historiktabellen
+--    G4  QA-trigger återaktiverad efter ADD COLUMN (UPDATE skriver historik)
+--    G5  Andra ADD COLUMN placerar också kolumnen före geom
+--    G6  Inga föräldralösa _temp0001 efter fyra ADD COLUMNs i rad
+--    G7  geom sist i båda tabellerna efter fyra ADD COLUMNs
+--    G8  ADD COLUMN på tabell med befintliga rader: data intakt, ingen krasch
+--    G9  ext-schema ADD COLUMN (ingen QA-trigger): kolumn före geom, inga föräldralösa
 --
--- Schemas used: sk2_kba_test, sk2_ext_test
+-- Scheman som används: sk2_kba_test, sk2_ext_test
 -- Konvention: NOTICE = PASSED/INFO, WARNING = FAILED/BUG CONFIRMED
 -- ============================================================
 
 \echo ''
 \echo '============================================================'
-\echo 'HEX EXTENDED TEST SUITE — GROUPS E, F & G'
+\echo 'HEX UTÖKAD TESTSVIT — GRUPPERNA E, F & G'
 \echo '============================================================'
 
 -- ============================================================
--- Cleanup and setup
+-- Städning och förberedelse
 -- ============================================================
 DROP SCHEMA IF EXISTS sk2_kba_test CASCADE;
 DROP SCHEMA IF EXISTS sk2_ext_test CASCADE;
@@ -45,10 +45,10 @@ CREATE SCHEMA sk2_kba_test;
 CREATE SCHEMA sk2_ext_test;
 
 -- ============================================================
--- E: HISTORY TABLE AUTO-SYNC (ALTER TABLE ADD COLUMN on kba table)
+-- E: AUTOMATISK SYNK AV HISTORIKTABELL (ALTER TABLE ADD COLUMN på kba-tabell)
 -- ============================================================
 \echo ''
-\echo '--- GROUP E: History table auto-sync on ALTER TABLE ---'
+\echo '--- GRUPP E: Automatisk synk av historiktabell vid ALTER TABLE ---'
 
 CREATE TABLE sk2_kba_test.sync_test_y (
     info text,
@@ -61,15 +61,15 @@ BEGIN
         SELECT 1 FROM information_schema.tables
         WHERE table_schema = 'sk2_kba_test' AND table_name = 'sync_test_y_h'
     ) THEN
-        RAISE NOTICE 'TEST E0 PASSED: sync_test_y_h history table exists before sync tests';
+        RAISE NOTICE 'TEST E0 PASSED: historiktabellen sync_test_y_h finns innan synktesterna';
     ELSE
-        RAISE WARNING 'TEST E0 FAILED: No history table for sync_test_y - cannot run E tests';
+        RAISE WARNING 'TEST E0 FAILED: Ingen historiktabell för sync_test_y - kan inte köra E-testerna';
     END IF;
 END $$;
 
 ALTER TABLE sk2_kba_test.sync_test_y ADD COLUMN extra_data text;
 
--- E1: New column must appear in history table automatically
+-- E1: Den nya kolumnen måste dyka upp i historiktabellen automatiskt
 DO $$
 BEGIN
     IF EXISTS (
@@ -77,77 +77,77 @@ BEGIN
         WHERE table_schema = 'sk2_kba_test' AND table_name = 'sync_test_y_h'
         AND column_name = 'extra_data'
     ) THEN
-        RAISE NOTICE 'TEST E1 PASSED: ADD COLUMN extra_data auto-synced to history table';
+        RAISE NOTICE 'TEST E1 PASSED: ADD COLUMN extra_data synkades automatiskt till historiktabellen';
     ELSE
-        RAISE WARNING 'TEST E1 FAILED: extra_data not synced to history table sync_test_y_h';
+        RAISE WARNING 'TEST E1 FAILED: extra_data synkades inte till historiktabellen sync_test_y_h';
     END IF;
 END $$;
 
--- E2: geom must stay last in BOTH main table and history table after sync
+-- E2: geom måste förbli sist i BÅDE huvudtabellen och historiktabellen efter synk
 DO $$
 DECLARE
-    geom_pos_main  integer;
-    last_pos_main  integer;
-    geom_pos_hist  integer;
-    last_pos_hist  integer;
+    geom_pos_huvud  integer;
+    sista_pos_huvud integer;
+    geom_pos_hist   integer;
+    sista_pos_hist  integer;
 BEGIN
-    SELECT ordinal_position INTO geom_pos_main FROM information_schema.columns
+    SELECT ordinal_position INTO geom_pos_huvud FROM information_schema.columns
     WHERE table_schema = 'sk2_kba_test' AND table_name = 'sync_test_y' AND column_name = 'geom';
-    SELECT MAX(ordinal_position) INTO last_pos_main FROM information_schema.columns
+    SELECT MAX(ordinal_position) INTO sista_pos_huvud FROM information_schema.columns
     WHERE table_schema = 'sk2_kba_test' AND table_name = 'sync_test_y';
 
     SELECT ordinal_position INTO geom_pos_hist FROM information_schema.columns
     WHERE table_schema = 'sk2_kba_test' AND table_name = 'sync_test_y_h' AND column_name = 'geom';
-    SELECT MAX(ordinal_position) INTO last_pos_hist FROM information_schema.columns
+    SELECT MAX(ordinal_position) INTO sista_pos_hist FROM information_schema.columns
     WHERE table_schema = 'sk2_kba_test' AND table_name = 'sync_test_y_h';
 
-    IF geom_pos_main = last_pos_main AND geom_pos_hist = last_pos_hist THEN
-        RAISE NOTICE 'TEST E2 PASSED: geom is last in both main (pos %/%) and history (pos %/%)',
-            geom_pos_main, last_pos_main, geom_pos_hist, last_pos_hist;
+    IF geom_pos_huvud = sista_pos_huvud AND geom_pos_hist = sista_pos_hist THEN
+        RAISE NOTICE 'TEST E2 PASSED: geom är sist i både huvudtabellen (pos %/%) och historiken (pos %/%)',
+            geom_pos_huvud, sista_pos_huvud, geom_pos_hist, sista_pos_hist;
     ELSE
-        RAISE WARNING 'TEST E2 FAILED: geom not last. main: %/%, history: %/%',
-            geom_pos_main, last_pos_main, geom_pos_hist, last_pos_hist;
+        RAISE WARNING 'TEST E2 FAILED: geom är inte sist. huvud: %/%, historik: %/%',
+            geom_pos_huvud, sista_pos_huvud, geom_pos_hist, sista_pos_hist;
     END IF;
 END $$;
 
--- E3: Adding a second column - both should appear in history table
+-- E3: Att lägga till en andra kolumn - båda ska dyka upp i historiktabellen
 ALTER TABLE sk2_kba_test.sync_test_y ADD COLUMN kategori integer;
 
 DO $$
-DECLARE synced integer;
+DECLARE synkade integer;
 BEGIN
-    SELECT COUNT(*) INTO synced FROM information_schema.columns
+    SELECT COUNT(*) INTO synkade FROM information_schema.columns
     WHERE table_schema = 'sk2_kba_test' AND table_name = 'sync_test_y_h'
     AND column_name IN ('extra_data', 'kategori');
-    IF synced = 2 THEN
-        RAISE NOTICE 'TEST E3 PASSED: Both extra_data and kategori synced to history table';
+    IF synkade = 2 THEN
+        RAISE NOTICE 'TEST E3 PASSED: Både extra_data och kategori synkade till historiktabellen';
     ELSE
-        RAISE WARNING 'TEST E3 FAILED: Only % of 2 expected columns synced to history table', synced;
+        RAISE WARNING 'TEST E3 FAILED: Endast % av 2 förväntade kolumner synkade till historiktabellen', synkade;
     END IF;
 END $$;
 
--- E4: Running ADD COLUMN twice when already in sync - must not duplicate
+-- E4: Att köra ADD COLUMN två gånger när redan synkat - får inte ge dubbletter
 ALTER TABLE sk2_kba_test.sync_test_y ADD COLUMN stable_col text;
 ALTER TABLE sk2_kba_test.sync_test_y ADD COLUMN another_col text;
 
 DO $$
-DECLARE dup_count integer;
+DECLARE antal_dup integer;
 BEGIN
-    SELECT COUNT(*) INTO dup_count FROM information_schema.columns
+    SELECT COUNT(*) INTO antal_dup FROM information_schema.columns
     WHERE table_schema = 'sk2_kba_test' AND table_name = 'sync_test_y_h'
     AND column_name = 'stable_col';
-    IF dup_count = 1 THEN
-        RAISE NOTICE 'TEST E4 PASSED: stable_col appears exactly once in history (no duplicates from repeated syncs)';
+    IF antal_dup = 1 THEN
+        RAISE NOTICE 'TEST E4 PASSED: stable_col förekommer exakt en gång i historiken (inga dubbletter från upprepade synkar)';
     ELSE
-        RAISE WARNING 'TEST E4 FAILED: stable_col appears % times in history table (expected 1)', dup_count;
+        RAISE WARNING 'TEST E4 FAILED: stable_col förekommer % gånger i historiktabellen (förväntade 1)', antal_dup;
     END IF;
 END $$;
 
 -- ============================================================
--- F: DATA SURVIVAL
+-- F: DATAÖVERLEVNAD
 -- ============================================================
 \echo ''
-\echo '--- GROUP F: Data survival ---'
+\echo '--- GRUPP F: Dataöverlevnad ---'
 
 CREATE TABLE sk2_kba_test.data_test_y (
     naam       text,
@@ -160,84 +160,84 @@ INSERT INTO sk2_kba_test.data_test_y (naam, waarde, categorie, geom) VALUES
     ('objekt_1', 123.45, 'A', ST_GeomFromText('POLYGON((0 0,100 0,100 100,0 100,0 0))', 3007)),
     ('objekt_2', 678.90, 'B', ST_GeomFromText('POLYGON((200 200,300 200,300 300,200 300,200 200))', 3007));
 
--- F1: ADD COLUMN - existing rows and values must survive
+-- F1: ADD COLUMN - befintliga rader och värden måste överleva
 ALTER TABLE sk2_kba_test.data_test_y ADD COLUMN extra text;
 
 DO $$
 DECLARE
-    row_count integer;
-    sum_val   numeric;
+    antal_rader integer;
+    summa_val   numeric;
 BEGIN
-    SELECT COUNT(*), SUM(waarde) INTO row_count, sum_val
+    SELECT COUNT(*), SUM(waarde) INTO antal_rader, summa_val
     FROM sk2_kba_test.data_test_y;
-    IF row_count = 2 AND sum_val = 802.35 THEN
-        RAISE NOTICE 'TEST F1 PASSED: Both rows and numeric values intact after ADD COLUMN (count=%, sum=%)', row_count, sum_val;
+    IF antal_rader = 2 AND summa_val = 802.35 THEN
+        RAISE NOTICE 'TEST F1 PASSED: Både rader och numeriska värden intakta efter ADD COLUMN (antal=%, summa=%)', antal_rader, summa_val;
     ELSE
-        RAISE WARNING 'TEST F1 FAILED: Data not preserved. rows=%, sum=%', row_count, sum_val;
+        RAISE WARNING 'TEST F1 FAILED: Data bevarades inte. rader=%, summa=%', antal_rader, summa_val;
     END IF;
 END $$;
 
--- F2: Geometry values must survive ADD COLUMN
+-- F2: Geometrivärden måste överleva ADD COLUMN
 DO $$
-DECLARE geom_count integer;
+DECLARE antal_geom integer;
 BEGIN
-    SELECT COUNT(*) INTO geom_count
+    SELECT COUNT(*) INTO antal_geom
     FROM sk2_kba_test.data_test_y
     WHERE ST_IsValid(geom) AND NOT ST_IsEmpty(geom);
-    IF geom_count = 2 THEN
-        RAISE NOTICE 'TEST F2 PASSED: Both geometry values valid and intact after ADD COLUMN';
+    IF antal_geom = 2 THEN
+        RAISE NOTICE 'TEST F2 PASSED: Båda geometrivärdena giltiga och intakta efter ADD COLUMN';
     ELSE
-        RAISE WARNING 'TEST F2 FAILED: Expected 2 valid geometries, found %', geom_count;
+        RAISE WARNING 'TEST F2 FAILED: Förväntade 2 giltiga geometrier, hittade %', antal_geom;
     END IF;
 END $$;
 
--- F3: QA trigger works after ADD COLUMN - UPDATE writes history and bumps andrad_tidpunkt
+-- F3: QA-triggern fungerar efter ADD COLUMN - UPDATE skriver historik och uppdaterar andrad_tidpunkt
 DO $$
 DECLARE
-    hist_count integer;
-    old_ts     timestamptz;
-    new_ts     timestamptz;
+    antal_hist integer;
+    gammal_ts  timestamptz;
+    ny_ts      timestamptz;
 BEGIN
-    SELECT andrad_tidpunkt INTO old_ts
+    SELECT andrad_tidpunkt INTO gammal_ts
     FROM sk2_kba_test.data_test_y WHERE naam = 'objekt_1';
 
     PERFORM pg_sleep(0.05);
 
     UPDATE sk2_kba_test.data_test_y SET waarde = 999.99 WHERE naam = 'objekt_1';
 
-    SELECT andrad_tidpunkt INTO new_ts
+    SELECT andrad_tidpunkt INTO ny_ts
     FROM sk2_kba_test.data_test_y WHERE naam = 'objekt_1';
-    SELECT COUNT(*) INTO hist_count
+    SELECT COUNT(*) INTO antal_hist
     FROM sk2_kba_test.data_test_y_h WHERE naam = 'objekt_1' AND h_typ = 'U';
 
-    -- andrad_tidpunkt has historik_qa=true so no DEFAULT - it starts NULL and is set by
-    -- the UPDATE trigger. Check that new_ts IS NOT NULL and (was NULL or advanced).
-    IF hist_count = 1 AND new_ts IS NOT NULL AND (old_ts IS NULL OR new_ts > old_ts) THEN
-        RAISE NOTICE 'TEST F3 PASSED: UPDATE wrote 1 history row and bumped andrad_tidpunkt (old=%, new=%)',
-            old_ts, new_ts;
-    ELSIF hist_count = 1 AND new_ts IS NULL THEN
-        RAISE WARNING 'TEST F3 FAILED: History row written but andrad_tidpunkt still NULL after UPDATE (old=%, new=%)',
-            old_ts, new_ts;
-    ELSIF hist_count = 1 THEN
-        RAISE WARNING 'TEST F3 PARTIAL: History row written but andrad_tidpunkt not advanced (old=%, new=%)',
-            old_ts, new_ts;
+    -- andrad_tidpunkt har historik_qa=true så ingen DEFAULT - den börjar som NULL och sätts av
+    -- UPDATE-triggern. Kontrollera att ny_ts INTE ÄR NULL och (var NULL eller ökade).
+    IF antal_hist = 1 AND ny_ts IS NOT NULL AND (gammal_ts IS NULL OR ny_ts > gammal_ts) THEN
+        RAISE NOTICE 'TEST F3 PASSED: UPDATE skrev 1 historikrad och uppdaterade andrad_tidpunkt (gammal=%, ny=%)',
+            gammal_ts, ny_ts;
+    ELSIF antal_hist = 1 AND ny_ts IS NULL THEN
+        RAISE WARNING 'TEST F3 FAILED: Historikrad skrevs men andrad_tidpunkt fortfarande NULL efter UPDATE (gammal=%, ny=%)',
+            gammal_ts, ny_ts;
+    ELSIF antal_hist = 1 THEN
+        RAISE WARNING 'TEST F3 PARTIAL: Historikrad skrevs men andrad_tidpunkt uppdaterades inte (gammal=%, ny=%)',
+            gammal_ts, ny_ts;
     ELSE
-        RAISE WARNING 'TEST F3 FAILED: Expected 1 history row, got %. andrad_tidpunkt: old=%, new=%',
-            hist_count, old_ts, new_ts;
+        RAISE WARNING 'TEST F3 FAILED: Förväntade 1 historikrad, fick %. andrad_tidpunkt: gammal=%, ny=%',
+            antal_hist, gammal_ts, ny_ts;
     END IF;
 END $$;
 
--- F4: DELETE writes to history table with h_typ='D'
+-- F4: DELETE skriver till historiktabellen med h_typ='D'
 DO $$
-DECLARE hist_count integer;
+DECLARE antal_hist integer;
 BEGIN
     DELETE FROM sk2_kba_test.data_test_y WHERE naam = 'objekt_2';
-    SELECT COUNT(*) INTO hist_count
+    SELECT COUNT(*) INTO antal_hist
     FROM sk2_kba_test.data_test_y_h WHERE naam = 'objekt_2' AND h_typ = 'D';
-    IF hist_count = 1 THEN
-        RAISE NOTICE 'TEST F4 PASSED: DELETE wrote 1 history row with h_typ=''D''';
+    IF antal_hist = 1 THEN
+        RAISE NOTICE 'TEST F4 PASSED: DELETE skrev 1 historikrad med h_typ=''D''';
     ELSE
-        RAISE WARNING 'TEST F4 FAILED: Expected 1 DELETE history row, got %', hist_count;
+        RAISE WARNING 'TEST F4 FAILED: Förväntade 1 DELETE-historikrad, fick %', antal_hist;
     END IF;
 END $$;
 
@@ -259,7 +259,7 @@ END $$;
 -- inne i steg 6 efter att felet redan inträffat.
 -- ============================================================
 \echo ''
-\echo '--- GROUP G: QA trigger safety during ADD COLUMN (column-order fix) ---'
+\echo '--- GRUPP G: QA-trigger-säkerhet vid ADD COLUMN (kolumnordningsfix) ---'
 
 -- G-setup: färsk kba-tabell som automatiskt får QA-trigger och historiktabell
 CREATE TABLE sk2_kba_test.qa_order_test_y (
@@ -286,11 +286,11 @@ BEGIN
     ) INTO has_trigger;
 
     IF has_history AND has_trigger THEN
-        RAISE NOTICE 'TEST G0 PASSED: History table and QA trigger exist (bug preconditions verified)';
+        RAISE NOTICE 'TEST G0 PASSED: Historiktabell och QA-trigger finns (buggens förutsättningar verifierade)';
     ELSIF NOT has_history THEN
-        RAISE WARNING 'TEST G0 FAILED: No history table qa_order_test_y_h - kba schema setup broken';
+        RAISE WARNING 'TEST G0 FAILED: Ingen historiktabell qa_order_test_y_h - kba-schemauppsättningen är trasig';
     ELSE
-        RAISE WARNING 'TEST G0 FAILED: No QA trigger on qa_order_test_y - trigger creation broken';
+        RAISE WARNING 'TEST G0 FAILED: Ingen QA-trigger på qa_order_test_y - triggerskapandet är trasigt';
     END IF;
 END $$;
 
@@ -310,9 +310,9 @@ BEGIN
       AND column_name LIKE '%_temp0001';
 
     IF orphan_count = 0 THEN
-        RAISE NOTICE 'TEST G1 PASSED: No orphaned _temp0001 columns after first ADD COLUMN (QA trigger correctly disabled during restructuring)';
+        RAISE NOTICE 'TEST G1 PASSED: Inga föräldralösa _temp0001-kolumner efter första ADD COLUMN (QA-triggern korrekt inaktiverad under omstrukturering)';
     ELSE
-        RAISE WARNING 'TEST G1 FAILED: % orphaned _temp0001 column(s) - QA trigger fired during restructuring UPDATE and left orphans', orphan_count;
+        RAISE WARNING 'TEST G1 FAILED: % föräldralösa _temp0001-kolumn(er) - QA-triggern avfyrades under omstrukturerings-UPDATE och lämnade föräldralösa kolumner', orphan_count;
     END IF;
 END $$;
 
@@ -331,11 +331,11 @@ BEGIN
     WHERE table_schema = 'sk2_kba_test' AND table_name = 'qa_order_test_y';
 
     IF col_a_pos < geom_pos AND geom_pos = last_pos THEN
-        RAISE NOTICE 'TEST G2 PASSED: col_a (pos %) before geom (pos %/%) in parent table', col_a_pos, geom_pos, last_pos;
+        RAISE NOTICE 'TEST G2 PASSED: col_a (pos %) före geom (pos %/%) i huvudtabellen', col_a_pos, geom_pos, last_pos;
     ELSIF geom_pos != last_pos THEN
-        RAISE WARNING 'TEST G2 FAILED: geom is not last in parent. geom=%, last=%', geom_pos, last_pos;
+        RAISE WARNING 'TEST G2 FAILED: geom är inte sist i huvudtabellen. geom=%, sist=%', geom_pos, last_pos;
     ELSE
-        RAISE WARNING 'TEST G2 FAILED: col_a (pos %) is after geom (pos %) - restructuring was skipped (orphan guard fired)', col_a_pos, geom_pos;
+        RAISE WARNING 'TEST G2 FAILED: col_a (pos %) är efter geom (pos %) - omstrukturering hoppades över (orphan-vakten avfyrades)', col_a_pos, geom_pos;
     END IF;
 END $$;
 
@@ -354,13 +354,13 @@ BEGIN
     WHERE table_schema = 'sk2_kba_test' AND table_name = 'qa_order_test_y_h';
 
     IF col_a_pos IS NULL THEN
-        RAISE WARNING 'TEST G3 FAILED: col_a not found in history table - history sync failed';
+        RAISE WARNING 'TEST G3 FAILED: col_a hittades inte i historiktabellen - historiksynk misslyckades';
     ELSIF col_a_pos < geom_pos AND geom_pos = last_pos THEN
-        RAISE NOTICE 'TEST G3 PASSED: col_a (pos %) before geom (pos %/%) in history table', col_a_pos, geom_pos, last_pos;
+        RAISE NOTICE 'TEST G3 PASSED: col_a (pos %) före geom (pos %/%) i historiktabellen', col_a_pos, geom_pos, last_pos;
     ELSIF geom_pos != last_pos THEN
-        RAISE WARNING 'TEST G3 FAILED: geom not last in history. geom=%, last=%', geom_pos, last_pos;
+        RAISE WARNING 'TEST G3 FAILED: geom är inte sist i historiken. geom=%, sist=%', geom_pos, last_pos;
     ELSE
-        RAISE WARNING 'TEST G3 FAILED: col_a (pos %) is after geom (pos %) in history table', col_a_pos, geom_pos;
+        RAISE WARNING 'TEST G3 FAILED: col_a (pos %) är efter geom (pos %) i historiktabellen', col_a_pos, geom_pos;
     END IF;
 END $$;
 
@@ -379,9 +379,9 @@ BEGIN
     WHERE info = 'test_rad' AND h_typ = 'U';
 
     IF hist_count = 1 THEN
-        RAISE NOTICE 'TEST G4 PASSED: QA trigger re-enabled after ADD COLUMN - UPDATE wrote 1 history row';
+        RAISE NOTICE 'TEST G4 PASSED: QA-triggern återaktiverad efter ADD COLUMN - UPDATE skrev 1 historikrad';
     ELSE
-        RAISE WARNING 'TEST G4 FAILED: Expected 1 history row from UPDATE, got % (QA trigger may still be disabled)', hist_count;
+        RAISE WARNING 'TEST G4 FAILED: Förväntade 1 historikrad från UPDATE, fick % (QA-triggern kan fortfarande vara inaktiverad)', hist_count;
     END IF;
 END $$;
 
@@ -404,11 +404,11 @@ BEGIN
     WHERE table_schema = 'sk2_kba_test' AND table_name = 'qa_order_test_y';
 
     IF col_b_pos < geom_pos AND geom_pos = last_pos THEN
-        RAISE NOTICE 'TEST G5 PASSED: col_b (pos %) before geom (pos %/%) after second ADD COLUMN (no orphan cascade)', col_b_pos, geom_pos, last_pos;
+        RAISE NOTICE 'TEST G5 PASSED: col_b (pos %) före geom (pos %/%) efter andra ADD COLUMN (ingen föräldralös kedjeeffekt)', col_b_pos, geom_pos, last_pos;
     ELSIF geom_pos != last_pos THEN
-        RAISE WARNING 'TEST G5 FAILED: geom not last after second ADD COLUMN (geom=%, last=%). Orphan _temp0001 guard likely skipped restructuring.', geom_pos, last_pos;
+        RAISE WARNING 'TEST G5 FAILED: geom är inte sist efter andra ADD COLUMN (geom=%, sist=%). Orphan _temp0001-vakten hoppade troligen över omstruktureringen.', geom_pos, last_pos;
     ELSE
-        RAISE WARNING 'TEST G5 FAILED: col_b (pos %) after geom (pos %) - orphan _temp0001 guard blocked restructuring on second ADD COLUMN', col_b_pos, geom_pos;
+        RAISE WARNING 'TEST G5 FAILED: col_b (pos %) efter geom (pos %) - orphan _temp0001-vakten blockerade omstrukturering vid andra ADD COLUMN', col_b_pos, geom_pos;
     END IF;
 END $$;
 
@@ -426,9 +426,9 @@ BEGIN
       AND column_name LIKE '%_temp0001';
 
     IF orphan_count = 0 THEN
-        RAISE NOTICE 'TEST G6 PASSED: No orphaned _temp0001 columns after four ADD COLUMNs';
+        RAISE NOTICE 'TEST G6 PASSED: Inga föräldralösa _temp0001-kolumner efter fyra ADD COLUMNs';
     ELSE
-        RAISE WARNING 'TEST G6 FAILED: % orphaned _temp0001 column(s) after four ADD COLUMNs', orphan_count;
+        RAISE WARNING 'TEST G6 FAILED: % föräldralösa _temp0001-kolumn(er) efter fyra ADD COLUMNs', orphan_count;
     END IF;
 END $$;
 
@@ -451,10 +451,10 @@ BEGIN
     WHERE table_schema = 'sk2_kba_test' AND table_name = 'qa_order_test_y_h';
 
     IF geom_pos_main = last_pos_main AND geom_pos_hist = last_pos_hist THEN
-        RAISE NOTICE 'TEST G7 PASSED: geom last in parent (pos %/%) and history (pos %/%) after four ADD COLUMNs',
+        RAISE NOTICE 'TEST G7 PASSED: geom sist i huvudtabellen (pos %/%) och historiken (pos %/%) efter fyra ADD COLUMNs',
             geom_pos_main, last_pos_main, geom_pos_hist, last_pos_hist;
     ELSE
-        RAISE WARNING 'TEST G7 FAILED: geom not last. parent: %/%, history: %/%',
+        RAISE WARNING 'TEST G7 FAILED: geom är inte sist. huvudtabell: %/%, historik: %/%',
             geom_pos_main, last_pos_main, geom_pos_hist, last_pos_hist;
     END IF;
 END $$;
@@ -495,10 +495,10 @@ BEGIN
     WHERE table_schema = 'sk2_kba_test' AND table_name = 'qa_rows_test_y' AND column_name = 'geom';
 
     IF row_count = 3 AND orphan_count = 0 AND col_pos < geom_pos THEN
-        RAISE NOTICE 'TEST G8 PASSED: ADD COLUMN on table with 3 rows: data intact, no orphans, waarde (pos %) before geom (pos %)',
+        RAISE NOTICE 'TEST G8 PASSED: ADD COLUMN på tabell med 3 rader: data intakt, inga föräldralösa, waarde (pos %) före geom (pos %)',
             col_pos, geom_pos;
     ELSE
-        RAISE WARNING 'TEST G8 FAILED: rows=%, orphans=%, waarde_pos=%, geom_pos=%. Expected: rows=3, orphans=0, waarde before geom.',
+        RAISE WARNING 'TEST G8 FAILED: rader=%, föräldralösa=%, waarde_pos=%, geom_pos=%. Förväntade: rader=3, föräldralösa=0, waarde före geom.',
             row_count, orphan_count, col_pos, geom_pos;
     END IF;
 END $$;
@@ -531,20 +531,20 @@ BEGIN
       AND column_name LIKE '%_temp0001';
 
     IF extra_pos < geom_pos AND geom_pos = last_pos AND orphan_count = 0 THEN
-        RAISE NOTICE 'TEST G9 PASSED: ext schema ADD COLUMN: extra (pos %) before geom (pos %/%), no orphans',
+        RAISE NOTICE 'TEST G9 PASSED: ext-schema ADD COLUMN: extra (pos %) före geom (pos %/%), inga föräldralösa',
             extra_pos, geom_pos, last_pos;
     ELSE
-        RAISE WARNING 'TEST G9 FAILED: ext schema. extra_pos=%, geom_pos=%, last_pos=%, orphans=%',
+        RAISE WARNING 'TEST G9 FAILED: ext-schema. extra_pos=%, geom_pos=%, last_pos=%, föräldralösa=%',
             extra_pos, geom_pos, last_pos, orphan_count;
     END IF;
 END $$;
 
 -- ============================================================
--- Cleanup
+-- Städning
 -- ============================================================
 DROP SCHEMA IF EXISTS sk2_kba_test CASCADE;
 DROP SCHEMA IF EXISTS sk2_ext_test CASCADE;
 
 \echo ''
-\echo 'HEX EXTENDED E, F & G COMPLETE'
+\echo 'HEX UTÖKAD E, F & G KLAR'
 \echo 'NOTICE = PASSED/INFO,  WARNING = FAILED/BUG CONFIRMED'

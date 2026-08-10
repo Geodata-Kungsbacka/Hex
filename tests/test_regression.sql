@@ -1,69 +1,70 @@
 /******************************************************************************
- * REGRESSION TEST SUITE FOR HEX BUG FIXES
+ * REGRESSIONSTESTSVIT FÖR HEX-BUGGFIXAR
  *
- * Tests cover:
- *   1. Geometry validation applied to _kba_ schemas
- *   2. Spatial (GiST) indexes created for geometry tables
- *   3. Swedish characters (åäö) in table/schema names
- *   4. Schema validation error messages, and that CREATE SCHEMA rolls back
- *      atomically (schema + roles) even though roles are created before the
- *      name is validated (event triggers fire in alphabetical order)
- *   5. Non-geometry tables (regression check)
- *   6. DROP TABLE cleans up history tables and trigger functions
- *   7. Column order is clean after CREATE TABLE (no ordinal gaps)
- *   8. Standard columns are added correctly
- *   9. DROP SCHEMA cleans up roles; owner role has ADMIN OPTION on r_/w_ so it
- *      can GRANT them onward without superuser; hex_underhall() upgrades
- *      pre-existing grants that predate the ADMIN OPTION fix
- *  10. Edge cases: _h bypass, bad suffixes, name collisions, CTAS, ADD COLUMN
+ * Testerna täcker:
+ *   1. Geometrivalidering tillämpad på _kba_-scheman
+ *   2. Spatiala (GiST-)index skapas för geometritabeller
+ *   3. Svenska tecken (åäö) i tabell-/schemanamn
+ *   4. Schemavalideringens felmeddelanden, och att CREATE SCHEMA rullas
+ *      tillbaka atomärt (schema + roller) trots att rollerna skapas innan
+ *      namnet valideras (event-triggers körs i alfabetisk ordning)
+ *   5. Tabeller utan geometri (regressionskontroll)
+ *   6. DROP TABLE städar bort historiktabeller och triggerfunktioner
+ *   7. Kolumnordningen är ren efter CREATE TABLE (inga luckor i ordinal)
+ *   8. Standardkolumner läggs till korrekt
+ *   9. DROP SCHEMA städar bort roller; ägarrollen har ADMIN OPTION på r_/w_
+ *      så att den kan GRANT:a dem vidare utan superuser; hex_underhall()
+ *      uppgraderar befintliga tilldelningar som föregår ADMIN OPTION-fixen
+ *  10. Specialfall: _h-genväg, felaktiga suffix, namnkollisioner, CTAS,
+ *      ADD COLUMN
  *
- * PREREQUISITES:
- *   - Hex must be installed in the target database (all functions deployed)
- *   - PostGIS extension must be available
- *   - Run as a superuser or the Hex system owner
+ * FÖRUTSÄTTNINGAR:
+ *   - Hex måste vara installerat i måldatabasen (alla funktioner utplacerade)
+ *   - PostGIS-tillägget måste vara tillgängligt
+ *   - Kör som superuser eller Hex-systemägaren
  *
- * USAGE:
- *   psql -d your_database -f test_regression.sql
- *   Or run the statements in PgAdmin query tool.
+ * ANVÄNDNING:
+ *   psql -d din_databas -f test_regression.sql
+ *   Eller kör satserna i PgAdmins fråge-verktyg.
  *
- * The test cleans up after itself using DROP SCHEMA ... CASCADE at the end.
- * The test is idempotent - safe to run multiple times.
+ * Testet städar upp efter sig med DROP SCHEMA ... CASCADE på slutet.
+ * Testet är idempotent - säkert att köra flera gånger.
  ******************************************************************************/
 
 \echo '============================================================'
-\echo 'HEX REGRESSION TEST SUITE'
+\echo 'HEX REGRESSIONSTESTSVIT'
 \echo '============================================================'
 
 ------------------------------------------------------------------------
--- INITIAL CLEANUP (idempotent - safe if schemas don't exist)
+-- INLEDANDE STÄDNING (idempotent - säkert även om scheman inte finns)
 ------------------------------------------------------------------------
 \echo ''
-\echo '--- Initial cleanup of previous test runs ---'
+\echo '--- Inledande städning av tidigare testkörningar ---'
 DROP SCHEMA IF EXISTS sk1_kba_test CASCADE;
 DROP SCHEMA IF EXISTS sk0_ext_test CASCADE;
 DROP SCHEMA IF EXISTS sk2_ext_rolltest CASCADE;
 
 ------------------------------------------------------------------------
--- SETUP: Create test schemas
+-- FÖRBEREDELSE: Skapa testscheman
 ------------------------------------------------------------------------
 \echo ''
-\echo '--- Creating test schemas ---'
+\echo '--- Skapar testscheman ---'
 CREATE SCHEMA sk1_kba_test;
 CREATE SCHEMA sk0_ext_test;
 
 ------------------------------------------------------------------------
--- TEST 1: Geometry validation is applied to _kba_ schemas
+-- TEST 1: Geometrivalidering tillämpas på _kba_-scheman
 ------------------------------------------------------------------------
 \echo ''
-\echo '--- TEST 1: Geometry validation on _kba_ schemas ---'
+\echo '--- TEST 1: Geometrivalidering på _kba_-scheman ---'
 
--- Create a geometry table in _kba_ schema
+-- Skapa en geometritabell i _kba_-schema
 CREATE TABLE sk1_kba_test.test_validering_y (
     namn text,
     geom geometry(Polygon, 3007)
 );
 
--- Verify CHECK constraint exists
+-- Verifiera att CHECK-villkoret finns
 DO $$
 DECLARE
     constraint_count integer;
@@ -76,49 +77,49 @@ BEGIN
     AND c.contype = 'c';
 
     IF constraint_count > 0 THEN
-        RAISE NOTICE 'TEST 1a PASSED: Geometry validation constraint found on _kba_ table';
+        RAISE NOTICE 'TEST 1a PASSED: Geometrivalideringsvillkor hittat på _kba_-tabell';
     ELSE
-        RAISE WARNING 'TEST 1a FAILED: No geometry validation constraint on _kba_ table';
+        RAISE WARNING 'TEST 1a FAILED: Inget geometrivalideringsvillkor på _kba_-tabell';
     END IF;
 END $$;
 
--- Verify invalid geometry is blocked (empty geometry).
--- hex_kontrollera_geom (a BEFORE INSERT trigger) fires before the CHECK
--- constraint and rejects it first with a plain RAISE EXCEPTION (SQLSTATE
--- P0001), so this is normally caught as hex_kontrollera_geom's own message,
--- not as a check_violation (23514) -- the CHECK constraint is a second line
--- of defense that would only fire if the trigger were somehow missing.
+-- Verifiera att ogiltig geometri blockeras (tom geometri).
+-- hex_kontrollera_geom (en BEFORE INSERT-trigger) körs innan CHECK-villkoret
+-- och avvisar den först med en enkel RAISE EXCEPTION (SQLSTATE P0001), så
+-- detta fångas normalt som hex_kontrollera_geoms eget meddelande, inte som
+-- check_violation (23514) -- CHECK-villkoret är ett andra försvarsled som
+-- bara skulle utlösas om triggern på något sätt saknades.
 DO $$
 BEGIN
     INSERT INTO sk1_kba_test.test_validering_y (namn, geom)
     VALUES ('tom', ST_GeomFromText('POLYGON EMPTY', 3007));
-    RAISE WARNING 'TEST 1b FAILED: Empty geometry was accepted (should be blocked)';
+    RAISE WARNING 'TEST 1b FAILED: Tom geometri accepterades (skulle blockerats)';
 EXCEPTION
     WHEN check_violation THEN
-        RAISE NOTICE 'TEST 1b PASSED: Empty geometry correctly blocked by CHECK constraint';
+        RAISE NOTICE 'TEST 1b PASSED: Tom geometri korrekt blockerad av CHECK-villkor';
     WHEN OTHERS THEN
         IF SQLERRM LIKE '%Ogiltig geometri%' THEN
-            RAISE NOTICE 'TEST 1b PASSED: Empty geometry correctly blocked by hex_kontrollera_geom';
+            RAISE NOTICE 'TEST 1b PASSED: Tom geometri korrekt blockerad av hex_kontrollera_geom';
         ELSE
-            RAISE WARNING 'TEST 1b FAILED: Empty geometry rejected, but by an unexpected error: %', SQLERRM;
+            RAISE WARNING 'TEST 1b FAILED: Tom geometri avvisad, men av ett oväntat fel: %', SQLERRM;
         END IF;
 END $$;
 
--- Cleanup
+-- Städning
 DROP TABLE IF EXISTS sk1_kba_test.test_validering_y;
 
 ------------------------------------------------------------------------
--- TEST 2: Spatial (GiST) indexes are created
+-- TEST 2: Spatiala (GiST-)index skapas
 ------------------------------------------------------------------------
 \echo ''
-\echo '--- TEST 2: Spatial GiST index creation ---'
+\echo '--- TEST 2: Skapande av spatialt GiST-index ---'
 
 CREATE TABLE sk0_ext_test.test_index_y (
     data text,
     geom geometry(Polygon, 3007)
 );
 
--- Verify GiST index exists
+-- Verifiera att GiST-index finns
 DO $$
 DECLARE
     index_count integer;
@@ -130,13 +131,13 @@ BEGIN
     AND indexname = 'test_index_y_geom_gidx';
 
     IF index_count > 0 THEN
-        RAISE NOTICE 'TEST 2a PASSED: GiST index created on ext schema table';
+        RAISE NOTICE 'TEST 2a PASSED: GiST-index skapat på ext-schematabell';
     ELSE
-        RAISE WARNING 'TEST 2a FAILED: GiST index NOT found on ext schema table';
+        RAISE WARNING 'TEST 2a FAILED: GiST-index INTE funnet på ext-schematabell';
     END IF;
 END $$;
 
--- Also verify GiST index on _kba_ schema table
+-- Verifiera även GiST-index på _kba_-schematabell
 CREATE TABLE sk1_kba_test.test_index_p (
     data text,
     geom geometry(Point, 3007)
@@ -153,13 +154,13 @@ BEGIN
     AND indexname = 'test_index_p_geom_gidx';
 
     IF index_count > 0 THEN
-        RAISE NOTICE 'TEST 2b PASSED: GiST index created on kba schema table';
+        RAISE NOTICE 'TEST 2b PASSED: GiST-index skapat på kba-schematabell';
     ELSE
-        RAISE WARNING 'TEST 2b FAILED: GiST index NOT found on kba schema table';
+        RAISE WARNING 'TEST 2b FAILED: GiST-index INTE funnet på kba-schematabell';
     END IF;
 END $$;
 
--- Verify NO constraint on ext table (only _kba_ should have validation)
+-- Verifiera att INGET villkor finns på ext-tabellen (endast _kba_ ska ha validering)
 DO $$
 DECLARE
     constraint_count integer;
@@ -172,36 +173,36 @@ BEGIN
     AND c.contype = 'c';
 
     IF constraint_count = 0 THEN
-        RAISE NOTICE 'TEST 2c PASSED: No geometry validation on ext schema (correct)';
+        RAISE NOTICE 'TEST 2c PASSED: Ingen geometrivalidering på ext-schema (korrekt)';
     ELSE
-        RAISE WARNING 'TEST 2c FAILED: Geometry validation unexpectedly on ext schema';
+        RAISE WARNING 'TEST 2c FAILED: Geometrivalidering oväntat på ext-schema';
     END IF;
 END $$;
 
--- Cleanup
+-- Städning
 DROP TABLE IF EXISTS sk0_ext_test.test_index_y;
 DROP TABLE IF EXISTS sk1_kba_test.test_index_p;
 
 ------------------------------------------------------------------------
--- TEST 3: Swedish characters (åäö) in table names
+-- TEST 3: Svenska tecken (åäö) i tabellnamn
 ------------------------------------------------------------------------
 \echo ''
-\echo '--- TEST 3: Swedish character support ---'
+\echo '--- TEST 3: Stöd för svenska tecken ---'
 
--- Test table with Swedish characters
+-- Testa tabell med svenska tecken
 DO $$
 BEGIN
     CREATE TABLE sk0_ext_test.rör_l (
         diameter integer,
         geom geometry(LineString, 3007)
     );
-    RAISE NOTICE 'TEST 3a PASSED: Table with Swedish chars (rör_l) created successfully';
+    RAISE NOTICE 'TEST 3a PASSED: Tabell med svenska tecken (rör_l) skapad korrekt';
 EXCEPTION
     WHEN OTHERS THEN
-        RAISE WARNING 'TEST 3a FAILED: Could not create table with Swedish chars: %', SQLERRM;
+        RAISE WARNING 'TEST 3a FAILED: Kunde inte skapa tabell med svenska tecken: %', SQLERRM;
 END $$;
 
--- Verify the table was restructured (has gid column)
+-- Verifiera att tabellen omstrukturerades (har gid-kolumn)
 DO $$
 DECLARE
     has_gid boolean;
@@ -214,13 +215,13 @@ BEGIN
     ) INTO has_gid;
 
     IF has_gid THEN
-        RAISE NOTICE 'TEST 3b PASSED: Swedish char table has standard gid column';
+        RAISE NOTICE 'TEST 3b PASSED: Tabell med svenska tecken har standard gid-kolumn';
     ELSE
-        RAISE WARNING 'TEST 3b FAILED: Swedish char table missing gid column';
+        RAISE WARNING 'TEST 3b FAILED: Tabell med svenska tecken saknar gid-kolumn';
     END IF;
 END $$;
 
--- Verify GiST index on Swedish char table
+-- Verifiera GiST-index på tabell med svenska tecken
 DO $$
 DECLARE
     index_count integer;
@@ -232,23 +233,23 @@ BEGIN
     AND indexname = 'rör_l_geom_gidx';
 
     IF index_count > 0 THEN
-        RAISE NOTICE 'TEST 3c PASSED: GiST index created on Swedish char table';
+        RAISE NOTICE 'TEST 3c PASSED: GiST-index skapat på tabell med svenska tecken';
     ELSE
-        RAISE WARNING 'TEST 3c FAILED: GiST index NOT found on Swedish char table';
+        RAISE WARNING 'TEST 3c FAILED: GiST-index INTE funnet på tabell med svenska tecken';
     END IF;
 END $$;
 
--- Test more Swedish character names
+-- Testa fler tabellnamn med svenska tecken
 DO $$
 BEGIN
     CREATE TABLE sk0_ext_test.vägar_l (
         bredd numeric,
         geom geometry(LineString, 3007)
     );
-    RAISE NOTICE 'TEST 3d PASSED: Table vägar_l created successfully';
+    RAISE NOTICE 'TEST 3d PASSED: Tabell vägar_l skapad korrekt';
 EXCEPTION
     WHEN OTHERS THEN
-        RAISE WARNING 'TEST 3d FAILED: Could not create table vägar_l: %', SQLERRM;
+        RAISE WARNING 'TEST 3d FAILED: Kunde inte skapa tabell vägar_l: %', SQLERRM;
 END $$;
 
 DO $$
@@ -257,42 +258,43 @@ BEGIN
         areal numeric,
         geom geometry(Polygon, 3007)
     );
-    RAISE NOTICE 'TEST 3e PASSED: Table åkrar_y created successfully';
+    RAISE NOTICE 'TEST 3e PASSED: Tabell åkrar_y skapad korrekt';
 EXCEPTION
     WHEN OTHERS THEN
-        RAISE WARNING 'TEST 3e FAILED: Could not create table åkrar_y: %', SQLERRM;
+        RAISE WARNING 'TEST 3e FAILED: Kunde inte skapa tabell åkrar_y: %', SQLERRM;
 END $$;
 
--- Cleanup
+-- Städning
 DROP TABLE IF EXISTS sk0_ext_test.rör_l;
 DROP TABLE IF EXISTS sk0_ext_test.vägar_l;
 DROP TABLE IF EXISTS sk0_ext_test.åkrar_y;
 
 ------------------------------------------------------------------------
--- TEST 4: Schema validation error messages
+-- TEST 4: Schemavalideringens felmeddelanden
 ------------------------------------------------------------------------
 \echo ''
-\echo '--- TEST 4: Schema validation error messages ---'
+\echo '--- TEST 4: Schemavalideringens felmeddelanden ---'
 
--- Test that invalid schema name is rejected with helpful message
+-- Testa att ogiltigt schemanamn avvisas med hjälpsamt meddelande
 DO $$
 BEGIN
     CREATE SCHEMA invalid_schema_name;
-    RAISE WARNING 'TEST 4a FAILED: Invalid schema name was accepted';
+    RAISE WARNING 'TEST 4a FAILED: Ogiltigt schemanamn accepterades';
 EXCEPTION
     WHEN OTHERS THEN
         IF SQLERRM LIKE '%hex_validera_schemanamn%' AND (SQLERRM LIKE '%sk0%' OR SQLERRM LIKE '%sk1%' OR SQLERRM LIKE '%sk2%') THEN
-            RAISE NOTICE 'TEST 4a PASSED: Invalid schema rejected with helpful error';
+            RAISE NOTICE 'TEST 4a PASSED: Ogiltigt schema avvisat med hjälpsamt fel';
         ELSE
-            RAISE WARNING 'TEST 4a PARTIAL: Schema rejected but message unclear: %', SQLERRM;
+            RAISE WARNING 'TEST 4a PARTIAL: Schema avvisat men meddelandet oklart: %', SQLERRM;
         END IF;
 END $$;
 
--- 4b: PostgreSQL fires Hex's three CREATE SCHEMA event triggers in alphabetical
--- order by trigger name (hex_hantera_std_roller_trigger, hex_notifiera_gs_trigger,
--- hex_validera_schemanamn_trigger) -- so for the invalid name above, r_/w_/gs_r_/
--- gs_w_ roles were already created by the time validation rejected it. Confirm
--- the whole transaction rolled back together and left no orphaned roles.
+-- 4b: PostgreSQL kör Hex tre CREATE SCHEMA-event-triggers i alfabetisk
+-- ordning efter triggernamn (hex_hantera_std_roller_trigger,
+-- hex_notifiera_gs_trigger, hex_validera_schemanamn_trigger) -- så för det
+-- ogiltiga namnet ovan hade r_/w_/gs_r_/gs_w_-rollerna redan skapats när
+-- valideringen avvisade det. Bekräfta att hela transaktionen rullades
+-- tillbaka tillsammans och inte lämnade några övergivna roller.
 DO $$
 DECLARE
     orphans text[];
@@ -302,17 +304,17 @@ BEGIN
     WHERE rolname LIKE '%invalid_schema_name%';
 
     IF orphans IS NULL THEN
-        RAISE NOTICE 'TEST 4b PASSED: no orphaned roles survive rollback of an invalid schema name';
+        RAISE NOTICE 'TEST 4b PASSED: Inga övergivna roller kvarstår efter återställning av ogiltigt schemanamn';
     ELSE
-        RAISE WARNING 'TEST 4b FAILED: orphaned roles survived rollback: %', array_to_string(orphans, ', ');
+        RAISE WARNING 'TEST 4b FAILED: Övergivna roller kvarstod efter återställning: %', array_to_string(orphans, ', ');
     END IF;
 END $$;
 
 ------------------------------------------------------------------------
--- TEST 5: Tables without geometry still work (no regression)
+-- TEST 5: Tabeller utan geometri fungerar fortfarande (ingen regression)
 ------------------------------------------------------------------------
 \echo ''
-\echo '--- TEST 5: Non-geometry tables (regression check) ---'
+\echo '--- TEST 5: Tabeller utan geometri (regressionskontroll) ---'
 
 DO $$
 BEGIN
@@ -320,13 +322,13 @@ BEGIN
         nyckel text,
         varde text
     );
-    RAISE NOTICE 'TEST 5a PASSED: Non-geometry table created successfully';
+    RAISE NOTICE 'TEST 5a PASSED: Tabell utan geometri skapad korrekt';
 EXCEPTION
     WHEN OTHERS THEN
-        RAISE WARNING 'TEST 5a FAILED: Could not create non-geometry table: %', SQLERRM;
+        RAISE WARNING 'TEST 5a FAILED: Kunde inte skapa tabell utan geometri: %', SQLERRM;
 END $$;
 
--- Verify no GiST index on non-geometry table
+-- Verifiera att inget GiST-index finns på tabell utan geometri
 DO $$
 DECLARE
     index_count integer;
@@ -338,28 +340,28 @@ BEGIN
     AND indexdef LIKE '%GIST%';
 
     IF index_count = 0 THEN
-        RAISE NOTICE 'TEST 5b PASSED: No GiST index on non-geometry table (correct)';
+        RAISE NOTICE 'TEST 5b PASSED: Inget GiST-index på tabell utan geometri (korrekt)';
     ELSE
-        RAISE WARNING 'TEST 5b FAILED: Unexpected GiST index on non-geometry table';
+        RAISE WARNING 'TEST 5b FAILED: Oväntat GiST-index på tabell utan geometri';
     END IF;
 END $$;
 
--- Cleanup
+-- Städning
 DROP TABLE IF EXISTS sk0_ext_test.metadata;
 
 ------------------------------------------------------------------------
--- TEST 6: DROP TABLE cleans up history tables and trigger functions
+-- TEST 6: DROP TABLE städar bort historiktabeller och triggerfunktioner
 ------------------------------------------------------------------------
 \echo ''
-\echo '--- TEST 6: DROP TABLE history cleanup ---'
+\echo '--- TEST 6: DROP TABLE-städning av historik ---'
 
--- Create a _kba_ table that will get a history table
+-- Skapa en _kba_-tabell som får en historiktabell
 CREATE TABLE sk1_kba_test.historiktest_y (
     beskrivning text,
     geom geometry(Polygon, 3007)
 );
 
--- Verify history table was created
+-- Verifiera att historiktabellen skapades
 DO $$
 DECLARE
     has_history boolean;
@@ -371,13 +373,13 @@ BEGIN
     ) INTO has_history;
 
     IF has_history THEN
-        RAISE NOTICE 'TEST 6a PASSED: History table created for _kba_ table';
+        RAISE NOTICE 'TEST 6a PASSED: Historiktabell skapad för _kba_-tabell';
     ELSE
-        RAISE WARNING 'TEST 6a FAILED: No history table created for _kba_ table';
+        RAISE WARNING 'TEST 6a FAILED: Ingen historiktabell skapad för _kba_-tabell';
     END IF;
 END $$;
 
--- Verify trigger function was created
+-- Verifiera att triggerfunktionen skapades
 DO $$
 DECLARE
     has_trigger_fn boolean;
@@ -390,16 +392,16 @@ BEGIN
     ) INTO has_trigger_fn;
 
     IF has_trigger_fn THEN
-        RAISE NOTICE 'TEST 6b PASSED: QA trigger function created for _kba_ table';
+        RAISE NOTICE 'TEST 6b PASSED: QA-triggerfunktion skapad för _kba_-tabell';
     ELSE
-        RAISE WARNING 'TEST 6b FAILED: No QA trigger function created for _kba_ table';
+        RAISE WARNING 'TEST 6b FAILED: Ingen QA-triggerfunktion skapad för _kba_-tabell';
     END IF;
 END $$;
 
--- Now DROP the main table - this should cascade to history + trigger function
+-- Kör nu DROP på huvudtabellen - detta ska kaskadera till historik + triggerfunktion
 DROP TABLE sk1_kba_test.historiktest_y;
 
--- Verify history table was removed
+-- Verifiera att historiktabellen togs bort
 DO $$
 DECLARE
     has_history boolean;
@@ -411,13 +413,13 @@ BEGIN
     ) INTO has_history;
 
     IF NOT has_history THEN
-        RAISE NOTICE 'TEST 6c PASSED: History table removed when main table dropped';
+        RAISE NOTICE 'TEST 6c PASSED: Historiktabell borttagen när huvudtabellen togs bort';
     ELSE
-        RAISE WARNING 'TEST 6c FAILED: History table still exists after main table dropped';
+        RAISE WARNING 'TEST 6c FAILED: Historiktabell finns kvar efter att huvudtabellen togs bort';
     END IF;
 END $$;
 
--- Verify trigger function was removed
+-- Verifiera att triggerfunktionen togs bort
 DO $$
 DECLARE
     has_trigger_fn boolean;
@@ -430,14 +432,14 @@ BEGIN
     ) INTO has_trigger_fn;
 
     IF NOT has_trigger_fn THEN
-        RAISE NOTICE 'TEST 6d PASSED: QA trigger function removed when main table dropped';
+        RAISE NOTICE 'TEST 6d PASSED: QA-triggerfunktion borttagen när huvudtabellen togs bort';
     ELSE
-        RAISE WARNING 'TEST 6d FAILED: QA trigger function still exists after main table dropped';
+        RAISE WARNING 'TEST 6d FAILED: QA-triggerfunktion finns kvar efter att huvudtabellen togs bort';
     END IF;
 END $$;
 
--- Test that table restructuring still works (DROP TABLE during hex_byt_ut_tabell
--- should NOT cascade to history because of the recursion guard)
+-- Testa att tabellomstrukturering fortfarande fungerar (DROP TABLE under
+-- hex_byt_ut_tabell ska INTE kaskadera till historiken tack vare rekursionsspärren)
 CREATE TABLE sk1_kba_test.omstrukt_test_y (
     data text,
     geom geometry(Polygon, 3007)
@@ -462,31 +464,31 @@ BEGIN
     ) INTO has_history;
 
     IF has_gid AND has_history THEN
-        RAISE NOTICE 'TEST 6e PASSED: Table restructuring still works with DROP TABLE trigger active';
+        RAISE NOTICE 'TEST 6e PASSED: Tabellomstrukturering fungerar fortfarande med DROP TABLE-triggern aktiv';
     ELSIF NOT has_gid THEN
-        RAISE WARNING 'TEST 6e FAILED: Table not restructured (missing gid)';
+        RAISE WARNING 'TEST 6e FAILED: Tabellen omstrukturerades inte (saknar gid)';
     ELSE
-        RAISE WARNING 'TEST 6e FAILED: History table not created during restructuring';
+        RAISE WARNING 'TEST 6e FAILED: Historiktabell skapades inte vid omstrukturering';
     END IF;
 END $$;
 
--- Cleanup
+-- Städning
 DROP TABLE IF EXISTS sk1_kba_test.omstrukt_test_y;
 
 ------------------------------------------------------------------------
--- TEST 7: Column order is clean (no ordinal position gaps)
+-- TEST 7: Kolumnordningen är ren (inga luckor i ordinalposition)
 ------------------------------------------------------------------------
 \echo ''
-\echo '--- TEST 7: Column order after CREATE TABLE ---'
+\echo '--- TEST 7: Kolumnordning efter CREATE TABLE ---'
 
 CREATE TABLE sk1_kba_test.kolumnordning_y (
     beskrivning text,
     geom geometry(Polygon, 3007)
 );
 
--- If hex_hantera_ny_kolumn fires during CREATE TABLE, columns get dropped
--- and re-added, causing gaps in ordinal_position (e.g. 1,2,13,14,15,16,17).
--- With the fix, max(ordinal_position) should equal count(*).
+-- Om hex_hantera_ny_kolumn körs under CREATE TABLE tas kolumner bort och
+-- läggs till igen, vilket ger luckor i ordinal_position (t.ex. 1,2,13,14,
+-- 15,16,17). Med fixen ska max(ordinal_position) vara lika med count(*).
 DO $$
 DECLARE
     col_count integer;
@@ -499,27 +501,27 @@ BEGIN
     AND table_name = 'kolumnordning_y';
 
     IF col_count = max_pos THEN
-        RAISE NOTICE 'TEST 7a PASSED: Column positions are sequential (% columns, max position %)', col_count, max_pos;
+        RAISE NOTICE 'TEST 7a PASSED: Kolumnpositioner är sekventiella (% kolumner, max position %)', col_count, max_pos;
     ELSE
-        RAISE WARNING 'TEST 7a FAILED: Column position gaps detected (% columns but max position %)', col_count, max_pos;
+        RAISE WARNING 'TEST 7a FAILED: Luckor i kolumnposition upptäckta (% kolumner men max position %)', col_count, max_pos;
     END IF;
 END $$;
 
--- Cleanup
+-- Städning
 DROP TABLE IF EXISTS sk1_kba_test.kolumnordning_y;
 
 ------------------------------------------------------------------------
--- TEST 8: Standard columns are added correctly
+-- TEST 8: Standardkolumner läggs till korrekt
 ------------------------------------------------------------------------
 \echo ''
-\echo '--- TEST 8: Standard columns ---'
+\echo '--- TEST 8: Standardkolumner ---'
 
 CREATE TABLE sk0_ext_test.standardkol_y (
     data text,
     geom geometry(Polygon, 3007)
 );
 
--- Verify standard columns on _ext_ schema (only gid + skapad_tidpunkt)
+-- Verifiera standardkolumner på _ext_-schema (endast gid + skapad_tidpunkt)
 DO $$
 DECLARE
     missing text[];
@@ -534,13 +536,13 @@ BEGIN
     );
 
     IF missing IS NULL THEN
-        RAISE NOTICE 'TEST 8a PASSED: Standard columns present on ext table (gid, skapad_tidpunkt)';
+        RAISE NOTICE 'TEST 8a PASSED: Standardkolumner finns på ext-tabell (gid, skapad_tidpunkt)';
     ELSE
-        RAISE WARNING 'TEST 8a FAILED: Missing standard columns on ext table: %', array_to_string(missing, ', ');
+        RAISE WARNING 'TEST 8a FAILED: Standardkolumner saknas på ext-tabell: %', array_to_string(missing, ', ');
     END IF;
 END $$;
 
--- Verify _kba_ table gets ALL standard columns (gid + skapad_tidpunkt + skapad_av + andrad_tidpunkt + andrad_av)
+-- Verifiera att _kba_-tabell får ALLA standardkolumner (gid + skapad_tidpunkt + skapad_av + andrad_tidpunkt + andrad_av)
 CREATE TABLE sk1_kba_test.standardkol_kba_y (
     data text,
     geom geometry(Polygon, 3007)
@@ -560,13 +562,13 @@ BEGIN
     );
 
     IF missing IS NULL THEN
-        RAISE NOTICE 'TEST 8b PASSED: All standard columns present on kba table';
+        RAISE NOTICE 'TEST 8b PASSED: Alla standardkolumner finns på kba-tabell';
     ELSE
-        RAISE WARNING 'TEST 8b FAILED: Missing standard columns on kba table: %', array_to_string(missing, ', ');
+        RAISE WARNING 'TEST 8b FAILED: Standardkolumner saknas på kba-tabell: %', array_to_string(missing, ', ');
     END IF;
 END $$;
 
--- Verify gid is first column
+-- Verifiera att gid är första kolumnen
 DO $$
 DECLARE
     gid_pos integer;
@@ -578,13 +580,13 @@ BEGIN
     AND column_name = 'gid';
 
     IF gid_pos = 1 THEN
-        RAISE NOTICE 'TEST 8c PASSED: gid is first column (position 1)';
+        RAISE NOTICE 'TEST 8c PASSED: gid är första kolumnen (position 1)';
     ELSE
-        RAISE WARNING 'TEST 8c FAILED: gid at position % (expected 1)', gid_pos;
+        RAISE WARNING 'TEST 8c FAILED: gid på position % (förväntade 1)', gid_pos;
     END IF;
 END $$;
 
--- Verify geom is last column
+-- Verifiera att geom är sista kolumnen
 DO $$
 DECLARE
     geom_pos integer;
@@ -602,13 +604,13 @@ BEGIN
     AND table_name = 'standardkol_y';
 
     IF geom_pos = max_pos THEN
-        RAISE NOTICE 'TEST 8d PASSED: geom is last column (position %)', geom_pos;
+        RAISE NOTICE 'TEST 8d PASSED: geom är sista kolumnen (position %)', geom_pos;
     ELSE
-        RAISE WARNING 'TEST 8d FAILED: geom at position % but max is %', geom_pos, max_pos;
+        RAISE WARNING 'TEST 8d FAILED: geom på position % men max är %', geom_pos, max_pos;
     END IF;
 END $$;
 
--- Cleanup
+-- Städning
 DROP TABLE IF EXISTS sk0_ext_test.standardkol_y;
 DROP TABLE IF EXISTS sk1_kba_test.standardkol_kba_y;
 
@@ -802,8 +804,8 @@ BEGIN
     END IF;
 END $$;
 
--- 9m: Behavioral proof of 9l -- SET ROLE to hex_systemagare() and actually
--- GRANT r_ onward to a throwaway role, without any superuser involvement.
+-- 9m: Beteendemässigt bevis för 9l -- SET ROLE till hex_systemagare() och
+-- faktiskt GRANT:a r_ vidare till en engångsroll, helt utan superuser.
 DO $$
 DECLARE
     agare text := public.hex_systemagare();
@@ -821,9 +823,9 @@ BEGIN
     END;
     RESET ROLE;
 
-    -- DROP ROLE alone is enough to clean up the membership; an explicit REVOKE
-    -- here would be run as the wrong grantor (the GRANT above was made "by"
-    -- agare, not by the session's own role) and just emit a spurious WARNING.
+    -- DROP ROLE ensamt räcker för att städa bort medlemskapet; en explicit
+    -- REVOKE här skulle köras som fel grantor (GRANT ovan gjordes "av"
+    -- agare, inte av sessionens egen roll) och bara ge en missvisande WARNING.
     DROP ROLE hex_test_ad_user_tmp2;
 
     IF ok THEN
@@ -911,22 +913,22 @@ BEGIN
 END $$;
 
 ------------------------------------------------------------------------
--- TEST 10: Edge cases and adversarial inputs
+-- TEST 10: Specialfall och testfientliga indata
 ------------------------------------------------------------------------
 \echo ''
-\echo '--- TEST 10: Edge cases ---'
+\echo '--- TEST 10: Specialfall ---'
 
--- 10a: Orphan _h table (no parent) should be BLOCKED (rolled back)
+-- 10a: Föräldralös _h-tabell (ingen förälder) ska BLOCKERAS (rullas tillbaka)
 DO $$
 BEGIN
     CREATE TABLE sk0_ext_test.sneaky_h (data text);
-    RAISE WARNING 'TEST 10a FAILED: Orphan _h table was accepted (parent does not exist)';
+    RAISE WARNING 'TEST 10a FAILED: Föräldralös _h-tabell accepterades (föräldern finns inte)';
 EXCEPTION
     WHEN OTHERS THEN
-        RAISE NOTICE 'TEST 10a PASSED: Orphan _h table blocked: %', SQLERRM;
+        RAISE NOTICE 'TEST 10a PASSED: Föräldralös _h-tabell blockerad: %', SQLERRM;
 END $$;
 
--- 10a2: Legitimate _h table (parent exists) should be SKIPPED (allowed through)
+-- 10a2: Legitim _h-tabell (föräldern finns) ska HOPPAS ÖVER (släppas igenom)
 CREATE TABLE sk0_ext_test.parent_y (
     data text,
     geom geometry(Polygon, 3007)
@@ -941,29 +943,29 @@ BEGIN
         WHERE table_schema = 'sk0_ext_test'
         AND table_name = 'parent_y_h'
     ) THEN
-        RAISE NOTICE 'TEST 10a2 PASSED: _h table with existing parent was allowed';
+        RAISE NOTICE 'TEST 10a2 PASSED: _h-tabell med befintlig förälder tilläts';
     ELSE
-        RAISE WARNING 'TEST 10a2 FAILED: _h table with existing parent was blocked';
+        RAISE WARNING 'TEST 10a2 FAILED: _h-tabell med befintlig förälder blockerades';
     END IF;
 EXCEPTION
     WHEN OTHERS THEN
-        RAISE WARNING 'TEST 10a2 FAILED: _h table with existing parent was rejected: %', SQLERRM;
+        RAISE WARNING 'TEST 10a2 FAILED: _h-tabell med befintlig förälder avvisades: %', SQLERRM;
 END $$;
 
 DROP TABLE IF EXISTS sk0_ext_test.parent_y_h;
 DROP TABLE IF EXISTS sk0_ext_test.parent_y;
 
--- 10b: Reserved geometry suffix without geometry (should be rejected)
+-- 10b: Reserverat geometrisuffix utan geometri (ska avvisas)
 DO $$
 BEGIN
     CREATE TABLE sk0_ext_test.trick_p (name text);
-    RAISE WARNING 'TEST 10b FAILED: Table with geometry suffix but no geometry was accepted';
+    RAISE WARNING 'TEST 10b FAILED: Tabell med geometrisuffix men utan geometri accepterades';
 EXCEPTION
     WHEN OTHERS THEN
-        RAISE NOTICE 'TEST 10b PASSED: Table with geometry suffix but no geometry rejected: %', SQLERRM;
+        RAISE NOTICE 'TEST 10b PASSED: Tabell med geometrisuffix men utan geometri avvisad: %', SQLERRM;
 END $$;
 
--- 10c: User column named 'gid' (should be silently replaced by standard gid)
+-- 10c: Användarkolumn med namnet 'gid' (ska tyst ersättas av standard-gid)
 CREATE TABLE sk0_ext_test.usergid_y (
     gid text,
     geom geometry(Polygon, 3007)
@@ -980,15 +982,15 @@ BEGIN
     AND column_name = 'gid';
 
     IF gid_type = 'integer' THEN
-        RAISE NOTICE 'TEST 10c PASSED: User gid (text) replaced by standard gid (integer)';
+        RAISE NOTICE 'TEST 10c PASSED: Användarens gid (text) ersatt av standard-gid (integer)';
     ELSE
-        RAISE WARNING 'TEST 10c FAILED: gid is % instead of integer', gid_type;
+        RAISE WARNING 'TEST 10c FAILED: gid är % istället för integer', gid_type;
     END IF;
 END $$;
 
 DROP TABLE IF EXISTS sk0_ext_test.usergid_y;
 
--- 10d: CREATE TABLE AS SELECT (different DDL tag - may bypass Hex)
+-- 10d: CREATE TABLE AS SELECT (annan DDL-tagg - kan kringgå Hex)
 CREATE TABLE sk0_ext_test.source_y (
     data text,
     geom geometry(Polygon, 3007)
@@ -1008,18 +1010,18 @@ BEGIN
     ) INTO has_gid;
 
     IF has_gid THEN
-        RAISE NOTICE 'TEST 10d INFO: CREATE TABLE AS SELECT WAS restructured by Hex';
+        RAISE NOTICE 'TEST 10d INFO: CREATE TABLE AS SELECT omstrukturerades AV Hex';
     ELSE
-        RAISE WARNING 'TEST 10d INFO: CREATE TABLE AS SELECT bypasses Hex (no restructuring). Use INSERT INTO ... SELECT instead.';
+        RAISE WARNING 'TEST 10d INFO: CREATE TABLE AS SELECT kringgår Hex (ingen omstrukturering). Använd INSERT INTO ... SELECT istället.';
     END IF;
 END $$;
 
 DROP TABLE IF EXISTS sk0_ext_test.ctas_y;
 DROP TABLE IF EXISTS sk0_ext_test.source_y;
 
--- 10e: Reserved column name on wrong schema (skapad_av on _ext_ table)
--- skapad_av is a standard column for _kba_ only, but the filter removes it
--- from ALL schemas. On _ext_ it gets silently dropped.
+-- 10e: Reserverat kolumnnamn på fel schema (skapad_av på _ext_-tabell)
+-- skapad_av är en standardkolumn endast för _kba_, men filtret tar bort
+-- den från ALLA scheman. På _ext_ tas den tyst bort.
 CREATE TABLE sk0_ext_test.reserverat_y (
     skapad_av text,
     other_data text,
@@ -1038,28 +1040,28 @@ BEGIN
     ) INTO has_skapad_av;
 
     IF has_skapad_av THEN
-        RAISE NOTICE 'TEST 10e INFO: User column skapad_av preserved on ext table';
+        RAISE NOTICE 'TEST 10e INFO: Användarkolumnen skapad_av behölls på ext-tabell';
     ELSE
-        RAISE WARNING 'TEST 10e INFO: User column skapad_av silently dropped on ext table (reserved name). Avoid using standard column names on non-kba schemas.';
+        RAISE WARNING 'TEST 10e INFO: Användarkolumnen skapad_av tyst borttagen på ext-tabell (reserverat namn). Undvik att använda standardkolumnnamn på icke-kba-scheman.';
     END IF;
 END $$;
 
 DROP TABLE IF EXISTS sk0_ext_test.reserverat_y;
 
--- 10f: Geometry column not named 'geom' (should be rejected)
+-- 10f: Geometrikolumn ej namngiven 'geom' (ska avvisas)
 DO $$
 BEGIN
     CREATE TABLE sk0_ext_test.badgeom_y (
         data text,
         the_geom geometry(Polygon, 3007)
     );
-    RAISE WARNING 'TEST 10f FAILED: Table with geometry not named geom was accepted';
+    RAISE WARNING 'TEST 10f FAILED: Tabell med geometri ej namngiven geom accepterades';
 EXCEPTION
     WHEN OTHERS THEN
-        RAISE NOTICE 'TEST 10f PASSED: Geometry column must be named geom: %', SQLERRM;
+        RAISE NOTICE 'TEST 10f PASSED: Geometrikolumn måste heta geom: %', SQLERRM;
 END $$;
 
--- 10g: ALTER TABLE ADD COLUMN on existing table (hex_hantera_ny_kolumn)
+-- 10g: ALTER TABLE ADD COLUMN på befintlig tabell (hex_hantera_ny_kolumn)
 CREATE TABLE sk0_ext_test.addcol_y (
     data text,
     geom geometry(Polygon, 3007)
@@ -1092,40 +1094,40 @@ BEGIN
     AND table_name = 'addcol_y';
 
     IF extra_exists AND geom_pos = max_pos THEN
-        RAISE NOTICE 'TEST 10g PASSED: ADD COLUMN works and geom stays last';
+        RAISE NOTICE 'TEST 10g PASSED: ADD COLUMN fungerar och geom förblir sist';
     ELSIF NOT extra_exists THEN
-        RAISE WARNING 'TEST 10g FAILED: extra_info column not found after ADD COLUMN';
+        RAISE WARNING 'TEST 10g FAILED: Kolumnen extra_info hittades inte efter ADD COLUMN';
     ELSE
-        RAISE WARNING 'TEST 10g FAILED: geom not last after ADD COLUMN (pos % of %)', geom_pos, max_pos;
+        RAISE WARNING 'TEST 10g FAILED: geom inte sist efter ADD COLUMN (pos % av %)', geom_pos, max_pos;
     END IF;
 END $$;
 
 DROP TABLE IF EXISTS sk0_ext_test.addcol_y;
 
--- 10h: Multiple geometry columns (should be rejected)
+-- 10h: Flera geometrikolumner (ska avvisas)
 DO $$
 BEGIN
     CREATE TABLE sk0_ext_test.multigeom_y (
         geom geometry(Polygon, 3007),
         geom2 geometry(Point, 3007)
     );
-    RAISE WARNING 'TEST 10h FAILED: Table with multiple geometry columns was accepted';
+    RAISE WARNING 'TEST 10h FAILED: Tabell med flera geometrikolumner accepterades';
 EXCEPTION
     WHEN OTHERS THEN
-        RAISE NOTICE 'TEST 10h PASSED: Multiple geometry columns rejected: %', SQLERRM;
+        RAISE NOTICE 'TEST 10h PASSED: Flera geometrikolumner avvisade: %', SQLERRM;
 END $$;
 
 ------------------------------------------------------------------------
--- FINAL CLEANUP
+-- SLUTLIG STÄDNING
 ------------------------------------------------------------------------
 \echo ''
-\echo '--- Cleaning up test schemas ---'
+\echo '--- Städar upp testscheman ---'
 DROP SCHEMA IF EXISTS sk1_kba_test CASCADE;
 DROP SCHEMA IF EXISTS sk0_ext_test CASCADE;
 
 \echo ''
 \echo '============================================================'
-\echo 'REGRESSION TEST SUITE COMPLETE'
-\echo 'Review NOTICE/WARNING messages above for results.'
+\echo 'REGRESSIONSTESTSVIT SLUTFÖRD'
+\echo 'Granska NOTICE/WARNING-meddelandena ovan för resultat.'
 \echo 'NOTICE = PASSED, WARNING = FAILED'
 \echo '============================================================'

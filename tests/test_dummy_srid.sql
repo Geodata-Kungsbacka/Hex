@@ -18,7 +18,7 @@
 \echo '============================================================'
 
 -- ============================================================
--- Cleanup
+-- Städning
 -- ============================================================
 DROP SCHEMA IF EXISTS sk0_ext_dummy_test CASCADE;
 
@@ -28,15 +28,15 @@ CREATE SCHEMA sk0_ext_dummy_test;
 -- 1: hex_dummy_geometrier tabell
 -- ============================================================
 \echo ''
-\echo '--- GROUP 1: hex_dummy_geometrier table structure ---'
+\echo '--- GRUPP 1: hex_dummy_geometrier tabellstruktur ---'
 
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM information_schema.tables
                WHERE table_schema = 'public' AND table_name = 'hex_dummy_geometrier') THEN
-        RAISE NOTICE 'TEST 1a PASSED: hex_dummy_geometrier table exists';
+        RAISE NOTICE 'TEST 1a PASSED: tabellen hex_dummy_geometrier finns';
     ELSE
-        RAISE WARNING 'TEST 1a FAILED: hex_dummy_geometrier table missing';
+        RAISE WARNING 'TEST 1a FAILED: tabellen hex_dummy_geometrier saknas';
     END IF;
 END $$;
 
@@ -48,13 +48,13 @@ BEGIN
     WHERE table_schema = 'public' AND table_name = 'hex_dummy_geometrier'
       AND column_name IN ('schema_namn', 'tabell_namn', 'gid', 'registrerad');
     IF col_count = 4 THEN
-        RAISE NOTICE 'TEST 1b PASSED: hex_dummy_geometrier has all 4 expected columns';
+        RAISE NOTICE 'TEST 1b PASSED: hex_dummy_geometrier har alla 4 förväntade kolumner';
     ELSE
-        RAISE WARNING 'TEST 1b FAILED: Expected 4 columns, found %', col_count;
+        RAISE WARNING 'TEST 1b FAILED: Förväntade 4 kolumner, hittade %', col_count;
     END IF;
 END $$;
 
--- Check PRIMARY KEY exists (schema_namn, tabell_namn, gid)
+-- Kontrollera att PRIMARY KEY finns (schema_namn, tabell_namn, gid)
 DO $$
 BEGIN
     IF EXISTS (
@@ -63,9 +63,9 @@ BEGIN
         WHERE n.nspname = 'public' AND c.conrelid = 'public.hex_dummy_geometrier'::regclass
           AND c.contype = 'p'
     ) THEN
-        RAISE NOTICE 'TEST 1c PASSED: hex_dummy_geometrier has a PRIMARY KEY';
+        RAISE NOTICE 'TEST 1c PASSED: hex_dummy_geometrier har en PRIMARY KEY';
     ELSE
-        RAISE WARNING 'TEST 1c FAILED: hex_dummy_geometrier missing PRIMARY KEY';
+        RAISE WARNING 'TEST 1c FAILED: hex_dummy_geometrier saknar PRIMARY KEY';
     END IF;
 END $$;
 
@@ -73,15 +73,15 @@ END $$;
 -- 2: hex_avvikande_srid tabell
 -- ============================================================
 \echo ''
-\echo '--- GROUP 2: hex_avvikande_srid table structure ---'
+\echo '--- GRUPP 2: hex_avvikande_srid tabellstruktur ---'
 
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM information_schema.tables
                WHERE table_schema = 'public' AND table_name = 'hex_avvikande_srid') THEN
-        RAISE NOTICE 'TEST 2a PASSED: hex_avvikande_srid table exists';
+        RAISE NOTICE 'TEST 2a PASSED: tabellen hex_avvikande_srid finns';
     ELSE
-        RAISE WARNING 'TEST 2a FAILED: hex_avvikande_srid table missing';
+        RAISE WARNING 'TEST 2a FAILED: tabellen hex_avvikande_srid saknas';
     END IF;
 END $$;
 
@@ -93,13 +93,13 @@ BEGIN
     WHERE table_schema = 'public' AND table_name = 'hex_avvikande_srid'
       AND column_name IN ('schema_namn', 'tabell_namn', 'srid', 'registrerad', 'registrerad_av');
     IF col_count = 5 THEN
-        RAISE NOTICE 'TEST 2b PASSED: hex_avvikande_srid has all 5 expected columns';
+        RAISE NOTICE 'TEST 2b PASSED: hex_avvikande_srid har alla 5 förväntade kolumner';
     ELSE
-        RAISE WARNING 'TEST 2b FAILED: Expected 5 columns, found %', col_count;
+        RAISE WARNING 'TEST 2b FAILED: Förväntade 5 kolumner, hittade %', col_count;
     END IF;
 END $$;
 
--- Check PRIMARY KEY is (schema_namn, tabell_namn)
+-- Kontrollera att PRIMARY KEY är (schema_namn, tabell_namn)
 DO $$
 DECLARE pk_cols text;
 BEGIN
@@ -114,49 +114,49 @@ BEGIN
       AND c.contype = 'p';
 
     IF pk_cols = 'schema_namn, tabell_namn' THEN
-        RAISE NOTICE 'TEST 2c PASSED: hex_avvikande_srid PRIMARY KEY is (schema_namn, tabell_namn)';
+        RAISE NOTICE 'TEST 2c PASSED: hex_avvikande_srid PRIMARY KEY är (schema_namn, tabell_namn)';
     ELSE
-        RAISE WARNING 'TEST 2c FAILED: Expected PK (schema_namn, tabell_namn), got: %', pk_cols;
+        RAISE WARNING 'TEST 2c FAILED: Förväntade PK (schema_namn, tabell_namn), fick: %', pk_cols;
     END IF;
 END $$;
 
 -- ============================================================
--- 3: hex_lagg_till_dummy_geometri — dummy inserted on CREATE TABLE
+-- 3: hex_lagg_till_dummy_geometri — dummy sätts in vid CREATE TABLE
 -- ============================================================
 \echo ''
-\echo '--- GROUP 3: hex_lagg_till_dummy_geometri() ---'
+\echo '--- GRUPP 3: hex_lagg_till_dummy_geometri() ---'
 
 CREATE TABLE sk0_ext_dummy_test.punker_p (
     beskrivning text,
     geom geometry(Point, 3007)
 );
 
--- 3a: hex_dummy_geometrier contains a row for the new table
+-- 3a: hex_dummy_geometrier innehåller en rad för den nya tabellen
 DO $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM public.hex_dummy_geometrier
         WHERE schema_namn = 'sk0_ext_dummy_test' AND tabell_namn = 'punker_p'
     ) THEN
-        RAISE NOTICE 'TEST 3a PASSED: dummy row registered in hex_dummy_geometrier for punker_p';
+        RAISE NOTICE 'TEST 3a PASSED: dummy-rad registrerad i hex_dummy_geometrier för punker_p';
     ELSE
-        RAISE WARNING 'TEST 3a FAILED: No entry in hex_dummy_geometrier for punker_p';
+        RAISE WARNING 'TEST 3a FAILED: Ingen post i hex_dummy_geometrier för punker_p';
     END IF;
 END $$;
 
--- 3b: The actual table contains exactly 1 row (the dummy)
+-- 3b: Själva tabellen innehåller exakt 1 rad (dummyn)
 DO $$
 DECLARE row_count integer;
 BEGIN
     SELECT COUNT(*) INTO row_count FROM sk0_ext_dummy_test.punker_p;
     IF row_count = 1 THEN
-        RAISE NOTICE 'TEST 3b PASSED: punker_p contains exactly 1 dummy row';
+        RAISE NOTICE 'TEST 3b PASSED: punker_p innehåller exakt 1 dummy-rad';
     ELSE
-        RAISE WARNING 'TEST 3b FAILED: Expected 1 dummy row, found %', row_count;
+        RAISE WARNING 'TEST 3b FAILED: Förväntade 1 dummy-rad, hittade %', row_count;
     END IF;
 END $$;
 
--- 3c: The dummy row has a valid, non-empty Point geometry
+-- 3c: Dummy-raden har en giltig, icke-tom Point-geometri
 DO $$
 DECLARE geom_count integer;
 BEGIN
@@ -164,13 +164,13 @@ BEGIN
     FROM sk0_ext_dummy_test.punker_p
     WHERE ST_GeometryType(geom) = 'ST_Point' AND NOT ST_IsEmpty(geom);
     IF geom_count = 1 THEN
-        RAISE NOTICE 'TEST 3c PASSED: Dummy row has valid non-empty Point geometry';
+        RAISE NOTICE 'TEST 3c PASSED: Dummy-raden har giltig icke-tom Point-geometri';
     ELSE
-        RAISE WARNING 'TEST 3c FAILED: Expected 1 valid Point geometry, found %', geom_count;
+        RAISE WARNING 'TEST 3c FAILED: Förväntade 1 giltig Point-geometri, hittade %', geom_count;
     END IF;
 END $$;
 
--- 3d: hex_ta_bort_dummy trigger exists on the table
+-- 3d: hex_ta_bort_dummy-triggern finns på tabellen
 DO $$
 BEGIN
     IF EXISTS (
@@ -181,13 +181,13 @@ BEGIN
           AND c.relname = 'punker_p'
           AND t.tgname = 'hex_ta_bort_dummy'
     ) THEN
-        RAISE NOTICE 'TEST 3d PASSED: hex_ta_bort_dummy trigger installed on punker_p';
+        RAISE NOTICE 'TEST 3d PASSED: hex_ta_bort_dummy-triggern installerad på punker_p';
     ELSE
-        RAISE WARNING 'TEST 3d FAILED: hex_ta_bort_dummy trigger missing on punker_p';
+        RAISE WARNING 'TEST 3d FAILED: hex_ta_bort_dummy-triggern saknas på punker_p';
     END IF;
 END $$;
 
--- 3e: Polygon table also gets correct geometry type in dummy
+-- 3e: Polygon-tabell får också korrekt geometrityp i dummyn
 CREATE TABLE sk0_ext_dummy_test.omraden_y (
     namn text,
     geom geometry(Polygon, 3007)
@@ -200,74 +200,74 @@ BEGIN
     FROM sk0_ext_dummy_test.omraden_y
     WHERE ST_GeometryType(geom) = 'ST_Polygon' AND NOT ST_IsEmpty(geom);
     IF geom_count = 1 THEN
-        RAISE NOTICE 'TEST 3e PASSED: Polygon table omraden_y has valid Polygon dummy row';
+        RAISE NOTICE 'TEST 3e PASSED: Polygon-tabellen omraden_y har giltig Polygon-dummy-rad';
     ELSE
-        RAISE WARNING 'TEST 3e FAILED: Expected 1 Polygon dummy, found %', geom_count;
+        RAISE WARNING 'TEST 3e FAILED: Förväntade 1 Polygon-dummy, hittade %', geom_count;
     END IF;
 END $$;
 
 -- ============================================================
--- 4: hex_ta_bort_dummy_rad — dummy auto-removed on first real INSERT
+-- 4: hex_ta_bort_dummy_rad — dummyn tas bort automatiskt vid första riktiga INSERT
 -- ============================================================
 \echo ''
-\echo '--- GROUP 4: hex_ta_bort_dummy_rad() ---'
+\echo '--- GRUPP 4: hex_ta_bort_dummy_rad() ---'
 
--- 4a: Before real insert, dummy still present
+-- 4a: Före riktig insättning finns dummyn kvar
 DO $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM public.hex_dummy_geometrier
         WHERE schema_namn = 'sk0_ext_dummy_test' AND tabell_namn = 'punker_p'
     ) THEN
-        RAISE NOTICE 'TEST 4a PASSED: Dummy tracking row still present before first real INSERT';
+        RAISE NOTICE 'TEST 4a PASSED: Dummy-spårningsraden finns fortfarande kvar före första riktiga INSERT';
     ELSE
-        RAISE WARNING 'TEST 4a FAILED: Dummy tracking row disappeared too early';
+        RAISE WARNING 'TEST 4a FAILED: Dummy-spårningsraden försvann för tidigt';
     END IF;
 END $$;
 
--- Insert first real row
+-- Sätt in första riktiga raden
 INSERT INTO sk0_ext_dummy_test.punker_p (beskrivning, geom)
 VALUES ('riktig punkt', ST_GeomFromText('POINT(319000 6400000)', 3007));
 
--- 4b: After real insert, dummy row removed from the table
+-- 4b: Efter riktig insättning är dummy-raden borttagen från tabellen
 DO $$
 DECLARE row_count integer;
 BEGIN
     SELECT COUNT(*) INTO row_count FROM sk0_ext_dummy_test.punker_p;
     IF row_count = 1 THEN
-        RAISE NOTICE 'TEST 4b PASSED: Only 1 row remains after first real INSERT (dummy removed)';
+        RAISE NOTICE 'TEST 4b PASSED: Endast 1 rad kvar efter första riktiga INSERT (dummy borttagen)';
     ELSE
-        RAISE WARNING 'TEST 4b FAILED: Expected 1 row (real only), found % (dummy may not have been removed)', row_count;
+        RAISE WARNING 'TEST 4b FAILED: Förväntade 1 rad (endast riktig), hittade % (dummyn kanske inte togs bort)', row_count;
     END IF;
 END $$;
 
--- 4c: The remaining row is the real one (has our known beschreibung value)
+-- 4c: Den kvarvarande raden är den riktiga (har vårt kända beskrivningsvärde)
 DO $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM sk0_ext_dummy_test.punker_p
         WHERE beskrivning = 'riktig punkt'
     ) THEN
-        RAISE NOTICE 'TEST 4c PASSED: Remaining row is the real data row';
+        RAISE NOTICE 'TEST 4c PASSED: Kvarvarande rad är den riktiga dataraden';
     ELSE
-        RAISE WARNING 'TEST 4c FAILED: Real data row not found after dummy removal';
+        RAISE WARNING 'TEST 4c FAILED: Riktig datarad hittades inte efter dummy-borttagning';
     END IF;
 END $$;
 
--- 4d: hex_dummy_geometrier entry cleaned up
+-- 4d: hex_dummy_geometrier-posten städad
 DO $$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM public.hex_dummy_geometrier
         WHERE schema_namn = 'sk0_ext_dummy_test' AND tabell_namn = 'punker_p'
     ) THEN
-        RAISE NOTICE 'TEST 4d PASSED: hex_dummy_geometrier entry cleaned up after real INSERT';
+        RAISE NOTICE 'TEST 4d PASSED: hex_dummy_geometrier-posten städad efter riktig INSERT';
     ELSE
-        RAISE WARNING 'TEST 4d FAILED: hex_dummy_geometrier still has entry for punker_p after real INSERT';
+        RAISE WARNING 'TEST 4d FAILED: hex_dummy_geometrier har fortfarande en post för punker_p efter riktig INSERT';
     END IF;
 END $$;
 
--- 4e: hex_ta_bort_dummy trigger is still present (harmless after dummy removed)
+-- 4e: hex_ta_bort_dummy-triggern finns fortfarande kvar (ofarlig efter att dummyn tagits bort)
 DO $$
 BEGIN
     IF EXISTS (
@@ -278,13 +278,13 @@ BEGIN
           AND c.relname = 'punker_p'
           AND t.tgname = 'hex_ta_bort_dummy'
     ) THEN
-        RAISE NOTICE 'TEST 4e PASSED: hex_ta_bort_dummy trigger still present (harmless - early-exit guard active)';
+        RAISE NOTICE 'TEST 4e PASSED: hex_ta_bort_dummy-triggern finns fortfarande kvar (ofarlig - early-exit-spärr aktiv)';
     ELSE
-        RAISE WARNING 'TEST 4e INFO: hex_ta_bort_dummy trigger was removed after dummy cleanup';
+        RAISE WARNING 'TEST 4e INFO: hex_ta_bort_dummy-triggern togs bort efter dummy-städning';
     END IF;
 END $$;
 
--- 4f: Subsequent inserts work fine (trigger becomes a no-op)
+-- 4f: Efterföljande insättningar fungerar problemfritt (triggern blir en no-op)
 INSERT INTO sk0_ext_dummy_test.punker_p (beskrivning, geom)
 VALUES ('andra riktiga punkten', ST_GeomFromText('POINT(319001 6400001)', 3007));
 
@@ -293,51 +293,51 @@ DECLARE row_count integer;
 BEGIN
     SELECT COUNT(*) INTO row_count FROM sk0_ext_dummy_test.punker_p;
     IF row_count = 2 THEN
-        RAISE NOTICE 'TEST 4f PASSED: Second INSERT works fine, trigger is harmless no-op (2 rows total)';
+        RAISE NOTICE 'TEST 4f PASSED: Andra INSERT fungerar problemfritt, triggern är en ofarlig no-op (2 rader totalt)';
     ELSE
-        RAISE WARNING 'TEST 4f FAILED: Expected 2 rows after second INSERT, found %', row_count;
+        RAISE WARNING 'TEST 4f FAILED: Förväntade 2 rader efter andra INSERT, hittade %', row_count;
     END IF;
 END $$;
 
 -- ============================================================
--- 5: hex_avvikande_srid — registered on SRID ≠ 3007
+-- 5: hex_avvikande_srid — registreras vid SRID ≠ 3007
 -- ============================================================
 \echo ''
-\echo '--- GROUP 5: hex_avvikande_srid registration ---'
+\echo '--- GRUPP 5: hex_avvikande_srid-registrering ---'
 
--- 5a: Table with correct SRID (3007) must NOT appear in hex_avvikande_srid
+-- 5a: Tabell med korrekt SRID (3007) ska INTE finnas i hex_avvikande_srid
 DO $$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM public.hex_avvikande_srid
         WHERE schema_namn = 'sk0_ext_dummy_test' AND tabell_namn = 'punker_p'
     ) THEN
-        RAISE NOTICE 'TEST 5a PASSED: Table with SRID 3007 not registered in hex_avvikande_srid';
+        RAISE NOTICE 'TEST 5a PASSED: Tabell med SRID 3007 ej registrerad i hex_avvikande_srid';
     ELSE
-        RAISE WARNING 'TEST 5a FAILED: Table with SRID 3007 incorrectly registered as avvikande';
+        RAISE WARNING 'TEST 5a FAILED: Tabell med SRID 3007 felaktigt registrerad som avvikande';
     END IF;
 END $$;
 
--- Create a table with SRID 3006 (incorrect — should be flagged)
+-- Skapa en tabell med SRID 3006 (felaktig — ska flaggas)
 CREATE TABLE sk0_ext_dummy_test.fel_srid_y (
     namn text,
     geom geometry(Polygon, 3006)
 );
 
--- 5b: Table with SRID 3006 must appear in hex_avvikande_srid
+-- 5b: Tabell med SRID 3006 ska finnas i hex_avvikande_srid
 DO $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM public.hex_avvikande_srid
         WHERE schema_namn = 'sk0_ext_dummy_test' AND tabell_namn = 'fel_srid_y'
     ) THEN
-        RAISE NOTICE 'TEST 5b PASSED: Table with SRID 3006 registered in hex_avvikande_srid';
+        RAISE NOTICE 'TEST 5b PASSED: Tabell med SRID 3006 registrerad i hex_avvikande_srid';
     ELSE
-        RAISE WARNING 'TEST 5b FAILED: Table with SRID 3006 not registered in hex_avvikande_srid';
+        RAISE WARNING 'TEST 5b FAILED: Tabell med SRID 3006 ej registrerad i hex_avvikande_srid';
     END IF;
 END $$;
 
--- 5c: The stored SRID value is correct (3006)
+-- 5c: Det lagrade SRID-värdet är korrekt (3006)
 DO $$
 DECLARE stored_srid integer;
 BEGIN
@@ -345,13 +345,13 @@ BEGIN
     FROM public.hex_avvikande_srid
     WHERE schema_namn = 'sk0_ext_dummy_test' AND tabell_namn = 'fel_srid_y';
     IF stored_srid = 3006 THEN
-        RAISE NOTICE 'TEST 5c PASSED: Stored SRID is 3006 (correctly recorded)';
+        RAISE NOTICE 'TEST 5c PASSED: Lagrad SRID är 3006 (korrekt registrerad)';
     ELSE
-        RAISE WARNING 'TEST 5c FAILED: Expected stored SRID 3006, got %', stored_srid;
+        RAISE WARNING 'TEST 5c FAILED: Förväntade lagrad SRID 3006, fick %', stored_srid;
     END IF;
 END $$;
 
--- 5d: Table with correct SRID — ADD COLUMN (user column, not geom) must NOT trigger avvikande
+-- 5d: Tabell med korrekt SRID — ADD COLUMN (användarkolumn, ej geom) ska INTE utlösa avvikande
 ALTER TABLE sk0_ext_dummy_test.punker_p ADD COLUMN kategori text;
 
 DO $$
@@ -360,13 +360,13 @@ BEGIN
         SELECT 1 FROM public.hex_avvikande_srid
         WHERE schema_namn = 'sk0_ext_dummy_test' AND tabell_namn = 'punker_p'
     ) THEN
-        RAISE NOTICE 'TEST 5d PASSED: ADD COLUMN (non-geom) on SRID-3007 table does not create avvikande entry';
+        RAISE NOTICE 'TEST 5d PASSED: ADD COLUMN (icke-geom) på SRID-3007-tabell skapar ingen avvikande-post';
     ELSE
-        RAISE WARNING 'TEST 5d FAILED: Unexpected avvikande entry for SRID-3007 table after ADD COLUMN';
+        RAISE WARNING 'TEST 5d FAILED: Oväntad avvikande-post för SRID-3007-tabell efter ADD COLUMN';
     END IF;
 END $$;
 
--- 5e: Two tables with different wrong SRIDs — both appear in hex_avvikande_srid
+-- 5e: Två tabeller med olika felaktiga SRID — båda finns i hex_avvikande_srid
 CREATE TABLE sk0_ext_dummy_test.annan_srid_y (
     namn text,
     geom geometry(Polygon, 4326)
@@ -379,57 +379,57 @@ BEGIN
     FROM public.hex_avvikande_srid
     WHERE schema_namn = 'sk0_ext_dummy_test' AND tabell_namn = 'annan_srid_y';
     IF srid_val = 4326 THEN
-        RAISE NOTICE 'TEST 5e PASSED: Table with SRID 4326 registered with correct SRID in hex_avvikande_srid';
+        RAISE NOTICE 'TEST 5e PASSED: Tabell med SRID 4326 registrerad med korrekt SRID i hex_avvikande_srid';
     ELSE
-        RAISE WARNING 'TEST 5e FAILED: Expected SRID 4326 for annan_srid_y, got %', srid_val;
+        RAISE WARNING 'TEST 5e FAILED: Förväntade SRID 4326 för annan_srid_y, fick %', srid_val;
     END IF;
 END $$;
 
 -- ============================================================
--- 6: Cleanup — hex_dummy_geometrier and hex_avvikande_srid
---    cleared when tables are dropped
+-- 6: Städning — hex_dummy_geometrier och hex_avvikande_srid
+--    rensas när tabeller tas bort
 -- ============================================================
 \echo ''
-\echo '--- GROUP 6: Cleanup on DROP TABLE ---'
+\echo '--- GRUPP 6: Städning vid DROP TABLE ---'
 
--- Check current state: both avvikande tables registered
+-- Kontrollera nuvarande tillstånd: båda avvikande tabellerna registrerade
 DO $$
 DECLARE cnt integer;
 BEGIN
     SELECT COUNT(*) INTO cnt FROM public.hex_avvikande_srid
     WHERE schema_namn = 'sk0_ext_dummy_test';
     IF cnt >= 1 THEN
-        RAISE NOTICE 'TEST 6a PASSED: At least 1 avvikande SRID entry before DROP (count=%)', cnt;
+        RAISE NOTICE 'TEST 6a PASSED: Minst 1 avvikande SRID-post före DROP (antal=%)', cnt;
     ELSE
-        RAISE WARNING 'TEST 6a INFO: Expected at least 1 avvikande SRID entry, found %', cnt;
+        RAISE WARNING 'TEST 6a INFO: Förväntade minst 1 avvikande SRID-post, hittade %', cnt;
     END IF;
 END $$;
 
 DROP TABLE sk0_ext_dummy_test.fel_srid_y;
 
--- 6b: After dropping the avvikande table, its entry is removed
+-- 6b: Efter att den avvikande tabellen tagits bort är dess post borttagen
 DO $$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM public.hex_avvikande_srid
         WHERE schema_namn = 'sk0_ext_dummy_test' AND tabell_namn = 'fel_srid_y'
     ) THEN
-        RAISE NOTICE 'TEST 6b PASSED: hex_avvikande_srid entry removed after DROP TABLE';
+        RAISE NOTICE 'TEST 6b PASSED: hex_avvikande_srid-posten borttagen efter DROP TABLE';
     ELSE
-        RAISE WARNING 'TEST 6b FAILED: hex_avvikande_srid entry not cleaned up after DROP TABLE';
+        RAISE WARNING 'TEST 6b FAILED: hex_avvikande_srid-posten inte städad efter DROP TABLE';
     END IF;
 END $$;
 
--- 6c: Dropping a table that has a dummy (omraden_y still has dummy since no real rows were inserted)
+-- 6c: Att ta bort en tabell som har en dummy (omraden_y har fortfarande dummy eftersom inga riktiga rader satts in)
 DO $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM public.hex_dummy_geometrier
         WHERE schema_namn = 'sk0_ext_dummy_test' AND tabell_namn = 'omraden_y'
     ) THEN
-        RAISE NOTICE 'TEST 6c PASSED: omraden_y dummy still tracked before DROP';
+        RAISE NOTICE 'TEST 6c PASSED: omraden_y-dummyn fortfarande spårad före DROP';
     ELSE
-        RAISE WARNING 'TEST 6c INFO: omraden_y dummy tracking entry already gone before DROP';
+        RAISE WARNING 'TEST 6c INFO: omraden_y-dummyns spårningspost redan borta före DROP';
     END IF;
 END $$;
 
@@ -441,17 +441,17 @@ BEGIN
         SELECT 1 FROM public.hex_dummy_geometrier
         WHERE schema_namn = 'sk0_ext_dummy_test' AND tabell_namn = 'omraden_y'
     ) THEN
-        RAISE NOTICE 'TEST 6d PASSED: hex_dummy_geometrier entry removed after DROP TABLE omraden_y';
+        RAISE NOTICE 'TEST 6d PASSED: hex_dummy_geometrier-posten borttagen efter DROP TABLE omraden_y';
     ELSE
-        RAISE WARNING 'TEST 6d FAILED: hex_dummy_geometrier entry not cleaned up after DROP TABLE';
+        RAISE WARNING 'TEST 6d FAILED: hex_dummy_geometrier-posten inte städad efter DROP TABLE';
     END IF;
 END $$;
 
 -- ============================================================
--- Cleanup
+-- Städning
 -- ============================================================
 DROP SCHEMA IF EXISTS sk0_ext_dummy_test CASCADE;
 
 \echo ''
-\echo 'HEX DUMMY GEOMETRI & AVVIKANDE SRID TEST SUITE COMPLETE'
+\echo 'HEX DUMMY GEOMETRI & AVVIKANDE SRID TEST SUITE SLUTFÖRD'
 \echo 'NOTICE = PASSED/INFO,  WARNING = FAILED'
