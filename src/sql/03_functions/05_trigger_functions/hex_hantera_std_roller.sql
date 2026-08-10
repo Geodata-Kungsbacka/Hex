@@ -39,7 +39,13 @@ AS $BODY$
  *   kan de fritt tilldelas AD-användare utan att störa pg_hba.conf-logiken.
  *   Transitiv gruppmedlemskap via r_- och w_-grupper når aldrig hex_geoserver_roller.
  *
- * TRIGGER: Körs automatiskt vid CREATE SCHEMA
+ * TRIGGER: Körs automatiskt vid CREATE SCHEMA. PostgreSQL kör flera event
+ * triggers på samma event i alfabetisk ordning efter triggernamn, så
+ * hex_hantera_std_roller_trigger körs FÖRST av Hex tre CREATE SCHEMA-triggers
+ * (före hex_notifiera_gs_trigger och hex_validera_schemanamn_trigger, eftersom
+ * "h" < "n" och "v"). Rollerna skapas alltså innan schemanamnet har validerats
+ * av hex_validera_schemanamn() — om valideringen senare misslyckas rullas
+ * hela transaktionen (schema + roller) tillbaka gemensamt.
  ******************************************************************************/
 DECLARE
     kommando            record;

@@ -152,14 +152,26 @@ En kvarliggande rad indikerar att verktyget aldrig slutförde sitt andra steg.
 
 ## 2. CREATE SCHEMA
 
+> **Körordning:** PostgreSQL kör flera event triggers på samma DDL-event i
+> **alfabetisk ordning efter triggernamn**, inte i den ordning man tänker sig
+> logiskt. Med Hex tre triggernamn (`hex_hantera_std_roller_trigger`,
+> `hex_notifiera_gs_trigger`, `hex_validera_schemanamn_trigger`) blir
+> den faktiska körordningen `h` → `n` → `v`: **roller skapas, GeoServer
+> notifieras, och namnet valideras sist.** Det är alltså tvärtom mot vad man
+> intuitivt skulle förvänta sig (namnvalidering → rollskapande → notifiering).
+> Det spelar ingen praktisk roll: hela `CREATE SCHEMA`-satsen körs i en
+> transaktion, så ett ogiltigt namn som upptäcks sist rullar ändå tillbaka
+> schemat och alla roller som redan skapats. `pg_notify` levereras dessutom
+> inte till lyssnare förrän vid `COMMIT`, så en köad men aldrig committad
+> notifiering försvinner spårlöst vid rollback — GeoServer får aldrig reda på
+> det schema som ändå inte kom att existera.
+
 ```mermaid
 flowchart TD
     START(["CREATE SCHEMA sk0_kba_bygg"])
-    START --> VS["hex_validera_schemanamn<br/>trigger 1"]
-    VS --> |"ogiltigt namn"| ERRV(["EXCEPTION + rollback"])
-    VS --> |"giltigt: mönster från konfigurationstabeller"| HSR
+    START --> HSR
 
-    HSR["hex_hantera_std_roller<br/>trigger 2 — SECURITY DEFINER"]
+    HSR["hex_hantera_std_roller<br/>trigger 1 — SECURITY DEFINER"]
     HSR --> LOOP["Evaluera schema_uttryck<br/>för varje rad i hex_standardiserade_roller"]
     LOOP --> |"matchar (with_login=true)"| LOGIN["CREATE ROLE rollnamn WITH LOGIN<br/>lösenord → hex_role_credentials<br/>GRANT CONNECT ON DATABASE<br/>GRANT hex_geoserver_roller TO rollnamn"]
     LOOP --> |"matchar (with_login=false)"| NOLOGIN["CREATE ROLE rollnamn NOLOGIN"]
@@ -167,46 +179,35 @@ flowchart TD
     LOGIN --> |"arvs_fran IS NULL"| TRR["hex_tilldela_rollrattigheter<br/>GRANT USAGE + SELECT / DML"]
     NOLOGIN --> TRR
 
-    TRR --> NG["hex_notifiera_gs<br/>trigger 3"]
-    NG --> |"prefix = sk0 / sk1"| NOTIFY["pg_notify<br/>geoserver_schema<br/>sk0_kba_bygg"]
+    TRR --> NG
+    ARV --> NG
+
+    NG["hex_notifiera_gs<br/>trigger 2"]
+    NG --> |"prefix = sk0 / sk1"| NOTIFY["pg_notify<br/>geoserver_schema<br/>sk0_kba_bygg<br/>(köad, ej levererad förrän COMMIT)"]
     NG --> |"sk2 / systemschema"| SKIP(["hoppar över"])
-    NOTIFY -.-> GS(["GeoServer-lyssnaren<br/>se avsnitt 9"])
+    NOTIFY --> VS
+    SKIP --> VS
+
+    VS["hex_validera_schemanamn<br/>trigger 3"]
+    VS --> |"ogiltigt namn"| ERRV(["EXCEPTION<br/>rollback: schema + roller + köad notifiering"])
+    VS --> |"giltigt: mönster från konfigurationstabeller"| DONE(["COMMIT<br/>→ notifiering levereras till GeoServer-lyssnaren, se avsnitt 9"])
 ```
 
 ```
 CREATE SCHEMA sk0_kba_bygg
 ```
 
-Tre eventutlösare körs i ordning vid `DDL_COMMAND_END`:
+Tre eventutlösare körs vid `DDL_COMMAND_END`, i alfabetisk ordning efter
+triggernamn (se rutan ovan) — **inte** i den logiska ordning man skulle
+förvänta sig:
 
 ---
 
-### Steg 1 — `hex_validera_schemanamn_trigger` → `hex_validera_schemanamn()`
-
-**Syfte:** Blockera ogiltiga schemanamn innan något annat händer.
-
-```
-hex_validera_schemanamn()
-  ├── Hoppar över: public, information_schema, pg_*
-  ├── Bygger mönster dynamiskt från konfigurationstabellerna:
-  │     hex_standardiserade_skyddsnivaer  → prefix-del  (t.ex. sk0|sk1|sk2|skx)
-  │     hex_standardiserade_datakategorier → kategori-del (t.ex. ext|kba|sys)
-  │     Resultat: ^(sk0|sk1|sk2|skx)_(ext|kba|sys)_.+$
-  │     sk0 / sk1 / sk2  = säkerhetsnivå (0=öppen, 1=kommunal, 2=skyddad)
-  │     skx              = okänd / oklassificerad (endast GIS-administratörer)
-  │     ext              = extern datakälla (bulkladdad, t.ex. via FME)
-  │     kba              = kommunens egna data (manuellt redigerat)
-  │     sys              = systemdata
-  │     .+               = beskrivande namn
-  └── Ogiltigt namn → EXCEPTION → transaktion rullas tillbaka
-```
-
----
-
-### Steg 2 — `hex_hantera_std_roller_trigger` → `hex_hantera_std_roller()`
+### Steg 1 — `hex_hantera_std_roller_trigger` → `hex_hantera_std_roller()`
 
 **Syfte:** Skapa rollstruktur automatiskt baserat på `hex_standardiserade_roller`.
 **Kör som:** SECURITY DEFINER (postgres) — krävs för att skapa roller.
+**Körs:** Först av de tre — före både GeoServer-notifiering och namnvalidering.
 
 ```
 hex_hantera_std_roller()
@@ -243,11 +244,16 @@ hex_hantera_std_roller()
                  gs_w_sk0_kba_bygg  (GeoServer skriv-tjänstekonto → hex_role_credentials)
 ```
 
+Om ett senare steg (Steg 3) upptäcker ett ogiltigt schemanamn har rollerna
+ovan redan skapats — men eftersom hela `CREATE SCHEMA` körs i en transaktion
+rullas de tillbaka tillsammans med schemat.
+
 ---
 
-### Steg 3 — `hex_notifiera_gs_trigger` → `hex_notifiera_gs()`
+### Steg 2 — `hex_notifiera_gs_trigger` → `hex_notifiera_gs()`
 
 **Syfte:** Signalera till den externa GeoServer-lyssnaren att skapa workspace och datakälla.
+**Körs:** Efter rollskapandet (Steg 1), men fortfarande före namnvalideringen (Steg 3).
 
 ```
 hex_notifiera_gs()
@@ -256,8 +262,37 @@ hex_notifiera_gs()
   │     (sk2 exponeras inte mot GeoServer)
   ├── Om prefix = sk0 eller sk1:
   │     pg_notify('geoserver_schema', 'sk0_kba_bygg')
+  │     (levereras till lyssnare först vid COMMIT — ett senare rollback
+  │      i Steg 3 gör att notifieringen aldrig når GeoServer)
   └── Icke-kritisk: om GeoServer inte nås rullas inte schemat tillbaka
         → se avsnitt 9 för vad som händer i Python-lyssnaren
+```
+
+---
+
+### Steg 3 — `hex_validera_schemanamn_trigger` → `hex_validera_schemanamn()`
+
+**Syfte:** Blockera ogiltiga schemanamn.
+**Körs:** Sist av de tre — efter att roller redan skapats (Steg 1) och en
+eventuell GeoServer-notifiering redan köats (Steg 2). Det är den sista
+kontrollen innan transaktionen committas, och den som avgör om Steg 1 och 2:s
+arbete faktiskt får stå kvar.
+
+```
+hex_validera_schemanamn()
+  ├── Hoppar över: public, information_schema, pg_*
+  ├── Bygger mönster dynamiskt från konfigurationstabellerna:
+  │     hex_standardiserade_skyddsnivaer  → prefix-del  (t.ex. sk0|sk1|sk2|skx)
+  │     hex_standardiserade_datakategorier → kategori-del (t.ex. ext|kba|sys)
+  │     Resultat: ^(sk0|sk1|sk2|skx)_(ext|kba|sys)_.+$
+  │     sk0 / sk1 / sk2  = säkerhetsnivå (0=öppen, 1=kommunal, 2=skyddad)
+  │     skx              = okänd / oklassificerad (endast GIS-administratörer)
+  │     ext              = extern datakälla (bulkladdad, t.ex. via FME)
+  │     kba              = kommunens egna data (manuellt redigerat)
+  │     sys              = systemdata
+  │     .+               = beskrivande namn
+  └── Ogiltigt namn → EXCEPTION → hela transaktionen rullas tillbaka
+        (schema + roller från Steg 1 + köad notifiering från Steg 2)
 ```
 
 ---

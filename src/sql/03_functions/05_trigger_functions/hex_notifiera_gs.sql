@@ -26,7 +26,13 @@ AS $BODY$
  *   - Direkt PostGIS-datastore i workspace med autentiseringsuppgifter
  *     från tabellen hex_role_credentials (läsrollen r_{schema})
  *
- * TRIGGER: Kors automatiskt vid CREATE SCHEMA (efter validering och roller)
+ * TRIGGER: Kors automatiskt vid CREATE SCHEMA. PostgreSQL kor flera event
+ * triggers pa samma event i alfabetisk ordning efter triggernamn, sa
+ * hex_notifiera_gs_trigger kor efter hex_hantera_std_roller_trigger men
+ * FORE hex_validera_schemanamn_trigger ("h" < "n" < "v"). Notifieringen
+ * skickas alltsa innan namnet hunnit valideras - men pg_notify levereras
+ * forst vid COMMIT, sa om valideringen senare kastar EXCEPTION och hela
+ * transaktionen rullas tillbaka nar aldrig notifieringen ut till lyssnaren.
  ******************************************************************************/
 DECLARE
     kommando record;
