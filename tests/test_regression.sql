@@ -5,12 +5,16 @@
  *   1. Geometry validation applied to _kba_ schemas
  *   2. Spatial (GiST) indexes created for geometry tables
  *   3. Swedish characters (åäö) in table/schema names
- *   4. Schema validation error messages
+ *   4. Schema validation error messages, and that CREATE SCHEMA rolls back
+ *      atomically (schema + roles) even though roles are created before the
+ *      name is validated (event triggers fire in alphabetical order)
  *   5. Non-geometry tables (regression check)
  *   6. DROP TABLE cleans up history tables and trigger functions
  *   7. Column order is clean after CREATE TABLE (no ordinal gaps)
  *   8. Standard columns are added correctly
- *   9. DROP SCHEMA cleans up roles
+ *   9. DROP SCHEMA cleans up roles; owner role has ADMIN OPTION on r_/w_ so it
+ *      can GRANT them onward without superuser; hex_underhall() upgrades
+ *      pre-existing grants that predate the ADMIN OPTION fix
  *  10. Edge cases: _h bypass, bad suffixes, name collisions, CTAS, ADD COLUMN
  *
  * PREREQUISITES:
@@ -271,6 +275,26 @@ EXCEPTION
         ELSE
             RAISE WARNING 'TEST 4a PARTIAL: Schema rejected but message unclear: %', SQLERRM;
         END IF;
+END $$;
+
+-- 4b: PostgreSQL fires Hex's three CREATE SCHEMA event triggers in alphabetical
+-- order by trigger name (hex_hantera_std_roller_trigger, hex_notifiera_gs_trigger,
+-- hex_validera_schemanamn_trigger) -- so for the invalid name above, r_/w_/gs_r_/
+-- gs_w_ roles were already created by the time validation rejected it. Confirm
+-- the whole transaction rolled back together and left no orphaned roles.
+DO $$
+DECLARE
+    orphans text[];
+BEGIN
+    SELECT array_agg(rolname) INTO orphans
+    FROM pg_roles
+    WHERE rolname LIKE '%invalid_schema_name%';
+
+    IF orphans IS NULL THEN
+        RAISE NOTICE 'TEST 4b PASSED: no orphaned roles survive rollback of an invalid schema name';
+    ELSE
+        RAISE WARNING 'TEST 4b FAILED: orphaned roles survived rollback: %', array_to_string(orphans, ', ');
+    END IF;
 END $$;
 
 ------------------------------------------------------------------------
@@ -740,6 +764,64 @@ BEGIN
     END IF;
 END $$;
 
+-- 9l: hex_systemagare() (ägarrollen, t.ex. gis_admin) ska ha ADMIN OPTION på
+-- r_ och w_ -- annars kan den inte GRANT:a rollerna vidare till AD-användare
+-- utan en superuser (PostgreSQL 16+ kräver ADMIN OPTION, inte bara CREATEROLE).
+DO $$
+DECLARE
+    r_admin boolean;
+    w_admin boolean;
+BEGIN
+    SELECT am.admin_option INTO r_admin
+    FROM pg_auth_members am
+    JOIN pg_roles grp ON grp.oid = am.roleid
+    JOIN pg_roles mem ON mem.oid = am.member
+    WHERE grp.rolname = 'r_sk2_ext_rolltest' AND mem.rolname = public.hex_systemagare();
+
+    SELECT am.admin_option INTO w_admin
+    FROM pg_auth_members am
+    JOIN pg_roles grp ON grp.oid = am.roleid
+    JOIN pg_roles mem ON mem.oid = am.member
+    WHERE grp.rolname = 'w_sk2_ext_rolltest' AND mem.rolname = public.hex_systemagare();
+
+    IF r_admin AND w_admin THEN
+        RAISE NOTICE 'TEST 9l PASSED: hex_systemagare() har ADMIN OPTION på r_ och w_';
+    ELSE
+        RAISE WARNING 'TEST 9l FAILED: r_admin=%, w_admin=% (båda ska vara true)', r_admin, w_admin;
+    END IF;
+END $$;
+
+-- 9m: Behavioral proof of 9l -- SET ROLE to hex_systemagare() and actually
+-- GRANT r_ onward to a throwaway role, without any superuser involvement.
+DO $$
+DECLARE
+    agare text := public.hex_systemagare();
+    ok boolean := false;
+BEGIN
+    DROP ROLE IF EXISTS hex_test_ad_user_tmp2;
+    CREATE ROLE hex_test_ad_user_tmp2 WITH NOLOGIN;
+
+    BEGIN
+        EXECUTE format('SET ROLE %I', agare);
+        EXECUTE format('GRANT r_sk2_ext_rolltest TO %I', 'hex_test_ad_user_tmp2');
+        ok := true;
+    EXCEPTION WHEN OTHERS THEN
+        ok := false;
+    END;
+    RESET ROLE;
+
+    -- DROP ROLE alone is enough to clean up the membership; an explicit REVOKE
+    -- here would be run as the wrong grantor (the GRANT above was made "by"
+    -- agare, not by the session's own role) and just emit a spurious WARNING.
+    DROP ROLE hex_test_ad_user_tmp2;
+
+    IF ok THEN
+        RAISE NOTICE 'TEST 9m PASSED: % kan GRANT:a r_ vidare utan superuser (ADMIN OPTION verifierad end-to-end)', agare;
+    ELSE
+        RAISE WARNING 'TEST 9m FAILED: % kunde INTE GRANT:a r_ vidare — saknar ADMIN OPTION', agare;
+    END IF;
+END $$;
+
 -- DROP SCHEMA – alla fyra roller och credentials ska rensas
 DROP SCHEMA sk2_ext_rolltest CASCADE;
 
@@ -775,6 +857,46 @@ BEGIN
     ELSE
         RAISE WARNING 'TEST 9j FAILED: Följande poster finns kvar i hex_role_credentials: %', array_to_string(remaining, ', ');
     END IF;
+END $$;
+
+-- 9n: hex_underhall() ska uppgradera ett befintligt r_/w_-medlemskap till
+-- WITH ADMIN OPTION om det saknas (t.ex. ett schema skapat av en äldre
+-- Hex-version, innan ADMIN OPTION lades till). Körs efter varje
+-- install/uppgradering, så detta är vägen för att fixa befintliga scheman.
+DO $$
+DECLARE
+    agare text := public.hex_systemagare();
+    admin_before boolean;
+    admin_after boolean;
+BEGIN
+    DROP SCHEMA IF EXISTS sk2_ext_underhalltest CASCADE;
+    CREATE SCHEMA sk2_ext_underhalltest;
+
+    -- Simulera en pre-fix installation: samma medlemskap men UTAN ADMIN OPTION.
+    EXECUTE format('REVOKE %I FROM %I', 'r_sk2_ext_underhalltest', agare);
+    EXECUTE format('GRANT %I TO %I', 'r_sk2_ext_underhalltest', agare);
+
+    SELECT am.admin_option INTO admin_before
+    FROM pg_auth_members am
+    JOIN pg_roles grp ON grp.oid = am.roleid
+    JOIN pg_roles mem ON mem.oid = am.member
+    WHERE grp.rolname = 'r_sk2_ext_underhalltest' AND mem.rolname = agare;
+
+    PERFORM public.hex_underhall();
+
+    SELECT am.admin_option INTO admin_after
+    FROM pg_auth_members am
+    JOIN pg_roles grp ON grp.oid = am.roleid
+    JOIN pg_roles mem ON mem.oid = am.member
+    WHERE grp.rolname = 'r_sk2_ext_underhalltest' AND mem.rolname = agare;
+
+    IF admin_before IS DISTINCT FROM true AND admin_after = true THEN
+        RAISE NOTICE 'TEST 9n PASSED: hex_underhall() uppgraderade befintligt r_-medlemskap till WITH ADMIN OPTION (before=%, after=%)', admin_before, admin_after;
+    ELSE
+        RAISE WARNING 'TEST 9n FAILED: admin_before=%, admin_after=% (förväntade false → true)', admin_before, admin_after;
+    END IF;
+
+    DROP SCHEMA sk2_ext_underhalltest CASCADE;
 END $$;
 
 ------------------------------------------------------------------------
