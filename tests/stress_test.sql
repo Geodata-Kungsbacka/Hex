@@ -494,27 +494,36 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 
 -- TEST 32: andrad_tidpunkt uppdateras automatiskt vid UPDATE
+-- INSERT och UPDATE körs i separata transaktioner så NOW() ger olika värden.
 DO $$ BEGIN
     INSERT INTO sk1_kba_stress.punkter_p (namn, geom)
     VALUES ('Tid test', ST_SetSRID(ST_MakePoint(319000, 6400000), 3006));
+EXCEPTION WHEN OTHERS THEN
+    PERFORM _fail(32, 'Trigger: andrad_tidpunkt (INSERT)', SQLERRM);
+END $$;
 
-    PERFORM pg_sleep(0.01);  -- säkerställ att tiden går framåt
+SELECT pg_sleep(0.05);  -- säkerställ att transaktionsgränsen ger olika NOW()
 
-    DECLARE
-        tid_fore timestamptz;
-        tid_efter timestamptz;
-    BEGIN
-        SELECT andrad_tidpunkt INTO tid_fore FROM sk1_kba_stress.punkter_p WHERE namn = 'Tid test';
-        UPDATE sk1_kba_stress.punkter_p SET namn = 'Tid test uppdaterad' WHERE namn = 'Tid test';
-        SELECT andrad_tidpunkt INTO tid_efter FROM sk1_kba_stress.punkter_p WHERE namn = 'Tid test uppdaterad';
+DO $$ DECLARE
+    tid_fore  timestamptz;
+    tid_efter timestamptz;
+BEGIN
+    SELECT andrad_tidpunkt INTO tid_fore
+    FROM sk1_kba_stress.punkter_p WHERE namn = 'Tid test';
 
-        IF tid_efter > tid_fore OR (tid_fore IS NULL AND tid_efter IS NOT NULL) THEN
-            PERFORM _pass(32, 'Trigger: andrad_tidpunkt uppdaterad vid UPDATE');
-        ELSE
-            PERFORM _fail(32, 'Trigger: andrad_tidpunkt uppdaterad vid UPDATE',
-                format('fore=%s efter=%s', tid_fore, tid_efter));
-        END IF;
-    END;
+    UPDATE sk1_kba_stress.punkter_p
+    SET namn = 'Tid test uppdaterad'
+    WHERE namn = 'Tid test';
+
+    SELECT andrad_tidpunkt INTO tid_efter
+    FROM sk1_kba_stress.punkter_p WHERE namn = 'Tid test uppdaterad';
+
+    IF tid_efter > tid_fore OR (tid_fore IS NULL AND tid_efter IS NOT NULL) THEN
+        PERFORM _pass(32, 'Trigger: andrad_tidpunkt uppdaterad vid UPDATE');
+    ELSE
+        PERFORM _fail(32, 'Trigger: andrad_tidpunkt uppdaterad vid UPDATE',
+            format('fore=%s efter=%s', tid_fore, tid_efter));
+    END IF;
 EXCEPTION WHEN OTHERS THEN
     PERFORM _fail(32, 'Trigger: andrad_tidpunkt', SQLERRM);
 END $$;
@@ -554,7 +563,7 @@ INSERT INTO hex_standardiserade_kolumner (kolumnnamn, ordinal_position, datatyp,
     ('gid',             1,  'integer GENERATED ALWAYS AS IDENTITY', NULL,                'Primärnyckel',               'IS NOT NULL',    false, false),
     ('skapad_tidpunkt', -4, 'timestamptz',  'NOW()',             'Tidpunkt då raden skapades',   'IS NOT NULL',    false, false),
     ('skapad_av',       -3, 'character varying', 'session_user', 'Användare som skapade raden',  'LIKE ''%_kba_%''', false, false),
-    ('andrad_tidpunkt', -2, 'timestamptz',  'clock_timestamp()', 'Senaste ändringstidpunkt',     'LIKE ''%_kba_%''', true,  false),
+    ('andrad_tidpunkt', -2, 'timestamptz',  'NOW()',             'Senaste ändringstidpunkt',     'LIKE ''%_kba_%''', true,  false),
     ('andrad_av',       -1, 'character varying', 'session_user', 'Användare som senast ändrade', 'LIKE ''%_kba_%''', true,  false)
 ON CONFLICT (kolumnnamn) DO UPDATE SET
     default_varde          = EXCLUDED.default_varde,

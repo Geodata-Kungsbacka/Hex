@@ -43,7 +43,7 @@ VALUES
     ('gid',              1, 'integer GENERATED ALWAYS AS IDENTITY', NULL,                'Primärnyckel',                  'IS NOT NULL',       false, false),
     ('skapad_tidpunkt', -4, 'timestamptz',                          'NOW()',             'Tidpunkt då raden skapades',    'IS NOT NULL',       false, false),
     ('skapad_av',       -3, 'character varying',                    'session_user',      'Användare som skapade raden',   'LIKE ''%_kba_%''',  false, false),
-    ('andrad_tidpunkt', -2, 'timestamptz',                          'clock_timestamp()', 'Senaste ändringstidpunkt',      'LIKE ''%_kba_%''',  true,  false),
+    ('andrad_tidpunkt', -2, 'timestamptz',                          'NOW()',             'Senaste ändringstidpunkt',      'LIKE ''%_kba_%''',  true,  false),
     ('andrad_av',       -1, 'character varying',                    'session_user',      'Användare som senast ändrade',  'LIKE ''%_kba_%''',  true,  false)
 ON CONFLICT (kolumnnamn) DO UPDATE SET
     default_varde          = EXCLUDED.default_varde,
