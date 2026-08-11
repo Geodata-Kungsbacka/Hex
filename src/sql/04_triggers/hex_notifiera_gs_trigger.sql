@@ -12,8 +12,8 @@ ALTER EVENT TRIGGER hex_notifiera_gs_trigger
     OWNER TO postgres;
 
 COMMENT ON EVENT TRIGGER hex_notifiera_gs_trigger
-    IS 'Skickar pg_notify till GeoServer-lyssnaren nar nya sk0/sk1-scheman skapas.
+    IS 'Skickar pg_notify till GeoServer-lyssnaren när nya sk0/sk1-scheman skapas.
 Lyssnaren skapar automatiskt workspace och PostGIS-datastore i GeoServer.
-Kors som andra av Hex tre CREATE SCHEMA-triggers (alfabetisk korordning: hex_hantera_std_roller_trigger,
-hex_notifiera_gs_trigger, hex_validera_schemanamn_trigger) - efter rollskapandet men fore namnvalideringen.
-pg_notify levereras forst vid COMMIT, sa en senare misslyckad namnvalidering gor att notifieringen aldrig nar lyssnaren.';
+Körs som andra av Hex tre CREATE SCHEMA-triggers (alfabetisk körordning: hex_hantera_std_roller_trigger,
+hex_notifiera_gs_trigger, hex_validera_schemanamn_trigger) - efter rollskapandet men före namnvalideringen.
+pg_notify levereras först vid COMMIT, så en senare misslyckad namnvalidering gör att notifieringen aldrig når lyssnaren.';
