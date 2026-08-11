@@ -937,6 +937,12 @@ BEGIN
         WHERE  n.nspname ~ schema_regex
           AND  c.relkind IN ('r', 'v', 'm', 'S', 'f')
           AND  ro.rolname != system_owner()
+          -- Identitetssekvenser ägs av sin kolumn; ägandet kaskaderar automatiskt
+          -- när tabellen byter ägare via ALTER TABLE. Direkt ALTER SEQUENCE OWNER TO
+          -- på en identitetssekvens (deptype='i') är inte tillåtet i PostgreSQL.
+          AND  NOT (c.relkind = 'S' AND EXISTS (
+                   SELECT 1 FROM pg_catalog.pg_depend d
+                   WHERE d.objid = c.oid AND d.deptype = 'i'))
         ORDER BY n.nspname, c.relname
     LOOP
         CASE r.k
