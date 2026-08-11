@@ -1,22 +1,25 @@
 #!/usr/bin/env python3
 """
-GeoServer Schema Listener - Lyssnar på pg_notify och hanterar workspace/store i GeoServer.
+GeoServer Schema Listener - Lyssnar på pg_notify och hanterar workspaces/stores i GeoServer.
 
 Processen lyssnar på två PostgreSQL-kanaler och hanterar schema-händelser automatiskt:
 
   Kanal 'geoserver_schema'  (utlöses av CREATE SCHEMA via SQL-triggern
                              hex_notifiera_gs_trigger):
-    1. Skapar en workspace i GeoServer med samma namn som schemat.
-    2. Hämtar autentiseringsuppgifter för läsrollen (r_{schema}) från
-       tabellen hex_rolluppgifter.
-    3. Skapar en direkt PostGIS-datastore i workspace med dessa uppgifter.
+    Per schema skapas två workspaces med varsin PostGIS-datastore:
+
+    Läsworkspace  '{schema}'   — ansluter med gs_r_{schema} (SELECT-behörighet).
+                                 Används av WMS/WFS-läsanrop.
+    Skrivworkspace '{schema}_w' — ansluter med gs_w_{schema} (ALL-behörighet).
+                                  Används av WFS-T-transaktioner (Insert/Update/Delete).
+
+    Autentiseringsuppgifterna hämtas från tabellen hex_rolluppgifter där
+    hex_hantera_std_roller() lagrar de autogenererade lösenorden vid CREATE SCHEMA.
 
   Kanal 'geoserver_schema_drop'  (utlöses av DROP SCHEMA via SQL-triggern
                                   hex_notifiera_gs_borttagning_trigger):
-    1. Tar bort workspace från GeoServer med recurse=true, vilket raderar
-       alla datastores och publicerade lager i workspace.
-       Det förhindrar att GeoServer gör upprepade anrop mot ett schema
-       som inte längre existerar.
+    Tar bort båda workspaces ('{schema}' och '{schema}_w') med recurse=true,
+    vilket raderar datastores och publicerade lager i respektive workspace.
 
 Båda kanalerna hanterar enbart scheman vars skyddsnivå har publiceras_geoserver = true
 i tabellen hex_standardiserade_skyddsnivaer. Standardkonfigurationen publicerar sk0 och sk1;
@@ -32,8 +35,8 @@ Användning:
     python geoserver_listener.py --dry-run    # Visa vad som skulle göras utan att göra det
 
 Manuell återutsändning (om lyssnaren var nere när ett schema skapades/togs bort):
-    NOTIFY geoserver_schema,      'sk0_kba_mittschema';   -- lägg till workspace
-    NOTIFY geoserver_schema_drop, 'sk0_kba_mittschema';   -- ta bort workspace
+    NOTIFY geoserver_schema,      'sk0_kba_mittschema';   -- lägg till workspaces
+    NOTIFY geoserver_schema_drop, 'sk0_kba_mittschema';   -- ta bort workspaces
 
 Krav:
     pip install psycopg2 requests python-dotenv
@@ -812,30 +815,55 @@ class GeoServerClient:
             return False
 
     def create_workspace_acl(self, workspace, anonymous_read=False):
-        """Skapar ACL-regler för en workspace.
+        """Skapar ACL-regler för läs-workspace.
 
-        Ger r_{workspace} läsrättighet och w_{workspace} skrivrättighet
-        till alla lager i workspace. Om anonymous_read är True läggs
-        ROLE_ANONYMOUS till i läsregeln så att oautentiserade anrop tillåts
-        (förutsätter att åtkomst begränsas på nätverksnivå, t.ex. IP-vitlista).
+        Ger r_{workspace} läsrättighet till alla lager i workspace.
+        Om anonymous_read är True läggs ROLE_ANONYMOUS till i läsregeln
+        så att oautentiserade anrop tillåts (förutsätter att åtkomst
+        begränsas på nätverksnivå, t.ex. IP-vitlista).
+
+        Skrivrättigheter hanteras av skriv-workspacet (se create_write_workspace_acl).
         """
         read_role = f"r_{workspace},ROLE_ANONYMOUS" if anonymous_read else f"r_{workspace}"
         rules = {
             f"{workspace}.*.r": read_role,
-            f"{workspace}.*.w": f"w_{workspace}",
         }
 
         if self.dry_run:
-            log.info("  [DRY-RUN] Skulle skapa ACL-regler för workspace '%s':", workspace)
+            log.info("  [DRY-RUN] Skulle skapa ACL-regler för läs-workspace '%s':", workspace)
             for rule, role in rules.items():
                 log.info("  [DRY-RUN]   %s = %s", rule, role)
             return True
 
         return self._ensure_acl_rules(workspace, rules)
 
+    def create_write_workspace_acl(self, schema_name):
+        """Skapar ACL-regler för skriv-workspace ('{schema}_w').
+
+        Ger w_{schema_name} både läs- och skrivrättighet till alla lager i
+        skriv-workspacet. Det innebär att enbart användare med skrivrollen kan
+        nå workspacet — WFS-T-anrop (Insert/Update/Delete) riktas dit och når
+        en datastore med gs_w_{schema_name}-uppgifter (ALL-behörighet i PostgreSQL).
+        """
+        write_workspace = f"{schema_name}{WRITE_WORKSPACE_SUFFIX}"
+        write_role = f"w_{schema_name}"
+        rules = {
+            f"{write_workspace}.*.r": write_role,
+            f"{write_workspace}.*.w": write_role,
+        }
+
+        if self.dry_run:
+            log.info("  [DRY-RUN] Skulle skapa ACL-regler för skriv-workspace '%s':", write_workspace)
+            for rule, role in rules.items():
+                log.info("  [DRY-RUN]   %s = %s", rule, role)
+            return True
+
+        return self._ensure_acl_rules(write_workspace, rules)
+
     def delete_workspace_acl(self, workspace):
         """Tar bort ACL-regler för en workspace.
 
+        Tar bort {workspace}.*.r och (om den finns) {workspace}.*.w.
         Returnerar True om reglerna togs bort eller inte hittades (idempotent).
         """
         rules = [f"{workspace}.*.r", f"{workspace}.*.w"]
@@ -946,6 +974,10 @@ class GeoServerClient:
 # SCHEMA HANDLER
 # =============================================================================
 
+# Suffix som läggs till schemanamnet för att bilda skriv-workspace-namnet.
+# Läs-workspace: '{schema}',  skriv-workspace: '{schema}{WRITE_WORKSPACE_SUFFIX}'.
+WRITE_WORKSPACE_SUFFIX = "_w"
+
 # Regex som matchar giltiga schemanamn för GeoServer-publicering.
 # Används som fallback om DB-laddningen misslyckas. Varje lyssnartråd håller
 # sitt eget mönster i _thread_local.schema_pattern, laddat från sin egen databas,
@@ -1020,7 +1052,7 @@ def _db_tag(db_label):
 
 
 def _fetch_role_credentials(conn, schema_name):
-    """Hämtar autentiseringsuppgifter för läsrollen för ett schema.
+    """Hämtar autentiseringsuppgifter för läs-tjänstekontot (gs_r_) för ett schema.
 
     Slår upp gs_r_{schema_name} i hex_rolluppgifter.
 
@@ -1032,6 +1064,35 @@ def _fetch_role_credentials(conn, schema_name):
         (rollnamn, losenord) tuple, eller (None, None) om ej hittad.
     """
     role_name = f"gs_r_{schema_name}"
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT rollnamn, losenord FROM public.hex_rolluppgifter WHERE rollnamn = %s",
+                (role_name,),
+            )
+            row = cur.fetchone()
+        if row:
+            return row[0], row[1]
+        return None, None
+    except Exception as e:
+        log.error("Kunde inte hämta autentiseringsuppgifter för '%s': %s", role_name, e)
+        return None, None
+
+
+def _fetch_write_role_credentials(conn, schema_name):
+    """Hämtar autentiseringsuppgifter för skriv-tjänstekontot (gs_w_) för ett schema.
+
+    Slår upp gs_w_{schema_name} i hex_rolluppgifter. Returnerar (None, None) om
+    raden saknas — t.ex. för äldre scheman skapade innan gs_w_*-stödet lades till.
+
+    Args:
+        conn:        psycopg2-anslutning till databasen (AUTOCOMMIT OK)
+        schema_name: Schemanamn (t.ex. 'sk1_kba_bygg')
+
+    Returns:
+        (rollnamn, losenord) tuple, eller (None, None) om ej hittad.
+    """
+    role_name = f"gs_w_{schema_name}"
     try:
         with conn.cursor() as cur:
             cur.execute(
@@ -1096,8 +1157,10 @@ def _fetch_anonymous_read(conn, schema_name):
 def handle_schema_notification(schema_name, db_config, pg_conn, gs_client, db_label=""):
     """Hanterar en notifiering om nytt schema (kanal: CHANNEL_SCHEMA_CREATE).
 
-    Hämtar autentiseringsuppgifter för läsrollen från hex_rolluppgifter
-    och skapar workspace och direkt PostGIS-datastore i GeoServer.
+    Skapar två workspaces med varsin PostGIS-datastore i GeoServer:
+      - Läs-workspace  '{schema}'   med gs_r_{schema}-uppgifter (SELECT).
+      - Skriv-workspace '{schema}_w' med gs_w_{schema}-uppgifter (ALL),
+        som möjliggör WFS-T (Insert/Update/Delete) via rätt databasanslutning.
 
     Args:
         schema_name: Schemanamnet från pg_notify-payloaden
@@ -1118,26 +1181,36 @@ def handle_schema_notification(schema_name, db_config, pg_conn, gs_client, db_la
     if not _validate_schema_name(schema_name, tag):
         return False
 
-    # Hämta autentiseringsuppgifter för läsrollen från hex_rolluppgifter
-    role_name, password = _fetch_role_credentials(pg_conn, schema_name)
-    if not role_name:
+    # Hämta autentiseringsuppgifter för läs- och skriv-tjänstekontona
+    r_role, r_password = _fetch_role_credentials(pg_conn, schema_name)
+    if not r_role:
         log.error(
             "%sIngen autentiseringsuppgifter hittades för 'gs_r_%s' i hex_rolluppgifter - "
             "hoppar över schema '%s'",
             tag, schema_name, schema_name,
         )
         return False
+    log.info("%s  Hittade autentiseringsuppgifter för läsroll: %s", tag, r_role)
 
-    log.info("%s  Hittade autentiseringsuppgifter för roll: %s", tag, role_name)
+    w_role, w_password = _fetch_write_role_credentials(pg_conn, schema_name)
+    if not w_role:
+        log.warning(
+            "%sIngen autentiseringsuppgifter hittades för 'gs_w_%s' i hex_rolluppgifter - "
+            "skriv-workspace utelämnas för schema '%s'",
+            tag, schema_name, schema_name,
+        )
 
-    # 1. Skapa workspace
-    log.info("%s  Steg 1: Skapar workspace '%s'...", tag, schema_name)
+    write_workspace = f"{schema_name}{WRITE_WORKSPACE_SUFFIX}"
+    anonymous_read = _fetch_anonymous_read(pg_conn, schema_name)
+
+    # 1. Skapa läs-workspace
+    log.info("%s  Steg 1: Skapar läs-workspace '%s'...", tag, schema_name)
     if not gs_client.create_workspace(schema_name):
-        log.error("%s  Avbryter - workspace kunde inte skapas", tag)
+        log.error("%s  Avbryter - läs-workspace kunde inte skapas", tag)
         return False
 
-    # 2. Skapa direkt PostGIS-datastore med läsrollens uppgifter
-    log.info("%s  Steg 2: Skapar PostGIS-datastore '%s'...", tag, schema_name)
+    # 2. Skapa PostGIS-datastore med läsrollens uppgifter
+    log.info("%s  Steg 2: Skapar läs-datastore '%s'...", tag, schema_name)
     if not gs_client.create_pg_datastore(
         workspace=schema_name,
         store_name=schema_name,
@@ -1145,25 +1218,56 @@ def handle_schema_notification(schema_name, db_config, pg_conn, gs_client, db_la
         port=db_config["port"],
         dbname=db_config["dbname"],
         schema_name=schema_name,
-        pg_user=role_name,
-        pg_password=password,
+        pg_user=r_role,
+        pg_password=r_password,
     ):
-        log.error("%s  Avbryter - datastore kunde inte skapas", tag)
+        log.error("%s  Avbryter - läs-datastore kunde inte skapas", tag)
         return False
 
-    # 3. Skapa GeoServer-roller (r_ och w_) som speglar PostgreSQL-rollerna
-    log.info("%s  Steg 3: Skapar GeoServer-roller för '%s'...", tag, schema_name)
+    # 3. Skapa skriv-workspace och skriv-datastore (kräver gs_w_-uppgifter)
+    if w_role:
+        log.info("%s  Steg 3: Skapar skriv-workspace '%s'...", tag, write_workspace)
+        if not gs_client.create_workspace(write_workspace):
+            log.error("%s  Avbryter - skriv-workspace kunde inte skapas", tag)
+            return False
+
+        log.info("%s  Steg 4: Skapar skriv-datastore '%s'...", tag, write_workspace)
+        if not gs_client.create_pg_datastore(
+            workspace=write_workspace,
+            store_name=write_workspace,
+            host=db_config["host"],
+            port=db_config["port"],
+            dbname=db_config["dbname"],
+            schema_name=schema_name,
+            pg_user=w_role,
+            pg_password=w_password,
+        ):
+            log.error("%s  Avbryter - skriv-datastore kunde inte skapas", tag)
+            return False
+    else:
+        log.info("%s  Steg 3-4: Hoppar över skriv-workspace (saknade gs_w_-uppgifter)", tag)
+
+    # 5. Skapa GeoServer-roller (r_ och w_) som speglar PostgreSQL-rollerna
+    log.info("%s  Steg 5: Skapar GeoServer-roller för '%s'...", tag, schema_name)
     for gs_role in (f"r_{schema_name}", f"w_{schema_name}"):
         if not gs_client.create_gs_role(gs_role):
             log.error("%s  Avbryter - GeoServer-roll '%s' kunde inte skapas", tag, gs_role)
             return False
 
-    # 4. Skapa ACL-regler så att rollerna får tillgång till workspace
-    anonymous_read = _fetch_anonymous_read(pg_conn, schema_name)
-    log.info("%s  Steg 4: Skapar ACL-regler för '%s'...", tag, schema_name)
+    # 6. Skapa ACL-regler för läs-workspace (r_-rollen läser)
+    log.info("%s  Steg 6: Skapar ACL-regler för läs-workspace '%s'...", tag, schema_name)
     if not gs_client.create_workspace_acl(schema_name, anonymous_read=anonymous_read):
-        log.error("%s  Avbryter - ACL-regler kunde inte skapas", tag)
+        log.error("%s  Avbryter - ACL-regler för läs-workspace kunde inte skapas", tag)
         return False
+
+    # 7. Skapa ACL-regler för skriv-workspace (w_-rollen läser och skriver)
+    if w_role:
+        log.info("%s  Steg 7: Skapar ACL-regler för skriv-workspace '%s'...", tag, write_workspace)
+        if not gs_client.create_write_workspace_acl(schema_name):
+            log.error("%s  Avbryter - ACL-regler för skriv-workspace kunde inte skapas", tag)
+            return False
+    else:
+        log.info("%s  Steg 7: Hoppar över ACL för skriv-workspace (saknade gs_w_-uppgifter)", tag)
 
     log.info("%s  Schema '%s' publicerat till GeoServer", tag, schema_name)
     return True
@@ -1196,18 +1300,28 @@ def handle_schema_removal_notification(schema_name, gs_client, pg_conn=None, db_
     if not _validate_schema_name(schema_name, tag):
         return False
 
-    # 1. Ta bort ACL-regler innan workspace raderas
-    log.info("%s  Steg 1: Tar bort ACL-regler för '%s'...", tag, schema_name)
+    write_workspace = f"{schema_name}{WRITE_WORKSPACE_SUFFIX}"
+
+    # 1. Ta bort ACL-regler för läs-workspace innan workspace raderas
+    log.info("%s  Steg 1: Tar bort ACL-regler för läs-workspace '%s'...", tag, schema_name)
     gs_client.delete_workspace_acl(schema_name)
 
-    # 2. Ta bort workspace (kaskadraderar datastores och publicerade lager)
-    log.info("%s  Steg 2: Tar bort workspace '%s' från GeoServer...", tag, schema_name)
+    # 2. Ta bort ACL-regler för skriv-workspace
+    log.info("%s  Steg 2: Tar bort ACL-regler för skriv-workspace '%s'...", tag, write_workspace)
+    gs_client.delete_workspace_acl(write_workspace)
+
+    # 3. Ta bort läs-workspace (kaskadraderar datastores och publicerade lager)
+    log.info("%s  Steg 3: Tar bort läs-workspace '%s' från GeoServer...", tag, schema_name)
     if not gs_client.delete_workspace(schema_name):
-        log.error("%s  Workspace '%s' kunde inte tas bort", tag, schema_name)
+        log.error("%s  Läs-workspace '%s' kunde inte tas bort", tag, schema_name)
         return False
 
-    # 3. Ta bort GeoServer-rollerna
-    log.info("%s  Steg 3: Tar bort GeoServer-roller för '%s'...", tag, schema_name)
+    # 4. Ta bort skriv-workspace (kaskadraderar datastores och publicerade lager)
+    log.info("%s  Steg 4: Tar bort skriv-workspace '%s' från GeoServer...", tag, write_workspace)
+    gs_client.delete_workspace(write_workspace)
+
+    # 5. Ta bort GeoServer-rollerna
+    log.info("%s  Steg 5: Tar bort GeoServer-roller för '%s'...", tag, schema_name)
     for gs_role in (f"r_{schema_name}", f"w_{schema_name}"):
         gs_client.delete_gs_role(gs_role)
 
@@ -1406,7 +1520,11 @@ def _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label="", all_pg_
         #    som denna databas faktiskt hanterar, så att varje äkta föräldralös workspace
         #    bara rapporteras av rätt databas (sk0_oppen → sk0_*, skx_utveckling → skx_*).
         #    Databaser utan egna scheman hoppas över helt i multi-DB-läge.
+        #    Förväntade skriv-workspaces ('<schema>_w') är kända och ska inte larma.
         known_schemas = all_pg_schemas if all_pg_schemas is not None else pg_schemas
+        known_schemas = known_schemas | {
+            f"{s}{WRITE_WORKSPACE_SUFFIX}" for s in known_schemas
+        }
         own_prefixes = {name.split("_")[0] for name in pg_schemas}
         _pattern = _get_schema_pattern()
         if own_prefixes:

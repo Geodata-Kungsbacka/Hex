@@ -10,8 +10,12 @@ GeoServer krävs inte: GeoServerClient ersätts med en mock som
 registrerar varje anrop. Testet använder en riktig PostgreSQL-anslutning
 så att den faktiska LISTEN/NOTIFY-mekaniken testas.
 
-Lyssnaren använder direkta PostgreSQL-anslutningar (inte JNDI): autentiseringsuppgifter
-för läsrollen hämtas från tabellen hex_rolluppgifter.
+Lyssnaren skapar två workspaces per schema:
+  - Läs-workspace  '{schema}'   med gs_r_-uppgifter (SELECT)
+  - Skriv-workspace '{schema}_w' med gs_w_-uppgifter (ALL, möjliggör WFS-T)
+
+Autentiseringsuppgifterna hämtas från tabellen hex_rolluppgifter via
+_fetch_role_credentials (läs) respektive _fetch_write_role_credentials (skriv).
 
 Användning:
     python3 tests/test_pg_notify_listener.py
@@ -63,9 +67,13 @@ VALID_CREATE_SCHEMA = "sk0_kba_testschema"
 VALID_DROP_SCHEMA   = "sk1_ext_oldschema"
 INVALID_SCHEMA      = "public_not_a_valid_name"
 
-# Testuppgifter för läsrollen som lagras i hex_rolluppgifter
-TEST_ROLE_NAME = f"r_{VALID_CREATE_SCHEMA}"
-TEST_ROLE_PASSWORD = "test_password_123"
+# Testuppgifter för läs- och skrivrollen som lagras i hex_rolluppgifter
+TEST_ROLE_NAME       = f"gs_r_{VALID_CREATE_SCHEMA}"
+TEST_ROLE_PASSWORD   = "test_password_123"
+TEST_W_ROLE_NAME     = f"gs_w_{VALID_CREATE_SCHEMA}"
+TEST_W_ROLE_PASSWORD = "test_write_password_456"
+
+WRITE_SUFFIX = gl.WRITE_WORKSPACE_SUFFIX  # "_w"
 
 
 # ---------------------------------------------------------------------------
@@ -207,6 +215,7 @@ class TestHandlerLogicWithMockGeoServer(unittest.TestCase):
         gs.create_pg_datastore.return_value = datastore_ok
         gs.create_gs_role.return_value = role_ok
         gs.create_workspace_acl.return_value = acl_ok
+        gs.create_write_workspace_acl.return_value = acl_ok
         gs.delete_workspace.return_value = True
         gs.delete_workspace_acl.return_value = True
         gs.delete_gs_role.return_value = True
@@ -231,18 +240,33 @@ class TestHandlerLogicWithMockGeoServer(unittest.TestCase):
     # 2. Schema CREATE-hanterare
     # ------------------------------------------------------------------
     def test_create_handler_calls_workspace_and_datastore(self):
-        """Lyckad väg: alla fyra steg utförs för ett giltigt sk0-schema."""
+        """Lyckad väg: alla sju steg utförs för ett giltigt sk0-schema.
+
+        Verifierar att både läs-workspace (gs_r_) och skriv-workspace (gs_w_)
+        skapas med korrekta autentiseringsuppgifter och ACL-regler.
+        """
         gs = self._make_gs_mock()
         mock_conn = self._make_pg_conn_mock()
+        write_workspace = f"{VALID_CREATE_SCHEMA}{WRITE_SUFFIX}"
 
-        with patch.object(gl, "_fetch_role_credentials", return_value=(TEST_ROLE_NAME, TEST_ROLE_PASSWORD)):
-            result = gl.handle_schema_notification(
-                VALID_CREATE_SCHEMA, DB_CONFIG, mock_conn, gs
-            )
+        with patch.object(gl, "_fetch_role_credentials",
+                          return_value=(TEST_ROLE_NAME, TEST_ROLE_PASSWORD)):
+            with patch.object(gl, "_fetch_write_role_credentials",
+                              return_value=(TEST_W_ROLE_NAME, TEST_W_ROLE_PASSWORD)):
+                result = gl.handle_schema_notification(
+                    VALID_CREATE_SCHEMA, DB_CONFIG, mock_conn, gs
+                )
 
         self.assertTrue(result)
-        gs.create_workspace.assert_called_once_with(VALID_CREATE_SCHEMA)
-        gs.create_pg_datastore.assert_called_once_with(
+
+        # Båda workspaces skapas
+        self.assertEqual(gs.create_workspace.call_count, 2)
+        gs.create_workspace.assert_any_call(VALID_CREATE_SCHEMA)
+        gs.create_workspace.assert_any_call(write_workspace)
+
+        # Båda datastores skapas med rätt uppgifter
+        self.assertEqual(gs.create_pg_datastore.call_count, 2)
+        gs.create_pg_datastore.assert_any_call(
             workspace=VALID_CREATE_SCHEMA,
             store_name=VALID_CREATE_SCHEMA,
             host=DB_CONFIG["host"],
@@ -252,10 +276,45 @@ class TestHandlerLogicWithMockGeoServer(unittest.TestCase):
             pg_user=TEST_ROLE_NAME,
             pg_password=TEST_ROLE_PASSWORD,
         )
+        gs.create_pg_datastore.assert_any_call(
+            workspace=write_workspace,
+            store_name=write_workspace,
+            host=DB_CONFIG["host"],
+            port=DB_CONFIG["port"],
+            dbname=DB_CONFIG["dbname"],
+            schema_name=VALID_CREATE_SCHEMA,
+            pg_user=TEST_W_ROLE_NAME,
+            pg_password=TEST_W_ROLE_PASSWORD,
+        )
+
+        # GeoServer-roller skapas
         self.assertEqual(gs.create_gs_role.call_count, 2)
         gs.create_gs_role.assert_any_call(f"r_{VALID_CREATE_SCHEMA}")
         gs.create_gs_role.assert_any_call(f"w_{VALID_CREATE_SCHEMA}")
+
+        # ACL för läs- och skriv-workspace skapas
         gs.create_workspace_acl.assert_called_once_with(VALID_CREATE_SCHEMA, anonymous_read=False)
+        gs.create_write_workspace_acl.assert_called_once_with(VALID_CREATE_SCHEMA)
+
+    def test_create_handler_skips_write_workspace_when_w_credentials_missing(self):
+        """Om gs_w_-uppgifter saknas i hex_rolluppgifter skapas enbart läs-workspace."""
+        gs = self._make_gs_mock()
+        mock_conn = self._make_pg_conn_mock()
+
+        with patch.object(gl, "_fetch_role_credentials",
+                          return_value=(TEST_ROLE_NAME, TEST_ROLE_PASSWORD)):
+            with patch.object(gl, "_fetch_write_role_credentials",
+                              return_value=(None, None)):
+                result = gl.handle_schema_notification(
+                    VALID_CREATE_SCHEMA, DB_CONFIG, mock_conn, gs
+                )
+
+        self.assertTrue(result)
+        # Enbart läs-workspace skapas
+        gs.create_workspace.assert_called_once_with(VALID_CREATE_SCHEMA)
+        gs.create_pg_datastore.assert_called_once()
+        # Inga skriv-ACL
+        gs.create_write_workspace_acl.assert_not_called()
 
     def test_create_handler_rejects_invalid_schema(self):
         """Schemanamn som inte matchar regex hoppas tyst över."""
@@ -292,10 +351,12 @@ class TestHandlerLogicWithMockGeoServer(unittest.TestCase):
         original_thread_pattern = gl._thread_local.__dict__.pop("schema_pattern", None)
         try:
             with patch.object(gl, "_fetch_role_credentials",
-                              return_value=("r_skx_kba_test", "pw")):
-                result = gl.handle_schema_notification(
-                    "skx_kba_test", DB_CONFIG, mock_conn, gs
-                )
+                              return_value=("gs_r_skx_kba_test", "pw")):
+                with patch.object(gl, "_fetch_write_role_credentials",
+                                  return_value=("gs_w_skx_kba_test", "pw_w")):
+                    result = gl.handle_schema_notification(
+                        "skx_kba_test", DB_CONFIG, mock_conn, gs
+                    )
         finally:
             if original_thread_pattern is not None:
                 gl._thread_local.schema_pattern = original_thread_pattern
@@ -303,23 +364,26 @@ class TestHandlerLogicWithMockGeoServer(unittest.TestCase):
                 gl._thread_local.__dict__.pop("schema_pattern", None)
 
         self.assertTrue(result, "skx_kba_test ska accepteras när mönstret laddats om från DB")
-        gs.create_workspace.assert_called_once_with("skx_kba_test")
+        gs.create_workspace.assert_any_call("skx_kba_test")
 
     def test_create_handler_passes_anonymous_read_true(self):
         """När anonym_las=True i DB skickas anonymous_read=True till create_workspace_acl."""
         gs = self._make_gs_mock()
         mock_conn = self._make_pg_conn_mock(anonym_las=True)
 
-        with patch.object(gl, "_fetch_role_credentials", return_value=(TEST_ROLE_NAME, TEST_ROLE_PASSWORD)):
-            result = gl.handle_schema_notification(
-                VALID_CREATE_SCHEMA, DB_CONFIG, mock_conn, gs
-            )
+        with patch.object(gl, "_fetch_role_credentials",
+                          return_value=(TEST_ROLE_NAME, TEST_ROLE_PASSWORD)):
+            with patch.object(gl, "_fetch_write_role_credentials",
+                              return_value=(TEST_W_ROLE_NAME, TEST_W_ROLE_PASSWORD)):
+                result = gl.handle_schema_notification(
+                    VALID_CREATE_SCHEMA, DB_CONFIG, mock_conn, gs
+                )
 
         self.assertTrue(result)
         gs.create_workspace_acl.assert_called_once_with(VALID_CREATE_SCHEMA, anonymous_read=True)
 
     def test_create_handler_missing_credentials(self):
-        """Schema utan autentiseringsuppgifter i hex_rolluppgifter hoppas över."""
+        """Schema utan gs_r_-uppgifter i hex_rolluppgifter hoppas helt över."""
         gs = self._make_gs_mock()
         mock_conn = self._make_pg_conn_mock()
 
@@ -331,14 +395,17 @@ class TestHandlerLogicWithMockGeoServer(unittest.TestCase):
         gs.create_workspace.assert_not_called()
 
     def test_create_handler_workspace_failure_aborts(self):
-        """Om workspace-skapande misslyckas hoppas datastore-steget över."""
+        """Om läs-workspace-skapande misslyckas hoppas resten över."""
         gs = self._make_gs_mock(workspace_ok=False)
         mock_conn = self._make_pg_conn_mock()
 
-        with patch.object(gl, "_fetch_role_credentials", return_value=(TEST_ROLE_NAME, TEST_ROLE_PASSWORD)):
-            result = gl.handle_schema_notification(
-                VALID_CREATE_SCHEMA, DB_CONFIG, mock_conn, gs
-            )
+        with patch.object(gl, "_fetch_role_credentials",
+                          return_value=(TEST_ROLE_NAME, TEST_ROLE_PASSWORD)):
+            with patch.object(gl, "_fetch_write_role_credentials",
+                              return_value=(TEST_W_ROLE_NAME, TEST_W_ROLE_PASSWORD)):
+                result = gl.handle_schema_notification(
+                    VALID_CREATE_SCHEMA, DB_CONFIG, mock_conn, gs
+                )
         self.assertFalse(result)
         gs.create_pg_datastore.assert_not_called()
 
@@ -346,29 +413,37 @@ class TestHandlerLogicWithMockGeoServer(unittest.TestCase):
         """sk1-scheman hanteras identiskt med sk0-scheman."""
         gs = self._make_gs_mock()
         mock_conn = self._make_pg_conn_mock()
-        sk1_role = f"r_{VALID_DROP_SCHEMA}"
+        sk1_r_role = f"gs_r_{VALID_DROP_SCHEMA}"
+        sk1_w_role = f"gs_w_{VALID_DROP_SCHEMA}"
 
-        with patch.object(gl, "_fetch_role_credentials", return_value=(sk1_role, TEST_ROLE_PASSWORD)):
-            result = gl.handle_schema_notification(
-                VALID_DROP_SCHEMA,   # "sk1_ext_oldschema"
-                DB_CONFIG,
-                mock_conn,
-                gs,
-            )
+        with patch.object(gl, "_fetch_role_credentials",
+                          return_value=(sk1_r_role, TEST_ROLE_PASSWORD)):
+            with patch.object(gl, "_fetch_write_role_credentials",
+                              return_value=(sk1_w_role, TEST_W_ROLE_PASSWORD)):
+                result = gl.handle_schema_notification(
+                    VALID_DROP_SCHEMA,   # "sk1_ext_oldschema"
+                    DB_CONFIG,
+                    mock_conn,
+                    gs,
+                )
         self.assertTrue(result)
-        gs.create_workspace.assert_called_once_with(VALID_DROP_SCHEMA)
+        gs.create_workspace.assert_any_call(VALID_DROP_SCHEMA)
+        gs.create_workspace.assert_any_call(f"{VALID_DROP_SCHEMA}{WRITE_SUFFIX}")
 
     def test_create_handler_datastore_failure(self):
-        """Om datastore-skapande misslyckas avbryts flödet innan roller skapas."""
+        """Om läs-datastore-skapande misslyckas avbryts flödet innan roller skapas."""
         gs = self._make_gs_mock(datastore_ok=False)
         mock_conn = self._make_pg_conn_mock()
 
-        with patch.object(gl, "_fetch_role_credentials", return_value=(TEST_ROLE_NAME, TEST_ROLE_PASSWORD)):
-            result = gl.handle_schema_notification(
-                VALID_CREATE_SCHEMA, DB_CONFIG, mock_conn, gs
-            )
+        with patch.object(gl, "_fetch_role_credentials",
+                          return_value=(TEST_ROLE_NAME, TEST_ROLE_PASSWORD)):
+            with patch.object(gl, "_fetch_write_role_credentials",
+                              return_value=(TEST_W_ROLE_NAME, TEST_W_ROLE_PASSWORD)):
+                result = gl.handle_schema_notification(
+                    VALID_CREATE_SCHEMA, DB_CONFIG, mock_conn, gs
+                )
         self.assertFalse(result)
-        gs.create_workspace.assert_called_once()
+        gs.create_workspace.assert_called_once()  # läs-workspace skapas, sedan avbryts
         gs.create_gs_role.assert_not_called()
         gs.create_workspace_acl.assert_not_called()
 
@@ -377,40 +452,54 @@ class TestHandlerLogicWithMockGeoServer(unittest.TestCase):
         gs = self._make_gs_mock(role_ok=False)
         mock_conn = self._make_pg_conn_mock()
 
-        with patch.object(gl, "_fetch_role_credentials", return_value=(TEST_ROLE_NAME, TEST_ROLE_PASSWORD)):
-            result = gl.handle_schema_notification(
-                VALID_CREATE_SCHEMA, DB_CONFIG, mock_conn, gs
-            )
+        with patch.object(gl, "_fetch_role_credentials",
+                          return_value=(TEST_ROLE_NAME, TEST_ROLE_PASSWORD)):
+            with patch.object(gl, "_fetch_write_role_credentials",
+                              return_value=(TEST_W_ROLE_NAME, TEST_W_ROLE_PASSWORD)):
+                result = gl.handle_schema_notification(
+                    VALID_CREATE_SCHEMA, DB_CONFIG, mock_conn, gs
+                )
         self.assertFalse(result)
-        gs.create_workspace.assert_called_once()
-        gs.create_pg_datastore.assert_called_once()
+        self.assertEqual(gs.create_workspace.call_count, 2)
+        self.assertEqual(gs.create_pg_datastore.call_count, 2)
         gs.create_workspace_acl.assert_not_called()
 
     def test_create_handler_acl_failure_aborts(self):
-        """Om ACL-regler inte kan skapas returneras False."""
+        """Om läs-ACL-regler inte kan skapas returneras False."""
         gs = self._make_gs_mock(acl_ok=False)
         mock_conn = self._make_pg_conn_mock()
 
-        with patch.object(gl, "_fetch_role_credentials", return_value=(TEST_ROLE_NAME, TEST_ROLE_PASSWORD)):
-            result = gl.handle_schema_notification(
-                VALID_CREATE_SCHEMA, DB_CONFIG, mock_conn, gs
-            )
+        with patch.object(gl, "_fetch_role_credentials",
+                          return_value=(TEST_ROLE_NAME, TEST_ROLE_PASSWORD)):
+            with patch.object(gl, "_fetch_write_role_credentials",
+                              return_value=(TEST_W_ROLE_NAME, TEST_W_ROLE_PASSWORD)):
+                result = gl.handle_schema_notification(
+                    VALID_CREATE_SCHEMA, DB_CONFIG, mock_conn, gs
+                )
         self.assertFalse(result)
-        gs.create_workspace.assert_called_once()
-        gs.create_pg_datastore.assert_called_once()
+        self.assertEqual(gs.create_workspace.call_count, 2)
+        self.assertEqual(gs.create_pg_datastore.call_count, 2)
         self.assertEqual(gs.create_gs_role.call_count, 2)
 
     # ------------------------------------------------------------------
     # 3. Schema DROP-hanterare
     # ------------------------------------------------------------------
     def test_drop_handler_calls_delete_workspace(self):
-        """Lyckad väg: ACL-regler, workspace och roller tas bort i rätt ordning."""
+        """Lyckad väg: ACL-regler, båda workspaces och roller tas bort i rätt ordning."""
         gs = self._make_gs_mock()
+        write_workspace = f"{VALID_DROP_SCHEMA}{WRITE_SUFFIX}"
         result = gl.handle_schema_removal_notification(VALID_DROP_SCHEMA, gs)
 
         self.assertTrue(result)
-        gs.delete_workspace_acl.assert_called_once_with(VALID_DROP_SCHEMA)
-        gs.delete_workspace.assert_called_once_with(VALID_DROP_SCHEMA)
+        # Steg 1 och 2: ACL tas bort för läs- och skriv-workspace
+        self.assertEqual(gs.delete_workspace_acl.call_count, 2)
+        gs.delete_workspace_acl.assert_any_call(VALID_DROP_SCHEMA)
+        gs.delete_workspace_acl.assert_any_call(write_workspace)
+        # Steg 3 och 4: Båda workspaces tas bort
+        self.assertEqual(gs.delete_workspace.call_count, 2)
+        gs.delete_workspace.assert_any_call(VALID_DROP_SCHEMA)
+        gs.delete_workspace.assert_any_call(write_workspace)
+        # Steg 5: GeoServer-roller tas bort
         self.assertEqual(gs.delete_gs_role.call_count, 2)
         gs.delete_gs_role.assert_any_call(f"r_{VALID_DROP_SCHEMA}")
         gs.delete_gs_role.assert_any_call(f"w_{VALID_DROP_SCHEMA}")
@@ -459,15 +548,16 @@ class TestHandlerLogicWithMockGeoServer(unittest.TestCase):
                 gl._thread_local.__dict__.pop("schema_pattern", None)
 
         self.assertTrue(result, "skx_kba_test ska accepteras när mönstret laddats om från DB")
-        gs.delete_workspace.assert_called_once_with("skx_kba_test")
+        gs.delete_workspace.assert_any_call("skx_kba_test")
 
     def test_drop_handler_returns_false_on_geoserver_failure(self):
-        """Hanteraren returnerar False när workspace-borttagning misslyckas; roller rensas inte."""
+        """Hanteraren returnerar False när läs-workspace-borttagning misslyckas; roller rensas inte."""
         gs = self._make_gs_mock()
         gs.delete_workspace.return_value = False
         result = gl.handle_schema_removal_notification(VALID_DROP_SCHEMA, gs)
         self.assertFalse(result)
-        gs.delete_workspace_acl.assert_called_once_with(VALID_DROP_SCHEMA)
+        # Steg 1 och 2: Båda ACL-stegen körs innan workspace-borttagningen försöks
+        self.assertEqual(gs.delete_workspace_acl.call_count, 2)
         gs.delete_gs_role.assert_not_called()
 
 
@@ -484,12 +574,13 @@ class TestListenLoopIntegration(unittest.TestCase):
 
     def _run_listen_loop(self, gs_mock, stop_event):
         with patch.object(gl, "_fetch_role_credentials", return_value=(TEST_ROLE_NAME, TEST_ROLE_PASSWORD)):
-            gl.listen_loop(
-                DB_CONFIG,
-                reconnect_delay=1,
-                gs_client=gs_mock,
-                stop_event=stop_event,
-            )
+            with patch.object(gl, "_fetch_write_role_credentials", return_value=(TEST_W_ROLE_NAME, TEST_W_ROLE_PASSWORD)):
+                gl.listen_loop(
+                    DB_CONFIG,
+                    reconnect_delay=1,
+                    gs_client=gs_mock,
+                    stop_event=stop_event,
+                )
 
     def _make_gs_mock(self):
         gs = MagicMock()
@@ -499,6 +590,7 @@ class TestListenLoopIntegration(unittest.TestCase):
         gs.create_pg_datastore.return_value = True
         gs.create_gs_role.return_value = True
         gs.create_workspace_acl.return_value = True
+        gs.create_write_workspace_acl.return_value = True
         gs.delete_workspace.return_value = True
         gs.delete_workspace_acl.return_value = True
         gs.delete_gs_role.return_value = True
@@ -526,8 +618,8 @@ class TestListenLoopIntegration(unittest.TestCase):
         stop.set()
         t.join(timeout=3)
 
-        gs.create_workspace.assert_called_once_with(VALID_CREATE_SCHEMA)
-        gs.create_pg_datastore.assert_called_once()
+        gs.create_workspace.assert_any_call(VALID_CREATE_SCHEMA)
+        self.assertGreaterEqual(gs.create_pg_datastore.call_count, 1)
 
     def test_listen_loop_picks_up_drop_notification(self):
         """listen_loop tar emot geoserver_schema_drop NOTIFY och anropar delete_workspace."""
@@ -551,7 +643,7 @@ class TestListenLoopIntegration(unittest.TestCase):
         stop.set()
         t.join(timeout=3)
 
-        gs.delete_workspace.assert_called_once_with(VALID_DROP_SCHEMA)
+        gs.delete_workspace.assert_any_call(VALID_DROP_SCHEMA)
 
     def test_listen_loop_both_directions(self):
         """Båda NOTIFY-kanaler bearbetas i en enda listen_loop-körning."""
@@ -576,8 +668,8 @@ class TestListenLoopIntegration(unittest.TestCase):
         stop.set()
         t.join(timeout=3)
 
-        gs.create_workspace.assert_called_once_with(VALID_CREATE_SCHEMA)
-        gs.delete_workspace.assert_called_once_with(VALID_DROP_SCHEMA)
+        gs.create_workspace.assert_any_call(VALID_CREATE_SCHEMA)
+        gs.delete_workspace.assert_any_call(VALID_DROP_SCHEMA)
 
 
 class TestCreateWorkspaceNamespaceUri(unittest.TestCase):
@@ -795,18 +887,20 @@ class TestCreateWorkspaceAcl(unittest.TestCase):
         return resp
 
     def test_create_acl_success_201(self):
-        """201 → regler skapade, returnerar True."""
+        """Regel skapas framgångsrikt via POST 201 när ingen regel finns sedan tidigare."""
         client = self._make_client()
-        with patch.object(client, "_request_with_retry",
-                          return_value=self._mock_response(201)):
-            self.assertTrue(client.create_workspace_acl("sk0_kba_test"))
+        with patch.object(client, "get_acl_rules", return_value={}):
+            with patch.object(client, "_request_with_retry",
+                              return_value=self._mock_response(201)):
+                self.assertTrue(client.create_workspace_acl("sk0_kba_test"))
 
     def test_create_acl_success_200(self):
-        """200 → regler skapade (vissa GeoServer-versioner), returnerar True."""
+        """Regel skapas framgångsrikt via POST 200 (vissa GeoServer-versioner)."""
         client = self._make_client()
-        with patch.object(client, "_request_with_retry",
-                          return_value=self._mock_response(200)):
-            self.assertTrue(client.create_workspace_acl("sk0_kba_test"))
+        with patch.object(client, "get_acl_rules", return_value={}):
+            with patch.object(client, "_request_with_retry",
+                              return_value=self._mock_response(200)):
+                self.assertTrue(client.create_workspace_acl("sk0_kba_test"))
 
     def test_create_acl_409_rules_already_correct(self):
         """409 → GET visar att reglerna redan har rätt roll → returnerar True utan skrivning."""
@@ -879,14 +973,19 @@ class TestCreateWorkspaceAcl(unittest.TestCase):
             self.assertFalse(client.create_workspace_acl("sk0_kba_test"))
 
     def test_create_acl_server_error(self):
-        """500 → logg ERROR, returnerar False."""
+        """500 från POST → logg ERROR, returnerar False."""
         client = self._make_client()
-        with patch.object(client, "_request_with_retry",
-                          return_value=self._mock_response(500, "Internal Server Error")):
-            self.assertFalse(client.create_workspace_acl("sk0_kba_test"))
+        with patch.object(client, "get_acl_rules", return_value={}):
+            with patch.object(client, "_request_with_retry",
+                              return_value=self._mock_response(500, "Internal Server Error")):
+                self.assertFalse(client.create_workspace_acl("sk0_kba_test"))
 
     def test_create_acl_anonymous_read_adds_role_anonymous(self):
-        """anonymous_read=True → läsregeln inkluderar ROLE_ANONYMOUS i POST-payloaden."""
+        """anonymous_read=True → läsregeln inkluderar ROLE_ANONYMOUS i POST-payloaden.
+
+        create_workspace_acl hanterar enbart läs-workspacets .*.r-regel.
+        Skrivrättigheter hanteras av create_write_workspace_acl för skriv-workspacet.
+        """
         client = self._make_client()
         posted = {}
 
@@ -895,11 +994,13 @@ class TestCreateWorkspaceAcl(unittest.TestCase):
                 posted.update(kwargs.get("json", {}))
             return self._mock_response(201)
 
-        with patch.object(client, "_request_with_retry", side_effect=capture_request):
-            self.assertTrue(client.create_workspace_acl("skx_kba_fg", anonymous_read=True))
+        with patch.object(client, "get_acl_rules", return_value={}):
+            with patch.object(client, "_request_with_retry", side_effect=capture_request):
+                self.assertTrue(client.create_workspace_acl("skx_kba_fg", anonymous_read=True))
 
         self.assertEqual(posted.get("skx_kba_fg.*.r"), "r_skx_kba_fg,ROLE_ANONYMOUS")
-        self.assertEqual(posted.get("skx_kba_fg.*.w"), "w_skx_kba_fg")
+        # Skrivrättigheter hanteras av skriv-workspacet – ska inte finnas i läs-workspacets ACL
+        self.assertNotIn("skx_kba_fg.*.w", posted)
 
     def test_create_acl_anonymous_read_false_omits_role_anonymous(self):
         """anonymous_read=False (default) → läsregeln innehåller inte ROLE_ANONYMOUS."""
@@ -911,8 +1012,9 @@ class TestCreateWorkspaceAcl(unittest.TestCase):
                 posted.update(kwargs.get("json", {}))
             return self._mock_response(201)
 
-        with patch.object(client, "_request_with_retry", side_effect=capture_request):
-            self.assertTrue(client.create_workspace_acl("sk1_kba_test"))
+        with patch.object(client, "get_acl_rules", return_value={}):
+            with patch.object(client, "_request_with_retry", side_effect=capture_request):
+                self.assertTrue(client.create_workspace_acl("sk1_kba_test"))
 
         self.assertEqual(posted.get("sk1_kba_test.*.r"), "r_sk1_kba_test")
         self.assertNotIn("ROLE_ANONYMOUS", posted.get("sk1_kba_test.*.r", ""))
@@ -1148,19 +1250,21 @@ class TestReconcileGeoServerSchemas(unittest.TestCase):
     # ------------------------------------------------------------------
 
     def test_missing_schema_creates_workspace(self):
-        """Schema i PG men inte i GeoServer → workspace skapas."""
+        """Schema i PG men inte i GeoServer → båda workspaces skapas."""
         cur = self._make_cur_mock(["sk0_kba_testschema"])
         gs  = self._make_gs_mock(existing_workspaces=[])
 
         with patch.object(gl, "_fetch_role_credentials",
                           return_value=(TEST_ROLE_NAME, TEST_ROLE_PASSWORD)):
-            gl._reconcile_geoserver_schemas(cur, self.DB_CONFIG, gs)
+            with patch.object(gl, "_fetch_write_role_credentials",
+                              return_value=(TEST_W_ROLE_NAME, TEST_W_ROLE_PASSWORD)):
+                gl._reconcile_geoserver_schemas(cur, self.DB_CONFIG, gs)
 
-        gs.create_workspace.assert_called_once_with("sk0_kba_testschema")
+        gs.create_workspace.assert_any_call("sk0_kba_testschema")
 
     def test_existing_schema_refreshes_datastore_credentials(self):
         """
-        Schema finns i både PG och GeoServer → workspace skapas inte igen men
+        Schema finns i både PG och GeoServer → workspaces skapas inte igen men
         create_pg_datastore anropas för att uppdatera lösenordet.
 
         Förut hoppades befintliga scheman över helt under startavstämning.
@@ -1172,13 +1276,15 @@ class TestReconcileGeoServerSchemas(unittest.TestCase):
 
         with patch.object(gl, "_fetch_role_credentials",
                           return_value=(TEST_ROLE_NAME, TEST_ROLE_PASSWORD)):
-            gl._reconcile_geoserver_schemas(cur, self.DB_CONFIG, gs)
+            with patch.object(gl, "_fetch_write_role_credentials",
+                              return_value=(TEST_W_ROLE_NAME, TEST_W_ROLE_PASSWORD)):
+                gl._reconcile_geoserver_schemas(cur, self.DB_CONFIG, gs)
 
-        # create_workspace anropas (idempotent – den verkliga implementationen
+        # create_workspace anropas (idempotent – verkliga implementationen
         # kontrollerar att workspace finns innan den försöker skapa)
-        gs.create_workspace.assert_called_once_with("sk0_kba_testschema")
-        # create_pg_datastore anropas alltid för att synka lösenordet
-        gs.create_pg_datastore.assert_called_once()
+        gs.create_workspace.assert_any_call("sk0_kba_testschema")
+        # create_pg_datastore anropas för att synka lösenord (minst läs-datastore)
+        self.assertGreaterEqual(gs.create_pg_datastore.call_count, 1)
 
     def test_in_sync_logs_ok(self):
         """Identiska listor → ingen skapning, inga varningar om saknade/extra scheman."""
@@ -1573,6 +1679,7 @@ class TestPeriodicReconcileLoop(unittest.TestCase):
             user=self.DB_CONFIG["user"],
             password=self.DB_CONFIG["password"],
             connect_timeout=10,
+            client_encoding="utf8",
         )
 
     def test_reconcile_interval_zero_does_not_spawn_thread(self):
