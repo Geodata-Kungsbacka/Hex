@@ -18,7 +18,7 @@ AS $BODY$
  * Schemaprefix hämtas dynamiskt från hex_standardiserade_skyddsnivaer, så att
  * egna prefix (t.ex. sc1, sk3) fungerar utan kodändringar.
  *
- * Hanterar tio åtgärdstyper:
+ * Hanterar elva åtgärdstyper:
  *
  *   schemamigrering      Uppgraderar hex_rolluppgifter och hex_standardiserade_roller
  *                        till aktuellt schema idempotent (ADD COLUMN IF NOT EXISTS).
@@ -75,6 +75,17 @@ AS $BODY$
  *   schemabehörigheter   Kör hex_tilldela_rollrattigheter för NOLOGIN-roller och
  *                        säkerställer GRANT arvs_fran för gs_*-roller.
  *                        Idempotent.
+ *
+ *   ägarskap_schema      Korrigerar ägare på Hex-scheman som ägs av fel roll.
+ *                        Uppstår t.ex. när en superanvändare skapat schemat
+ *                        direkt och förbigått event-triggern. Alla scheman vars
+ *                        namn matchar schema_regex och vars ägare inte är
+ *                        system_owner() åtgärdas. Idempotent.
+ *
+ *   ägarskap_objekt      Korrigerar ägare på tabeller, vyer, materialiserade
+ *                        vyer, sekvenser, fremmande tabeller och funktioner i
+ *                        Hex-scheman. Samma schema_regex-filter som övriga
+ *                        sektioner. Idempotent.
  *
  *   geoserver_notifiering Skickar pg_notify('geoserver_schema', schema) för
  *                        scheman vars prefix har publiceras_geoserver = true
@@ -883,7 +894,99 @@ BEGIN
     END LOOP;
 
     -- -------------------------------------------------------------------------
-    -- 8. geoserver_notifiering
+    -- 8. ägarskap_schema
+    --    Alla Hex-scheman (namn matchar schema_regex) vars nuvarande ägare
+    --    inte är system_owner() korrigeras med ALTER SCHEMA ... OWNER TO.
+    --    Täcker scenariot där en superanvändare skapade schemat direkt och
+    --    förbigick event-triggern hantera_standardiserade_roller.
+    -- -------------------------------------------------------------------------
+    FOR r IN
+        SELECT n.nspname AS s,
+               ro.rolname AS nuvarande_agare
+        FROM   pg_catalog.pg_namespace n
+        JOIN   pg_catalog.pg_roles     ro ON ro.oid = n.nspowner
+        WHERE  n.nspname ~ schema_regex
+          AND  ro.rolname != system_owner()
+        ORDER BY n.nspname
+    LOOP
+        EXECUTE format('ALTER SCHEMA %I OWNER TO %I', r.s, system_owner());
+        schema_namn  := r.s;
+        tabell_namn  := '-';
+        trigger_namn := 'ägarskap_schema';
+        atgard       := 'ägare korrigerad: ' || r.nuvarande_agare || ' → ' || system_owner();
+        RETURN NEXT;
+    END LOOP;
+
+    -- -------------------------------------------------------------------------
+    -- 9. ägarskap_objekt
+    --    Tabeller, vyer, materialiserade vyer, sekvenser och fremmande tabeller
+    --    i Hex-scheman vars ägare inte är system_owner() korrigeras.
+    --    Därefter korrigeras funktioner/procedurer i samma scheman.
+    --    Idempotent – objekt med rätt ägare berörs inte.
+    -- -------------------------------------------------------------------------
+
+    -- 9a. Relationsobjekt (relkind r/v/m/S/f)
+    FOR r IN
+        SELECT n.nspname                AS s,
+               c.relname               AS t,
+               c.relkind               AS k,
+               ro.rolname              AS nuvarande_agare
+        FROM   pg_catalog.pg_class     c
+        JOIN   pg_catalog.pg_namespace n  ON n.oid = c.relnamespace
+        JOIN   pg_catalog.pg_roles     ro ON ro.oid = c.relowner
+        WHERE  n.nspname ~ schema_regex
+          AND  c.relkind IN ('r', 'v', 'm', 'S', 'f')
+          AND  ro.rolname != system_owner()
+        ORDER BY n.nspname, c.relname
+    LOOP
+        CASE r.k
+            WHEN 'r' THEN
+                EXECUTE format('ALTER TABLE %I.%I OWNER TO %I',
+                    r.s, r.t, system_owner());
+            WHEN 'v' THEN
+                EXECUTE format('ALTER VIEW %I.%I OWNER TO %I',
+                    r.s, r.t, system_owner());
+            WHEN 'm' THEN
+                EXECUTE format('ALTER MATERIALIZED VIEW %I.%I OWNER TO %I',
+                    r.s, r.t, system_owner());
+            WHEN 'S' THEN
+                EXECUTE format('ALTER SEQUENCE %I.%I OWNER TO %I',
+                    r.s, r.t, system_owner());
+            WHEN 'f' THEN
+                EXECUTE format('ALTER FOREIGN TABLE %I.%I OWNER TO %I',
+                    r.s, r.t, system_owner());
+        END CASE;
+        schema_namn  := r.s;
+        tabell_namn  := r.t;
+        trigger_namn := 'ägarskap_objekt';
+        atgard       := 'ägare korrigerad: ' || r.nuvarande_agare || ' → ' || system_owner();
+        RETURN NEXT;
+    END LOOP;
+
+    -- 9b. Funktioner och procedurer
+    FOR r IN
+        SELECT n.nspname                                     AS s,
+               p.proname                                     AS fn,
+               pg_catalog.pg_get_function_identity_arguments(p.oid) AS args,
+               ro.rolname                                    AS nuvarande_agare
+        FROM   pg_catalog.pg_proc      p
+        JOIN   pg_catalog.pg_namespace n  ON n.oid = p.pronamespace
+        JOIN   pg_catalog.pg_roles     ro ON ro.oid = p.proowner
+        WHERE  n.nspname ~ schema_regex
+          AND  ro.rolname != system_owner()
+        ORDER BY n.nspname, p.proname
+    LOOP
+        EXECUTE format('ALTER FUNCTION %I.%I(%s) OWNER TO %I',
+            r.s, r.fn, r.args, system_owner());
+        schema_namn  := r.s;
+        tabell_namn  := r.fn;
+        trigger_namn := 'ägarskap_objekt';
+        atgard       := 'ägare korrigerad: ' || r.nuvarande_agare || ' → ' || system_owner();
+        RETURN NEXT;
+    END LOOP;
+
+    -- -------------------------------------------------------------------------
+    -- 10. geoserver_notifiering
     --    Skickar pg_notify('geoserver_schema', schema) för alla Hex-scheman
     --    vars prefix har publiceras_geoserver = true och som har gs_r_-uppgifter
     --    i hex_rolluppgifter (dvs. lyssnaren kan sätta upp datastore).
@@ -944,6 +1047,10 @@ Säkerställer hex_geoserver_roller-medlemskap (enbart gs_*) och tar bort
 NOLOGIN-roller som felaktigt hamnat där.
 Reparerar schemabehörigheter (NOLOGIN: hex_tilldela_rollrattigheter,
 LOGIN: GRANT arvs_fran).
+Korrigerar schemaägare som inte är system_owner() – täcker scheman skapade av
+superanvändare som förbigick event-triggern.
+Korrigerar objektägare (tabeller, vyer, materialiserade vyer, sekvenser,
+fremmande tabeller, funktioner) i Hex-scheman vars ägare inte är system_owner().
 Skickar pg_notify för GeoServer-publicering (gs_r_-uppgifter krävs).
 Schemaprefix hämtas från hex_standardiserade_skyddsnivaer – egna prefix fungerar
 utan kodändringar. Idempotent. Anropas av installeraren efter varje
