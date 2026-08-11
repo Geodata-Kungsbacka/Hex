@@ -14,7 +14,7 @@ vissa scheman.
 > Kolumnerna `global_roll` och `login_roller` som tidigare fanns i den här
 > tabellen är borttagna. De byggde en delad roll per säkerhetsnivå
 > (`r_sk0_global` m.fl.) med separata `_pub`-suffixade inloggningsvarianter.
-> Modellen ersattes av en roll per schema (`with_login` styr LOGIN/NOLOGIN
+> Modellen ersattes av en roll per schema (`kan_logga_in` styr LOGIN/NOLOGIN
 > direkt på raden) och senare av dagens fyra-rollsstruktur (`arvs_fran` låter
 > `gs_r_`/`gs_w_` ärva från `r_`/`w_`). Se
 > [02_lagg-till-databasanvandare.md](02_lagg-till-databasanvandare.md#bakgrund)
@@ -30,13 +30,13 @@ vissa scheman.
 | `rolltyp` | `read` eller `write` – styr vilka rättigheter `hex_tilldela_rollrattigheter` beviljar. |
 | `schema_uttryck` | SQL-uttryck som avgör för vilka scheman mallen ska gälla (se exempel nedan). |
 | `ta_bort_med_schema` | `true` = rollen tas bort automatiskt när schemat droppas. |
-| `with_login` | `true` = rollen skapas med `LOGIN` och ett autogenererat lösenord (sparas i `hex_role_credentials`), och läggs i `hex_geoserver_roller`. `false` = `NOLOGIN`-behörighetsgrupp avsedd för AD-användare/AD-grupper. |
+| `kan_logga_in` | `true` = rollen skapas med `LOGIN` och ett autogenererat lösenord (sparas i `hex_rolluppgifter`), och läggs i `hex_geoserver_roller`. `false` = `NOLOGIN`-behörighetsgrupp avsedd för AD-användare/AD-grupper. |
 | `arvs_fran` | Om satt: rollen får sina rättigheter genom `GRANT <arvs_fran> TO <rollnamn>` istället för ett direkt anrop till `hex_tilldela_rollrattigheter`. Stödjer `{schema}`-substitution. Används för att låta `gs_r_{schema}`/`gs_w_{schema}` ärva från `r_{schema}`/`w_{schema}` så att behörigheterna hålls synkroniserade. |
 | `beskrivning` | Fritext för dokumentation. |
 
 **Fördefinierade rader (installeras med Hex):**
 
-| `rollnamn` | `rolltyp` | `schema_uttryck` | `with_login` | `arvs_fran` |
+| `rollnamn` | `rolltyp` | `schema_uttryck` | `kan_logga_in` | `arvs_fran` |
 |---|---|---|---|---|
 | `r_{schema}` | read | `IS NOT NULL` (alla) | false | — |
 | `w_{schema}` | write | `IS NOT NULL` (alla) | false | — |
@@ -48,7 +48,7 @@ vissa scheman.
 ## Visa befintliga rollmallar
 
 ```sql
-SELECT rollnamn, rolltyp, schema_uttryck, with_login, arvs_fran, ta_bort_med_schema
+SELECT rollnamn, rolltyp, schema_uttryck, kan_logga_in, arvs_fran, ta_bort_med_schema
 FROM hex_standardiserade_roller
 ORDER BY gid;
 ```
@@ -70,7 +70,7 @@ INSERT INTO hex_standardiserade_roller (
     rollnamn,
     rolltyp,
     schema_uttryck,
-    with_login,
+    kan_logga_in,
     arvs_fran,
     ta_bort_med_schema
 ) VALUES (
@@ -84,7 +84,7 @@ INSERT INTO hex_standardiserade_roller (
 ```
 
 Ett LOGIN-tjänstekonto `gs_w_<schema>` skapas nu automatiskt för alla
-kommande `sk2`-scheman, med lösenord sparat i `hex_role_credentials` och
+kommande `sk2`-scheman, med lösenord sparat i `hex_rolluppgifter` och
 rättigheter ärvda från `w_<schema>`.
 
 ---

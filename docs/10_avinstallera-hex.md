@@ -96,7 +96,7 @@ DROP FUNCTION IF EXISTS public.hex_systemagare();
 DROP ROLE IF EXISTS hex_geoserver_roller;
 
 -- 8. Konfigurationstabeller
-DROP TABLE IF EXISTS public.hex_role_credentials;
+DROP TABLE IF EXISTS public.hex_rolluppgifter;
 DROP TABLE IF EXISTS public.hex_avvikande_srid;
 DROP TABLE IF EXISTS public.hex_dummy_geometrier;
 DROP TABLE IF EXISTS public.hex_afvaktande_geometri;

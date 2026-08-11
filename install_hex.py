@@ -67,7 +67,7 @@ INSTALL_ORDER = [
     "src/sql/02_tables/hex_afvaktande_geometri.sql",
     "src/sql/02_tables/hex_dummy_geometrier.sql",
     "src/sql/02_tables/hex_avvikande_srid.sql",
-    "src/sql/02_tables/hex_role_credentials.sql",
+    "src/sql/02_tables/hex_rolluppgifter.sql",
     # Funktioner - Struktur
     "src/sql/03_functions/01_structure/hex_hamta_geometri_definition.sql",
     "src/sql/03_functions/01_structure/hex_hamta_kolumnstandard.sql",
@@ -182,7 +182,7 @@ DROP FUNCTION IF EXISTS public.hex_systemagare();
 -- vill ta bort rollen helt, kör manuellt: DROP ROLE hex_geoserver_roller;
 
 -- Tabeller
-DROP TABLE IF EXISTS public.hex_role_credentials;
+DROP TABLE IF EXISTS public.hex_rolluppgifter;
 DROP TABLE IF EXISTS public.hex_avvikande_srid;
 DROP TABLE IF EXISTS public.hex_dummy_geometrier;
 DROP TABLE IF EXISTS public.hex_afvaktande_geometri;
@@ -221,7 +221,7 @@ PRESERVE_CONFIG = {
     },
     "hex_standardiserade_roller": {
         "key": "rollnamn",
-        "restore": ["rolltyp", "schema_uttryck", "ta_bort_med_schema", "with_login", "arvs_fran", "beskrivning"],
+        "restore": ["rolltyp", "schema_uttryck", "ta_bort_med_schema", "kan_logga_in", "arvs_fran", "beskrivning"],
     },
 }
 
@@ -230,7 +230,7 @@ PRESERVE_CONFIG = {
 PRESERVE_USER_DATA = {
     "hex_systemanvandare": ["anvandare", "beskrivning"],
     "hex_grupprattigheter": ["ad_grupproll", "hex_roll", "beskrivning"],
-    "hex_role_credentials": ["rolname", "password", "rolcanlogin"],
+    "hex_rolluppgifter": ["rollnamn", "losenord", "kan_logga_in"],
 }
 
 # =============================================================================

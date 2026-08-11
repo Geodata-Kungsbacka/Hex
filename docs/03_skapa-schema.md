@@ -77,7 +77,7 @@ ORDER BY rolname;
 Du bör se fyra roller: `r_sk1_kba_parkering` och `w_sk1_kba_parkering`
 (NOLOGIN-behörighetsgrupper för AD-användare) samt `gs_r_sk1_kba_parkering`
 och `gs_w_sk1_kba_parkering` (LOGIN-tjänstekonton för GeoServer, med
-lösenord i `hex_role_credentials`). Alla fyra skapas per schema – det finns
+lösenord i `hex_rolluppgifter`). Alla fyra skapas per schema – det finns
 inga delade roller som spänner över flera scheman, se
 [02_lagg-till-databasanvandare.md](02_lagg-till-databasanvandare.md#bakgrund).
 
@@ -128,7 +128,7 @@ Hex tar automatiskt bort alla tillhörande roller (de som är märkta med
 |---|---|
 | GeoServer-workspace | Namnges identiskt med schemat. Workspace blir föräldralös; lager försvinner från WMS/WFS. |
 | Databasroller `r_…` / `w_…` | Härleds från schemanamnet. Befintliga roller pekar på ett schema som inte finns; nya schemat saknar roller. |
-| `hex_role_credentials` | Autentiseringsuppgifter lagras med rollnamnet som nyckel. GeoServer-lyssnaren hittar inga uppgifter för det nya schemanamnet. |
+| `hex_rolluppgifter` | Autentiseringsuppgifter lagras med rollnamnet som nyckel. GeoServer-lyssnaren hittar inga uppgifter för det nya schemanamnet. |
 | `hex_metadata` | `parent_schema` lagras som text. Tabellerna tappar kopplingen till sina historiktabeller och triggar. |
 
 Eftersom skyddsnivå och datakategori dessutom är kodade i själva schemanamnet (`sk0_kba_bygg` → nivå `sk0`, kategori `kba`) går det inte heller att validera att ett nytt namn är konsistent med det befintliga innehållet.

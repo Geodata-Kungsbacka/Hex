@@ -8,7 +8,7 @@ Processen lyssnar på två PostgreSQL-kanaler och hanterar schema-händelser aut
                              hex_notifiera_gs_trigger):
     1. Skapar en workspace i GeoServer med samma namn som schemat.
     2. Hämtar autentiseringsuppgifter för läsrollen (r_{schema}) från
-       tabellen hex_role_credentials.
+       tabellen hex_rolluppgifter.
     3. Skapar en direkt PostGIS-datastore i workspace med dessa uppgifter.
 
   Kanal 'geoserver_schema_drop'  (utlöses av DROP SCHEMA via SQL-triggern
@@ -671,7 +671,7 @@ class GeoServerClient:
         """Skapar eller uppdaterar en PostGIS-datastore i GeoServer.
 
         Skapar en ny datastore om den inte finns. Om datastore redan existerar
-        uppdateras den alltid via PUT med aktuella uppgifter från hex_role_credentials,
+        uppdateras den alltid via PUT med aktuella uppgifter från hex_rolluppgifter,
         så att lösenordsändringar (t.ex. efter ominstallation) slår igenom.
 
         Args:
@@ -1015,20 +1015,20 @@ def _db_tag(db_label):
 def _fetch_role_credentials(conn, schema_name):
     """Hämtar autentiseringsuppgifter för läsrollen för ett schema.
 
-    Slår upp gs_r_{schema_name} i hex_role_credentials.
+    Slår upp gs_r_{schema_name} i hex_rolluppgifter.
 
     Args:
         conn:        psycopg2-anslutning till databasen (AUTOCOMMIT OK)
         schema_name: Schemanamn (t.ex. 'sk1_kba_bygg')
 
     Returns:
-        (rolname, password) tuple, eller (None, None) om ej hittad.
+        (rollnamn, losenord) tuple, eller (None, None) om ej hittad.
     """
     role_name = f"gs_r_{schema_name}"
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT rolname, password FROM public.hex_role_credentials WHERE rolname = %s",
+                "SELECT rollnamn, losenord FROM public.hex_rolluppgifter WHERE rollnamn = %s",
                 (role_name,),
             )
             row = cur.fetchone()
@@ -1088,7 +1088,7 @@ def _fetch_anonymous_read(conn, schema_name):
 def handle_schema_notification(schema_name, db_config, pg_conn, gs_client, db_label=""):
     """Hanterar en notifiering om nytt schema (kanal: CHANNEL_SCHEMA_CREATE).
 
-    Hämtar autentiseringsuppgifter för läsrollen från hex_role_credentials
+    Hämtar autentiseringsuppgifter för läsrollen från hex_rolluppgifter
     och skapar workspace och direkt PostGIS-datastore i GeoServer.
 
     Args:
@@ -1110,11 +1110,11 @@ def handle_schema_notification(schema_name, db_config, pg_conn, gs_client, db_la
     if not _validate_schema_name(schema_name, tag):
         return False
 
-    # Hämta autentiseringsuppgifter för läsrollen från hex_role_credentials
+    # Hämta autentiseringsuppgifter för läsrollen från hex_rolluppgifter
     role_name, password = _fetch_role_credentials(pg_conn, schema_name)
     if not role_name:
         log.error(
-            "%sIngen autentiseringsuppgifter hittades för 'gs_r_%s' i hex_role_credentials - "
+            "%sIngen autentiseringsuppgifter hittades för 'gs_r_%s' i hex_rolluppgifter - "
             "hoppar över schema '%s'",
             tag, schema_name, schema_name,
         )
@@ -1272,7 +1272,7 @@ def _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label="", all_pg_
       b) Hämtar befintliga workspaces via GeoServer REST GET /rest/workspaces.json.
       c) Kör handle_schema_notification för ALLA PG-scheman (inte bara saknade).
          Saknade workspaces skapas; befintliga datastores uppdateras alltid med
-         aktuella autentiseringsuppgifter från hex_role_credentials (så att
+         aktuella autentiseringsuppgifter från hex_rolluppgifter (så att
          lösenordsändringar efter ominstallation slår igenom vid omstart).
       d) Loggar INFO för varje nyskapad workspace.
       e) Loggar WARNING för varje GeoServer-workspace som saknar PG-schema i
@@ -1727,7 +1727,7 @@ def main():
     log.info("GeoServer Schema Listener")
     log.info("=" * 60)
     log.info("GeoServer:  %s", config["gs_url"])
-    log.info("Anslutning: direkt PostGIS (autentiseringsuppgifter från hex_role_credentials)")
+    log.info("Anslutning: direkt PostGIS (autentiseringsuppgifter från hex_rolluppgifter)")
     log.info("Databaser:  %d st", len(config["databases"]))
     for db in config["databases"]:
         log.info("  [%s] %s@%s:%d/%s",

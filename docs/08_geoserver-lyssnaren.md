@@ -10,7 +10,7 @@ nya scheman till GeoServer.
 När ett schema skapas skickar Hex en `pg_notify`. En Python-process lyssnar
 på dessa notifieringar och skapar automatiskt en **workspace** och en direkt
 **PostGIS-datastore** i GeoServer med samma namn som schemat.
-Datastore-autentiseringen hämtas från tabellen `hex_role_credentials` (GeoServer-tjänstekontot `gs_r_{schema}`).
+Datastore-autentiseringen hämtas från tabellen `hex_rolluppgifter` (GeoServer-tjänstekontot `gs_r_{schema}`).
 
 Vilka skyddsnivåer som publiceras styrs av kolumnen `publiceras_geoserver` i
 tabellen `hex_standardiserade_skyddsnivaer` — standard är `sk0` och `sk1`.
@@ -138,10 +138,10 @@ som systemövergripande miljövariabler:
 ## Lägga till en ny databas att övervaka
 
 1. Installera Hex-triggern i den nya databasen (se [09_installera-uppdatera-hex.md](09_installera-uppdatera-hex.md)).
-2. Ge `hex_listener` CONNECT-rättighet och läsåtkomst till `hex_role_credentials`:
+2. Ge `hex_listener` CONNECT-rättighet och läsåtkomst till `hex_rolluppgifter`:
    ```sql
    GRANT CONNECT ON DATABASE geodata_ny TO hex_listener;
-   GRANT SELECT ON public.hex_role_credentials TO hex_listener;
+   GRANT SELECT ON public.hex_rolluppgifter TO hex_listener;
    ```
 3. Lägg till i `.env`:
    ```env
@@ -159,10 +159,10 @@ Autentiseringsuppgifterna hanteras automatiskt av Hex:
 - Vid **CREATE SCHEMA** skapar `hex_hantera_std_roller()` fyra roller automatiskt:
   - `r_{schema}` och `w_{schema}` — NOLOGIN behörighetsgrupper, tilldelas AD-användare/grupper
   - `gs_r_{schema}` och `gs_w_{schema}` — LOGIN GeoServer-tjänstekonton med autogenererade
-    lösenord sparade i `hex_role_credentials`. Tjänstekontona ärver behörigheter från
+    lösenord sparade i `hex_rolluppgifter`. Tjänstekontona ärver behörigheter från
     `r_{schema}` respektive `w_{schema}` via gruppmedlemskap.
 - Lyssnaren hämtar `gs_r_{schema}`-uppgifterna och konfigurerar GeoServer-datastoren med dem.
-- Vid **DROP SCHEMA** tas alla fyra roller och deras poster i `hex_role_credentials` bort automatiskt.
+- Vid **DROP SCHEMA** tas alla fyra roller och deras poster i `hex_rolluppgifter` bort automatiskt.
 
 Det krävs normalt ingen manuell åtgärd. Om du behöver en `pg_hba.conf`-post
 för GeoServers direktanslutningar, tillåt `hex_geoserver_roller`-gruppen (som innehåller

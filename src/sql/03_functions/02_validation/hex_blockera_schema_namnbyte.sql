@@ -24,7 +24,7 @@ AS $BODY$
  *      på ett schema som inte längre finns, och nya schemat saknar roller –
  *      ingen kan ansluta, GeoServer kan inte autentisera.
  *
- *   3. hex_role_credentials – lösenord lagras med rollnamnet som nyckel.
+ *   3. hex_rolluppgifter – lösenord lagras med rollnamnet som nyckel.
  *      GeoServer-lyssnaren hittar inte autentiseringsuppgifter för det
  *      nya schemanamnet och misslyckas med att konfigurera datastoren.
  *
@@ -65,7 +65,7 @@ BEGIN
                 'Schemanamnet är identitetsnyckeln för ett helt ekosystem av beroenden:\n'
                 '  • GeoServer-workspace (namnges identiskt med schemat)\n'
                 '  • Databasroller r_%% och w_%% (härleds från schemanamnet)\n'
-                '  • Autentiseringsuppgifter i hex_role_credentials\n'
+                '  • Autentiseringsuppgifter i hex_rolluppgifter\n'
                 '  • Schemanamn i hex_metadata (parent_schema)\n\n'
                 'Ett namnbyte river sönder alla dessa kopplingar utan möjlighet\n'
                 'till automatisk återställning.\n\n'
@@ -97,6 +97,6 @@ ALTER FUNCTION public.hex_blockera_schema_namnbyte()
 COMMENT ON FUNCTION public.hex_blockera_schema_namnbyte()
     IS 'Event trigger-funktion som blockerar ALTER SCHEMA ... RENAME TO.
 Schemanamnet är identitetsnyckeln för GeoServer-workspace, databasroller,
-autentiseringsuppgifter i hex_role_credentials och poster i hex_metadata.
+autentiseringsuppgifter i hex_rolluppgifter och poster i hex_metadata.
 Ett namnbyte river sönder alla dessa kopplingar. Rätt tillvägagångssätt
 är DROP SCHEMA CASCADE följt av CREATE SCHEMA med det nya namnet.';

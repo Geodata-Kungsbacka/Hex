@@ -587,13 +587,13 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 
 -- Återställ standardroller (alla fyra roller med korrekta värden)
-INSERT INTO hex_standardiserade_roller (rollnamn, rolltyp, schema_uttryck, with_login, arvs_fran, beskrivning) VALUES
+INSERT INTO hex_standardiserade_roller (rollnamn, rolltyp, schema_uttryck, kan_logga_in, arvs_fran, beskrivning) VALUES
     ('r_{schema}',    'read',  'IS NOT NULL', false, NULL,          'Läsbehörighetsgrupp – tilldelas AD-användare och AD-grupper'),
     ('w_{schema}',    'write', 'IS NOT NULL', false, NULL,          'Skrivbehörighetsgrupp – tilldelas AD-användare och AD-grupper'),
     ('gs_r_{schema}', 'read',  'IS NOT NULL', true,  'r_{schema}',  'GeoServer läs-tjänstekonto – ärver behörigheter från r_{schema}'),
     ('gs_w_{schema}', 'write', 'IS NOT NULL', true,  'w_{schema}',  'GeoServer skriv-tjänstekonto – ärver behörigheter från w_{schema}')
 ON CONFLICT (rollnamn) DO UPDATE SET
-    with_login  = EXCLUDED.with_login,
+    kan_logga_in = EXCLUDED.kan_logga_in,
     arvs_fran   = EXCLUDED.arvs_fran,
     rolltyp     = EXCLUDED.rolltyp,
     beskrivning = EXCLUDED.beskrivning;

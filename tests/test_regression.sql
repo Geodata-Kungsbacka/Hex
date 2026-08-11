@@ -619,7 +619,7 @@ DROP TABLE IF EXISTS sk1_kba_test.standardkol_kba_y;
 --
 -- Verifierar att alla fyra roller skapas korrekt vid CREATE SCHEMA:
 --   r_*/w_*     NOLOGIN behörighetsgrupper (ej i hex_geoserver_roller)
---   gs_r_*/gs_w_* LOGIN tjänstekonton (i hex_geoserver_roller, i hex_role_credentials)
+--   gs_r_*/gs_w_* LOGIN tjänstekonton (i hex_geoserver_roller, i hex_rolluppgifter)
 -- Verifierar att alla fyra roller och credentials rensas vid DROP SCHEMA.
 ------------------------------------------------------------------------
 \echo ''
@@ -712,33 +712,33 @@ BEGIN
     END IF;
 END $$;
 
--- 9e: gs_r_ och gs_w_ ska ha credentials i hex_role_credentials (rolcanlogin=true)
+-- 9e: gs_r_ och gs_w_ ska ha uppgifter i hex_rolluppgifter (kan_logga_in=true)
 DO $$
 DECLARE
     gsr_creds boolean;
     gsw_creds boolean;
 BEGIN
-    SELECT EXISTS(SELECT 1 FROM public.hex_role_credentials WHERE rolname='gs_r_sk2_ext_rolltest' AND rolcanlogin=true AND password IS NOT NULL) INTO gsr_creds;
-    SELECT EXISTS(SELECT 1 FROM public.hex_role_credentials WHERE rolname='gs_w_sk2_ext_rolltest' AND rolcanlogin=true AND password IS NOT NULL) INTO gsw_creds;
+    SELECT EXISTS(SELECT 1 FROM public.hex_rolluppgifter WHERE rollnamn='gs_r_sk2_ext_rolltest' AND kan_logga_in=true AND losenord IS NOT NULL) INTO gsr_creds;
+    SELECT EXISTS(SELECT 1 FROM public.hex_rolluppgifter WHERE rollnamn='gs_w_sk2_ext_rolltest' AND kan_logga_in=true AND losenord IS NOT NULL) INTO gsw_creds;
 
     IF gsr_creds AND gsw_creds THEN
-        RAISE NOTICE 'TEST 9e PASSED: gs_r_ och gs_w_ har lösenord i hex_role_credentials';
+        RAISE NOTICE 'TEST 9e PASSED: gs_r_ och gs_w_ har lösenord i hex_rolluppgifter';
     ELSE
         RAISE WARNING 'TEST 9e FAILED: gsr_creds=%, gsw_creds=%', gsr_creds, gsw_creds;
     END IF;
 END $$;
 
--- 9f: r_ och w_ ska finnas i hex_role_credentials med rolcanlogin=false
+-- 9f: r_ och w_ ska finnas i hex_rolluppgifter med kan_logga_in=false
 DO $$
 DECLARE
     r_entry boolean;
     w_entry boolean;
 BEGIN
-    SELECT EXISTS(SELECT 1 FROM public.hex_role_credentials WHERE rolname='r_sk2_ext_rolltest' AND rolcanlogin=false AND password IS NULL) INTO r_entry;
-    SELECT EXISTS(SELECT 1 FROM public.hex_role_credentials WHERE rolname='w_sk2_ext_rolltest' AND rolcanlogin=false AND password IS NULL) INTO w_entry;
+    SELECT EXISTS(SELECT 1 FROM public.hex_rolluppgifter WHERE rollnamn='r_sk2_ext_rolltest' AND kan_logga_in=false AND losenord IS NULL) INTO r_entry;
+    SELECT EXISTS(SELECT 1 FROM public.hex_rolluppgifter WHERE rollnamn='w_sk2_ext_rolltest' AND kan_logga_in=false AND losenord IS NULL) INTO w_entry;
 
     IF r_entry AND w_entry THEN
-        RAISE NOTICE 'TEST 9f PASSED: r_ och w_ registrerade i hex_role_credentials (NOLOGIN)';
+        RAISE NOTICE 'TEST 9f PASSED: r_ och w_ registrerade i hex_rolluppgifter (NOLOGIN)';
     ELSE
         RAISE WARNING 'TEST 9f FAILED: r_entry=%, w_entry=%', r_entry, w_entry;
     END IF;
@@ -860,15 +860,15 @@ DO $$
 DECLARE
     remaining text[];
 BEGIN
-    SELECT array_agg(rolname) INTO remaining
-    FROM public.hex_role_credentials
-    WHERE rolname IN ('r_sk2_ext_rolltest','w_sk2_ext_rolltest',
-                      'gs_r_sk2_ext_rolltest','gs_w_sk2_ext_rolltest');
+    SELECT array_agg(rollnamn) INTO remaining
+    FROM public.hex_rolluppgifter
+    WHERE rollnamn IN ('r_sk2_ext_rolltest','w_sk2_ext_rolltest',
+                       'gs_r_sk2_ext_rolltest','gs_w_sk2_ext_rolltest');
 
     IF remaining IS NULL THEN
-        RAISE NOTICE 'TEST 9j PASSED: Alla hex_role_credentials-poster borttagna efter DROP SCHEMA';
+        RAISE NOTICE 'TEST 9j PASSED: Alla hex_rolluppgifter-poster borttagna efter DROP SCHEMA';
     ELSE
-        RAISE WARNING 'TEST 9j FAILED: Följande poster finns kvar i hex_role_credentials: %', array_to_string(remaining, ', ');
+        RAISE WARNING 'TEST 9j FAILED: Följande poster finns kvar i hex_rolluppgifter: %', array_to_string(remaining, ', ');
     END IF;
 END $$;
 

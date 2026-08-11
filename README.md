@@ -35,7 +35,7 @@ Exempel på giltiga schemanamn (standardkonfiguration):
 - `sk2_sys_admin`
 - `skx_kba_testprojekt`
 
-**`ALTER SCHEMA ... RENAME TO` är blockerat.** Schemanamnet är identitetsnyckeln för GeoServer-workspace, databasroller (`r_`/`w_`), `hex_role_credentials` och `hex_metadata`. Ett namnbyte river sönder alla dessa kopplingar. Rätt tillvägagångssätt är `DROP SCHEMA CASCADE` (Hex städar upp) följt av `CREATE SCHEMA` med det nya namnet.
+**`ALTER SCHEMA ... RENAME TO` är blockerat.** Schemanamnet är identitetsnyckeln för GeoServer-workspace, databasroller (`r_`/`w_`), `hex_rolluppgifter` och `hex_metadata`. Ett namnbyte river sönder alla dessa kopplingar. Rätt tillvägagångssätt är `DROP SCHEMA CASCADE` (Hex städar upp) följt av `CREATE SCHEMA` med det nya namnet.
 
 #### Tabellnamn
 Systemet kräver specifika suffix baserat på geometrityp:
@@ -52,17 +52,17 @@ För varje nytt schema skapas automatiskt fyra roller:
 - `gs_r_schemanamn` — LOGIN GeoServer-läs-tjänstekonto, ärver rättigheter från `r_`
 - `gs_w_schemanamn` — LOGIN GeoServer-skriv-tjänstekonto, ärver rättigheter från `w_`
 
-`gs_r_` och `gs_w_` får autogenererade lösenord sparade i `hex_role_credentials` och ingår i `hex_geoserver_roller` för pg_hba.conf-matchning. `r_` och `w_` är NOLOGIN och ingår aldrig i `hex_geoserver_roller`.
+`gs_r_` och `gs_w_` får autogenererade lösenord sparade i `hex_rolluppgifter` och ingår i `hex_geoserver_roller` för pg_hba.conf-matchning. `r_` och `w_` är NOLOGIN och ingår aldrig i `hex_geoserver_roller`.
 
 ### 4. **Automatisk GeoServer-publicering och rensning**
 Lyssnaren hanterar två livscykelhändelser automatiskt via `pg_notify`:
 
 **Vid CREATE SCHEMA** (kanal `geoserver_schema`) — för sk0- och sk1-scheman:
 - Skapar en workspace i GeoServer med samma namn som schemat
-- Hämtar autentiseringsuppgifter för GeoServer-tjänstekontot (`gs_r_{schema}`) från tabellen `hex_role_credentials`
+- Hämtar autentiseringsuppgifter för GeoServer-tjänstekontot (`gs_r_{schema}`) från tabellen `hex_rolluppgifter`
 - Skapar en direkt PostGIS-datastore i den workspace med dessa uppgifter
 
-`gs_r_{schema}` skapas automatiskt av `hex_hantera_std_roller()` vid CREATE SCHEMA med ett autogenererat lösenord sparat i `hex_role_credentials`. Ingen JNDI-konfiguration i Tomcat krävs.
+`gs_r_{schema}` skapas automatiskt av `hex_hantera_std_roller()` vid CREATE SCHEMA med ett autogenererat lösenord sparat i `hex_rolluppgifter`. Ingen JNDI-konfiguration i Tomcat krävs.
 
 **Vid DROP SCHEMA** (kanal `geoserver_schema_drop`) — för sk0- och sk1-scheman:
 - Tar bort workspace från GeoServer med `recurse=true`, vilket raderar datastores och publicerade lager automatiskt
@@ -669,7 +669,7 @@ Vilka roller som skapas när ett schema skapas styrs av tabellen `hex_standardis
 
 ```sql
 -- Visa aktuell rollkonfiguration
-SELECT rollnamn, rolltyp, schema_uttryck, with_login, arvs_fran, ta_bort_med_schema
+SELECT rollnamn, rolltyp, schema_uttryck, kan_logga_in, arvs_fran, ta_bort_med_schema
 FROM hex_standardiserade_roller
 ORDER BY gid;
 
@@ -678,7 +678,7 @@ INSERT INTO hex_standardiserade_roller (
     rollnamn,
     rolltyp,
     schema_uttryck,
-    with_login,
+    kan_logga_in,
     arvs_fran,
     ta_bort_med_schema
 ) VALUES (
@@ -693,7 +693,7 @@ INSERT INTO hex_standardiserade_roller (
 
 Fördefinierade roller (installeras med Hex):
 
-| Roll | Typ | Matchar | with_login | Ärver från | Raderas med schema |
+| Roll | Typ | Matchar | kan_logga_in | Ärver från | Raderas med schema |
 |---|---|---|---|---|---|
 | `r_{schema}` | read | IS NOT NULL (alla) | Nej (NOLOGIN) | — | Ja |
 | `w_{schema}` | write | IS NOT NULL (alla) | Nej (NOLOGIN) | — | Ja |

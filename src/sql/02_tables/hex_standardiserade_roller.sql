@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS public.hex_standardiserade_roller (
     rolltyp         text    NOT NULL CHECK (rolltyp IN ('read', 'write')),
     schema_uttryck  text    NOT NULL DEFAULT 'IS NOT NULL',
     ta_bort_med_schema boolean DEFAULT true,
-    with_login      boolean DEFAULT false,
+    kan_logga_in    boolean DEFAULT false,
     arvs_fran       text    DEFAULT NULL,
     beskrivning     text,
 
@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS public.hex_standardiserade_roller (
     CONSTRAINT hex_standardiserade_roller_rollnamn_key UNIQUE (rollnamn)
 );
 
--- Backfill the unique constraint on existing installations.
+-- Säkerställ unik begränsning på befintliga installationer.
 DO $$
 BEGIN
     ALTER TABLE public.hex_standardiserade_roller
@@ -22,8 +22,8 @@ EXCEPTION
 END;
 $$;
 
--- Backfill the arvs_fran column added in the 4-role refactor.
--- CREATE TABLE IF NOT EXISTS does not alter existing tables, so upgrades need this.
+-- Lägg till arvs_fran-kolonnen från fyrrollsrefaktoreringen på befintliga installationer.
+-- CREATE TABLE IF NOT EXISTS ändrar inte befintliga tabeller, så uppgraderingar behöver detta.
 DO $$
 BEGIN
     ALTER TABLE public.hex_standardiserade_roller
@@ -40,9 +40,9 @@ COMMENT ON TABLE public.hex_standardiserade_roller
     IS 'Definierar vilka roller som ska skapas automatiskt för nya scheman.
     Stöder både schemaspecifika och globala roller.';
 
-COMMENT ON COLUMN public.hex_standardiserade_roller.with_login
+COMMENT ON COLUMN public.hex_standardiserade_roller.kan_logga_in
     IS 'Om true skapas rollen med LOGIN och ett autogenererat lösenord (via pgcrypto).
-    Lösenordet sparas i hex_role_credentials.
+    Lösenordet sparas i hex_rolluppgifter.
     Om false skapas rollen som NOLOGIN (behörighetsgrupp för t.ex. AD-användare).';
 
 COMMENT ON COLUMN public.hex_standardiserade_roller.arvs_fran
@@ -54,18 +54,18 @@ COMMENT ON COLUMN public.hex_standardiserade_roller.arvs_fran
 -- Fyra roller per schema:
 --   r_  / w_     – NOLOGIN behörighetsgrupper, tilldelas AD-användare och AD-grupper
 --   gs_r_ / gs_w_ – LOGIN tjänstekonton för GeoServer, ärver från r_/w_
-INSERT INTO hex_standardiserade_roller (rollnamn, rolltyp, schema_uttryck, with_login, arvs_fran, beskrivning) VALUES
+INSERT INTO hex_standardiserade_roller (rollnamn, rolltyp, schema_uttryck, kan_logga_in, arvs_fran, beskrivning) VALUES
     ('r_{schema}',    'read',  'IS NOT NULL', false, NULL,          'Läsbehörighetsgrupp – tilldelas AD-användare och AD-grupper'),
     ('w_{schema}',    'write', 'IS NOT NULL', false, NULL,          'Skrivbehörighetsgrupp – tilldelas AD-användare och AD-grupper'),
     ('gs_r_{schema}', 'read',  'IS NOT NULL', true,  'r_{schema}',  'GeoServer läs-tjänstekonto – ärver behörigheter från r_{schema}'),
     ('gs_w_{schema}', 'write', 'IS NOT NULL', true,  'w_{schema}',  'GeoServer skriv-tjänstekonto – ärver behörigheter från w_{schema}')
 ON CONFLICT (rollnamn) DO UPDATE
-    SET with_login  = EXCLUDED.with_login,
-        arvs_fran   = EXCLUDED.arvs_fran,
-        rolltyp     = EXCLUDED.rolltyp,
-        beskrivning = EXCLUDED.beskrivning;
+    SET kan_logga_in = EXCLUDED.kan_logga_in,
+        arvs_fran    = EXCLUDED.arvs_fran,
+        rolltyp      = EXCLUDED.rolltyp,
+        beskrivning  = EXCLUDED.beskrivning;
 
--- Any database user who creates tables needs to read these configuration tables,
--- since the trigger functions (hex_hantera_ny_tabell, hex_hantera_ny_kolumn) run
--- as SECURITY INVOKER (the calling user's privileges).
+-- Alla databasanvändare som skapar tabeller behöver läsa dessa konfigurationstabeller,
+-- eftersom triggerfunktionerna (hex_hantera_ny_tabell, hex_hantera_ny_kolumn) körs
+-- som SECURITY INVOKER (den anropande användarens rättigheter).
 GRANT SELECT ON public.hex_standardiserade_roller TO PUBLIC;

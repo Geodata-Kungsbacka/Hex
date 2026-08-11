@@ -18,7 +18,7 @@ AS $BODY$
  *
  * FUNKTIONALITET:
  * - Tar endast bort roller där ta_bort_med_schema = true
- * - Rensar hex_role_credentials för borttagna LOGIN-roller
+ * - Rensar hex_rolluppgifter för borttagna LOGIN-roller
  * - Bevarar globala roller (ta_bort_med_schema = false)
  ******************************************************************************/
 DECLARE
@@ -66,7 +66,7 @@ BEGIN
                     EXECUTE format('DROP ROLE %I', slutligt_rollnamn);
 
                     -- Rensa sparade autentiseringsuppgifter
-                    DELETE FROM hex_role_credentials WHERE rolname = slutligt_rollnamn;
+                    DELETE FROM hex_rolluppgifter WHERE rollnamn = slutligt_rollnamn;
 
                     RAISE NOTICE '[hex_ta_bort_schemaroller]   ✓ Roll borttagen: %', slutligt_rollnamn;
                     antal_borttagna := antal_borttagna + 1;
@@ -102,4 +102,4 @@ ALTER FUNCTION public.hex_ta_bort_schemaroller()
 COMMENT ON FUNCTION public.hex_ta_bort_schemaroller()
     IS 'Tar automatiskt bort roller när scheman tas bort. Läser konfiguration från
     hex_standardiserade_roller och tar endast bort roller där ta_bort_med_schema = true.
-    Rensar även hex_role_credentials för borttagna LOGIN-roller.';
+    Rensar även hex_rolluppgifter för borttagna LOGIN-roller.';
