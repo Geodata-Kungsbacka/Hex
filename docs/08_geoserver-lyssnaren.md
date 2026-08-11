@@ -8,9 +8,16 @@ nya scheman till GeoServer.
 ## Bakgrund
 
 När ett schema skapas skickar Hex en `pg_notify`. En Python-process lyssnar
-på dessa notifieringar och skapar automatiskt en **workspace** och en direkt
-**PostGIS-datastore** i GeoServer med samma namn som schemat.
-Datastore-autentiseringen hämtas från tabellen `hex_rolluppgifter` (GeoServer-tjänstekontot `gs_r_{schema}`).
+på dessa notifieringar och skapar automatiskt två workspaces i GeoServer:
+
+- **Läs-workspace** `{schema}` — ansluter med `gs_r_{schema}` (SELECT-behörighet).
+  Används av WMS/WFS-läsanrop.
+- **Skriv-workspace** `{schema}_w` — ansluter med `gs_w_{schema}` (ALL-behörighet).
+  Används av WFS-T-transaktioner (Insert/Update/Delete) via GeoServer.
+
+Varje workspace får en direkt PostGIS-datastore med rätt PostgreSQL-tjänstekonto.
+Autentiseringsuppgifterna hämtas från tabellen `hex_rolluppgifter` där
+`hex_hantera_std_roller()` lagrar de autogenererade lösenorden vid `CREATE SCHEMA`.
 
 Vilka skyddsnivåer som publiceras styrs av kolumnen `publiceras_geoserver` i
 tabellen `hex_standardiserade_skyddsnivaer` — standard är `sk0` och `sk1`.
@@ -24,8 +31,9 @@ WHERE prefix = 'sk2';
 ```
 
 Huruvida publicerade lager är läsbara utan inloggning styrs av kolumnen `anonym_las`.
-När den är `true` läggs `ROLE_ANONYMOUS` till i GeoServers ACL-läsregel för alla
-workspaces med det prefixet, vilket tillåter anonyma WMS/WFS-anrop (t.ex. från Hajk).
+När den är `true` läggs `ROLE_ANONYMOUS` till i GeoServers ACL-läsregel för läs-workspacet,
+vilket tillåter anonyma WMS/WFS-anrop (t.ex. från Hajk). Skriv-workspacet `{schema}_w`
+kräver alltid inloggning.
 Standard är `true` för `sk0` (öppen publik data) och `false` för övriga prefix.
 Förutsätter att åtkomst redan begränsas på nätverksnivå (t.ex. IP-vitlista i `web.xml`).
 
@@ -98,15 +106,40 @@ trigga publicering manuellt. Anslut till aktuell databas i psql eller pgAdmin:
 NOTIFY geoserver_schema, 'sk0_ext_sgu';
 ```
 
-Lyssnaren tar emot notifieringen och försöker publicera schemat igen.
+Lyssnaren tar emot notifieringen och försöker publicera schemat igen (skapar
+läs-workspace `sk0_ext_sgu` och skriv-workspace `sk0_ext_sgu_w`).
 Kontrollera loggen efteråt.
+
+---
+
+## WFS-T (redigering via GeoServer)
+
+WFS-T (Web Feature Service Transactional) möjliggör Insert, Update och Delete
+av lager via GeoServer. För att redigering ska fungera hela vägen till databasen
+krävs att klienten pekar mot skriv-workspacet:
+
+| Workspace       | Datastore-användare | PostgreSQL-rättigheter | Ändamål            |
+|-----------------|---------------------|------------------------|--------------------|
+| `{schema}`      | `gs_r_{schema}`     | SELECT                 | WMS/WFS-läsning    |
+| `{schema}_w`    | `gs_w_{schema}`     | ALL                    | WFS-T (redigering) |
+
+Konfigurationsexempel för en WFS-T-klient (t.ex. QGIS):
+
+```
+WFS-URL: https://geoserver.example.com/geoserver/{schema}_w/wfs
+```
+
+Åtkomstkontroll via GeoServer ACL:
+- `{schema}.*.r` = `r_{schema}` (och eventuellt `ROLE_ANONYMOUS` för sk0)
+- `{schema}_w.*.r` = `w_{schema}`
+- `{schema}_w.*.w` = `w_{schema}`
 
 ---
 
 ## Periodisk avstämning (reconciliation)
 
 Lyssnaren kör automatiskt en periodisk avstämning mot GeoServer för att reparera
-avvikelser — t.ex. om en workspace eller datastore försvunnit, eller om ACL-regler
+avvikelser — t.ex. om ett workspace eller en datastore försvunnit, eller om ACL-regler
 är felaktiga. Samma logik körs alltid vid tjänstens uppstart.
 
 Intervallet styrs av miljövariabeln `HEX_RECONCILE_INTERVAL` (sekunder, standard `3600`).
@@ -117,8 +150,9 @@ HEX_RECONCILE_INTERVAL=3600   # Kontrollera varje timme (standard)
 HEX_RECONCILE_INTERVAL=0      # Ingen periodisk avstämning
 ```
 
-Vid varje avstämning jämförs GeoServers befintliga workspaces mot scheman i PostgreSQL
-och avvikande ACL-regler korrigeras. Eventuella fel loggas men stoppar inte lyssnaren.
+Vid varje avstämning jämförs GeoServers befintliga workspaces mot scheman i PostgreSQL.
+Både läs- och skriv-workspaces skapas om de saknas, och avvikande ACL-regler korrigeras.
+Eventuella fel loggas men stoppar inte lyssnaren.
 
 ---
 
@@ -161,8 +195,10 @@ Autentiseringsuppgifterna hanteras automatiskt av Hex:
   - `gs_r_{schema}` och `gs_w_{schema}` — LOGIN GeoServer-tjänstekonton med autogenererade
     lösenord sparade i `hex_rolluppgifter`. Tjänstekontona ärver behörigheter från
     `r_{schema}` respektive `w_{schema}` via gruppmedlemskap.
-- Lyssnaren hämtar `gs_r_{schema}`-uppgifterna och konfigurerar GeoServer-datastoren med dem.
-- Vid **DROP SCHEMA** tas alla fyra roller och deras poster i `hex_rolluppgifter` bort automatiskt.
+- Lyssnaren hämtar `gs_r_{schema}`-uppgifterna och konfigurerar läs-datastoren,
+  samt `gs_w_{schema}`-uppgifterna för skriv-datastoren.
+- Vid **DROP SCHEMA** tas båda workspaces, alla fyra roller och deras poster
+  i `hex_rolluppgifter` bort automatiskt.
 
 Det krävs normalt ingen manuell åtgärd. Om du behöver en `pg_hba.conf`-post
 för GeoServers direktanslutningar, tillåt `hex_geoserver_roller`-gruppen (som innehåller

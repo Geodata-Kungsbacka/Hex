@@ -19,13 +19,13 @@ CREATE SCHEMA sk0_kba_test
 hex_hantera_std_roller()
         |
         +--> CREATE ROLE r_sk0_kba_test NOLOGIN
-        |    (läsbehörighetsgrupp - tilldelas AD-användare)
+        |    (läsbehörighetsgrupp – tilldelas AD-användare)
         +--> CREATE ROLE w_sk0_kba_test NOLOGIN
-        |    (skrivbehörighetsgrupp - tilldelas AD-användare)
+        |    (skrivbehörighetsgrupp – tilldelas AD-användare)
         +--> CREATE ROLE gs_r_sk0_kba_test WITH LOGIN PASSWORD '<autogenererat>'
-        |    (GeoServer läs-tjänstekonto - direkt PostgreSQL-anslutning)
+        |    (GeoServer läs-tjänstekonto, ärver r_sk0_kba_test – SELECT)
         +--> CREATE ROLE gs_w_sk0_kba_test WITH LOGIN PASSWORD '<autogenererat>'
-        |    (GeoServer skriv-tjänstekonto)
+        |    (GeoServer skriv-tjänstekonto, ärver w_sk0_kba_test – ALL, möjliggör WFS-T)
         +--> INSERT INTO hex_rolluppgifter (rollnamn, losenord)
              (lösenorden sparas i databasen för lyssnaren att hämta)
         |
@@ -41,23 +41,34 @@ pg_notify('geoserver_schema', 'sk0_kba_test')
 geoserver_listener.py
         |
         +--> SELECT losenord FROM hex_rolluppgifter WHERE rollnamn = 'gs_r_sk0_kba_test'
+        +--> SELECT losenord FROM hex_rolluppgifter WHERE rollnamn = 'gs_w_sk0_kba_test'
         |
         v
 GeoServer REST API:
-  1. POST /rest/workspaces
-         --> workspace "sk0_kba_test"
-  2. PUT  /rest/namespaces/sk0_kba_test
-         --> namespace URI satt
-  3. POST /rest/workspaces/sk0_kba_test/datastores
-         --> PostGIS-datastore "sk0_kba_test"
-             (direktanslutning med gs_r_sk0_kba_test-uppgifter)
-  4. POST /rest/security/roles/role/gs_r_sk0_kba_test
-  4. POST /rest/security/roles/role/gs_w_sk0_kba_test
-         --> GeoServer-roller skapas (speglar PostgreSQL-tjänstekontona)
-  5. POST /rest/security/acl/layers
-         --> sk0_kba_test.*.r = gs_r_sk0_kba_test
-             sk0_kba_test.*.w = gs_w_sk0_kba_test
-             (ger rollerna tillgång till workspace)
+  Steg 1. POST /rest/workspaces
+              --> läs-workspace "sk0_kba_test"
+          PUT  /rest/namespaces/sk0_kba_test
+              --> namespace URI satt
+  Steg 2. POST /rest/workspaces/sk0_kba_test/datastores
+              --> PostGIS-datastore "sk0_kba_test"
+                  (direktanslutning med gs_r_sk0_kba_test – SELECT)
+  Steg 3. POST /rest/workspaces
+              --> skriv-workspace "sk0_kba_test_w"
+          PUT  /rest/namespaces/sk0_kba_test_w
+              --> namespace URI satt
+  Steg 4. POST /rest/workspaces/sk0_kba_test_w/datastores
+              --> PostGIS-datastore "sk0_kba_test_w"
+                  (direktanslutning med gs_w_sk0_kba_test – ALL, möjliggör WFS-T)
+  Steg 5. POST /rest/security/roles/role/r_sk0_kba_test
+          POST /rest/security/roles/role/w_sk0_kba_test
+              --> GeoServer-roller skapas (speglar PostgreSQL-behörighetsgrupperna)
+  Steg 6. POST /rest/security/acl/layers
+              --> sk0_kba_test.*.r = r_sk0_kba_test
+                  (läsrollen, och ROLE_ANONYMOUS för sk0/anonym_las=true)
+  Steg 7. POST /rest/security/acl/layers
+              --> sk0_kba_test_w.*.r = w_sk0_kba_test
+                  sk0_kba_test_w.*.w = w_sk0_kba_test
+                  (skrivrollen styr åtkomst till WFS-T-workspacet)
 ```
 
 > Rolltrigger och notifieringstrigger körs i ordning som en del av samma CREATE
@@ -82,14 +93,18 @@ geoserver_listener.py
         |
         v
 GeoServer REST API:
-  1. DELETE /rest/security/acl/layers/sk0_kba_test.*.r
-     DELETE /rest/security/acl/layers/sk0_kba_test.*.w
-         --> ACL-regler tas bort
-  2. DELETE /rest/workspaces/sk0_kba_test?recurse=true
-         --> workspace + datastores + publicerade lager tas bort
-  3. DELETE /rest/security/roles/role/gs_r_sk0_kba_test
-     DELETE /rest/security/roles/role/gs_w_sk0_kba_test
-         --> GeoServer-roller tas bort
+  Steg 1. DELETE /rest/security/acl/layers/sk0_kba_test.*.r
+              --> ACL-regler för läs-workspace tas bort
+  Steg 2. DELETE /rest/security/acl/layers/sk0_kba_test_w.*.r
+          DELETE /rest/security/acl/layers/sk0_kba_test_w.*.w
+              --> ACL-regler för skriv-workspace tas bort
+  Steg 3. DELETE /rest/workspaces/sk0_kba_test?recurse=true
+              --> läs-workspace + datastores + publicerade lager tas bort
+  Steg 4. DELETE /rest/workspaces/sk0_kba_test_w?recurse=true
+              --> skriv-workspace + datastores + publicerade lager tas bort
+  Steg 5. DELETE /rest/security/roles/role/r_sk0_kba_test
+          DELETE /rest/security/roles/role/w_sk0_kba_test
+              --> GeoServer-roller tas bort
 ```
 
 Det säkerställer att GeoServer inte gör upprepade anrop mot ett schema
@@ -623,18 +638,24 @@ CREATE SCHEMA sk0_kba_test;
 **Förväntad utskrift i Terminal 1 (skapande):**
 ```
 [INFO] [geodata_sk0] Mottog notifiering för schema: sk0_kba_test
-[INFO] [geodata_sk0]   Hittade autentiseringsuppgifter för roll: r_sk0_kba_test
-[INFO] [geodata_sk0]   Steg 1: Skapar workspace 'sk0_kba_test'...
+[INFO] [geodata_sk0]   Steg 1: Skapar läs-workspace 'sk0_kba_test'...
 [INFO]   [DRY-RUN] Skulle skapa workspace: sk0_kba_test
-[INFO] [geodata_sk0]   Steg 2: Skapar PostGIS-datastore 'sk0_kba_test'...
-[INFO]   [DRY-RUN] Skulle skapa PG-datastore: sk0_kba_test
-[INFO] [geodata_sk0]   Steg 3: Skapar GeoServer-roller för 'sk0_kba_test'...
+[INFO] [geodata_sk0]   Steg 2: Skapar läs-datastore 'sk0_kba_test'...
+[INFO]   [DRY-RUN] Skulle skapa PG-datastore: sk0_kba_test (användare: gs_r_sk0_kba_test)
+[INFO] [geodata_sk0]   Steg 3: Skapar skriv-workspace 'sk0_kba_test_w'...
+[INFO]   [DRY-RUN] Skulle skapa workspace: sk0_kba_test_w
+[INFO] [geodata_sk0]   Steg 4: Skapar skriv-datastore 'sk0_kba_test_w'...
+[INFO]   [DRY-RUN] Skulle skapa PG-datastore: sk0_kba_test_w (användare: gs_w_sk0_kba_test)
+[INFO] [geodata_sk0]   Steg 5: Skapar GeoServer-roller för 'sk0_kba_test'...
 [INFO]   [DRY-RUN] Skulle skapa GeoServer-roll: r_sk0_kba_test
 [INFO]   [DRY-RUN] Skulle skapa GeoServer-roll: w_sk0_kba_test
-[INFO] [geodata_sk0]   Steg 4: Skapar ACL-regler för 'sk0_kba_test'...
-[INFO]   [DRY-RUN] Skulle skapa ACL-regler för workspace 'sk0_kba_test':
+[INFO] [geodata_sk0]   Steg 6: Skapar ACL-regler för läs-workspace 'sk0_kba_test'...
+[INFO]   [DRY-RUN] Skulle skapa ACL-regler för läs-workspace 'sk0_kba_test':
 [INFO]   [DRY-RUN]   sk0_kba_test.*.r = r_sk0_kba_test
-[INFO]   [DRY-RUN]   sk0_kba_test.*.w = w_sk0_kba_test
+[INFO] [geodata_sk0]   Steg 7: Skapar ACL-regler för skriv-workspace 'sk0_kba_test_w'...
+[INFO]   [DRY-RUN] Skulle skapa ACL-regler för skriv-workspace 'sk0_kba_test_w':
+[INFO]   [DRY-RUN]   sk0_kba_test_w.*.r = w_sk0_kba_test
+[INFO]   [DRY-RUN]   sk0_kba_test_w.*.w = w_sk0_kba_test
 [INFO] [geodata_sk0]   Schema 'sk0_kba_test' publicerat till GeoServer
 ```
 
@@ -646,13 +667,19 @@ DROP SCHEMA sk0_kba_test CASCADE;
 **Förväntad utskrift i Terminal 1 (borttagning):**
 ```
 [INFO] [geodata_sk0] Mottog borttagningsnotifiering för schema: sk0_kba_test
-[INFO] [geodata_sk0]   Steg 1: Tar bort ACL-regler för 'sk0_kba_test'...
+[INFO] [geodata_sk0]   Steg 1: Tar bort ACL-regler för läs-workspace 'sk0_kba_test'...
 [INFO]   [DRY-RUN] Skulle ta bort ACL-regler för workspace 'sk0_kba_test':
 [INFO]   [DRY-RUN]   sk0_kba_test.*.r
 [INFO]   [DRY-RUN]   sk0_kba_test.*.w
-[INFO] [geodata_sk0]   Steg 2: Tar bort workspace 'sk0_kba_test' från GeoServer...
+[INFO] [geodata_sk0]   Steg 2: Tar bort ACL-regler för skriv-workspace 'sk0_kba_test_w'...
+[INFO]   [DRY-RUN] Skulle ta bort ACL-regler för workspace 'sk0_kba_test_w':
+[INFO]   [DRY-RUN]   sk0_kba_test_w.*.r
+[INFO]   [DRY-RUN]   sk0_kba_test_w.*.w
+[INFO] [geodata_sk0]   Steg 3: Tar bort läs-workspace 'sk0_kba_test' från GeoServer...
 [INFO]   [DRY-RUN] Skulle ta bort workspace (inkl. datastores/lager): sk0_kba_test
-[INFO] [geodata_sk0]   Steg 3: Tar bort GeoServer-roller för 'sk0_kba_test'...
+[INFO] [geodata_sk0]   Steg 4: Tar bort skriv-workspace 'sk0_kba_test_w' från GeoServer...
+[INFO]   [DRY-RUN] Skulle ta bort workspace (inkl. datastores/lager): sk0_kba_test_w
+[INFO] [geodata_sk0]   Steg 5: Tar bort GeoServer-roller för 'sk0_kba_test'...
 [INFO]   [DRY-RUN] Skulle ta bort GeoServer-roll: r_sk0_kba_test
 [INFO]   [DRY-RUN] Skulle ta bort GeoServer-roll: w_sk0_kba_test
 [INFO] [geodata_sk0]   Schema 'sk0_kba_test' avpublicerat från GeoServer
@@ -672,18 +699,22 @@ py geoserver_listener.py
 
 Skapa schemat och verifiera i GeoServer:
 1. Gå till http://localhost:8080/geoserver/web/
-2. Klicka på **Workspaces** — du bör se `sk0_kba_test` i listan
-3. Klicka på den, sedan **Stores** — du bör se en PostGIS-datastore med samma namn
-4. Gå till **Security > Users/Groups/Roles** — du bör se rollerna `gs_r_sk0_kba_test` och `gs_w_sk0_kba_test`
-5. Gå till **Security > Data** — du bör se reglerna `sk0_kba_test.*.r = gs_r_sk0_kba_test` och `sk0_kba_test.*.w = gs_w_sk0_kba_test`
+2. Klicka på **Workspaces** — du bör se **både** `sk0_kba_test` (läs) och `sk0_kba_test_w` (skriv) i listan
+3. Klicka på `sk0_kba_test`, sedan **Stores** — du bör se en PostGIS-datastore med rollen `gs_r_sk0_kba_test`
+4. Klicka på `sk0_kba_test_w`, sedan **Stores** — du bör se en PostGIS-datastore med rollen `gs_w_sk0_kba_test`
+5. Gå till **Security > Users/Groups/Roles** — du bör se rollerna `r_sk0_kba_test` och `w_sk0_kba_test`
+6. Gå till **Security > Data** — du bör se:
+   - `sk0_kba_test.*.r = r_sk0_kba_test` (och ev. `ROLE_ANONYMOUS` för sk0)
+   - `sk0_kba_test_w.*.r = w_sk0_kba_test`
+   - `sk0_kba_test_w.*.w = w_sk0_kba_test`
 
 Testa sedan borttagning:
 ```sql
 DROP SCHEMA sk0_kba_test CASCADE;
 ```
 
-Kontrollera i GeoServer att workspace, roller och ACL-regler för `sk0_kba_test` är borta.
-Loggen ska visa att alla tre steg lyckades.
+Kontrollera i GeoServer att **båda** workspaces (`sk0_kba_test` och `sk0_kba_test_w`), roller och
+ACL-regler är borta. Loggen ska visa att alla fem steg lyckades.
 
 ---
 
@@ -761,10 +792,14 @@ type D:\ProgramData\Hex\geoserver_listener.log
 ```
 
 Kontrollera GeoServer:
-- Workspace `sk1_kba_parkering` bör finnas under **Workspaces**
-- Datastore `sk1_kba_parkering` med direktanslutning via rollen `r_sk1_kba_parkering` under **Stores**
-- Rollerna `gs_r_sk1_kba_parkering` och `gs_w_sk1_kba_parkering` under **Security > Users/Groups/Roles**
-- ACL-reglerna `sk1_kba_parkering.*.r` och `sk1_kba_parkering.*.w` under **Security > Data**
+- Båda workspaces bör finnas under **Workspaces**:
+  - `sk1_kba_parkering` (läs) med datastore ansluten via `gs_r_sk1_kba_parkering`
+  - `sk1_kba_parkering_w` (skriv/WFS-T) med datastore ansluten via `gs_w_sk1_kba_parkering`
+- Rollerna `r_sk1_kba_parkering` och `w_sk1_kba_parkering` under **Security > Users/Groups/Roles**
+- Under **Security > Data**:
+  - `sk1_kba_parkering.*.r = r_sk1_kba_parkering`
+  - `sk1_kba_parkering_w.*.r = w_sk1_kba_parkering`
+  - `sk1_kba_parkering_w.*.w = w_sk1_kba_parkering`
 
 ---
 
@@ -847,13 +882,14 @@ vid uppstart:
 
 Autentiseringsuppgifter för GeoServer-datastores hanteras automatiskt av Hex:
 
-- `hex_hantera_std_roller()` skapar `r_{schema}` med LOGIN och ett
-  autogenererat lösenord vid varje CREATE SCHEMA
-- Lösenordet sparas i `hex_rolluppgifter` och läses av lyssnaren vid
-  datastore-skapandet
+- `hex_hantera_std_roller()` skapar `gs_r_{schema}` (läs) och `gs_w_{schema}` (skriv)
+  med LOGIN och autogenererade lösenord vid varje CREATE SCHEMA
+- Lösenorden sparas i `hex_rolluppgifter` och läses av lyssnaren vid
+  datastore-skapandet — `gs_r_{schema}` för läs-workspacet och `gs_w_{schema}` för
+  skriv-workspacet
 
 Det finns normalt inget att konfigurera manuellt. Om du behöver återskapa
-en datastore för ett befintligt schema, skicka en manuell notifiering:
+datastores för ett befintligt schema, skicka en manuell notifiering:
 
 ```sql
 NOTIFY geoserver_schema, 'sk0_kba_mittschema';
