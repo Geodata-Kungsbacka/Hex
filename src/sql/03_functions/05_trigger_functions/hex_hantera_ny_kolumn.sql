@@ -133,21 +133,19 @@ BEGIN
         RETURN;  -- Inget kolumnarbete behövs vid rename
     END IF;
 
-    -- ----------------------------------------------------------------
-    -- Specialfall: ALTER TABLE ... OWNER TO (bästa-försök-optimering)
-    -- Ägarbyten ändrar inga kolumner - hoppa över all kolumnhantering när vi
-    -- kan avgöra det. Samma mönster som RENAME TO-undantaget ovan.
-    --
-    -- BEGRÄNSNING: current_query() returnerar den YTTERSTA satsen som
-    -- klienten skickade, inte en nästlad sats körd via EXECUTE inuti en
-    -- PL/pgSQL-funktion. Denna kontroll fångar alltså bara ett direkt
-    -- `ALTER TABLE x OWNER TO y;` från en klient (t.ex. en DBA i psql) - inte
-    -- hex_underhall()'s `EXECUTE format('ALTER TABLE %I.%I OWNER TO %I', ...)`.
-    -- Det verkliga skyddet mot att ägarbyten kraschar historiktabeller ligger
-    -- i _h-undantaget i Steg 5c nedan, som fungerar oavsett nästling.
-    -- ----------------------------------------------------------------
-    IF current_query() ~* '\mOWNER\s+TO\M' THEN
-        RAISE NOTICE '[hex_hantera_ny_kolumn] ALTER TABLE ... OWNER TO – inga kolumner att hantera, hoppar över';
+    -- Avbryt om inga kolumntillägg finns i denna DDL-händelse.
+    -- ALTER TABLE OWNER TO, SET SCHEMA, DROP COLUMN, ENABLE/DISABLE TRIGGER o.s.v.
+    -- ger object_type = 'table' (eller NULL), inte 'table column'. Utan detta
+    -- skydd utförs onödig (och ibland felaktig) kolumnhantering för sådana kommandon.
+    -- Denna kontroll fungerar även för EXECUTE inuti PL/pgSQL (till skillnad från
+    -- current_query() som bara ser den yttersta klientsatsen).
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_event_trigger_ddl_commands()
+        WHERE command_tag = 'ALTER TABLE'
+          AND object_type = 'table column'
+    ) THEN
+        RAISE NOTICE '[hex_hantera_ny_kolumn] Inga kolumntillägg – avbryter';
+        PERFORM set_config('temp.reorganization_in_progress', 'false', true);
         RETURN;
     END IF;
 
