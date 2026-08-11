@@ -13,8 +13,8 @@ oavsett säkerhetsnivå (sk0/sk1/sk2/skx):
 |------|-----|-------------|-----------------|
 | `r_<schema>` | NOLOGIN grupproll | Läsrättigheter på detta specifika schema | AD-användare/AD-grupper |
 | `w_<schema>` | NOLOGIN grupproll | Läs- och skrivrättigheter på detta specifika schema | AD-användare/AD-grupper |
-| `gs_r_<schema>` | LOGIN-tjänstekonto | Ärver läsrättigheter från `r_<schema>` | GeoServer (autogenererat lösenord i `hex_role_credentials`) |
-| `gs_w_<schema>` | LOGIN-tjänstekonto | Ärver skrivrättigheter från `w_<schema>` | GeoServer (autogenererat lösenord i `hex_role_credentials`) |
+| `gs_r_<schema>` | LOGIN-tjänstekonto | Ärver läsrättigheter från `r_<schema>` | GeoServer (autogenererat lösenord i `hex_rolluppgifter`) |
+| `gs_w_<schema>` | LOGIN-tjänstekonto | Ärver skrivrättigheter från `w_<schema>` | GeoServer (autogenererat lösenord i `hex_rolluppgifter`) |
 
 > **Det finns inga längre globala läsroller som spänner över flera scheman.**
 > Tidigare fanns `r_sk0_global`/`r_sk1_global` – en delad läsroll per

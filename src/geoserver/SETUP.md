@@ -26,7 +26,7 @@ hex_hantera_std_roller()
         |    (GeoServer läs-tjänstekonto - direkt PostgreSQL-anslutning)
         +--> CREATE ROLE gs_w_sk0_kba_test WITH LOGIN PASSWORD '<autogenererat>'
         |    (GeoServer skriv-tjänstekonto)
-        +--> INSERT INTO hex_role_credentials (rolname, password)
+        +--> INSERT INTO hex_rolluppgifter (rollnamn, losenord)
              (lösenorden sparas i databasen för lyssnaren att hämta)
         |
         v
@@ -40,7 +40,7 @@ pg_notify('geoserver_schema', 'sk0_kba_test')
 [Python Listener - Windows Service]
 geoserver_listener.py
         |
-        +--> SELECT password FROM hex_role_credentials WHERE rolname = 'gs_r_sk0_kba_test'
+        +--> SELECT losenord FROM hex_rolluppgifter WHERE rollnamn = 'gs_r_sk0_kba_test'
         |
         v
 GeoServer REST API:
@@ -61,7 +61,7 @@ GeoServer REST API:
 ```
 
 > Rolltrigger och notifieringstrigger körs i ordning som en del av samma CREATE
-> SCHEMA-transaktion. Lösenordet är alltid inskrivet i `hex_role_credentials`
+> SCHEMA-transaktion. Lösenordet är alltid inskrivet i `hex_rolluppgifter`
 > innan pg_notify når lyssnaren.
 
 **Borttagning** — när du kör `DROP SCHEMA sk0_kba_test CASCADE`:
@@ -217,7 +217,7 @@ automatiskt som en del av installationsordningen. De relevanta filerna är:
 
 | Fil | Syfte |
 |---|---|
-| `src/sql/02_tables/hex_role_credentials.sql` | Tabell där lösenord för LOGIN-roller sparas |
+| `src/sql/02_tables/hex_rolluppgifter.sql` | Tabell där lösenord för LOGIN-roller sparas |
 | `src/sql/03_functions/05_trigger_functions/hex_hantera_std_roller.sql` | Skapar r_/w_-behörighetsgrupper och gs_r_/gs_w_-tjänstekonton med autogenererade lösenord vid CREATE SCHEMA |
 | `src/sql/04_triggers/hex_hantera_std_roller_trigger.sql` | Registrerar ovanstående trigger |
 | `src/sql/03_functions/05_trigger_functions/hex_notifiera_gs.sql` | Skickar pg_notify vid CREATE SCHEMA |
@@ -252,7 +252,7 @@ WHERE evtname IN (
 
 Du bör se tre rader. `hex_hantera_std_roller_trigger` körs alltid
 **före** `hex_notifiera_gs_trigger` så att lösenordet redan finns i
-`hex_role_credentials` när lyssnaren svarar på notifieringen.
+`hex_rolluppgifter` när lyssnaren svarar på notifieringen.
 
 ---
 
@@ -282,17 +282,17 @@ GRANT CONNECT ON DATABASE geodata_sk1 TO hex_listener;
 ```
 
 `LISTEN` på en kanal är tillgängligt för alla roller som kan ansluta till
-databasen. Lyssnaren behöver dessutom kunna läsa `hex_role_credentials` för
+databasen. Lyssnaren behöver dessutom kunna läsa `hex_rolluppgifter` för
 att hämta lösenordet till GeoServer-datastorens direktanslutning. Ge
 rättigheten i **varje databas** som ska övervakas:
 
 ```sql
 -- Kör i varje databas (t.ex. \c geodata_sk0 i psql)
-GRANT SELECT ON public.hex_role_credentials TO hex_listener;
+GRANT SELECT ON public.hex_rolluppgifter TO hex_listener;
 ```
 
 > **OBS:** Om du kör Hex-installern (`install_hex.py`) sätts denna rättighet
-> automatiskt av `hex_role_credentials.sql` och behöver inte läggas till manuellt.
+> automatiskt av `hex_rolluppgifter.sql` och behöver inte läggas till manuellt.
 
 ### pg_hba.conf — tillåt anslutningar
 
@@ -474,7 +474,7 @@ per databas om de skiljer sig från standardvärdena ovan (t.ex. `HEX_DB_2_HOST=
 >   `127.0.0.1` från lyssnaren gör att GeoServer försöker ansluta till sig själv.
 
 > **Datastore-autentisering:** Lyssnaren hämtar autentiseringsuppgifter för
-> GeoServer-datastores direkt från tabellen `hex_role_credentials` i varje
+> GeoServer-datastores direkt från tabellen `hex_rolluppgifter` i varje
 > databas. Lösenorden genereras automatiskt av `hex_hantera_std_roller()`
 > vid CREATE SCHEMA och kräver ingen manuell konfiguration.
 
@@ -483,7 +483,7 @@ per databas om de skiljer sig från standardvärdena ovan (t.ex. `HEX_DB_2_HOST=
 Lyssnaren kör automatiskt en periodisk kontroll av GeoServer mot PostgreSQL. Om
 en workspace eller datastore saknas (t.ex. för att någon manuellt tagit bort dem)
 skapas de om automatiskt, och autentiseringsuppgifterna uppdateras alltid med
-aktuella värden från `hex_role_credentials`.
+aktuella värden från `hex_rolluppgifter`.
 
 Standardintervallet är **3600 sekunder (60 minuter)**. Ändra eller avaktivera med:
 
@@ -584,7 +584,7 @@ Förväntad utskrift:
 2026-02-13 10:00:00 [INFO] GeoServer Schema Listener
 2026-02-13 10:00:00 [INFO] ============================================================
 2026-02-13 10:00:00 [INFO] GeoServer:  http://localhost:8080/geoserver
-2026-02-13 10:00:00 [INFO] Anslutning: direkt PostGIS (autentiseringsuppgifter från hex_role_credentials)
+2026-02-13 10:00:00 [INFO] Anslutning: direkt PostGIS (autentiseringsuppgifter från hex_rolluppgifter)
 2026-02-13 10:00:00 [INFO] Databaser:  2 st
 2026-02-13 10:00:00 [INFO]   [geodata_sk0] hex_listener@localhost:5432/geodata_sk0
 2026-02-13 10:00:00 [INFO]   [geodata_sk1] hex_listener@localhost:5432/geodata_sk1
@@ -830,7 +830,7 @@ vid uppstart:
    ```sql
    GRANT CONNECT ON DATABASE geodata_sk3 TO hex_listener;
    -- Kör i den nya databasen:
-   GRANT SELECT ON public.hex_role_credentials TO hex_listener;
+   GRANT SELECT ON public.hex_rolluppgifter TO hex_listener;
    ```
 3. Lägg till en ny databasgrupp i `.env`:
    ```env
@@ -849,7 +849,7 @@ Autentiseringsuppgifter för GeoServer-datastores hanteras automatiskt av Hex:
 
 - `hex_hantera_std_roller()` skapar `r_{schema}` med LOGIN och ett
   autogenererat lösenord vid varje CREATE SCHEMA
-- Lösenordet sparas i `hex_role_credentials` och läses av lyssnaren vid
+- Lösenordet sparas i `hex_rolluppgifter` och läses av lyssnaren vid
   datastore-skapandet
 
 Det finns normalt inget att konfigurera manuellt. Om du behöver återskapa
@@ -878,7 +878,7 @@ Lyssnaren har inbyggd retry-logik för transienta fel mot GeoServer:
 
 **Vad som INTE ger retry:**
 - HTTP-felkoder (400, 401, 404, 500 etc.) - dessa returneras direkt
-- Ogiltiga schemanamn, saknade uppgifter i `hex_role_credentials`, autentiseringsfel mot GeoServer, etc.
+- Ogiltiga schemanamn, saknade uppgifter i `hex_rolluppgifter`, autentiseringsfel mot GeoServer, etc.
 
 Om alla retry-försök misslyckas loggas felet tydligt. Lyssnaren hoppar
 sedan över notifieringen. För att försöka igen manuellt:

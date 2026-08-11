@@ -87,12 +87,12 @@ Definierar vilka roller som automatiskt skapas för nya scheman.
 | `rolltyp` | `read` eller `write` |
 | `schema_uttryck` | SQL-filter — rollen skapas bara om schemanamnet matchar |
 | `ta_bort_med_schema` | `true` = rollen tas bort när schemat droppas |
-| `with_login` | `true` = rollen skapas med LOGIN och autogenererat lösenord (sparas i `hex_role_credentials`). `false` = NOLOGIN (ren behörighetsgrupp). |
+| `kan_logga_in` | `true` = rollen skapas med LOGIN och autogenererat lösenord (sparas i `hex_rolluppgifter`). `false` = NOLOGIN (ren behörighetsgrupp). |
 | `arvs_fran` | Om satt, ersätts `{schema}` och rollen beviljas `GRANT arvs_fran TO rollnamn` i stället för direkta schemabehörigheter via `hex_tilldela_rollrattigheter`. Används för att hålla `gs_r_`/`gs_w_`-behörigheter synkroniserade med `r_`/`w_`. |
 
 **Fördefinierade roller:**
 
-| Rollnamn | Typ | Matchar | with_login | arvs_fran | Tas bort med schema |
+| Rollnamn | Typ | Matchar | kan_logga_in | arvs_fran | Tas bort med schema |
 |---|---|---|---|---|---|
 | `r_{schema}` | read | IS NOT NULL (alla) | nej (NOLOGIN) | — | ja |
 | `w_{schema}` | write | IS NOT NULL (alla) | nej (NOLOGIN) | — | ja |
@@ -173,8 +173,8 @@ flowchart TD
 
     HSR["hex_hantera_std_roller<br/>trigger 1 — SECURITY DEFINER"]
     HSR --> LOOP["Evaluera schema_uttryck<br/>för varje rad i hex_standardiserade_roller"]
-    LOOP --> |"matchar (with_login=true)"| LOGIN["CREATE ROLE rollnamn WITH LOGIN<br/>lösenord → hex_role_credentials<br/>GRANT CONNECT ON DATABASE<br/>GRANT hex_geoserver_roller TO rollnamn"]
-    LOOP --> |"matchar (with_login=false)"| NOLOGIN["CREATE ROLE rollnamn NOLOGIN"]
+    LOOP --> |"matchar (kan_logga_in=true)"| LOGIN["CREATE ROLE rollnamn WITH LOGIN<br/>lösenord → hex_rolluppgifter<br/>GRANT CONNECT ON DATABASE<br/>GRANT hex_geoserver_roller TO rollnamn"]
+    LOOP --> |"matchar (kan_logga_in=false)"| NOLOGIN["CREATE ROLE rollnamn NOLOGIN"]
     LOGIN --> |"arvs_fran IS NOT NULL<br/>(gs_r_, gs_w_)"| ARV["GRANT arvs_fran TO rollnamn<br/>(ärver behörigheter från r_/w_-gruppen)"]
     LOGIN --> |"arvs_fran IS NULL"| TRR["hex_tilldela_rollrattigheter<br/>GRANT USAGE + SELECT / DML"]
     NOLOGIN --> TRR
@@ -216,18 +216,18 @@ hex_hantera_std_roller()
   │     ├── Evaluerar schema_uttryck mot schemanamnet
   │     │     Exempel: 'IS NOT NULL' → matchar alla scheman
   │     └── Om matchar:
-  │           ├── with_login = true (gs_r_*, gs_w_*):
+  │           ├── kan_logga_in = true (gs_r_*, gs_w_*):
   │           │     ├── Genererar lösenord: gen_random_bytes(18) → base64
   │           │     ├── CREATE ROLE <rollnamn> WITH LOGIN PASSWORD <lösenord>
   │           │     ├── GRANT CONNECT ON DATABASE till rollen
-  │           │     ├── Sparar till hex_role_credentials (för GeoServer-lyssnaren)
+  │           │     ├── Sparar till hex_rolluppgifter (för GeoServer-lyssnaren)
   │           │     ├── GRANT hex_geoserver_roller TO <rollnamn>
   │           │     │     (tillåter pg_hba.conf att matcha via +hex_geoserver_roller)
   │           │     └── Om arvs_fran IS NOT NULL:
   │           │           GRANT <arvs_fran> TO <rollnamn>  (ärver behörigheter från r_/w_-gruppen)
   │           │         Annars: hex_tilldela_rollrattigheter(schema, roll, typ)
   │           │
-  │           ├── with_login = false (r_*, w_*):
+  │           ├── kan_logga_in = false (r_*, w_*):
   │           │     ├── CREATE ROLE <rollnamn> WITH NOLOGIN
   │           │     ├── GRANT <rollnamn> TO hex_systemagare() WITH ADMIN OPTION
   │           │     └── → hex_tilldela_rollrattigheter(schema, roll, typ)
@@ -240,8 +240,8 @@ hex_hantera_std_roller()
   └── Resultat för sk0_kba_bygg:
         NOLOGIN: r_sk0_kba_bygg  (AD-behörighetsgrupp, läs)
                  w_sk0_kba_bygg  (AD-behörighetsgrupp, skriv)
-        LOGIN:   gs_r_sk0_kba_bygg  (GeoServer läs-tjänstekonto → hex_role_credentials)
-                 gs_w_sk0_kba_bygg  (GeoServer skriv-tjänstekonto → hex_role_credentials)
+        LOGIN:   gs_r_sk0_kba_bygg  (GeoServer läs-tjänstekonto → hex_rolluppgifter)
+                 gs_w_sk0_kba_bygg  (GeoServer skriv-tjänstekonto → hex_rolluppgifter)
 ```
 
 Om ett senare steg (Steg 3) upptäcker ett ogiltigt schemanamn har rollerna
@@ -752,7 +752,7 @@ flowchart TD
     TBS_T --> SYS{"Systemschema?"}
     SYS --> |ja| SKIP(["hoppar över"])
     SYS --> |nej| LOOP["För varje rad i hex_standardiserade_roller<br/>där ta_bort_med_schema = true"]
-    LOOP --> DROPROL["REASSIGN OWNED BY roll TO postgres<br/>DROP OWNED BY roll<br/>DROP ROLE roll<br/>DELETE från hex_role_credentials"]
+    LOOP --> DROPROL["REASSIGN OWNED BY roll TO postgres<br/>DROP OWNED BY roll<br/>DROP ROLE roll<br/>DELETE från hex_rolluppgifter"]
     DROPROL --> DONE_ROLES(["Roller borttagna ✓"])
 
     NGB_T --> SYS2{"Systemschema?"}
@@ -786,7 +786,7 @@ hex_ta_bort_schemaroller()
         ├── REASSIGN OWNED BY <roll> TO postgres
         ├── DROP OWNED BY <roll>
         ├── DROP ROLE <roll>
-        └── DELETE FROM hex_role_credentials WHERE rolname = <roll>
+        └── DELETE FROM hex_rolluppgifter WHERE rolname = <roll>
               (rensar sparade autentiseringsuppgifter för LOGIN-roller)
 ```
 
@@ -834,7 +834,7 @@ flowchart TD
     subgraph PY["Python-lyssnaren (geoserver_listener.py)"]
         direction TB
         LL["listen_loop<br/>autocommit · LISTEN · 5 s select-timeout"]
-        LL --> |"kanal: geoserver_schema"| HSN["handle_schema_notification<br/>laddar mönster från DB<br/>hämtar credentials från hex_role_credentials"]
+        LL --> |"kanal: geoserver_schema"| HSN["handle_schema_notification<br/>laddar mönster från DB<br/>hämtar credentials från hex_rolluppgifter"]
         LL --> |"kanal: geoserver_schema_drop"| HRN["handle_schema_removal_notification<br/>laddar mönster från DB"]
         LL --> |"anslutning tappas"| REC["Väntar reconnect_delay<br/>återansluter"]
         REC --> EMAIL1["EmailNotifier<br/>skickar varning<br/>300 s cooldown"]
@@ -895,7 +895,7 @@ flowchart TD
 │                              gs_client)                             │
 │    ├── Laddar mönster från hex_standardiserade_skyddsnivaer /           │
 │    │     hex_standardiserade_datakategorier (dynamiskt, utan omstart)  │
-│    ├── Hämtar credentials för gs_r_sk0_kba_bygg ur hex_role_credentials│
+│    ├── Hämtar credentials för gs_r_sk0_kba_bygg ur hex_rolluppgifter│
 │    ├── → GeoServerClient.create_workspace()                         │
 │    ├── → GeoServerClient.create_pg_datastore()                     │
 │    ├── → GeoServerClient.create_gs_role('r_sk0_kba_bygg')          │
@@ -937,7 +937,7 @@ flowchart TD
 │                                                                     │
 │  4. POST /rest/workspaces/sk0_kba_bygg/datastores                  │
 │       Direkt PostGIS-konfiguration (credentials från               │
-│       hex_role_credentials för gs_r_sk0_kba_bygg):                 │
+│       hex_rolluppgifter för gs_r_sk0_kba_bygg):                 │
 │         dbtype:             postgis                                 │
 │         host/port/database: från db_config                         │
 │         user/passwd:        gs_r_sk0_kba_bygg + autogenererat lösen│

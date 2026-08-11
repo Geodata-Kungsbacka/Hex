@@ -18,8 +18,8 @@ AS $BODY$
  *
  *   r_{schema}    NOLOGIN – läsbehörighetsgrupp.
  *                 Tilldelas AD-användare och AD-grupper för direktåtkomst till databasen.
- *                 Är INTE i hex_geoserver_roller. Sparas i hex_role_credentials
- *                 med rolcanlogin=false och password=NULL.
+ *                 Är INTE i hex_geoserver_roller. Sparas i hex_rolluppgifter
+ *                 med kan_logga_in=false och losenord=NULL.
  *
  *   w_{schema}    NOLOGIN – skrivbehörighetsgrupp.
  *                 Tilldelas AD-användare och AD-grupper för direktåtkomst.
@@ -28,7 +28,7 @@ AS $BODY$
  *   gs_r_{schema} LOGIN – GeoServer läs-tjänstekonto.
  *                 Ärver rättigheter från r_{schema} via GRANT.
  *                 Är i hex_geoserver_roller för pg_hba.conf-matchning.
- *                 Lösenord sparas i hex_role_credentials med rolcanlogin=true.
+ *                 Lösenord sparas i hex_rolluppgifter med kan_logga_in=true.
  *
  *   gs_w_{schema} LOGIN – GeoServer skriv-tjänstekonto.
  *                 Ärver rättigheter från w_{schema} via GRANT.
@@ -93,7 +93,7 @@ BEGIN
             SELECT * FROM hex_standardiserade_roller ORDER BY gid
         LOOP
             RAISE NOTICE '[hex_hantera_std_roller] Testar rollkonfiguration: % (typ: %, login: %)',
-                rollkonfiguration.rollnamn, rollkonfiguration.rolltyp, rollkonfiguration.with_login;
+                rollkonfiguration.rollnamn, rollkonfiguration.rolltyp, rollkonfiguration.kan_logga_in;
 
             -- Testa om schema_uttryck matchar detta schema
             BEGIN
@@ -108,7 +108,7 @@ BEGIN
 
                     IF NOT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = slutligt_rollnamn) THEN
 
-                        IF rollkonfiguration.with_login THEN
+                        IF rollkonfiguration.kan_logga_in THEN
                             -- -------------------------------------------------------
                             -- LOGIN-roll: GeoServer-tjänstekonto (gs_r_*, gs_w_*)
                             -- -------------------------------------------------------
@@ -120,13 +120,13 @@ BEGIN
                             EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I',
                                 current_database(), slutligt_rollnamn);
 
-                            -- Spara uppgifter i hex_role_credentials
-                            INSERT INTO hex_role_credentials(rolname, password, rolcanlogin)
+                            -- Spara uppgifter i hex_rolluppgifter
+                            INSERT INTO hex_rolluppgifter(rollnamn, losenord, kan_logga_in)
                             VALUES (slutligt_rollnamn, generated_password, true)
-                            ON CONFLICT (rolname) DO UPDATE
-                                SET password    = EXCLUDED.password,
-                                    rolcanlogin = true,
-                                    created_at  = now();
+                            ON CONFLICT (rollnamn) DO UPDATE
+                                SET losenord     = EXCLUDED.losenord,
+                                    kan_logga_in = true,
+                                    skapad_tidpunkt = now();
 
                             -- Lägg till i hex_geoserver_roller för pg_hba.conf-matchning
                             EXECUTE format('GRANT hex_geoserver_roller TO %I', slutligt_rollnamn);
@@ -151,13 +151,13 @@ BEGIN
                             -- -------------------------------------------------------
                             EXECUTE format('CREATE ROLE %I WITH NOLOGIN', slutligt_rollnamn);
 
-                            -- Registrera i hex_role_credentials utan lösenord
-                            INSERT INTO hex_role_credentials(rolname, password, rolcanlogin)
+                            -- Registrera i hex_rolluppgifter utan lösenord
+                            INSERT INTO hex_rolluppgifter(rollnamn, losenord, kan_logga_in)
                             VALUES (slutligt_rollnamn, NULL, false)
-                            ON CONFLICT (rolname) DO UPDATE
-                                SET rolcanlogin = false,
-                                    password    = NULL,
-                                    created_at  = now();
+                            ON CONFLICT (rollnamn) DO UPDATE
+                                SET kan_logga_in    = false,
+                                    losenord        = NULL,
+                                    skapad_tidpunkt = now();
 
                             -- Direkta schemabehörigheter på behörighetsgruppen
                             PERFORM hex_tilldela_rollrattigheter(schema_namn, slutligt_rollnamn, rollkonfiguration.rolltyp);
@@ -178,7 +178,7 @@ BEGIN
 
                         -- Säkerställ att befintlig NOLOGIN-roll ändå får rätt behörigheter
                         -- (t.ex. om tabeller skapades innan rollen fick rättigheter)
-                        IF NOT rollkonfiguration.with_login THEN
+                        IF NOT rollkonfiguration.kan_logga_in THEN
                             PERFORM hex_tilldela_rollrattigheter(schema_namn, slutligt_rollnamn, rollkonfiguration.rolltyp);
                         ELSE
                             -- Säkerställ att befintlig LOGIN-roll är i hex_geoserver_roller
@@ -237,8 +237,8 @@ COMMENT ON FUNCTION public.hex_hantera_std_roller()
       w_{schema}    NOLOGIN behörighetsgrupp (skriv) – tilldelas AD-användare/grupper
       gs_r_{schema} LOGIN GeoServer läs-tjänstekonto – ärver r_{schema}, i hex_geoserver_roller
       gs_w_{schema} LOGIN GeoServer skriv-tjänstekonto – ärver w_{schema}, i hex_geoserver_roller
-    Alla fyra roller registreras i hex_role_credentials (LOGIN-roller med lösenord,
-    NOLOGIN-roller med password=NULL och rolcanlogin=false).
+    Alla fyra roller registreras i hex_rolluppgifter (LOGIN-roller med lösenord,
+    NOLOGIN-roller med losenord=NULL och kan_logga_in=false).
     Separation av AD-användare och tjänstekonton: r_*/w_* ingår aldrig i
     hex_geoserver_roller, vilket förhindrar transitiv pg_hba.conf-matchning för AD-konton.
     Kräver pgcrypto-tillägget för lösenordsgenerering.';

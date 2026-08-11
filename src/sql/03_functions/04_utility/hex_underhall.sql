@@ -20,7 +20,7 @@ AS $BODY$
  *
  * Hanterar tio åtgärdstyper:
  *
- *   schemamigrering      Uppgraderar hex_role_credentials och hex_standardiserade_roller
+ *   schemamigrering      Uppgraderar hex_rolluppgifter och hex_standardiserade_roller
  *                        till aktuellt schema idempotent (ADD COLUMN IF NOT EXISTS).
  *                        Körs alltid först.
  *
@@ -68,8 +68,8 @@ AS $BODY$
  *                        på PG16+ för att ägarrollen ska kunna GRANT:a r_/w_ vidare
  *                        utan superuser). Idempotent.
  *
- *   hex_geoserver_roller Säkerställer att gs_*-roller (rolcanlogin=true i
- *   (rollmedlemskap)     hex_role_credentials) är i hex_geoserver_roller.
+ *   hex_geoserver_roller Säkerställer att gs_*-roller (kan_logga_in=true i
+ *   (rollmedlemskap)     hex_rolluppgifter) är i hex_geoserver_roller.
  *                        Tar bort NOLOGIN-roller som felaktigt hamnat där.
  *
  *   schemabehörigheter   Kör hex_tilldela_rollrattigheter för NOLOGIN-roller och
@@ -78,7 +78,7 @@ AS $BODY$
  *
  *   geoserver_notifiering Skickar pg_notify('geoserver_schema', schema) för
  *                        scheman vars prefix har publiceras_geoserver = true
- *                        och som har gs_r_-uppgifter i hex_role_credentials.
+ *                        och som har gs_r_-uppgifter i hex_rolluppgifter.
  *                        Lyssnaren är idempotent, så det är säkert att alltid
  *                        skicka notifieringen.
  *
@@ -100,11 +100,44 @@ BEGIN
     -- -------------------------------------------------------------------------
     -- 0. Schemamigrering
     --    Uppgraderar tabellscheman från äldre Hex-installationer idempotent.
-    --    ALTER TABLE ... ADD COLUMN IF NOT EXISTS och DROP NOT NULL är no-ops
-    --    om kolumnen redan har rätt definition.
+    --    Engångsnamnbyten körs först, sedan idempotenta kolumnuppgraderingar.
     -- -------------------------------------------------------------------------
-    EXECUTE 'ALTER TABLE public.hex_role_credentials ALTER COLUMN password DROP NOT NULL';
-    EXECUTE 'ALTER TABLE public.hex_role_credentials ADD COLUMN IF NOT EXISTS rolcanlogin boolean NOT NULL DEFAULT true';
+
+    -- Byt namn på hex_rolluppgifter → hex_rolluppgifter och dess kolumner
+    IF EXISTS (
+        SELECT 1 FROM pg_tables
+        WHERE schemaname = 'public' AND tablename = 'hex_rolluppgifter'
+    ) THEN
+        EXECUTE 'ALTER TABLE public.hex_rolluppgifter RENAME TO hex_rolluppgifter';
+        EXECUTE 'ALTER TABLE public.hex_rolluppgifter RENAME COLUMN rolname     TO rollnamn';
+        EXECUTE 'ALTER TABLE public.hex_rolluppgifter RENAME COLUMN password    TO losenord';
+        EXECUTE 'ALTER TABLE public.hex_rolluppgifter RENAME COLUMN rolcanlogin TO kan_logga_in';
+        EXECUTE 'ALTER TABLE public.hex_rolluppgifter RENAME COLUMN created_at  TO skapad_tidpunkt';
+        IF EXISTS (
+            SELECT 1 FROM pg_constraint
+            WHERE conname = 'hex_rolluppgifter_pkey'
+        ) THEN
+            EXECUTE 'ALTER TABLE public.hex_rolluppgifter RENAME CONSTRAINT hex_rolluppgifter_pkey TO hex_rolluppgifter_pkey';
+        END IF;
+        EXECUTE 'REVOKE ALL ON public.hex_rolluppgifter FROM PUBLIC';
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'hex_listener') THEN
+            EXECUTE 'GRANT SELECT ON public.hex_rolluppgifter TO hex_listener';
+        END IF;
+    END IF;
+
+    -- Byt namn på with_login → kan_logga_in i hex_standardiserade_roller
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name   = 'hex_standardiserade_roller'
+          AND column_name  = 'with_login'
+    ) THEN
+        EXECUTE 'ALTER TABLE public.hex_standardiserade_roller RENAME COLUMN with_login TO kan_logga_in';
+    END IF;
+
+    -- Idempotenta kolumnuppgraderingar (no-ops om kolumnerna redan är rätt)
+    EXECUTE 'ALTER TABLE public.hex_rolluppgifter ALTER COLUMN losenord DROP NOT NULL';
+    EXECUTE 'ALTER TABLE public.hex_rolluppgifter ADD COLUMN IF NOT EXISTS kan_logga_in boolean NOT NULL DEFAULT true';
     EXECUTE 'ALTER TABLE public.hex_standardiserade_roller ADD COLUMN IF NOT EXISTS arvs_fran text DEFAULT NULL';
 
     -- Bygg regex från hex_standardiserade_skyddsnivaer en gång.
@@ -508,20 +541,20 @@ BEGIN
     --    hex_standardiserade_roller. Hanterar både nyinstallationer och migrering
     --    från äldre konfigurationer (r_*/w_* som LOGIN → NOLOGIN).
     --
-    --    NOLOGIN-roller (with_login=false, t.ex. r_*, w_*):
-    --      a) Saknas helt              → CREATE NOLOGIN, behörigheter, hex_role_credentials
+    --    NOLOGIN-roller (kan_logga_in=false, t.ex. r_*, w_*):
+    --      a) Saknas helt              → CREATE NOLOGIN, behörigheter, hex_rolluppgifter
     --      b) Är LOGIN (gammal config) → ALTER NOLOGIN, REVOKE hex_geoserver_roller,
-    --                                    uppdatera hex_role_credentials
-    --      c) Finns som NOLOGIN        → säkerställ hex_role_credentials-post
+    --                                    uppdatera hex_rolluppgifter
+    --      c) Finns som NOLOGIN        → säkerställ hex_rolluppgifter-post
     --
-    --    LOGIN-roller med arvs_fran (with_login=true, t.ex. gs_r_*, gs_w_*):
+    --    LOGIN-roller med arvs_fran (kan_logga_in=true, t.ex. gs_r_*, gs_w_*):
     --      a) Saknas helt              → CREATE LOGIN, lösenord, hex_geoserver_roller,
-    --                                    GRANT arvs_fran, hex_role_credentials
-    --      b) LOGIN, saknar credentials → backfyll lösenord i hex_role_credentials
+    --                                    GRANT arvs_fran, hex_rolluppgifter
+    --      b) LOGIN, saknar credentials → backfyll lösenord i hex_rolluppgifter
     --      c) Allt korrekt             → 'redan korrekt'
     --
     --    Alltid säkerställs: behörigheter (NOLOGIN), arvs_fran-grant (LOGIN),
-    --    hex_role_credentials-post, hex_systemagare-grant (NOLOGIN).
+    --    hex_rolluppgifter-post, hex_systemagare-grant (NOLOGIN).
     -- -------------------------------------------------------------------------
     FOR r IN
         SELECT DISTINCT n.nspname AS s
@@ -530,7 +563,7 @@ BEGIN
         ORDER BY n.nspname
     LOOP
         FOR rol IN
-            SELECT rollnamn, rolltyp, schema_uttryck, with_login, arvs_fran
+            SELECT rollnamn, rolltyp, schema_uttryck, kan_logga_in, arvs_fran
             FROM   public.hex_standardiserade_roller
             ORDER BY gid
         LOOP
@@ -548,17 +581,17 @@ BEGIN
             tabell_namn   := rollnamn_full;
             trigger_namn  := 'rollstruktur';
 
-            IF NOT rol.with_login THEN
+            IF NOT rol.kan_logga_in THEN
                 -- -------------------------------------------------------
                 -- NOLOGIN behörighetsgrupp (r_*, w_*)
                 -- -------------------------------------------------------
                 IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = rollnamn_full) THEN
                     -- Fall a: saknas helt
                     EXECUTE format('CREATE ROLE %I WITH NOLOGIN', rollnamn_full);
-                    INSERT INTO public.hex_role_credentials (rolname, password, rolcanlogin)
+                    INSERT INTO public.hex_rolluppgifter (rollnamn, losenord, kan_logga_in)
                     VALUES (rollnamn_full, NULL, false)
-                    ON CONFLICT (rolname) DO UPDATE
-                        SET rolcanlogin = false, password = NULL, created_at = now();
+                    ON CONFLICT (rollnamn) DO UPDATE
+                        SET kan_logga_in = false, losenord = NULL, skapad_tidpunkt = now();
                     -- WITH ADMIN OPTION: ägarrollen (t.ex. gis_admin) behöver detta för att
                     -- själv kunna GRANT:a rollen vidare till AD-användare, utan superuser.
                     EXECUTE format('GRANT %I TO %I WITH ADMIN OPTION', rollnamn_full, hex_systemagare());
@@ -580,11 +613,11 @@ BEGIN
                     ) THEN
                         EXECUTE format('REVOKE hex_geoserver_roller FROM %I', rollnamn_full);
                     END IF;
-                    -- Uppdatera hex_role_credentials
-                    INSERT INTO public.hex_role_credentials (rolname, password, rolcanlogin)
+                    -- Uppdatera hex_rolluppgifter
+                    INSERT INTO public.hex_rolluppgifter (rollnamn, losenord, kan_logga_in)
                     VALUES (rollnamn_full, NULL, false)
-                    ON CONFLICT (rolname) DO UPDATE
-                        SET rolcanlogin = false, password = NULL, created_at = now();
+                    ON CONFLICT (rollnamn) DO UPDATE
+                        SET kan_logga_in = false, losenord = NULL, skapad_tidpunkt = now();
                     -- Säkerställ hex_systemagare-grant MED ADMIN OPTION. Kontrollerar
                     -- admin_option specifikt (inte bara medlemskap) så att en roll som
                     -- redan finns som vanlig medlem utan ADMIN OPTION (t.ex. beviljad av en
@@ -603,11 +636,11 @@ BEGIN
                     atgard := 'LOGIN→NOLOGIN migrerad';
 
                 ELSE
-                    -- Fall c: finns som NOLOGIN – säkerställ hex_role_credentials
-                    INSERT INTO public.hex_role_credentials (rolname, password, rolcanlogin)
+                    -- Fall c: finns som NOLOGIN – säkerställ hex_rolluppgifter
+                    INSERT INTO public.hex_rolluppgifter (rollnamn, losenord, kan_logga_in)
                     VALUES (rollnamn_full, NULL, false)
-                    ON CONFLICT (rolname) DO UPDATE
-                        SET rolcanlogin = false, password = NULL;
+                    ON CONFLICT (rollnamn) DO UPDATE
+                        SET kan_logga_in = false, losenord = NULL;
                     -- Säkerställ hex_systemagare-grant MED ADMIN OPTION (se motsvarande
                     -- kommentar i Fall b ovan för varför admin_option kontrolleras explicit).
                     IF NOT EXISTS (
@@ -649,24 +682,24 @@ BEGIN
                     ) THEN
                         EXECUTE format('GRANT %I TO %I', arvs_rollnamn, rollnamn_full);
                     END IF;
-                    INSERT INTO public.hex_role_credentials (rolname, password, rolcanlogin)
+                    INSERT INTO public.hex_rolluppgifter (rollnamn, losenord, kan_logga_in)
                     VALUES (rollnamn_full, generated_password, true)
-                    ON CONFLICT (rolname) DO UPDATE
-                        SET password = EXCLUDED.password, rolcanlogin = true, created_at = now();
+                    ON CONFLICT (rollnamn) DO UPDATE
+                        SET losenord = EXCLUDED.losenord, kan_logga_in = true, skapad_tidpunkt = now();
                     atgard := 'LOGIN-tjänstekonto skapad';
 
                 ELSIF NOT EXISTS (
-                    SELECT 1 FROM public.hex_role_credentials
-                    WHERE rolname = rollnamn_full AND rolcanlogin = true
+                    SELECT 1 FROM public.hex_rolluppgifter
+                    WHERE rollnamn = rollnamn_full AND kan_logga_in = true
                 ) THEN
-                    -- Fall b: finns som LOGIN men saknar credentials – backfyll
+                    -- Fall b: finns som LOGIN men saknar uppgifter – backfyll
                     generated_password := encode(gen_random_bytes(18), 'base64');
                     EXECUTE format('ALTER ROLE %I WITH PASSWORD %L',
                         rollnamn_full, generated_password);
-                    INSERT INTO public.hex_role_credentials (rolname, password, rolcanlogin)
+                    INSERT INTO public.hex_rolluppgifter (rollnamn, losenord, kan_logga_in)
                     VALUES (rollnamn_full, generated_password, true)
-                    ON CONFLICT (rolname) DO UPDATE
-                        SET password = EXCLUDED.password, rolcanlogin = true, created_at = now();
+                    ON CONFLICT (rollnamn) DO UPDATE
+                        SET losenord = EXCLUDED.losenord, kan_logga_in = true, skapad_tidpunkt = now();
                     -- Säkerställ hex_geoserver_roller
                     IF NOT EXISTS (
                         SELECT 1 FROM pg_auth_members am
@@ -727,17 +760,17 @@ BEGIN
 
     -- -------------------------------------------------------------------------
     -- 6. hex_geoserver_roller rollmedlemskap
-    --    Säkerställer att gs_*-roller (rolcanlogin=true) är i hex_geoserver_roller.
-    --    Tar också bort NOLOGIN-roller (rolcanlogin=false) som felaktigt hamnat
+    --    Säkerställer att gs_*-roller (kan_logga_in=true) är i hex_geoserver_roller.
+    --    Tar också bort NOLOGIN-roller (kan_logga_in=false) som felaktigt hamnat
     --    i hex_geoserver_roller – förekommer vid migrering från äldre config.
     -- -------------------------------------------------------------------------
 
     -- 6a. Lägg till saknade LOGIN-roller
     FOR r IN
-        SELECT rolname AS s
-        FROM   public.hex_role_credentials
-        WHERE  rolcanlogin = true
-        ORDER BY rolname
+        SELECT rollnamn AS s
+        FROM   public.hex_rolluppgifter
+        WHERE  kan_logga_in = true
+        ORDER BY rollnamn
     LOOP
         schema_namn  := '-';
         tabell_namn  := r.s;
@@ -762,17 +795,17 @@ BEGIN
 
     -- 6b. Ta bort NOLOGIN-roller som felaktigt finns i hex_geoserver_roller
     FOR r IN
-        SELECT hrc.rolname AS s
-        FROM   public.hex_role_credentials hrc
-        WHERE  hrc.rolcanlogin = false
+        SELECT hru.rollnamn AS s
+        FROM   public.hex_rolluppgifter hru
+        WHERE  hru.kan_logga_in = false
           AND  EXISTS (
                    SELECT 1 FROM pg_auth_members am
                    JOIN pg_roles grp ON grp.oid = am.roleid
                    JOIN pg_roles mem ON mem.oid = am.member
                    WHERE grp.rolname = 'hex_geoserver_roller'
-                     AND mem.rolname = hrc.rolname
+                     AND mem.rolname = hru.rollnamn
                )
-        ORDER BY hrc.rolname
+        ORDER BY hru.rollnamn
     LOOP
         EXECUTE format('REVOKE hex_geoserver_roller FROM %I', r.s);
         schema_namn  := '-';
@@ -795,7 +828,7 @@ BEGIN
         ORDER BY n.nspname
     LOOP
         FOR rol IN
-            SELECT rollnamn, rolltyp, schema_uttryck, with_login, arvs_fran
+            SELECT rollnamn, rolltyp, schema_uttryck, kan_logga_in, arvs_fran
             FROM   public.hex_standardiserade_roller
             ORDER BY gid
         LOOP
@@ -818,7 +851,7 @@ BEGIN
             tabell_namn  := rollnamn_full;
             trigger_namn := 'schemabehörigheter';
 
-            IF NOT rol.with_login THEN
+            IF NOT rol.kan_logga_in THEN
                 -- NOLOGIN-roll: direkta schemabehörigheter
                 PERFORM hex_tilldela_rollrattigheter(r.s, rollnamn_full, rol.rolltyp);
                 atgard := 'behörigheter uppdaterade';
@@ -853,7 +886,7 @@ BEGIN
     -- 8. geoserver_notifiering
     --    Skickar pg_notify('geoserver_schema', schema) för alla Hex-scheman
     --    vars prefix har publiceras_geoserver = true och som har gs_r_-uppgifter
-    --    i hex_role_credentials (dvs. lyssnaren kan sätta upp datastore).
+    --    i hex_rolluppgifter (dvs. lyssnaren kan sätta upp datastore).
     --
     --    Täcker tre scenarier:
     --      a) Schema skapades med äldre config – notifiering skickades aldrig
@@ -869,9 +902,9 @@ BEGIN
                ON n.nspname LIKE ssn.prefix || '_%'
               AND ssn.publiceras_geoserver = true
         WHERE  EXISTS (
-                   SELECT 1 FROM public.hex_role_credentials
-                   WHERE  rolname     = 'gs_r_' || n.nspname
-                     AND  rolcanlogin = true
+                   SELECT 1 FROM public.hex_rolluppgifter
+                   WHERE  rollnamn     = 'gs_r_' || n.nspname
+                     AND  kan_logga_in = true
                )
         ORDER BY n.nspname
     LOOP
@@ -895,7 +928,7 @@ DROP FUNCTION IF EXISTS public.reparera_rad_triggers();
 
 COMMENT ON FUNCTION public.hex_underhall()
     IS 'Reparerar och verifierar hela Hex-strukturen för alla scheman.
-Uppgraderar tabellscheman (hex_role_credentials, hex_standardiserade_roller) idempotent.
+Uppgraderar tabellscheman (hex_rolluppgifter, hex_standardiserade_roller) idempotent.
 Överför ägarskap av scheman, tabeller, sekvenser, funktioner och vyer till hex_systemagare()
   – fångar objekt skapade av superusers innan ägarskapsöverföringen lades till i
   hex_hantera_std_roller/hex_hantera_ny_tabell.

@@ -131,7 +131,7 @@ class HexGeoServerService(win32serviceutil.ServiceFramework):
             config = load_config()
 
             log.info("GeoServer:  %s", config["gs_url"])
-            log.info("Anslutning: direkt PostGIS (autentiseringsuppgifter från hex_role_credentials)")
+            log.info("Anslutning: direkt PostGIS (autentiseringsuppgifter från hex_rolluppgifter)")
             log.info("Databaser:  %d st", len(config["databases"]))
             for db in config["databases"]:
                 log.info("  [%s] %s@%s:%d/%s",

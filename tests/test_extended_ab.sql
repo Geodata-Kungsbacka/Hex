@@ -41,7 +41,7 @@ DROP SCHEMA IF EXISTS sk0_ext_ab_temp CASCADE;
 DELETE FROM hex_standardiserade_roller WHERE rollnamn IN ('r_sk0_global', 'r_sk1_global');
 DROP ROLE IF EXISTS r_sk0_global;
 DROP ROLE IF EXISTS r_sk1_global;
-INSERT INTO hex_standardiserade_roller (rollnamn, rolltyp, schema_uttryck, ta_bort_med_schema, with_login, beskrivning) VALUES
+INSERT INTO hex_standardiserade_roller (rollnamn, rolltyp, schema_uttryck, ta_bort_med_schema, kan_logga_in, beskrivning) VALUES
     ('r_sk0_global', 'read', 'LIKE ''sk0_%''', false, false, 'Global läsroll för sk0'),
     ('r_sk1_global', 'read', 'LIKE ''sk1_%''', false, false, 'Global läsroll för sk1');
 
@@ -251,7 +251,7 @@ BEGIN
     END IF;
 END $$;
 
--- A4d: gs_r_sk2_ext_test ska vara en LOGIN-roll (with_login=true på gs_r_{schema}-raden)
+-- A4d: gs_r_sk2_ext_test ska vara en LOGIN-roll (kan_logga_in=true på gs_r_{schema}-raden)
 DO $$
 BEGIN
     IF EXISTS (

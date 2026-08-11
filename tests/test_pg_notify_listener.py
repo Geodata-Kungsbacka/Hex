@@ -11,7 +11,7 @@ registrerar varje anrop. Testet använder en riktig PostgreSQL-anslutning
 så att den faktiska LISTEN/NOTIFY-mekaniken testas.
 
 Lyssnaren använder direkta PostgreSQL-anslutningar (inte JNDI): autentiseringsuppgifter
-för läsrollen hämtas från tabellen hex_role_credentials.
+för läsrollen hämtas från tabellen hex_rolluppgifter.
 
 Användning:
     python3 tests/test_pg_notify_listener.py
@@ -63,7 +63,7 @@ VALID_CREATE_SCHEMA = "sk0_kba_testschema"
 VALID_DROP_SCHEMA   = "sk1_ext_oldschema"
 INVALID_SCHEMA      = "public_not_a_valid_name"
 
-# Testuppgifter för läsrollen som lagras i hex_role_credentials
+# Testuppgifter för läsrollen som lagras i hex_rolluppgifter
 TEST_ROLE_NAME = f"r_{VALID_CREATE_SCHEMA}"
 TEST_ROLE_PASSWORD = "test_password_123"
 
@@ -195,7 +195,7 @@ class TestHandlerLogicWithMockGeoServer(unittest.TestCase):
     Enhetstester för handle_schema_notification och
     handle_schema_removal_notification med en mockad GeoServerClient.
     _fetch_role_credentials mockas för att undvika beroende av databasens
-    hex_role_credentials-tabell.
+    hex_rolluppgifter-tabell.
     """
 
     def _make_gs_mock(self, workspace_ok=True, datastore_ok=True, role_ok=True, acl_ok=True):
@@ -316,7 +316,7 @@ class TestHandlerLogicWithMockGeoServer(unittest.TestCase):
         gs.create_workspace_acl.assert_called_once_with(VALID_CREATE_SCHEMA, anonymous_read=True)
 
     def test_create_handler_missing_credentials(self):
-        """Schema utan autentiseringsuppgifter i hex_role_credentials hoppas över."""
+        """Schema utan autentiseringsuppgifter i hex_rolluppgifter hoppas över."""
         gs = self._make_gs_mock()
         mock_conn = self._make_pg_conn_mock()
 
@@ -471,7 +471,7 @@ class TestListenLoopIntegration(unittest.TestCase):
     från huvudtråden och verifiera att mock-GeoServer anropades korrekt.
 
     _fetch_role_credentials mockas för att undvika beroende av databasens
-    hex_role_credentials-tabell under integrationstester.
+    hex_rolluppgifter-tabell under integrationstester.
     """
 
     TIMEOUT = 5  # sekunder att vänta på att tråden plockar upp notifieringen
@@ -1230,7 +1230,7 @@ class TestReconcileGeoServerSchemas(unittest.TestCase):
 
     def test_missing_credentials_skips_schema_without_crash(self):
         """
-        Schema utan rad i hex_role_credentials (t.ex. gamla JNDI-scheman) ska
+        Schema utan rad i hex_rolluppgifter (t.ex. gamla JNDI-scheman) ska
         hoppas över tyst – inte krascha startavstämningen.
         """
         cur = self._make_cur_mock(["sk0_kba_testschema"])

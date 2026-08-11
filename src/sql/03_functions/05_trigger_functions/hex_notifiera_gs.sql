@@ -24,7 +24,7 @@ AS $BODY$
  * Python-lyssnaren tar emot notifieringen och skapar:
  *   - Workspace i GeoServer med samma namn som schemat
  *   - Direkt PostGIS-datastore i workspace med autentiseringsuppgifter
- *     från tabellen hex_role_credentials (läsrollen r_{schema})
+ *     från tabellen hex_rolluppgifter (läsrollen r_{schema})
  *
  * TRIGGER: Kors automatiskt vid CREATE SCHEMA. PostgreSQL kor flera event
  * triggers pa samma event i alfabetisk ordning efter triggernamn, sa
@@ -98,4 +98,4 @@ COMMENT ON FUNCTION public.hex_notifiera_gs()
 Publicerar scheman vars skyddsnivå har publiceras_geoserver = true i hex_standardiserade_skyddsnivaer
 (standardkonfiguration: sk0 och sk1). Notifieringen används av en extern Python-process
 för att skapa workspace och direkt PostGIS-datastore i GeoServer via REST API.
-Datastore-autentiseringen hämtas från hex_role_credentials (läsrollen r_{schema}).';
+Datastore-autentiseringen hämtas från hex_rolluppgifter (läsrollen r_{schema}).';
