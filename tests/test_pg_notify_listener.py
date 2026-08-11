@@ -269,7 +269,7 @@ class TestHandlerLogicWithMockGeoServer(unittest.TestCase):
 
     def test_create_handler_accepts_new_prefix_after_runtime_config_change(self):
         """
-        Regression: skx_kba_test publiceras inte om SCHEMA_PATTERN inte
+        Regression: skx_kba_test publiceras inte om det trådlokala mönstret inte
         uppdaterats sedan tjänsten startade. handle_schema_notification ska
         ladda om mönstret från DB via pg_conn.cursor() innan validering så
         att ett nytt prefix (skx) accepteras utan omstart.
@@ -289,7 +289,7 @@ class TestHandlerLogicWithMockGeoServer(unittest.TestCase):
         mock_conn = MagicMock()
         mock_conn.cursor.return_value.__enter__.return_value = cur_mock
 
-        original_pattern = gl.SCHEMA_PATTERN
+        original_thread_pattern = gl._thread_local.__dict__.pop("schema_pattern", None)
         try:
             with patch.object(gl, "_fetch_role_credentials",
                               return_value=("r_skx_kba_test", "pw")):
@@ -297,7 +297,10 @@ class TestHandlerLogicWithMockGeoServer(unittest.TestCase):
                     "skx_kba_test", DB_CONFIG, mock_conn, gs
                 )
         finally:
-            gl.SCHEMA_PATTERN = original_pattern
+            if original_thread_pattern is not None:
+                gl._thread_local.schema_pattern = original_thread_pattern
+            else:
+                gl._thread_local.__dict__.pop("schema_pattern", None)
 
         self.assertTrue(result, "skx_kba_test ska accepteras när mönstret laddats om från DB")
         gs.create_workspace.assert_called_once_with("skx_kba_test")
@@ -421,10 +424,9 @@ class TestHandlerLogicWithMockGeoServer(unittest.TestCase):
 
     def test_drop_handler_accepts_new_prefix_after_runtime_config_change(self):
         """
-        Regression: DROP-notifiering för skx_kba_test avvisas om SCHEMA_PATTERN
-        är inaktuellt (t.ex. överskrivit av en annan DB-tråd utan skx).
-        handle_schema_removal_notification ska ladda om mönstret via pg_conn
-        innan validering.
+        Regression: DROP-notifiering för skx_kba_test avvisas om det trådlokala
+        mönstret är inaktuellt. handle_schema_removal_notification ska ladda om
+        mönstret via pg_conn innan validering.
         """
         gs = self._make_gs_mock()
 
@@ -441,16 +443,20 @@ class TestHandlerLogicWithMockGeoServer(unittest.TestCase):
         # so __enter__.return_value must be the configured cursor mock.
         mock_conn.cursor.return_value.__enter__.return_value = cur_mock
 
-        original_pattern = gl.SCHEMA_PATTERN
+        # Sätt ett inaktuellt trådlokalt mönster som saknar skx (simulerar ett
+        # mönster laddat från en annan databas innan skx lades till)
+        import re as _re
+        original_thread_pattern = gl._thread_local.__dict__.pop("schema_pattern", None)
+        gl._thread_local.schema_pattern = _re.compile(r"^(sk0|sk1)_(ext|kba|sys)_.+$")
         try:
-            # Sätt ett inaktuellt mönster som saknar skx (simulerar överskrivning
-            # från en annan DB-tråd)
-            gl.SCHEMA_PATTERN = __import__("re").compile(r"^(sk0|sk1)_(ext|kba|sys)_.+$")
             result = gl.handle_schema_removal_notification(
                 "skx_kba_test", gs, pg_conn=mock_conn
             )
         finally:
-            gl.SCHEMA_PATTERN = original_pattern
+            if original_thread_pattern is not None:
+                gl._thread_local.schema_pattern = original_thread_pattern
+            else:
+                gl._thread_local.__dict__.pop("schema_pattern", None)
 
         self.assertTrue(result, "skx_kba_test ska accepteras när mönstret laddats om från DB")
         gs.delete_workspace.assert_called_once_with("skx_kba_test")
@@ -1366,8 +1372,9 @@ class TestReconcileGeoServerSchemas(unittest.TestCase):
 
 class TestLoadSchemaPattern(unittest.TestCase):
     """
-    Enhetstester för _load_schema_pattern – verifierar att SCHEMA_PATTERN
-    byggs korrekt från konfigurationstabellerna och att fallback fungerar.
+    Enhetstester för _load_schema_pattern – verifierar att det trådlokala
+    schenanamnsmönstret byggs korrekt från konfigurationstabellerna och att
+    fallback till SCHEMA_PATTERN fungerar när tabellerna är tomma eller vid fel.
     """
 
     def _make_cur_mock(self, skyddsnivaer_prefixes, datakategori_prefixes):
@@ -1380,53 +1387,55 @@ class TestLoadSchemaPattern(unittest.TestCase):
         return cur
 
     def setUp(self):
-        """Spara originalvärdet av SCHEMA_PATTERN och återställ efter varje test."""
-        self._original_pattern = gl.SCHEMA_PATTERN
+        """Rensa det trådlokala mönstret före varje test för isolering."""
+        gl._thread_local.__dict__.pop("schema_pattern", None)
 
     def tearDown(self):
-        gl.SCHEMA_PATTERN = self._original_pattern
+        """Återställ trådlokalt läge efter varje test."""
+        gl._thread_local.__dict__.pop("schema_pattern", None)
 
     def test_pattern_built_from_config(self):
         """Mönstret byggs från skyddsnivaer + datakategorier ur DB."""
         cur = self._make_cur_mock(["sk0", "sk1"], ["ext", "kba", "sys"])
         gl._load_schema_pattern(cur)
-        self.assertRegex("sk0_kba_test",  gl.SCHEMA_PATTERN)
-        self.assertRegex("sk1_ext_sjv",   gl.SCHEMA_PATTERN)
-        self.assertNotRegex("sk2_kba_hemlig", gl.SCHEMA_PATTERN)
+        pattern = gl._get_schema_pattern()
+        self.assertRegex("sk0_kba_test",  pattern)
+        self.assertRegex("sk1_ext_sjv",   pattern)
+        self.assertNotRegex("sk2_kba_hemlig", pattern)
 
     def test_new_security_level_included(self):
         """Om sk2 läggs till med publiceras_geoserver = true inkluderas det i mönstret."""
         cur = self._make_cur_mock(["sk0", "sk1", "sk2"], ["ext", "kba", "sys"])
         gl._load_schema_pattern(cur)
-        self.assertRegex("sk2_kba_hemlig", gl.SCHEMA_PATTERN)
+        self.assertRegex("sk2_kba_hemlig", gl._get_schema_pattern())
 
     def test_new_datakategori_included(self):
         """En ny datakategori inkluderas direkt efter att mönstret laddats."""
         cur = self._make_cur_mock(["sk0", "sk1"], ["ext", "kba", "sys", "int"])
         gl._load_schema_pattern(cur)
-        self.assertRegex("sk0_int_test", gl.SCHEMA_PATTERN)
+        self.assertRegex("sk0_int_test", gl._get_schema_pattern())
 
     def test_empty_skyddsnivaer_keeps_existing_pattern(self):
         """Tomma skyddsnivaer → befintligt mönster behålls, ingen krasch."""
         cur = self._make_cur_mock([], ["kba"])
-        original = gl.SCHEMA_PATTERN
+        before = gl._get_schema_pattern()
         gl._load_schema_pattern(cur)
-        self.assertIs(gl.SCHEMA_PATTERN, original)
+        self.assertIs(gl._get_schema_pattern(), before)
 
     def test_empty_kategorier_keeps_existing_pattern(self):
         """Tomma datakategorier → befintligt mönster behålls."""
         cur = self._make_cur_mock(["sk0"], [])
-        original = gl.SCHEMA_PATTERN
+        before = gl._get_schema_pattern()
         gl._load_schema_pattern(cur)
-        self.assertIs(gl.SCHEMA_PATTERN, original)
+        self.assertIs(gl._get_schema_pattern(), before)
 
     def test_db_error_keeps_existing_pattern(self):
         """DB-fel → befintligt mönster behålls, ingen krasch."""
         cur = MagicMock()
         cur.execute.side_effect = Exception("connection lost")
-        original = gl.SCHEMA_PATTERN
+        before = gl._get_schema_pattern()
         gl._load_schema_pattern(cur)
-        self.assertIs(gl.SCHEMA_PATTERN, original)
+        self.assertIs(gl._get_schema_pattern(), before)
 
 
 class TestPeriodicReconcileLoop(unittest.TestCase):

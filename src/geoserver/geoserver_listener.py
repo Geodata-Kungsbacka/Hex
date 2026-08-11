@@ -947,25 +947,33 @@ class GeoServerClient:
 # =============================================================================
 
 # Regex som matchar giltiga schemanamn för GeoServer-publicering.
-# Laddas dynamiskt från hex_standardiserade_skyddsnivaer (publiceras_geoserver = true)
-# och hex_standardiserade_datakategorier vid uppstart via _load_schema_pattern().
-# Standardvärdet nedan används som fallback om DB-laddningen misslyckas.
+# Används som fallback om DB-laddningen misslyckas. Varje lyssnartråd håller
+# sitt eget mönster i _thread_local.schema_pattern, laddat från sin egen databas,
+# så att skilda publiceras_geoserver-konfigurationer i olika databaser inte
+# skriver över varandra.
 SCHEMA_PATTERN = re.compile(r"^sk[01]_(ext|kba|sys)_.+$")
-_schema_pattern_lock = threading.Lock()
+_thread_local = threading.local()
+
+
+def _get_schema_pattern():
+    """Returnerar det aktuella trådlokala mönstret, eller det globala fallback-mönstret."""
+    return getattr(_thread_local, "schema_pattern", SCHEMA_PATTERN)
 
 
 def _load_schema_pattern(cur):
-    """Laddar schemanamnsmönstret från konfigurationstabellerna och uppdaterar SCHEMA_PATTERN.
+    """Laddar schemanamnsmönstret från konfigurationstabellerna och sparar det trådlokalt.
 
     Bygger ett regex baserat på:
       - hex_standardiserade_skyddsnivaer WHERE publiceras_geoserver = true  → tillåtna prefix
       - hex_standardiserade_datakategorier                                  → tillåtna kategorier
 
+    Mönstret sparas i _thread_local.schema_pattern så att varje lyssnartråd
+    använder sin egen databas konfiguration utan att påverka övriga trådar.
     Om tabellerna är tomma eller ett fel uppstår behålls det befintliga mönstret.
     Anropas i listen_loop efter lyckad DB-anslutning så att mönstret hålls i synk
     med konfigurationen utan omstart av tjänsten.
     """
-    global SCHEMA_PATTERN
+    current = _get_schema_pattern()
     try:
         cur.execute(
             "SELECT prefix FROM public.hex_standardiserade_skyddsnivaer"
@@ -980,9 +988,9 @@ def _load_schema_pattern(cur):
 
         if not skyddsnivaer or not kategorier:
             log.warning(
-                "Schemanamnsmönster: konfigurationstabellerna är tomma – "
+                "Schenanamnsmönster: konfigurationstabellerna är tomma – "
                 "behåller nuvarande mönster '%s'",
-                SCHEMA_PATTERN.pattern,
+                current.pattern,
             )
             return
 
@@ -990,15 +998,14 @@ def _load_schema_pattern(cur):
         kat_alts    = "|".join(re.escape(k) for k in kategorier)
         pattern = re.compile(rf"^({prefix_alts})_({kat_alts})_.+$")
 
-        with _schema_pattern_lock:
-            SCHEMA_PATTERN = pattern
-        log.info("Schemanamnsmönster uppdaterat från DB: %s", pattern.pattern)
+        _thread_local.schema_pattern = pattern
+        log.info("Schenanamnsmönster uppdaterat från DB: %s", pattern.pattern)
 
     except Exception as e:
         log.warning(
-            "Kunde inte ladda schemanamnsmönster från DB: %s – "
+            "Kunde inte ladda schenanamnsmönster från DB: %s – "
             "behåller nuvarande mönster '%s'",
-            e, SCHEMA_PATTERN.pattern,
+            e, current.pattern,
         )
 
 # pg_notify-kanalnamn. Måste överensstämma med SQL-funktionerna
@@ -1053,12 +1060,13 @@ def _validate_schema_name(schema_name, tag):
     Returns:
         True om schemanamnet är giltigt, annars False (efter loggning).
     """
-    if not SCHEMA_PATTERN.match(schema_name):
+    pattern = _get_schema_pattern()
+    if not pattern.match(schema_name):
         log.warning(
             "%sOgiltigt schemanamn '%s' - matchar inte mönster '%s'. Ignorerar.",
             tag,
             schema_name,
-            SCHEMA_PATTERN.pattern,
+            pattern.pattern,
         )
         return False
     return True
@@ -1250,6 +1258,42 @@ def _fetch_publishable_schemas(db_config):
         return set()
 
 
+def _fetch_skyddsnivaer_config(db_config):
+    """Hämtar hex_standardiserade_skyddsnivaer-konfigurationen från en databas.
+
+    Returnerar en frozenset av (prefix, publiceras_geoserver, anonym_las)-tupler,
+    eller None vid anslutningsfel.  Används av run_all_listeners för att varna
+    om databaserna har olika konfigurationer.
+    """
+    try:
+        conn = psycopg2.connect(
+            host=db_config["host"],
+            port=db_config["port"],
+            dbname=db_config["dbname"],
+            user=db_config["user"],
+            password=db_config["password"],
+            connect_timeout=10,
+            client_encoding="utf8",
+        )
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT prefix, publiceras_geoserver, anonym_las"
+                    " FROM public.hex_standardiserade_skyddsnivaer"
+                    " ORDER BY prefix"
+                )
+                return frozenset(cur.fetchall())
+        finally:
+            conn.close()
+    except Exception as e:
+        log.warning(
+            "Kunde inte hämta skyddsnivaer-konfiguration från '%s': %s",
+            db_config["dbname"], e,
+        )
+        return None
+
+
+
 def _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label="", all_pg_schemas=None):
     """Avstämning: skapar saknade GeoServer-workspaces och datastores för befintliga PG-scheman.
 
@@ -1364,14 +1408,15 @@ def _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label="", all_pg_
         #    Databaser utan egna scheman hoppas över helt i multi-DB-läge.
         known_schemas = all_pg_schemas if all_pg_schemas is not None else pg_schemas
         own_prefixes = {name.split("_")[0] for name in pg_schemas}
+        _pattern = _get_schema_pattern()
         if own_prefixes:
             extra_in_gs = {
                 ws for ws in gs_workspaces - known_schemas
-                if SCHEMA_PATTERN.match(ws) and ws.split("_")[0] in own_prefixes
+                if _pattern.match(ws) and ws.split("_")[0] in own_prefixes
             }
         elif all_pg_schemas is None:
             # Enskild databas utan egna scheman: rapportera alla matchande föräldralösa
-            extra_in_gs = {ws for ws in gs_workspaces - known_schemas if SCHEMA_PATTERN.match(ws)}
+            extra_in_gs = {ws for ws in gs_workspaces - known_schemas if _pattern.match(ws)}
         else:
             # Multi-DB utan egna scheman: denna databas äger inga prefix – hoppa över
             extra_in_gs = set()
@@ -1655,6 +1700,29 @@ def run_all_listeners(config, dry_run=False, stop_event=None):
     all_pg_schemas = set()
     for db_config in databases:
         all_pg_schemas |= _fetch_publishable_schemas(db_config)
+
+    # Varna om databaserna har olika hex_standardiserade_skyddsnivaer-konfigurationer.
+    # Varje tråd använder sin egen databas mönster (via _thread_local), men skilda
+    # konfigurationer kan vara ett tecken på oavsiktlig databaskonfiguration.
+    if len(databases) > 1:
+        skyddsnivaer_per_db = {
+            db["dbname"]: _fetch_skyddsnivaer_config(db) for db in databases
+        }
+        loaded = {db: cfg for db, cfg in skyddsnivaer_per_db.items() if cfg is not None}
+        unique_configs = set(loaded.values())
+        if len(unique_configs) > 1:
+            log.warning(
+                "hex_standardiserade_skyddsnivaer skiljer sig åt mellan databaserna! "
+                "Varje lyssnartråd använder sin egen databas konfiguration. "
+                "Kontrollera att publiceras_geoserver och anonym_las är konsekvent "
+                "satta i alla databaser om det inte är avsiktligt."
+            )
+            for db_name, cfg in loaded.items():
+                log.warning(
+                    "  %s: %s",
+                    db_name,
+                    sorted((prefix, pub, anon) for prefix, pub, anon in cfg),
+                )
 
     if len(databases) == 1:
         # En databas - kör direkt utan extra tråd
