@@ -1,5 +1,5 @@
 -- =============================================================================
--- TEST SUITE: underhall_hex()
+-- TEST SUITE: hex_underhall()
 -- Covers trigger repair paths (sections 1–4) and ownership repair (sections 8–9).
 -- Run as: sudo -u postgres psql -d hex_test -f tests/test_underhall_hex.sql
 -- =============================================================================
@@ -33,7 +33,7 @@ CREATE SCHEMA IF NOT EXISTS sk0_ext_underhall;
 CREATE SCHEMA IF NOT EXISTS sk0_kba_underhall;
 
 -- =============================================================================
--- GROUP 1: TRIGGER REPAIR  (underhall_hex sections 1–4)
+-- GROUP 1: TRIGGER REPAIR  (hex_underhall sections 1–4)
 -- =============================================================================
 
 -- TEST 01: hex_tvinga_gid – trigger recreated after manual drop
@@ -59,7 +59,7 @@ BEGIN
         RETURN;
     END IF;
 
-    PERFORM public.underhall_hex();
+    PERFORM public.hex_underhall();
 
     SELECT EXISTS (
         SELECT 1 FROM pg_trigger t
@@ -129,7 +129,7 @@ BEGIN
         RETURN;
     END IF;
 
-    PERFORM public.underhall_hex();
+    PERFORM public.hex_underhall();
 
     SELECT EXISTS (
         SELECT 1 FROM pg_trigger t
@@ -184,7 +184,7 @@ BEGIN
         RETURN;
     END IF;
 
-    PERFORM public.underhall_hex();
+    PERFORM public.hex_underhall();
 
     SELECT EXISTS (
         SELECT 1 FROM pg_trigger t
@@ -214,7 +214,7 @@ BEGIN
     CREATE TABLE sk0_ext_underhall.qa_repair_test (namn text);
 
     -- Create the trigger function that would normally be created by skapa_historik_qa().
-    -- The function name encodes the parent table; underhall_hex() derives the table
+    -- The function name encodes the parent table; hex_underhall() derives the table
     -- name via: substring(proname FROM '^trg_fn_(.+)_qa$')
     CREATE OR REPLACE FUNCTION sk0_ext_underhall.trg_fn_qa_repair_test_qa()
         RETURNS trigger LANGUAGE plpgsql AS $fn$
@@ -238,7 +238,7 @@ BEGIN
         RETURN;
     END IF;
 
-    PERFORM public.underhall_hex();
+    PERFORM public.hex_underhall();
 
     SELECT EXISTS (
         SELECT 1 FROM pg_trigger t
@@ -260,7 +260,7 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 
 -- =============================================================================
--- GROUP 2: OWNERSHIP REPAIR  (underhall_hex sections 8–9)
+-- GROUP 2: OWNERSHIP REPAIR  (hex_underhall sections 8–9)
 -- =============================================================================
 
 -- TEST 06: ägarskap_schema – schema owned by wrong role corrected
@@ -281,18 +281,18 @@ BEGIN
         RETURN;
     END IF;
 
-    PERFORM public.underhall_hex();
+    PERFORM public.hex_underhall();
 
     SELECT ro.rolname INTO current_owner
     FROM   pg_namespace n
     JOIN   pg_roles     ro ON ro.oid = n.nspowner
     WHERE  n.nspname = 'sk0_ext_underhall';
 
-    IF current_owner = public.system_owner() THEN
+    IF current_owner = public.hex_systemagare() THEN
         PERFORM _pass(06, 'ägarskap_schema: schema ownership corrected to system_owner()');
     ELSE
         PERFORM _fail(06, 'ägarskap_schema: schema ownership corrected to system_owner()',
-            format('owner is %s, expected %s', current_owner, public.system_owner()));
+            format('owner is %s, expected %s', current_owner, public.hex_systemagare()));
     END IF;
 EXCEPTION WHEN OTHERS THEN
     PERFORM _fail(06, 'ägarskap_schema ownership repair', SQLERRM);
@@ -306,7 +306,7 @@ BEGIN
 
     ALTER TABLE sk0_ext_underhall.owner_repair_test OWNER TO postgres;
 
-    PERFORM public.underhall_hex();
+    PERFORM public.hex_underhall();
 
     SELECT ro.rolname INTO current_owner
     FROM   pg_class     c
@@ -316,11 +316,11 @@ BEGIN
       AND  c.relname = 'owner_repair_test'
       AND  c.relkind = 'r';
 
-    IF current_owner = public.system_owner() THEN
+    IF current_owner = public.hex_systemagare() THEN
         PERFORM _pass(07, 'ägarskap_objekt: table ownership corrected to system_owner()');
     ELSE
         PERFORM _fail(07, 'ägarskap_objekt: table ownership corrected to system_owner()',
-            format('owner is %s, expected %s', current_owner, public.system_owner()));
+            format('owner is %s, expected %s', current_owner, public.hex_systemagare()));
     END IF;
 EXCEPTION WHEN OTHERS THEN
     PERFORM _fail(07, 'ägarskap_objekt table ownership repair', SQLERRM);
@@ -329,7 +329,7 @@ END $$;
 -- TEST 08: ägarskap_objekt – identity sequence owner follows table owner after repair
 -- Identity sequences (GENERATED ALWAYS AS IDENTITY) cannot have their owner changed
 -- independently; PostgreSQL cascades the owner automatically when the table owner
--- changes.  underhall_hex() fixes the table owner (relkind 'r') and skips the
+-- changes.  hex_underhall() fixes the table owner (relkind 'r') and skips the
 -- identity sequence directly — the cascade does the work.
 DO $$ DECLARE
     seq_name      text;
@@ -356,7 +356,7 @@ BEGIN
     ALTER TABLE sk0_ext_underhall.owner_repair_test OWNER TO postgres;
 
     -- Repair: fixes table owner; identity sequence cascades
-    PERFORM public.underhall_hex();
+    PERFORM public.hex_underhall();
 
     SELECT ro.rolname INTO current_owner
     FROM   pg_class     c
@@ -366,11 +366,11 @@ BEGIN
       AND  c.relname = seq_name
       AND  c.relkind = 'S';
 
-    IF current_owner = public.system_owner() THEN
+    IF current_owner = public.hex_systemagare() THEN
         PERFORM _pass(08, 'ägarskap_objekt: identity sequence follows table owner repair');
     ELSE
         PERFORM _fail(08, 'ägarskap_objekt: identity sequence follows table owner repair',
-            format('owner is %s, expected %s', current_owner, public.system_owner()));
+            format('owner is %s, expected %s', current_owner, public.hex_systemagare()));
     END IF;
 EXCEPTION WHEN OTHERS THEN
     PERFORM _fail(08, 'ägarskap_objekt sequence ownership repair', SQLERRM);
@@ -385,7 +385,7 @@ BEGIN
 
     ALTER VIEW sk0_ext_underhall.v_owner_repair_test OWNER TO postgres;
 
-    PERFORM public.underhall_hex();
+    PERFORM public.hex_underhall();
 
     SELECT ro.rolname INTO current_owner
     FROM   pg_class     c
@@ -395,11 +395,11 @@ BEGIN
       AND  c.relname = 'v_owner_repair_test'
       AND  c.relkind = 'v';
 
-    IF current_owner = public.system_owner() THEN
+    IF current_owner = public.hex_systemagare() THEN
         PERFORM _pass(09, 'ägarskap_objekt: view ownership corrected to system_owner()');
     ELSE
         PERFORM _fail(09, 'ägarskap_objekt: view ownership corrected to system_owner()',
-            format('owner is %s, expected %s', current_owner, public.system_owner()));
+            format('owner is %s, expected %s', current_owner, public.hex_systemagare()));
     END IF;
 EXCEPTION WHEN OTHERS THEN
     PERFORM _fail(09, 'ägarskap_objekt view ownership repair', SQLERRM);
@@ -414,7 +414,7 @@ BEGIN
 
     ALTER FUNCTION sk0_ext_underhall.owner_repair_fn() OWNER TO postgres;
 
-    PERFORM public.underhall_hex();
+    PERFORM public.hex_underhall();
 
     SELECT ro.rolname INTO current_owner
     FROM   pg_proc      p
@@ -423,17 +423,17 @@ BEGIN
     WHERE  n.nspname = 'sk0_ext_underhall'
       AND  p.proname = 'owner_repair_fn';
 
-    IF current_owner = public.system_owner() THEN
+    IF current_owner = public.hex_systemagare() THEN
         PERFORM _pass(10, 'ägarskap_objekt: function ownership corrected to system_owner()');
     ELSE
         PERFORM _fail(10, 'ägarskap_objekt: function ownership corrected to system_owner()',
-            format('owner is %s, expected %s', current_owner, public.system_owner()));
+            format('owner is %s, expected %s', current_owner, public.hex_systemagare()));
     END IF;
 EXCEPTION WHEN OTHERS THEN
     PERFORM _fail(10, 'ägarskap_objekt function ownership repair', SQLERRM);
 END $$;
 
--- TEST 11: underhall_hex() return value – repair rows emitted for ownership corrections
+-- TEST 11: hex_underhall() return value – repair rows emitted for ownership corrections
 DO $$ DECLARE
     repair_count int;
 BEGIN
@@ -441,10 +441,15 @@ BEGIN
     ALTER SCHEMA sk0_ext_underhall OWNER TO postgres;
     ALTER TABLE  sk0_ext_underhall.owner_repair_test OWNER TO postgres;
 
+    -- Sektion 0b kör först och korrigerar ägarskap (trigger_namn='ägarskapsöverföring'),
+    -- sektion 8/9 (trigger_namn='ägarskap_schema'/'ägarskap_objekt') hittar sedan ingenting.
+    -- Testa båda möjliga returformaten.
     SELECT count(*) INTO repair_count
-    FROM public.underhall_hex()
-    WHERE trigger_namn IN ('ägarskap_schema', 'ägarskap_objekt')
-      AND atgard LIKE 'ägare korrigerad:%';
+    FROM public.hex_underhall()
+    WHERE (trigger_namn = 'ägarskapsöverföring'
+           AND atgard IN ('schema: ägare uppdaterad', 'tabell: ägare uppdaterad'))
+       OR (trigger_namn IN ('ägarskap_schema', 'ägarskap_objekt')
+           AND atgard LIKE 'ägare korrigerad:%');
 
     IF repair_count >= 2 THEN
         PERFORM _pass(11, 'underhall_hex: repair rows emitted for ownership corrections',
@@ -457,15 +462,18 @@ EXCEPTION WHEN OTHERS THEN
     PERFORM _fail(11, 'underhall_hex ownership repair rows', SQLERRM);
 END $$;
 
--- TEST 12: underhall_hex() is idempotent – no ownership repair rows when state is correct
+-- TEST 12: hex_underhall() is idempotent – no ownership repair rows when state is correct
 DO $$ DECLARE
     repair_count int;
 BEGIN
-    -- Previous test left everything in the correct state; a second call should produce zero
+    -- Previous test left everything in the correct state; a second call should produce zero.
+    -- Kontrollerar båda möjliga returformaten för ägarskapskorrigering.
     SELECT count(*) INTO repair_count
-    FROM public.underhall_hex()
-    WHERE trigger_namn IN ('ägarskap_schema', 'ägarskap_objekt')
-      AND atgard LIKE 'ägare korrigerad:%';
+    FROM public.hex_underhall()
+    WHERE (trigger_namn = 'ägarskapsöverföring'
+           AND atgard IN ('schema: ägare uppdaterad', 'tabell: ägare uppdaterad'))
+       OR (trigger_namn IN ('ägarskap_schema', 'ägarskap_objekt')
+           AND atgard LIKE 'ägare korrigerad:%');
 
     IF repair_count = 0 THEN
         PERFORM _pass(12, 'underhall_hex: idempotent – no spurious ownership repairs on clean state');

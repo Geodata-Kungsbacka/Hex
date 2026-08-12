@@ -133,17 +133,15 @@ BEGIN
         RETURN;  -- Inget kolumnarbete behövs vid rename
     END IF;
 
-    -- Avbryt om inga kolumntillägg finns i denna DDL-händelse.
+    -- Avbryt om DDL-satsen inte är ett ADD COLUMN.
     -- ALTER TABLE OWNER TO, SET SCHEMA, DROP COLUMN, ENABLE/DISABLE TRIGGER o.s.v.
-    -- ger object_type = 'table' (eller NULL), inte 'table column'. Utan detta
-    -- skydd utförs onödig (och ibland felaktig) kolumnhantering för sådana kommandon.
-    -- Denna kontroll fungerar även för EXECUTE inuti PL/pgSQL (till skillnad från
-    -- current_query() som bara ser den yttersta klientsatsen).
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_event_trigger_ddl_commands()
-        WHERE command_tag = 'ALTER TABLE'
-          AND object_type = 'table column'
-    ) THEN
+    -- ska inte trigga kolumnomstrukturering. pg_event_trigger_ddl_commands() returnerar
+    -- object_type = 'table' (inte 'table column') även för ADD COLUMN i PostgreSQL 16,
+    -- så vi använder current_query() som en tillförlitlig textuell kontroll.
+    -- Vid EXECUTE inuti PL/pgSQL (t.ex. hex_underhall()) returnerar current_query()
+    -- den yttersta klientsatsen (SELECT * FROM hex_underhall()), som aldrig innehåller
+    -- frasen 'ADD COLUMN', vilket ger korrekt tidig avslutning.
+    IF NOT (current_query() ~* 'add\s+column') THEN
         RAISE NOTICE '[hex_hantera_ny_kolumn] Inga kolumntillägg – avbryter';
         PERFORM set_config('temp.reorganization_in_progress', 'false', true);
         RETURN;
@@ -348,6 +346,9 @@ BEGIN
                         RAISE WARNING '[hex_hantera_ny_kolumn] Operation: %', op_steg;
                         RAISE WARNING '[hex_hantera_ny_kolumn] SQL: %', sql_sats;
                         RAISE WARNING '[hex_hantera_ny_kolumn] Felmeddelande: %', SQLERRM;
+                        -- Rensa eventuell föräldralös temporär kolumn så att nästa körning inte blockeras
+                        EXECUTE format('ALTER TABLE %I.%I DROP COLUMN IF EXISTS %I',
+                            schema_namn, tabell_namn, kolumn.kolumnnamn || '_temp0001');
                 END;
             END IF;
         END LOOP;
@@ -363,10 +364,16 @@ BEGIN
         ) THEN
             RAISE NOTICE '[hex_hantera_ny_kolumn] Geometrikolumn "geom" hittad';
             RAISE NOTICE '[hex_hantera_ny_kolumn] Hämtar geometridefinition (detaljerad analys sker i hjälpfunktion)';
-            
-            -- Hämta strukturerad geometriinformation
-            geometriinfo := hex_hamta_geometri_definition(schema_namn, tabell_namn);
-            
+
+            -- Hämta strukturerad geometriinformation; fånga fel för att inte abbortera ALTER TABLE
+            BEGIN
+                geometriinfo := hex_hamta_geometri_definition(schema_namn, tabell_namn);
+            EXCEPTION
+                WHEN OTHERS THEN
+                    RAISE WARNING '[hex_hantera_ny_kolumn] Kunde inte hämta geometridefinition: %', SQLERRM;
+                    geometriinfo := NULL;
+            END;
+
             -- Flytta geometrikolumnen om vi fick en korrekt definition
             IF geometriinfo IS NOT NULL AND geometriinfo.definition IS NOT NULL THEN
                 RAISE NOTICE '[hex_hantera_ny_kolumn] Använder geometridefinition: %', geometriinfo.definition;
@@ -423,6 +430,9 @@ BEGIN
                         RAISE WARNING '[hex_hantera_ny_kolumn] Geometriinfo: %',
                             coalesce(geometriinfo.definition, 'NULL');
                         RAISE WARNING '[hex_hantera_ny_kolumn] Felmeddelande: %', SQLERRM;
+                        -- Rensa eventuell föräldralös temporär geometrikolumn
+                        EXECUTE format('ALTER TABLE %I.%I DROP COLUMN IF EXISTS geom_temp0001',
+                            schema_namn, tabell_namn);
                 END;
             ELSE
                 RAISE WARNING '[hex_hantera_ny_kolumn] ⚠ Geometrikolumn hittad men ingen giltig definition returnerades';
@@ -868,6 +878,7 @@ BEGIN
                             
                             DECLARE
                                 ny_kolumn_lista text;
+                                ny_old_kolumn_lista text;
                                 trigger_funktionsnamn text := 'trg_fn_' || tabell_namn || '_qa';
                                 qa_kolumner text[];
                                 qa_uttryck text[];
@@ -877,6 +888,13 @@ BEGIN
                                 -- Hämta uppdaterad kolumnlista från modertabellen (citerade med %I för att hantera reserverade ord)
                                 SELECT string_agg(format('%I', c.column_name), ', ' ORDER BY c.ordinal_position)
                                 INTO ny_kolumn_lista
+                                FROM information_schema.columns c
+                                WHERE c.table_schema = schema_namn
+                                AND c.table_name = tabell_namn;
+
+                                -- Bygg explicit OLD.col-lista (matchar ny_kolumn_lista)
+                                SELECT string_agg(format('OLD.%I', c.column_name), ', ' ORDER BY c.ordinal_position)
+                                INTO ny_old_kolumn_lista
                                 FROM information_schema.columns c
                                 WHERE c.table_schema = schema_namn
                                 AND c.table_name = tabell_namn;
@@ -918,18 +936,18 @@ BEGIN
 %s                
                                             -- Kopiera gamla värdet till historik
                                             INSERT INTO %I.%I (h_typ, h_tidpunkt, h_av, %s)
-                                            SELECT 'U', NOW(), session_user, OLD.*;
-                                            
+                                            SELECT 'U', NOW(), session_user, %s;
+
                                             RETURN rad;
                                         ELSE -- DELETE
                                             rad := OLD;
-                                            
+
                                             -- Sätt QA-värden även för DELETE (för konsistens)
-%s                
+%s
                                             -- Kopiera till historik
                                             INSERT INTO %I.%I (h_typ, h_tidpunkt, h_av, %s)
-                                            SELECT 'D', NOW(), session_user, rad.*;
-                                            
+                                            SELECT 'D', NOW(), session_user, %s;
+
                                             RETURN OLD;
                                         END IF;
                                     END;
@@ -938,9 +956,9 @@ BEGIN
                                     schema_namn, trigger_funktionsnamn,
                                     schema_namn, tabell_namn,
                                     trigger_satser,
-                                    schema_namn, historik_tabell_namn, ny_kolumn_lista,
+                                    schema_namn, historik_tabell_namn, ny_kolumn_lista, ny_old_kolumn_lista,
                                     trigger_satser,
-                                    schema_namn, historik_tabell_namn, ny_kolumn_lista
+                                    schema_namn, historik_tabell_namn, ny_kolumn_lista, ny_old_kolumn_lista
                                 );
                                 
                                 RAISE NOTICE '[hex_hantera_ny_kolumn]   ✓ Trigger-funktion % regenererad', trigger_funktionsnamn;
