@@ -133,6 +133,107 @@ BEGIN
         RETURN;  -- Inget kolumnarbete behövs vid rename
     END IF;
 
+    -- ----------------------------------------------------------------
+    -- Specialfall: ALTER TABLE ... RENAME COLUMN
+    -- Namnbytet måste speglas i historiktabellen, annars pekar QA-triggern
+    -- på en kolumn som inte längre finns och nästa UPDATE/DELETE kraschar.
+    --
+    -- object_type = 'table column' sätts bara vid kolumnnamnbyte; ADD COLUMN,
+    -- DROP COLUMN, ALTER COLUMN TYPE och OWNER TO ger alla object_type =
+    -- 'table'. Hex egna interna namnbyten (kolumnflytt via _temp0001) filtreras
+    -- redan bort av rekursionsflaggan ovan.
+    -- ----------------------------------------------------------------
+    IF NOT (current_query() ~* 'add\s+column') AND EXISTS (
+        SELECT 1 FROM pg_event_trigger_ddl_commands()
+        WHERE object_type = 'table column'
+    ) THEN
+        FOR kommando IN SELECT * FROM pg_event_trigger_ddl_commands()
+            WHERE object_type = 'table column'
+        LOOP
+            DECLARE
+                nytt_kolumnnamn  text;
+                gammalt_kolumnnamn text;
+                antal_kandidater integer;
+                meta_rad         record;
+            BEGIN
+                SELECT n.nspname, c.relname
+                INTO schema_namn, tabell_namn
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE c.oid = kommando.objid;
+
+                -- Historiktabeller hanteras aldrig direkt
+                CONTINUE WHEN tabell_namn IS NULL OR tabell_namn ~ '_h$';
+
+                SELECT * INTO meta_rad
+                FROM hex_metadata
+                WHERE parent_oid = kommando.objid;
+
+                IF NOT FOUND THEN
+                    RAISE NOTICE '[hex_hantera_ny_kolumn] Kolumnnamnbyte i %.% - ingen historiktabell registrerad, inget att synka',
+                        schema_namn, tabell_namn;
+                    CONTINUE;
+                END IF;
+
+                -- Nya namnet hämtas via attnum (objsubid) - stabilt oavsett citering
+                SELECT a.attname
+                INTO nytt_kolumnnamn
+                FROM pg_attribute a
+                WHERE a.attrelid = kommando.objid
+                  AND a.attnum = kommando.objsubid;
+
+                -- Redan synkroniserad (t.ex. vid omkörning) - inget att göra
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = meta_rad.history_schema
+                      AND table_name = meta_rad.history_table
+                      AND column_name = nytt_kolumnnamn
+                ) THEN
+                    RAISE NOTICE '[hex_hantera_ny_kolumn] Kolumnen % finns redan i historiktabellen %.% - hoppar över',
+                        nytt_kolumnnamn, meta_rad.history_schema, meta_rad.history_table;
+                    CONTINUE;
+                END IF;
+
+                -- Gamla namnet = kolumnen som finns i historiktabellen men inte i
+                -- modertabellen. h_-kolumnerna är historiktabellens egna och räknas inte.
+                SELECT count(*), min(h.column_name)
+                INTO antal_kandidater, gammalt_kolumnnamn
+                FROM information_schema.columns h
+                WHERE h.table_schema = meta_rad.history_schema
+                  AND h.table_name = meta_rad.history_table
+                  AND h.column_name NOT IN ('h_typ', 'h_tidpunkt', 'h_av')
+                  AND NOT EXISTS (
+                      SELECT 1 FROM information_schema.columns m
+                      WHERE m.table_schema = schema_namn
+                        AND m.table_name = tabell_namn
+                        AND m.column_name = h.column_name
+                  );
+
+                IF antal_kandidater <> 1 THEN
+                    -- OBS: RAISE stöder inte %I - identifierare citeras med quote_ident()
+                    RAISE WARNING '[hex_hantera_ny_kolumn] Kunde inte entydigt avgöra vilket kolumnnamn som byttes i %.% (% kandidater i historiktabellen). Synka manuellt med: ALTER TABLE %.% RENAME COLUMN <gammalt> TO %;',
+                        schema_namn, tabell_namn, antal_kandidater,
+                        quote_ident(meta_rad.history_schema),
+                        quote_ident(meta_rad.history_table),
+                        quote_ident(nytt_kolumnnamn);
+                    CONTINUE;
+                END IF;
+
+                EXECUTE format('ALTER TABLE %I.%I RENAME COLUMN %I TO %I',
+                    meta_rad.history_schema, meta_rad.history_table,
+                    gammalt_kolumnnamn, nytt_kolumnnamn);
+
+                RAISE NOTICE '[hex_hantera_ny_kolumn] ✓ Historiktabell synkad: %.%.% → %',
+                    meta_rad.history_schema, meta_rad.history_table,
+                    gammalt_kolumnnamn, nytt_kolumnnamn;
+
+                -- QA-triggerns kolumnlista innehåller det gamla namnet och måste byggas om
+                PERFORM hex_aterskapa_qa_trigger(schema_namn, tabell_namn, meta_rad.history_table);
+            END;
+        END LOOP;
+        RETURN;  -- Kolumnnamnbyte kräver ingen omstrukturering
+    END IF;
+
     -- Avbryt om DDL-satsen inte är ett ADD COLUMN.
     -- ALTER TABLE OWNER TO, SET SCHEMA, DROP COLUMN, ENABLE/DISABLE TRIGGER o.s.v.
     -- ska inte trigga kolumnomstrukturering. pg_event_trigger_ddl_commands() returnerar
@@ -875,97 +976,7 @@ BEGIN
                         -- Regenerera trigger-funktionen med uppdaterad kolumnlista
                         IF antal_tillagda > 0 THEN
                             RAISE NOTICE '[hex_hantera_ny_kolumn] Regenererar trigger-funktion för att inkludera nya kolumner...';
-                            
-                            DECLARE
-                                ny_kolumn_lista text;
-                                ny_old_kolumn_lista text;
-                                trigger_funktionsnamn text := 'trg_fn_' || tabell_namn || '_qa';
-                                qa_kolumner text[];
-                                qa_uttryck text[];
-                                trigger_satser text := '';
-                                j integer;
-                            BEGIN
-                                -- Hämta uppdaterad kolumnlista från modertabellen (citerade med %I för att hantera reserverade ord)
-                                SELECT string_agg(format('%I', c.column_name), ', ' ORDER BY c.ordinal_position)
-                                INTO ny_kolumn_lista
-                                FROM information_schema.columns c
-                                WHERE c.table_schema = schema_namn
-                                AND c.table_name = tabell_namn;
-
-                                -- Bygg explicit OLD.col-lista (matchar ny_kolumn_lista)
-                                SELECT string_agg(format('OLD.%I', c.column_name), ', ' ORDER BY c.ordinal_position)
-                                INTO ny_old_kolumn_lista
-                                FROM information_schema.columns c
-                                WHERE c.table_schema = schema_namn
-                                AND c.table_name = tabell_namn;
-                                
-                                -- Hämta QA-kolumner och deras uttryck
-                                SELECT 
-                                    array_agg(sk.kolumnnamn ORDER BY sk.ordinal_position),
-                                    array_agg(sk.default_varde ORDER BY sk.ordinal_position)
-                                INTO qa_kolumner, qa_uttryck
-                                FROM hex_standardiserade_kolumner sk
-                                WHERE sk.historik_qa = true
-                                AND sk.default_varde IS NOT NULL
-                                AND EXISTS (
-                                    SELECT 1 FROM information_schema.columns c
-                                    WHERE c.table_schema = schema_namn 
-                                    AND c.table_name = tabell_namn 
-                                    AND c.column_name = sk.kolumnnamn
-                                );
-                                
-                                -- Bygg trigger-satser för QA-uppdatering
-                                FOR j IN 1..COALESCE(array_length(qa_kolumner, 1), 0) LOOP
-                                    trigger_satser := trigger_satser || format(
-                                        E'        rad.%I = %s;\n',
-                                        qa_kolumner[j], qa_uttryck[j]
-                                    );
-                                END LOOP;
-                                
-                                -- Återskapa trigger-funktionen med ny kolumnlista
-                                EXECUTE format($TRIG$
-                                    CREATE OR REPLACE FUNCTION %I.%I()
-                                    RETURNS TRIGGER AS $$
-                                    DECLARE
-                                        rad %I.%I%%ROWTYPE;
-                                    BEGIN
-                                        IF TG_OP = 'UPDATE' THEN
-                                            rad := NEW;
-                                            
-                                            -- Sätt QA-värden
-%s                
-                                            -- Kopiera gamla värdet till historik
-                                            INSERT INTO %I.%I (h_typ, h_tidpunkt, h_av, %s)
-                                            SELECT 'U', NOW(), session_user, %s;
-
-                                            RETURN rad;
-                                        ELSE -- DELETE
-                                            rad := OLD;
-
-                                            -- Sätt QA-värden även för DELETE (för konsistens)
-%s
-                                            -- Kopiera till historik
-                                            INSERT INTO %I.%I (h_typ, h_tidpunkt, h_av, %s)
-                                            SELECT 'D', NOW(), session_user, %s;
-
-                                            RETURN OLD;
-                                        END IF;
-                                    END;
-                                    $$ LANGUAGE plpgsql;
-                                $TRIG$,
-                                    schema_namn, trigger_funktionsnamn,
-                                    schema_namn, tabell_namn,
-                                    trigger_satser,
-                                    schema_namn, historik_tabell_namn, ny_kolumn_lista, ny_old_kolumn_lista,
-                                    trigger_satser,
-                                    schema_namn, historik_tabell_namn, ny_kolumn_lista, ny_old_kolumn_lista
-                                );
-                                
-                                RAISE NOTICE '[hex_hantera_ny_kolumn]   ✓ Trigger-funktion % regenererad', trigger_funktionsnamn;
-                            EXCEPTION
-                                WHEN OTHERS THEN
-                                    RAISE WARNING '[hex_hantera_ny_kolumn]   ✗ Kunde inte regenerera trigger-funktion: %', SQLERRM;
-                            END;
+                            PERFORM hex_aterskapa_qa_trigger(schema_namn, tabell_namn, historik_tabell_namn);
                         END IF;
                         
                         -- Flytta standardkolumner med negativ ordinal_position till rätt plats i historiktabellen
@@ -1125,8 +1136,10 @@ BEGIN
             EXCEPTION
                 WHEN OTHERS THEN
                     RAISE WARNING '[hex_hantera_ny_kolumn] KRITISKT: Kunde inte återaktivera QA-trigger: %', SQLERRM;
-                    RAISE WARNING '[hex_hantera_ny_kolumn] Du måste manuellt aktivera: ALTER TABLE %I.%I ENABLE TRIGGER trg_%I_qa;', 
-                        schema_namn, tabell_namn, tabell_namn;
+                    -- OBS: RAISE stöder inte %I - identifierare citeras med quote_ident()
+                    RAISE WARNING '[hex_hantera_ny_kolumn] Du måste manuellt aktivera: ALTER TABLE %.% ENABLE TRIGGER %;',
+                        quote_ident(schema_namn), quote_ident(tabell_namn),
+                        quote_ident('trg_' || tabell_namn || '_qa');
             END;
         END IF;
 

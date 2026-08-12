@@ -7,28 +7,47 @@
 ## Förutsättningar
 
 - Python 3 installerat på maskinen som kör installationsskriptet.
+- Python-paketet `psycopg2` installerat: `pip install psycopg2-binary`.
+  Installern importerar det direkt vid start och avbryter med
+  `ModuleNotFoundError` om det saknas.
 - Tillgång till databasen som en PostgreSQL-roll med `SUPERUSER` eller en roll med
   tillräckliga rättigheter för att skapa event-triggers och objekt i `public`-schemat.
   Normalt ägarrollen, t.ex. `gis_admin`.
+- PostGIS tillgängligt på servern (paketet `postgresql-<version>-postgis-3` eller
+  motsvarande). Själva tilläggen `postgis` och `pgcrypto` skapas automatiskt av
+  installern med `CREATE EXTENSION IF NOT EXISTS`.
+- Ägarrollen (`owner_role`) måste finnas i databasen innan installationen körs.
+  Installern skapar den inte, den avbryter med
+  `owner_role '<roll>' finns inte i databasen`.
 - Källkoden från repositoryt (`install_hex.py` och `src/`).
 
 ---
 
 ## Steg 1 – Konfigurera installationsskriptet
 
-Öppna `install_hex.py` i en texteditor och fyll i:
+Öppna `install_hex.py` i en texteditor och fyll i listan `DATABASES`:
 
 ```python
-DB_CONFIG = {
-    "host":     "localhost",
-    "port":     5432,
-    "dbname":   "geodata",      # Databas att installera Hex i
-    "user":     "gis_admin",    # Databasanvändare
-    "password": "losenord_har"
-}
-
-OWNER_ROLE = "gis_admin"        # Rollen som ska äga Hex-objekt
+DATABASES = [
+    {
+        "host":       "localhost",
+        "port":       5432,
+        "dbname":     "geodata",      # Databas att installera Hex i
+        "user":       "postgres",     # Databasanvändare
+        "password":   "losenord_har",
+        "owner_role": "gis_admin",    # Rollen som ska äga Hex-objekt
+    },
+]
 ```
+
+Alla nycklar utom `owner_role` skickas rakt in i `psycopg2.connect()` — du kan
+alltså lägga till andra psycopg2-parametrar vid behov. `owner_role` anger
+rollen som ska äga typer, tabeller, funktioner och triggers; sätt den till
+`None` för att låta den anslutande användaren äga objekten.
+
+> **OBS – anslutningen måste ha superuser-rättigheter.** Event-triggers kan
+> bara skapas av en superuser, och de behåller `postgres`-ägande även när
+> `owner_role` är satt. Samma gäller `SECURITY DEFINER`-funktioner.
 
 > **OBS – `localhost` på Windows Server:** Om du installerar mot en lokal
 > PostgreSQL-instans på Windows, byt `"localhost"` mot `"127.0.0.1"` i
@@ -36,10 +55,12 @@ OWNER_ROLE = "gis_admin"        # Rollen som ska äga Hex-objekt
 > (IPv6) i stället för `127.0.0.1`, beroende på `hosts`-filens ordning. Om
 > PostgreSQL lyssnar på `127.0.0.1` men Python ansluter via `::1` (eller
 > vice versa) misslyckas installationen med `connection refused`. Använd
-> samma literala adress i `DB_CONFIG` och i `pg_hba.conf`.
+> samma literala adress i `DATABASES` och i `pg_hba.conf`.
 
-> Installationsskriptet måste köras **en gång per databas** om du har
-> flera databaser som ska ha Hex.
+> Har du flera databaser som ska ha Hex lägger du till **en post per databas**
+> i `DATABASES`. Installern loopar över alla i samma körning och skriver ut en
+> sammanfattning med OK/MISSLYCKADES per databas. En databas som misslyckas
+> stoppar inte de övriga, men skriptet avslutas med felkod 1.
 
 ---
 

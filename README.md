@@ -114,11 +114,32 @@ Validerar geometrikvalitet för _kba_-scheman (manuellt redigerade data).
 
 ### Automatisk installation (rekommenderat)
 
-```bash
-# Redigera install_hex.py och ange:
-# - DB_CONFIG (host, port, dbname, user, password)
-# - OWNER_ROLE (rollen som ska äga Hex-objekt och hantera roller)
+Kräver Python 3 och `psycopg2` (`pip install psycopg2-binary`). Tilläggen
+PostGIS och pgcrypto skapas automatiskt av installern.
 
+Redigera listan `DATABASES` i `install_hex.py`. Varje post är ett dict med
+psycopg2-anslutningsparametrar plus `owner_role` — rollen som ska äga
+Hex-objekt och hantera roller. Sätt `owner_role` till `None` för att låta den
+anslutande användaren äga objekten. Anslutningen måste köras som `postgres`
+(eller annan superuser) eftersom event-triggers kräver det.
+
+```python
+DATABASES = [
+    {
+        "host": "localhost",       # Använd "127.0.0.1" på Windows Server
+        "port": 5432,
+        "dbname": "geodata",       # Databas att installera Hex i
+        "user": "postgres",
+        "password": "losenord_har",
+        "owner_role": "gis_admin", # Ägarroll för Hex-objekt
+    },
+]
+```
+
+Lägg till fler poster i listan för att installera i flera databaser i samma
+körning — installern loopar över alla och skriver ut en sammanfattning.
+
+```bash
 python install_hex.py              # Installera
 python install_hex.py --upgrade    # Uppgradera (bevarar inställningar)
 python install_hex.py --uninstall  # Avinstallera
@@ -126,37 +147,47 @@ python install_hex.py --uninstall  # Avinstallera
 
 ### Manuell installation
 
-```sql
--- 0. FÖRST: Redigera hex_systemagare.sql och ändra 'gis_admin' till din ägarroll
---    Kör sedan filen:
-src/sql/00_config/hex_systemagare.sql
+Skapa först tilläggen som Hex kräver (installern gör detta automatiskt):
 
--- 1. Alla filer i /01_types/
--- 2. Alla filer i /02_tables/
--- 3. Alla filer i /03_functions/ (i underkatalogers nummerordning)
--- 4. Alla filer i /04_triggers/
+```sql
+CREATE EXTENSION IF NOT EXISTS postgis;
+CREATE EXTENSION IF NOT EXISTS pgcrypto;  -- gen_random_bytes() för lösenordsgenerering
 ```
+
+Kör sedan filerna i ordningen nedan. Ordningen är en beroendeordning — hoppa
+inte över filer och byt inte plats på dem.
+
+> **OBS:** `hex_systemagare.sql` måste köras först och måste redigeras innan
+> den körs (ändra `'gis_admin'` till din ägarroll). Detta är den enda filen
+> installern inte kör — den genererar funktionen dynamiskt från `owner_role`.
 
 ### Detaljerad installationsordning
 
 ```sql
 -- 0. Konfiguration (MÅSTE köras först, redigera filen innan!)
 src/sql/00_config/hex_systemagare.sql
+src/sql/00_config/hex_geoserver_roller.sql
 
 -- 1. Skapa anpassade datatyper
 src/sql/01_types/hex_geom_info.sql
-src/sql/01_types/hex_kolumnegenskaper.sql
 src/sql/01_types/hex_kolumnkonfig.sql
+src/sql/01_types/hex_kolumnegenskaper.sql
 src/sql/01_types/hex_tabellregler.sql
 
 -- 2. Skapa konfigurationstabeller
 src/sql/02_tables/hex_standardiserade_skyddsnivaer.sql
+-- hex_schema_regex() läser hex_standardiserade_skyddsnivaer – måste köras efter tabellen
+src/sql/00_config/hex_schema_regex.sql
 src/sql/02_tables/hex_standardiserade_datakategorier.sql
 src/sql/02_tables/hex_standardiserade_kolumner.sql
 src/sql/02_tables/hex_standardiserade_roller.sql
 src/sql/02_tables/hex_metadata.sql
 src/sql/02_tables/hex_systemanvandare.sql
+src/sql/02_tables/hex_grupprattigheter.sql
 src/sql/02_tables/hex_afvaktande_geometri.sql
+src/sql/02_tables/hex_dummy_geometrier.sql
+src/sql/02_tables/hex_avvikande_srid.sql
+src/sql/02_tables/hex_rolluppgifter.sql
 
 -- 3. Skapa funktioner (i beroendeordning)
 -- 3.1 Strukturhantering
@@ -164,12 +195,12 @@ src/sql/03_functions/01_structure/hex_hamta_geometri_definition.sql
 src/sql/03_functions/01_structure/hex_hamta_kolumnstandard.sql
 
 -- 3.2 Validering
-src/sql/03_functions/02_validation/hex_validera_geometri.sql
-src/sql/03_functions/02_validation/hex_forklara_geometrifel.sql
 src/sql/03_functions/02_validation/hex_validera_tabell.sql
 src/sql/03_functions/02_validation/hex_validera_vynamn.sql
 src/sql/03_functions/02_validation/hex_validera_schemanamn.sql
 src/sql/03_functions/02_validation/hex_blockera_schema_namnbyte.sql
+src/sql/03_functions/02_validation/hex_validera_geometri.sql
+src/sql/03_functions/02_validation/hex_forklara_geometrifel.sql
 
 -- 3.3 Regelhantering
 src/sql/03_functions/03_rules/hex_spara_tabellregler.sql
@@ -181,10 +212,16 @@ src/sql/03_functions/03_rules/hex_aterskapa_kolumnegenskaper.sql
 src/sql/03_functions/04_utility/hex_byt_ut_tabell.sql
 src/sql/03_functions/04_utility/hex_uppdatera_sekvensnamn.sql
 src/sql/03_functions/04_utility/hex_skapa_historik_qa.sql
+src/sql/03_functions/04_utility/hex_aterskapa_qa_trigger.sql
 src/sql/03_functions/04_utility/hex_tilldela_rollrattigheter.sql
+src/sql/03_functions/04_utility/hex_tillampa_grupprattigheter.sql
+src/sql/03_functions/04_utility/hex_tvinga_gid_fran_sekvens.sql
+src/sql/03_functions/04_utility/hex_underhall.sql
 
 -- 3.5 Triggerfunktioner
-src/sql/03_functions/05_trigger_functions/kontrollera_geometri.sql
+src/sql/03_functions/05_trigger_functions/hex_ta_bort_dummy_rad.sql
+src/sql/03_functions/04_utility/hex_lagg_till_dummy_geometri.sql
+src/sql/03_functions/05_trigger_functions/hex_kontrollera_geometri.sql
 src/sql/03_functions/05_trigger_functions/hex_hantera_ny_tabell.sql
 src/sql/03_functions/05_trigger_functions/hex_hantera_ny_kolumn.sql
 src/sql/03_functions/05_trigger_functions/hex_hantera_ny_vy.sql
@@ -206,6 +243,10 @@ src/sql/04_triggers/hex_blockera_schema_namnbyte_trigger.sql
 src/sql/04_triggers/hex_notifiera_gs_trigger.sql
 src/sql/04_triggers/hex_notifiera_gs_borttagning_trigger.sql
 ```
+
+> Ordningen ovan speglar `INSTALL_ORDER` i `install_hex.py` (plus
+> `hex_systemagare.sql`, som installern genererar själv). Ändras den ena
+> måste den andra ändras likadant.
 
 ## Detaljerad funktionsbeskrivning
 
