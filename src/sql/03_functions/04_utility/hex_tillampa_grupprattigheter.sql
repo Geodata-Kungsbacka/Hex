@@ -9,7 +9,7 @@ CREATE OR REPLACE FUNCTION public.hex_tillampa_grupprattigheter()
     COST 100
     VOLATILE PARALLEL UNSAFE
     SECURITY DEFINER
-    SET search_path = public
+    SET search_path = public, pg_temp
 AS $BODY$
 
 /******************************************************************************

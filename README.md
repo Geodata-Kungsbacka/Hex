@@ -112,10 +112,25 @@ Validerar geometrikvalitet för _kba_-scheman (manuellt redigerade data).
 
 ## Installation
 
-### Automatisk installation (rekommenderat)
+### Systemkrav
 
-Kräver Python 3 och `psycopg2` (`pip install psycopg2-binary`). Tilläggen
-PostGIS och pgcrypto skapas automatiskt av installern.
+- **PostgreSQL 17 eller senare.** Installern kontrollerar serverversionen och
+  avbryter mot äldre versioner.
+- **PostGIS och pgcrypto** — skapas automatiskt av installern.
+- **Python 3** och `psycopg2` (`pip install psycopg2-binary`) för den
+  automatiska installationen.
+
+Installern kontrollerar också att `PUBLIC` saknar `CREATE` på schemat `public`
+och varnar annars. Det har varit standard sedan PostgreSQL 15, men en databas
+som uppgraderats från version 14 eller äldre behåller sin gamla ACL. Hex:s
+`SECURITY DEFINER`-funktioner slår upp objekt i `public`, så rättigheten bör
+återkallas:
+
+```sql
+REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+```
+
+### Automatisk installation (rekommenderat)
 
 Redigera listan `DATABASES` i `install_hex.py`. Varje post är ett dict med
 psycopg2-anslutningsparametrar plus `owner_role` — rollen som ska äga

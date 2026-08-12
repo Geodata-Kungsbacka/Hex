@@ -272,6 +272,49 @@ def _label(db: dict) -> str:
     return f"{db['dbname']}@{db['host']}"
 
 
+MINSTA_SERVERVERSION = 170000  # PostgreSQL 17
+
+
+def kontrollera_forutsattningar(cur):
+    """Kontrollerar databasens förutsättningar innan Hex installeras.
+
+    1. Serverversion. Hex kräver PostgreSQL 17 eller senare. Avbryter installationen.
+    2. CREATE på schema public för PUBLIC. Hex:s SECURITY DEFINER-funktioner låser
+       sitt search_path till 'public, pg_temp'. Den låsningen skyddar bara om public
+       inte är skrivbart för vem som helst — annars kan en godtycklig användare lägga
+       ett objekt i public som skuggar ett Hex-objekt och får det kört som postgres.
+       PostgreSQL 15 tog bort den rättigheten som standard, men databaser som
+       uppgraderats (pg_upgrade eller dump/restore) från äldre versioner behåller
+       sin gamla ACL även på 17. Varnar men avbryter inte — åtgärden är ett
+       medvetet beslut för databasägaren.
+    """
+    cur.execute("SELECT current_setting('server_version_num')::int, version()")
+    versionsnummer, versionstext = cur.fetchone()
+    if versionsnummer < MINSTA_SERVERVERSION:
+        raise RuntimeError(
+            f"Hex kräver PostgreSQL {MINSTA_SERVERVERSION // 10000} eller senare. "
+            f"Ansluten server: {versionstext.split(',')[0]}"
+        )
+
+    # grantee = 0 betyder PUBLIC i aclexplode().
+    cur.execute("""
+        SELECT EXISTS (
+            SELECT 1
+            FROM pg_namespace n, aclexplode(n.nspacl) a
+            WHERE n.nspname = 'public'
+              AND a.grantee = 0
+              AND a.privilege_type = 'CREATE'
+        )
+    """)
+    if cur.fetchone()[0]:
+        print("  VARNING: PUBLIC har CREATE på schema public.")
+        print("  Hex:s SECURITY DEFINER-funktioner körs som postgres och slår upp")
+        print("  objekt i public. Så länge vem som helst kan skapa objekt där kan")
+        print("  ett Hex-objekt skuggas och den skuggande koden köras som postgres.")
+        print("  Åtgärda med:  REVOKE CREATE ON SCHEMA public FROM PUBLIC;")
+        print("  (Databasen är sannolikt uppgraderad från PostgreSQL 14 eller äldre.)")
+
+
 def _strip_sql_comments(sql: str) -> str:
     """Returnerar SQL:en med blockkommentarer (/* */) och radkommentarer (--) borttagna.
 
@@ -531,6 +574,10 @@ def install(db: dict, base_path="."):
     installed = 0
 
     try:
+        # Serverversion och skrivskydd på public innan något installeras
+        print("Kontrollerar databasens förutsättningar...")
+        kontrollera_forutsattningar(cur)
+
         # Säkerställ att PostGIS finns
         print("Kontrollerar PostGIS-tillägget...")
         cur.execute("CREATE EXTENSION IF NOT EXISTS postgis")

@@ -41,17 +41,24 @@ grep -rPn 'EXECUTE\s+.*\|\|' src/sql/
 
 ### 3. `SECURITY DEFINER` utan `SET search_path`
 
-`SECURITY DEFINER`-funktioner körs som sin ägare. Utan ett låst `search_path` kan ett skadligt schema kapa anrop genom att skugga objekt.
+`SECURITY DEFINER`-funktioner körs med ägarens rättigheter (`postgres`). Namn utan schemaprefix slås upp via **anroparens** `search_path`, så utan ett låst `search_path` kan en anropare lägga ett eget objekt tidigare i sökvägen och få det kört som superanvändare.
+
+Repots standard är `SET search_path = public, pg_temp`. `pg_temp` sist är medvetet: nämns det inte söks temp-schemat först för tabell- och typnamn, vilket gör skuggning via temporära tabeller möjlig.
 
 ```bash
-grep -rl 'SECURITY DEFINER' src/sql/ | while read f; do
+# Kommentarer strippas först – annars räcker det att frasen nämns i en kommentar
+# för att filen ska flaggas (samma resonemang som _strip_sql_comments i install_hex.py).
+for f in $(grep -rl 'SECURITY DEFINER' src/sql/); do
+  perl -0777 -pe 's{/\*.*?\*/}{}gs; s{--[^\n]*}{}g' "$f" | grep -q 'SECURITY DEFINER' || continue
   grep -q 'SET search_path' "$f" || echo "Saknar SET search_path: $f"
 done
 ```
 
-> **OBS:** Det här är ett känt pågående problem i repot. Flagga berörda filer men blockera inte — åtgärder rullas ut successivt.
+> **OBS:** Samtliga `SECURITY DEFINER`-funktioner i repot har klausulen på plats. Kontrollen är en regressionsvakt — en träff är ett verkligt fynd och ska åtgärdas innan merge.
 
-**Åtgärd:** Lägg till `SET search_path = public` i funktionsdefinitionen, efter `SECURITY DEFINER`.
+**Åtgärd:** Lägg till `SET search_path = public, pg_temp` i funktionsdefinitionen, efter `SECURITY DEFINER`. Se `hex_tillampa_grupprattigheter.sql` för mönstret.
+
+Låsningen förutsätter att `public` inte är skrivbart för otrodda roller. Det är standard från PostgreSQL 15, och `kontrollera_forutsattningar()` i `install_hex.py` varnar vid installation om `PUBLIC` har `CREATE` där (vilket kan vara kvar i databaser uppgraderade från äldre versioner).
 
 ---
 
@@ -77,6 +84,6 @@ grep -rPn 'COMMENT\s+ON\s+.*[^\x00-\x7F]' src/sql/
 
 ## Allmänna kodfakta
 
-- All SQL riktar sig mot PostgreSQL — inga MySQL/SQLite-idiom.
+- All SQL riktar sig mot PostgreSQL **17 eller senare** — inga MySQL/SQLite-idiom, och inga bakåtkompatibilitetshänsyn till äldre PostgreSQL-versioner. Installern avbryter mot äldre servrar.
 - Spatiala funktioner använder PostGIS; typen `geometry` och `ST_*`-funktioner är förväntade.
 - FME läser direkt från PostgreSQL-vyer — returnera inte `NULL` där FME förväntar sig ett typat värde.
