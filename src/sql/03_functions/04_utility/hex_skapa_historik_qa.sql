@@ -27,6 +27,7 @@ DECLARE
     trigger_funktionsnamn text;
     i integer;
     kolumn_lista text;
+    old_kolumn_lista text;
     kolumn_definitioner text;
     antal_qa_kolumner integer := 0;
     antal_original_kolumner integer := 0;
@@ -146,7 +147,14 @@ BEGIN
     FROM information_schema.columns c
     WHERE c.table_schema = p_schema_namn
     AND c.table_name = p_tabell_namn;
-    
+
+    -- Bygg explicit OLD.col-lista för SELECT-sidan i trigger (matchar kolumn_lista)
+    SELECT string_agg(format('OLD.%I', c.column_name), ', ' ORDER BY c.ordinal_position)
+    INTO old_kolumn_lista
+    FROM information_schema.columns c
+    WHERE c.table_schema = p_schema_namn
+    AND c.table_name = p_tabell_namn;
+
     RAISE NOTICE '[hex_skapa_historik_qa]   » Kolumnlista för INSERT: %',
         substring(kolumn_lista from 1 for 50) ||
         CASE WHEN length(kolumn_lista) > 50 THEN '...' ELSE '' END;
@@ -214,18 +222,18 @@ BEGIN
 %s                
                 -- Kopiera gamla värdet till historik
                 INSERT INTO %I.%I (h_typ, h_tidpunkt, h_av, %s)
-                SELECT 'U', NOW(), session_user, OLD.*;
-                
+                SELECT 'U', NOW(), session_user, %s;
+
                 RETURN rad;
             ELSE -- DELETE
                 rad := OLD;
-                
+
                 -- Sätt QA-värden även för DELETE (för konsistens)
-%s                
+%s
                 -- Kopiera till historik
                 INSERT INTO %I.%I (h_typ, h_tidpunkt, h_av, %s)
-                SELECT 'D', NOW(), session_user, rad.*;
-                
+                SELECT 'D', NOW(), session_user, %s;
+
                 RETURN OLD;
             END IF;
         END;
@@ -234,9 +242,9 @@ BEGIN
         p_schema_namn, trigger_funktionsnamn,
         p_schema_namn, p_tabell_namn,
         trigger_satser,
-        p_schema_namn, p_tabell_namn || '_h', kolumn_lista,
+        p_schema_namn, p_tabell_namn || '_h', kolumn_lista, old_kolumn_lista,
         trigger_satser,
-        p_schema_namn, p_tabell_namn || '_h', kolumn_lista
+        p_schema_namn, p_tabell_namn || '_h', kolumn_lista, old_kolumn_lista
     );
     RAISE NOTICE '[hex_skapa_historik_qa]   ✓ Triggerfunktion skapad';
     

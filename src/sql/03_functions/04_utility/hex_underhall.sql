@@ -80,7 +80,7 @@ AS $BODY$
  *                        Uppstår t.ex. när en superanvändare skapat schemat
  *                        direkt och förbigått event-triggern. Alla scheman vars
  *                        namn matchar schema_regex och vars ägare inte är
- *                        system_owner() åtgärdas. Idempotent.
+ *                        hex_systemagare() åtgärdas. Idempotent.
  *
  *   ägarskap_objekt      Korrigerar ägare på tabeller, vyer, materialiserade
  *                        vyer, sekvenser, fremmande tabeller och funktioner i
@@ -114,21 +114,21 @@ BEGIN
     --    Engångsnamnbyten körs först, sedan idempotenta kolumnuppgraderingar.
     -- -------------------------------------------------------------------------
 
-    -- Byt namn på hex_rolluppgifter → hex_rolluppgifter och dess kolumner
+    -- Byt namn på hex_role_credentials → hex_rolluppgifter och dess kolumner
     IF EXISTS (
         SELECT 1 FROM pg_tables
-        WHERE schemaname = 'public' AND tablename = 'hex_rolluppgifter'
+        WHERE schemaname = 'public' AND tablename = 'hex_role_credentials'
     ) THEN
-        EXECUTE 'ALTER TABLE public.hex_rolluppgifter RENAME TO hex_rolluppgifter';
+        EXECUTE 'ALTER TABLE public.hex_role_credentials RENAME TO hex_rolluppgifter';
         EXECUTE 'ALTER TABLE public.hex_rolluppgifter RENAME COLUMN rolname     TO rollnamn';
         EXECUTE 'ALTER TABLE public.hex_rolluppgifter RENAME COLUMN password    TO losenord';
         EXECUTE 'ALTER TABLE public.hex_rolluppgifter RENAME COLUMN rolcanlogin TO kan_logga_in';
         EXECUTE 'ALTER TABLE public.hex_rolluppgifter RENAME COLUMN created_at  TO skapad_tidpunkt';
         IF EXISTS (
             SELECT 1 FROM pg_constraint
-            WHERE conname = 'hex_rolluppgifter_pkey'
+            WHERE conname = 'hex_role_credentials_pkey'
         ) THEN
-            EXECUTE 'ALTER TABLE public.hex_rolluppgifter RENAME CONSTRAINT hex_rolluppgifter_pkey TO hex_rolluppgifter_pkey';
+            EXECUTE 'ALTER TABLE public.hex_rolluppgifter RENAME CONSTRAINT hex_role_credentials_pkey TO hex_rolluppgifter_pkey';
         END IF;
         EXECUTE 'REVOKE ALL ON public.hex_rolluppgifter FROM PUBLIC';
         IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'hex_listener') THEN
@@ -896,7 +896,7 @@ BEGIN
     -- -------------------------------------------------------------------------
     -- 8. ägarskap_schema
     --    Alla Hex-scheman (namn matchar schema_regex) vars nuvarande ägare
-    --    inte är system_owner() korrigeras med ALTER SCHEMA ... OWNER TO.
+    --    inte är hex_systemagare() korrigeras med ALTER SCHEMA ... OWNER TO.
     --    Täcker scenariot där en superanvändare skapade schemat direkt och
     --    förbigick event-triggern hantera_standardiserade_roller.
     -- -------------------------------------------------------------------------
@@ -906,21 +906,21 @@ BEGIN
         FROM   pg_catalog.pg_namespace n
         JOIN   pg_catalog.pg_roles     ro ON ro.oid = n.nspowner
         WHERE  n.nspname ~ schema_regex
-          AND  ro.rolname != system_owner()
+          AND  ro.rolname != hex_systemagare()
         ORDER BY n.nspname
     LOOP
-        EXECUTE format('ALTER SCHEMA %I OWNER TO %I', r.s, system_owner());
+        EXECUTE format('ALTER SCHEMA %I OWNER TO %I', r.s, hex_systemagare());
         schema_namn  := r.s;
         tabell_namn  := '-';
         trigger_namn := 'ägarskap_schema';
-        atgard       := 'ägare korrigerad: ' || r.nuvarande_agare || ' → ' || system_owner();
+        atgard       := 'ägare korrigerad: ' || r.nuvarande_agare || ' → ' || hex_systemagare();
         RETURN NEXT;
     END LOOP;
 
     -- -------------------------------------------------------------------------
     -- 9. ägarskap_objekt
     --    Tabeller, vyer, materialiserade vyer, sekvenser och fremmande tabeller
-    --    i Hex-scheman vars ägare inte är system_owner() korrigeras.
+    --    i Hex-scheman vars ägare inte är hex_systemagare() korrigeras.
     --    Därefter korrigeras funktioner/procedurer i samma scheman.
     --    Idempotent – objekt med rätt ägare berörs inte.
     -- -------------------------------------------------------------------------
@@ -936,7 +936,7 @@ BEGIN
         JOIN   pg_catalog.pg_roles     ro ON ro.oid = c.relowner
         WHERE  n.nspname ~ schema_regex
           AND  c.relkind IN ('r', 'v', 'm', 'S', 'f')
-          AND  ro.rolname != system_owner()
+          AND  ro.rolname != hex_systemagare()
           -- Identitetssekvenser ägs av sin kolumn; ägandet kaskaderar automatiskt
           -- när tabellen byter ägare via ALTER TABLE. Direkt ALTER SEQUENCE OWNER TO
           -- på en identitetssekvens (deptype='i') är inte tillåtet i PostgreSQL.
@@ -948,24 +948,24 @@ BEGIN
         CASE r.k
             WHEN 'r' THEN
                 EXECUTE format('ALTER TABLE %I.%I OWNER TO %I',
-                    r.s, r.t, system_owner());
+                    r.s, r.t, hex_systemagare());
             WHEN 'v' THEN
                 EXECUTE format('ALTER VIEW %I.%I OWNER TO %I',
-                    r.s, r.t, system_owner());
+                    r.s, r.t, hex_systemagare());
             WHEN 'm' THEN
                 EXECUTE format('ALTER MATERIALIZED VIEW %I.%I OWNER TO %I',
-                    r.s, r.t, system_owner());
+                    r.s, r.t, hex_systemagare());
             WHEN 'S' THEN
                 EXECUTE format('ALTER SEQUENCE %I.%I OWNER TO %I',
-                    r.s, r.t, system_owner());
+                    r.s, r.t, hex_systemagare());
             WHEN 'f' THEN
                 EXECUTE format('ALTER FOREIGN TABLE %I.%I OWNER TO %I',
-                    r.s, r.t, system_owner());
+                    r.s, r.t, hex_systemagare());
         END CASE;
         schema_namn  := r.s;
         tabell_namn  := r.t;
         trigger_namn := 'ägarskap_objekt';
-        atgard       := 'ägare korrigerad: ' || r.nuvarande_agare || ' → ' || system_owner();
+        atgard       := 'ägare korrigerad: ' || r.nuvarande_agare || ' → ' || hex_systemagare();
         RETURN NEXT;
     END LOOP;
 
@@ -979,15 +979,15 @@ BEGIN
         JOIN   pg_catalog.pg_namespace n  ON n.oid = p.pronamespace
         JOIN   pg_catalog.pg_roles     ro ON ro.oid = p.proowner
         WHERE  n.nspname ~ schema_regex
-          AND  ro.rolname != system_owner()
+          AND  ro.rolname != hex_systemagare()
         ORDER BY n.nspname, p.proname
     LOOP
         EXECUTE format('ALTER FUNCTION %I.%I(%s) OWNER TO %I',
-            r.s, r.fn, r.args, system_owner());
+            r.s, r.fn, r.args, hex_systemagare());
         schema_namn  := r.s;
         tabell_namn  := r.fn;
         trigger_namn := 'ägarskap_objekt';
-        atgard       := 'ägare korrigerad: ' || r.nuvarande_agare || ' → ' || system_owner();
+        atgard       := 'ägare korrigerad: ' || r.nuvarande_agare || ' → ' || hex_systemagare();
         RETURN NEXT;
     END LOOP;
 
@@ -1053,10 +1053,10 @@ Säkerställer hex_geoserver_roller-medlemskap (enbart gs_*) och tar bort
 NOLOGIN-roller som felaktigt hamnat där.
 Reparerar schemabehörigheter (NOLOGIN: hex_tilldela_rollrattigheter,
 LOGIN: GRANT arvs_fran).
-Korrigerar schemaägare som inte är system_owner() – täcker scheman skapade av
+Korrigerar schemaägare som inte är hex_systemagare() – täcker scheman skapade av
 superanvändare som förbigick event-triggern.
 Korrigerar objektägare (tabeller, vyer, materialiserade vyer, sekvenser,
-fremmande tabeller, funktioner) i Hex-scheman vars ägare inte är system_owner().
+fremmande tabeller, funktioner) i Hex-scheman vars ägare inte är hex_systemagare().
 Skickar pg_notify för GeoServer-publicering (gs_r_-uppgifter krävs).
 Schemaprefix hämtas från hex_standardiserade_skyddsnivaer – egna prefix fungerar
 utan kodändringar. Idempotent. Anropas av installeraren efter varje
