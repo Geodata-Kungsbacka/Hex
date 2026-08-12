@@ -231,17 +231,34 @@ BEGIN
             RAISE NOTICE 'Steg 4/11: Skapar temporär tabell';
             DECLARE
                 kolumn_sql text;
+                persistens char(1);
+                persistens_nyckelord text := '';
             BEGIN
                 SELECT string_agg(format('%I %s', kolumnnamn, datatyp), ', ')
                 INTO kolumn_sql
                 FROM unnest(standardkolumner);
 
-                RAISE NOTICE '[hex_hantera_ny_tabell] SQL för temporär tabell: CREATE TABLE %.% (%)', 
-                schema_namn, temp_tabellnamn, kolumn_sql;
-                
+                -- Spegla originaltabellens persistens. Ersättningstabellen skapas
+                -- från grunden, så utan detta blir en UNLOGGED-tabell tyst
+                -- permanent (och därmed WAL-loggad) efter omstruktureringen.
+                SELECT c.relpersistence
+                INTO persistens
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = schema_namn AND c.relname = tabell_namn;
+
+                IF persistens = 'u' THEN
+                    persistens_nyckelord := 'UNLOGGED ';
+                    RAISE NOTICE '[hex_hantera_ny_tabell]   » Originaltabellen är UNLOGGED - egenskapen bevaras';
+                END IF;
+
+                RAISE NOTICE '[hex_hantera_ny_tabell] SQL för temporär tabell: CREATE %sTABLE %.% (%)',
+                persistens_nyckelord, schema_namn, temp_tabellnamn, kolumn_sql;
+
                 EXECUTE format(
-                    'CREATE TABLE %I.%I (%s)',
-                    schema_namn, 
+                    'CREATE %sTABLE %I.%I (%s)',
+                    persistens_nyckelord,
+                    schema_namn,
                     temp_tabellnamn,
                     kolumn_sql
                 );

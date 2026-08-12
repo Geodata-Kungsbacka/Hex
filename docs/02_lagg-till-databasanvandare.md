@@ -33,7 +33,7 @@ oavsett säkerhetsnivå (sk0/sk1/sk2/skx):
 > DBA-hanterad mappningstabell där varje rad kopplar en AD-synkad grupproll
 > till en enskild Hex-schemaroll (`r_<schema>`). Lägg till en rad per schema
 > gruppen ska kunna läsa, och applicera mappningarna med
-> `SELECT tillämpa_grupprattigheter();`. Se
+> `SELECT hex_tillampa_grupprattigheter();`. Se
 > `src/sql/02_tables/hex_grupprattigheter.sql` och
 > `src/sql/03_functions/04_utility/hex_tillampa_grupprattigheter.sql`.
 
@@ -98,7 +98,7 @@ GRANT r_sk0_ext_sgu, w_sk1_kba_bygg TO annand;
 **Läsrättigheter på flera scheman på en gång** (t.ex. alla öppna sk0-scheman
 för en AD-grupp): det finns ingen längre en enda roll som täcker detta
 automatiskt — lägg istället till en rad per schema i
-`hex_grupprattigheter` och applicera med `tillämpa_grupprattigheter()`,
+`hex_grupprattigheter` och applicera med `hex_tillampa_grupprattigheter()`,
 se [Bakgrund](#bakgrund) ovan.
 
 ---

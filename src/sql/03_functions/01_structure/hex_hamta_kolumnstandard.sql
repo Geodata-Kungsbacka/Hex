@@ -246,7 +246,12 @@ BEGIN
         LEFT JOIN pg_attrdef d ON (a.attrelid, a.attnum) = (d.adrelid, d.adnum)
         WHERE c.table_schema = p_schema_namn
         AND c.table_name = p_tabell_namn
-        AND c.column_name NOT IN (SELECT kolumnnamn FROM hex_standardiserade_kolumner)
+        -- Uteslut bara kolumner som faktiskt läggs tillbaka som standardkolumner
+        -- för DETTA schema (DEL 1/DEL 3). Filtreras det mot hela
+        -- hex_standardiserade_kolumner tas en användarkolumn bort tyst så fort
+        -- namnet råkar matcha en standardkolumn som inte gäller schemat –
+        -- t.ex. "skapad_av" (endast _kba_) på en _ext_-tabell.
+        AND c.column_name NOT IN (SELECT kolumnnamn FROM temp_filtrerade_standardkolumner)
         AND c.column_name != 'geom'
 
         UNION ALL

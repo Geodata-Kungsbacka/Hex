@@ -116,7 +116,7 @@ BEGIN
                 'Schemanamn måste följa mönstret: <skyddsnivå>_<datakategori>_<namn>\n'
                 'Giltiga skyddsnivåer: %\n'
                 'Giltiga datakategorier: %\n\n'
-                'OBS: Undvik a, a och o i schemanamn - använd vanliga ASCII-bokstäver.\n\n'
+                'OBS: Undvik å, ä och ö i schemanamn - använd vanliga ASCII-bokstäver.\n\n'
                 'Exempel:\n'
                 '  sk0_ext_sgu\n'
                 '  sk1_kba_bygg\n'

@@ -21,6 +21,7 @@ Användning:
     python3 tests/test_pg_notify_listener.py
 """
 
+import getpass
 import os
 import sys
 import threading
@@ -45,14 +46,23 @@ sys.path.insert(0, str(SRC_PATH))
 import geoserver_listener as gl  # noqa: E402
 
 # ---------------------------------------------------------------------------
-# PostgreSQL-anslutningsparametrar (lokalt kluster, inget lösenord krävs)
+# PostgreSQL-anslutningsparametrar.
+#
+# Standardvärdena träffar ett lokalt kluster via unix-socket, vilket undviker
+# lösenordsautentisering. Sätt miljövariablerna nedan för att köra mot en annan
+# instans eller som en annan roll:
+#
+#   PGHOST=localhost PGUSER=postgres PGPASSWORD=hemligt python3 tests/test_pg_notify_listener.py
+#
+# Standardanvändaren är den OS-användare som kör testet (peer-autentisering),
+# inte ett hårdkodat rollnamn.
 # ---------------------------------------------------------------------------
 PG_PARAMS = {
-    "host": "/var/run/postgresql",  # Unix socket – undviker lösenordsautentisering
-    "port": 5432,
-    "dbname": "postgres",
-    "user": "root",
-    "password": "",
+    "host": os.environ.get("PGHOST", "/var/run/postgresql"),
+    "port": int(os.environ.get("PGPORT", "5432")),
+    "dbname": os.environ.get("PGDATABASE", "postgres"),
+    "user": os.environ.get("PGUSER") or getpass.getuser(),
+    "password": os.environ.get("PGPASSWORD", ""),
 }
 
 # db_config-format som används av handle_schema_notification och listen_loop

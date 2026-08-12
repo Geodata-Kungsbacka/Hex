@@ -2,10 +2,10 @@
 --
 -- DBA-hanterad mappningstabell: vilka AD-synkade grupproller ska beviljas
 -- vilka Hex-schemaroller.
--- Applicera mappningarna med: SELECT tillämpa_grupprattigheter();
+-- Applicera mappningarna med: SELECT hex_tillampa_grupprattigheter();
 --
 -- Underhålls av:  DBA / systemadministratör
--- Appliceras av:  tillämpa_grupprattigheter()
+-- Appliceras av:  hex_tillampa_grupprattigheter()
 
 CREATE TABLE IF NOT EXISTS public.hex_grupprattigheter (
     id              serial          PRIMARY KEY,
@@ -21,7 +21,7 @@ ALTER TABLE public.hex_grupprattigheter OWNER TO gis_admin;
 
 COMMENT ON TABLE public.hex_grupprattigheter IS
     'DBA-hanterad mappning: vilka AD-synkade grupproller ska beviljas vilka Hex-schemaroller.
-     Applicera med: SELECT tillämpa_grupprattigheter();';
+     Applicera med: SELECT hex_tillampa_grupprattigheter();';
 
 COMMENT ON COLUMN public.hex_grupprattigheter.ad_grupproll IS
     'AD-synkad NOLOGIN-grupproll i PostgreSQL (t.ex. karttjanst_gis).';

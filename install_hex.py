@@ -87,6 +87,7 @@ INSTALL_ORDER = [
     "src/sql/03_functions/04_utility/hex_byt_ut_tabell.sql",
     "src/sql/03_functions/04_utility/hex_uppdatera_sekvensnamn.sql",
     "src/sql/03_functions/04_utility/hex_skapa_historik_qa.sql",
+    "src/sql/03_functions/04_utility/hex_aterskapa_qa_trigger.sql",
     "src/sql/03_functions/04_utility/hex_tilldela_rollrattigheter.sql",
     "src/sql/03_functions/04_utility/hex_tillampa_grupprattigheter.sql",
     "src/sql/03_functions/04_utility/hex_tvinga_gid_fran_sekvens.sql",
@@ -145,7 +146,11 @@ DROP FUNCTION IF EXISTS public.hex_hantera_borttagen_tabell();
 DROP FUNCTION IF EXISTS public.hex_kontrollera_geometri_trigger() CASCADE;
 
 -- Hjälpfunktioner
-DROP FUNCTION IF EXISTS public.tillämpa_grupprattigheter();
+DROP FUNCTION IF EXISTS public.hex_tillampa_grupprattigheter();
+-- Äldre namn utan hex_-prefix (och med icke-ASCII 'ä'). Droppas för att en
+-- uppgradering från en tidigare version inte ska lämna kvar en föräldralös kopia.
+DROP FUNCTION IF EXISTS public."tillämpa_grupprattigheter"();
+DROP FUNCTION IF EXISTS public.hex_aterskapa_qa_trigger(text, text, text);
 DROP FUNCTION IF EXISTS public.hex_lagg_till_dummy_geometri(text, text, hex_geom_info);
 DROP FUNCTION IF EXISTS public.hex_ta_bort_dummy_rad() CASCADE;
 DROP FUNCTION IF EXISTS public.hex_tvinga_gid_fran_sekvens() CASCADE;
@@ -267,14 +272,27 @@ def _label(db: dict) -> str:
     return f"{db['dbname']}@{db['host']}"
 
 
+def _strip_sql_comments(sql: str) -> str:
+    """Returnerar SQL:en med blockkommentarer (/* */) och radkommentarer (--) borttagna.
+
+    Används enbart för klassificering – aldrig för SQL som faktiskt körs.
+    """
+    utan_block = re.sub(r'/\*.*?\*/', ' ', sql, flags=re.DOTALL)
+    return re.sub(r'--[^\n]*', ' ', utan_block)
+
+
 def process_sql(sql: str, owner_role: str | None) -> str:
     """Bearbetar SQL-innehåll - ersätter eller tar bort OWNER TO-satser.
 
     Event-triggers måste ägas av en superuser och behåller därför postgres-ägande.
     """
-    # Event-triggers och SECURITY DEFINER-funktioner kräver superuser-ägande
-    needs_superuser = ('CREATE EVENT TRIGGER' in sql.upper() or
-                       'SECURITY DEFINER' in sql.upper())
+    # Event-triggers och SECURITY DEFINER-funktioner kräver superuser-ägande.
+    # Klassificeringen görs på SQL:en utan kommentarer – annars räcker det att
+    # frasen nämns i en kommentar för att filen felaktigt ska behålla
+    # postgres-ägande i stället för att få owner_role.
+    kod = _strip_sql_comments(sql).upper()
+    needs_superuser = ('CREATE EVENT TRIGGER' in kod or
+                       'SECURITY DEFINER' in kod)
 
     if needs_superuser:
         # Behåll postgres-ägande för superuser-beroende objekt

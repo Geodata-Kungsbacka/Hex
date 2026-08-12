@@ -9,7 +9,7 @@
  *
  * INSTALLER:
  * Om du använder install_hex.py ignoreras denna fil - installern
- * genererar funktionen dynamiskt baserat på OWNER_ROLE-konfigurationen.
+ * genererar funktionen dynamiskt från nyckeln owner_role i DATABASES.
  ******************************************************************************/
 
 CREATE OR REPLACE FUNCTION public.hex_systemagare()

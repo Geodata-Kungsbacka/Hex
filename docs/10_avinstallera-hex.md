@@ -61,7 +61,10 @@ DROP FUNCTION IF EXISTS public.hex_hantera_borttagen_tabell();
 DROP FUNCTION IF EXISTS public.hex_kontrollera_geometri_trigger() CASCADE;
 
 -- 3. Hjälpfunktioner
-DROP FUNCTION IF EXISTS public.tillämpa_grupprattigheter();
+DROP FUNCTION IF EXISTS public.hex_tillampa_grupprattigheter();
+-- Äldre namn utan hex_-prefix, droppas för installationer från tidigare versioner
+DROP FUNCTION IF EXISTS public."tillämpa_grupprattigheter"();
+DROP FUNCTION IF EXISTS public.hex_aterskapa_qa_trigger(text, text, text);
 DROP FUNCTION IF EXISTS public.hex_lagg_till_dummy_geometri(text, text, hex_geom_info);
 DROP FUNCTION IF EXISTS public.hex_ta_bort_dummy_rad() CASCADE;
 DROP FUNCTION IF EXISTS public.hex_tvinga_gid_fran_sekvens() CASCADE;

@@ -1,4 +1,4 @@
-CREATE OR REPLACE FUNCTION public.tillämpa_grupprattigheter()
+CREATE OR REPLACE FUNCTION public.hex_tillampa_grupprattigheter()
     RETURNS TABLE (
         behandlade    integer,
         beviljade     integer,
@@ -26,7 +26,7 @@ AS $BODY$
  * kunna GRANT:a dessa roller vidare till AD-grupproller.
  *
  * Anropas manuellt av DBA efter att rader lagts till i hex_grupprattigheter:
- *   SELECT * FROM tillämpa_grupprattigheter();
+ *   SELECT * FROM hex_tillampa_grupprattigheter();
  *
  * RETURNERAR: en rad med sammanfattning (behandlade, beviljade,
  *             hoppade_over, fel)
@@ -41,7 +41,7 @@ DECLARE
     v_ad_finns      boolean;
     v_hex_finns     boolean;
 BEGIN
-    RAISE NOTICE '[tillämpa_grupprattigheter] === START ===';
+    RAISE NOTICE '[hex_tillampa_grupprattigheter] === START ===';
 
     FOR r IN
         SELECT id, ad_grupproll, hex_roll
@@ -56,7 +56,7 @@ BEGIN
         ) INTO v_ad_finns;
 
         IF NOT v_ad_finns THEN
-            RAISE NOTICE '[tillämpa_grupprattigheter] Hoppar över rad %: AD-roll "%" finns inte i pg_roles',
+            RAISE NOTICE '[hex_tillampa_grupprattigheter] Hoppar över rad %: AD-roll "%" finns inte i pg_roles',
                 r.id, r.ad_grupproll;
             v_hoppade_over := v_hoppade_over + 1;
             CONTINUE;
@@ -68,7 +68,7 @@ BEGIN
         ) INTO v_hex_finns;
 
         IF NOT v_hex_finns THEN
-            RAISE NOTICE '[tillämpa_grupprattigheter] Hoppar över rad %: Hex-roll "%" finns inte i pg_roles',
+            RAISE NOTICE '[hex_tillampa_grupprattigheter] Hoppar över rad %: Hex-roll "%" finns inte i pg_roles',
                 r.id, r.hex_roll;
             v_hoppade_over := v_hoppade_over + 1;
             CONTINUE;
@@ -77,19 +77,19 @@ BEGIN
         -- Bevilja Hex-schemarollen till AD-grupproll
         BEGIN
             EXECUTE format('GRANT %I TO %I', r.hex_roll, r.ad_grupproll);
-            RAISE NOTICE '[tillämpa_grupprattigheter] GRANT % TO % – beviljad (rad %)',
+            RAISE NOTICE '[hex_tillampa_grupprattigheter] GRANT % TO % – beviljad (rad %)',
                 r.hex_roll, r.ad_grupproll, r.id;
             v_beviljade := v_beviljade + 1;
         EXCEPTION
             WHEN OTHERS THEN
-                RAISE NOTICE '[tillämpa_grupprattigheter] FEL vid GRANT % TO % (rad %): %',
+                RAISE NOTICE '[hex_tillampa_grupprattigheter] FEL vid GRANT % TO % (rad %): %',
                     r.hex_roll, r.ad_grupproll, r.id, SQLERRM;
                 v_fel := v_fel + 1;
         END;
 
     END LOOP;
 
-    RAISE NOTICE '[tillämpa_grupprattigheter] === SLUT === behandlade: %, beviljade: %, hoppade_over: %, fel: %',
+    RAISE NOTICE '[hex_tillampa_grupprattigheter] === SLUT === behandlade: %, beviljade: %, hoppade_over: %, fel: %',
         v_behandlade, v_beviljade, v_hoppade_over, v_fel;
 
     RETURN QUERY
@@ -97,11 +97,11 @@ BEGIN
 END;
 $BODY$;
 
-ALTER FUNCTION public.tillämpa_grupprattigheter()
+ALTER FUNCTION public.hex_tillampa_grupprattigheter()
     OWNER TO gis_admin;
 
-COMMENT ON FUNCTION public.tillämpa_grupprattigheter()
+COMMENT ON FUNCTION public.hex_tillampa_grupprattigheter()
     IS 'Applicerar mappningar i hex_grupprattigheter: beviljar Hex-schemaroller till
      AD-synkade grupproller. Kontrollerar att båda roller existerar i pg_roles.
      Idempotent – kan köras upprepade gånger. Returnerar sammanfattningsrad.
-     Anropas manuellt av DBA: SELECT * FROM tillämpa_grupprattigheter();';
+     Anropas manuellt av DBA: SELECT * FROM hex_tillampa_grupprattigheter();';
