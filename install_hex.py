@@ -275,7 +275,15 @@ def _label(db: dict) -> str:
 MINSTA_SERVERVERSION = 170000  # PostgreSQL 17
 
 
-def kontrollera_forutsattningar(cur):
+def skriv_varning(text: str):
+    """Skriver ut en varning med indrag på fortsättningsrader."""
+    rader = text.splitlines()
+    print(f"  VARNING: {rader[0]}")
+    for rad in rader[1:]:
+        print(f"           {rad}")
+
+
+def kontrollera_forutsattningar(cur) -> list[str]:
     """Kontrollerar databasens förutsättningar innan Hex installeras.
 
     1. Serverversion. Hex kräver PostgreSQL 17 eller senare. Avbryter installationen.
@@ -287,6 +295,9 @@ def kontrollera_forutsattningar(cur):
        uppgraderats (pg_upgrade eller dump/restore) från äldre versioner behåller
        sin gamla ACL även på 17. Varnar men avbryter inte — åtgärden är ett
        medvetet beslut för databasägaren.
+
+    Returnerar varningstexterna. De skrivs ut direkt men samlas också in så att
+    install() kan upprepa dem sist — annars drunknar de i installationsloggen.
     """
     cur.execute("SELECT current_setting('server_version_num')::int, version()")
     versionsnummer, versionstext = cur.fetchone()
@@ -306,13 +317,20 @@ def kontrollera_forutsattningar(cur):
               AND a.privilege_type = 'CREATE'
         )
     """)
+    varningar: list[str] = []
     if cur.fetchone()[0]:
-        print("  VARNING: PUBLIC har CREATE på schema public.")
-        print("  Hex:s SECURITY DEFINER-funktioner körs som postgres och slår upp")
-        print("  objekt i public. Så länge vem som helst kan skapa objekt där kan")
-        print("  ett Hex-objekt skuggas och den skuggande koden köras som postgres.")
-        print("  Åtgärda med:  REVOKE CREATE ON SCHEMA public FROM PUBLIC;")
-        print("  (Databasen är sannolikt uppgraderad från PostgreSQL 14 eller äldre.)")
+        varningar.append(
+            "PUBLIC har CREATE på schema public.\n"
+            "Hex:s SECURITY DEFINER-funktioner körs som postgres och slår upp\n"
+            "objekt i public. Så länge vem som helst kan skapa objekt där kan\n"
+            "ett Hex-objekt skuggas och den skuggande koden köras som postgres.\n"
+            "Åtgärda med:  REVOKE CREATE ON SCHEMA public FROM PUBLIC;\n"
+            "(Databasen är sannolikt uppgraderad från PostgreSQL 14 eller äldre.)"
+        )
+
+    for varning in varningar:
+        skriv_varning(varning)
+    return varningar
 
 
 def _strip_sql_comments(sql: str) -> str:
@@ -576,7 +594,7 @@ def install(db: dict, base_path="."):
     try:
         # Serverversion och skrivskydd på public innan något installeras
         print("Kontrollerar databasens förutsättningar...")
-        kontrollera_forutsattningar(cur)
+        varningar = kontrollera_forutsattningar(cur)
 
         # Säkerställ att PostGIS finns
         print("Kontrollerar PostGIS-tillägget...")
@@ -649,8 +667,19 @@ COMMENT ON FUNCTION public.hex_systemagare()
                 print("  Inga åtgärder behövdes.")
         except Exception as repair_err:
             conn.rollback()
-            print(f"  Varning: underhåll misslyckades: {repair_err}")
-            print("  Hex är installerat. Kör SELECT * FROM public.hex_underhall() manuellt.")
+            varningar.append(
+                f"Underhåll misslyckades: {str(repair_err).strip()}\n"
+                "Hex är installerat. Kör SELECT * FROM public.hex_underhall() manuellt."
+            )
+            skriv_varning(varningar[-1])
+
+        # Upprepa varningarna sist – annars försvinner de i loggen ovan.
+        if varningar:
+            print("=" * 60)
+            print(f"{len(varningar)} varning(ar) kvar att åtgärda:")
+            for varning in varningar:
+                skriv_varning(varning)
+            print("=" * 60)
 
         print("+++Anthill Inside+++")
 
