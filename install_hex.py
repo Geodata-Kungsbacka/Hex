@@ -22,6 +22,7 @@ from pathlib import Path
 #
 # Varje post är ett dict med psycopg2-anslutningsparametrar plus:
 #   owner_role: ägarroll för alla skapade objekt (typer, tabeller, funktioner, triggers)
+#               Saknas rollen skapar installern den som NOLOGIN utan lösenord.
 #               Sätt till None för att använda den anslutande användaren som ägare.
 #
 # Exempel för tre sk-databaser:
@@ -33,12 +34,12 @@ from pathlib import Path
 
 DATABASES = [
     {
-        "host": "localhost",
+        "host": "localhost",       # Använd "127.0.0.1" på Windows Server
         "port": 5432,
-        "dbname": "hex_test",
+        "dbname": "geodata",       # Databas att installera Hex i
         "user": "postgres",
-        "password": "testpass",
-        "owner_role": "gis_admin",
+        "password": "losenord_har",
+        "owner_role": "gis_admin", # Ägarroll för Hex-objekt, skapas om den saknas
     },
 ]
 
@@ -272,7 +273,7 @@ def _label(db: dict) -> str:
     return f"{db['dbname']}@{db['host']}"
 
 
-MINSTA_SERVERVERSION = 170000  # PostgreSQL 17
+MINSTA_SERVERVERSION = 160000  # PostgreSQL 16
 
 
 def skriv_varning(text: str):
@@ -286,15 +287,16 @@ def skriv_varning(text: str):
 def kontrollera_forutsattningar(cur) -> list[str]:
     """Kontrollerar databasens förutsättningar innan Hex installeras.
 
-    1. Serverversion. Hex kräver PostgreSQL 17 eller senare. Avbryter installationen.
+    1. Serverversion. Hex kräver PostgreSQL 16 eller senare. Avbryter installationen.
     2. CREATE på schema public för PUBLIC. Hex:s SECURITY DEFINER-funktioner låser
        sitt search_path till 'public, pg_temp'. Den låsningen skyddar bara om public
        inte är skrivbart för vem som helst — annars kan en godtycklig användare lägga
        ett objekt i public som skuggar ett Hex-objekt och får det kört som postgres.
        PostgreSQL 15 tog bort den rättigheten som standard, men databaser som
        uppgraderats (pg_upgrade eller dump/restore) från äldre versioner behåller
-       sin gamla ACL även på 17. Varnar men avbryter inte — åtgärden är ett
-       medvetet beslut för databasägaren.
+       sin gamla ACL oavsett vilken version de körs på i dag. Versionsgolvet är
+       alltså inte det som skyddar mot skuggning — den här kontrollen är det.
+       Varnar men avbryter inte — åtgärden är ett medvetet beslut för databasägaren.
 
     Returnerar varningstexterna. De skrivs ut direkt men samlas också in så att
     install() kan upprepa dem sist — annars drunknar de i installationsloggen.
@@ -605,11 +607,40 @@ def install(db: dict, base_path="."):
         print("Kontrollerar pgcrypto-tillägget...")
         cur.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto")
 
-        # Validera att owner_role existerar om angiven
+        # Säkerställ att ägarrollen finns. Saknas den skapas den här — annars
+        # kan Hex inte installeras i en ny databas utan ett manuellt CREATE ROLE
+        # i förväg, vilket är lätt att missa.
+        #
+        # Rollen skapas NOLOGIN och utan lösenord. Den behöver aldrig logga in:
+        # den äger Hex:s objekt och får ADMIN OPTION på schemats r_/w_-roller,
+        # och båda delarna fungerar för en NOLOGIN-roll. En miljö som vill kunna
+        # logga in som ägarrollen lägger själv till LOGIN och lösenord.
+        #
+        # OBS: roller är gemensamma för hela klustret, inte per databas. Skapas
+        # rollen här finns den även för klustrets övriga databaser.
         effective_owner = owner_role or 'postgres'
         cur.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (effective_owner,))
         if not cur.fetchone():
-            raise ValueError(f"owner_role '{effective_owner}' finns inte i databasen")
+            if owner_role is None:
+                # owner_role=None betyder "anslutande användare äger objekten".
+                # Att den rollen saknas är inte något installern kan reparera.
+                raise ValueError(
+                    f"Rollen '{effective_owner}' finns inte i databasen"
+                )
+            print(f"Ägarrollen '{effective_owner}' saknas – skapar den (NOLOGIN)...")
+            cur.execute(
+                pgsql.SQL("CREATE ROLE {} NOLOGIN").format(
+                    pgsql.Identifier(effective_owner)
+                )
+            )
+            varningar.append(
+                f"Ägarrollen '{effective_owner}' fanns inte och skapades av installern.\n"
+                "Den är NOLOGIN och saknar lösenord. Kontrollera att namnet är rätt\n"
+                "stavat – ett felstavat owner_role skapar en ny roll i stället för\n"
+                "att återanvända den avsedda. Behöver rollen kunna logga in:\n"
+                f"  ALTER ROLE {effective_owner} LOGIN PASSWORD '...';"
+            )
+            skriv_varning(varningar[-1])
 
         # Skapa hex_systemagare()-funktionen dynamiskt
         system_owner_sql = f"""
@@ -721,7 +752,11 @@ if __name__ == "__main__":
         try:
             action(db)
             succeeded.append(_label(db))
-        except Exception:
+        except Exception as e:
+            # Felet måste skrivas ut här. Misslyckas redan psycopg2.connect()
+            # hinner install() aldrig in i sin egen felhantering, och utan den
+            # här utskriften avslutas installern tyst med exitkod 1.
+            print(f"MISSLYCKADES: {_label(db)}: {e}")
             failed.append(_label(db))
 
     if len(DATABASES) > 1:

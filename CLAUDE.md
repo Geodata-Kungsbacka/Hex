@@ -84,6 +84,6 @@ grep -rPn 'COMMENT\s+ON\s+.*[^\x00-\x7F]' src/sql/
 
 ## Allmänna kodfakta
 
-- All SQL riktar sig mot PostgreSQL **17 eller senare** — inga MySQL/SQLite-idiom, och inga bakåtkompatibilitetshänsyn till äldre PostgreSQL-versioner. Installern avbryter mot äldre servrar.
+- All SQL riktar sig mot PostgreSQL **16 eller senare** — inga MySQL/SQLite-idiom, och inga bakåtkompatibilitetshänsyn till äldre PostgreSQL-versioner. Installern avbryter mot äldre servrar. Testsviten körs mot både 16 och 17.
 - Spatiala funktioner använder PostGIS; typen `geometry` och `ST_*`-funktioner är förväntade.
 - FME läser direkt från PostgreSQL-vyer — returnera inte `NULL` där FME förväntar sig ett typat värde.
