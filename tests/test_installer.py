@@ -47,9 +47,53 @@ class TestProcessSqlAgarskap(unittest.TestCase):
         self.assertNotIn("OWNER TO gis_admin", ut)
 
     def test_tar_bort_owner_to_utan_agarroll(self):
-        """owner_role=None ska ta bort OWNER TO-raden helt."""
+        """owner_role=None ska ta bort ägarskapssatsen helt."""
         ut = install_hex.process_sql(self.VANLIG_SQL, None)
         self.assertNotIn("OWNER TO", ut.upper())
+
+    def test_tar_bort_flerradig_agarskapssats(self):
+        """
+        En ägarskapssats skriven över flera rader ska tas bort i sin helhet.
+
+        REGRESSION: 49 av filerna skriver satsen som
+
+            ALTER TYPE public.hex_geom_info
+                OWNER TO gis_admin;
+
+        En radbaserad filtrering tar bara bort andra raden och lämnar kvar
+        ett dinglande 'ALTER TYPE public.hex_geom_info' utan avslutning,
+        vilket ger 'syntax error at end of input'.
+        """
+        sql = (
+            "CREATE TYPE public.hex_exempel AS (a int);\n\n"
+            "ALTER TYPE public.hex_exempel\n"
+            "    OWNER TO gis_admin;\n\n"
+            "COMMENT ON TYPE public.hex_exempel IS 'kvar';\n"
+        )
+        ut = install_hex.process_sql(sql, None)
+        self.assertNotIn("OWNER TO", ut.upper())
+        self.assertNotIn("ALTER TYPE", ut.upper())
+        self.assertIn("CREATE TYPE public.hex_exempel", ut)
+        self.assertIn("COMMENT ON TYPE", ut)
+
+    def test_dynamisk_sql_i_funktionskropp_rors_inte(self):
+        """
+        format('... OWNER TO %I', ...) i en funktionskropp ska lämnas i fred.
+
+        Borttagningen får bara träffa verkliga ägarskapssatser, inte SQL som
+        funktionen bygger upp vid körning.
+        """
+        sql = (
+            "CREATE FUNCTION public.hex_x() RETURNS void AS $$\n"
+            "BEGIN\n"
+            "    EXECUTE format('ALTER TABLE %I.%I OWNER TO %I', s, t, r);\n"
+            "END $$ LANGUAGE plpgsql;\n"
+            "ALTER FUNCTION public.hex_x()\n"
+            "    OWNER TO gis_admin;\n"
+        )
+        ut = install_hex.process_sql(sql, None)
+        self.assertIn("format('ALTER TABLE %I.%I OWNER TO %I', s, t, r)", ut)
+        self.assertNotIn("ALTER FUNCTION public.hex_x()", ut)
 
     def test_event_trigger_behaller_postgres(self):
         """Filer med CREATE EVENT TRIGGER ska lämnas orörda."""
@@ -216,6 +260,51 @@ class TestAgarskapsantagande(unittest.TestCase):
             "Filer som process_sql lämnar orörda men som inte äger till "
             "postgres. Ägarskapet blir hårdkodat i stället för att följa "
             "owner_role:\n  " + "\n  ".join(avvikande),
+        )
+
+    def test_utan_agarroll_lamnar_inga_agarskapssatser(self):
+        """
+        Med owner_role=None ska ingen installerad fil ha kvar en
+        ägarskapssats — utom de superuser-beroende filer som returneras
+        oförändrade och behåller sitt postgres-ägande.
+        """
+        kvar = []
+        for f in install_hex.INSTALL_ORDER:
+            sql = (PROJECT_ROOT / f).read_text(encoding="utf-8")
+            ut = install_hex.process_sql(sql, None)
+            if ut == sql:
+                continue  # superuser-beroende fil, avsiktligt orörd
+            kod = install_hex._strip_sql_comments(ut)
+            if re.search(r"\bOWNER\s+TO\s+\w+\s*;", kod, re.IGNORECASE):
+                kvar.append(f)
+
+        self.assertEqual(
+            kvar, [],
+            "Ägarskapssatser kvar trots owner_role=None:\n  " + "\n  ".join(kvar),
+        )
+
+    def test_utan_agarroll_lamnar_inga_dinglande_satser(self):
+        """
+        Borttagningen får inte klippa mitt i en sats.
+
+        Varje ALTER som inleder en sats ska antingen vara helt borta eller
+        fortfarande avslutas med semikolon.
+        """
+        trasiga = []
+        for f in install_hex.INSTALL_ORDER:
+            sql = (PROJECT_ROOT / f).read_text(encoding="utf-8")
+            ut = install_hex.process_sql(sql, None)
+            if ut == sql:
+                continue
+            kod = install_hex._strip_sql_comments(ut)
+            # Varje ALTER-sats på toppnivå måste ha ett semikolon efter sig
+            for match in re.finditer(r"^[ \t]*ALTER\b", kod, re.MULTILINE):
+                if ";" not in kod[match.start():]:
+                    trasiga.append(f"{f}: {kod[match.start():][:60]!r}")
+
+        self.assertEqual(
+            trasiga, [],
+            "Dinglande ALTER-satser efter borttagning:\n  " + "\n  ".join(trasiga),
         )
 
     def test_process_sql_lamnar_inga_frammande_agare(self):

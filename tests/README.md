@@ -62,7 +62,7 @@ SVIT                                 PASS  XFAIL   FAIL   STATUS
 reserved_words_test.sql                24      0      0   OK
 stress_test.sql                        28     14      0   OK
 ...
-TOTALT                                456     15      0
+TOTALT                                463     15      0
 ```
 
 Flaggor:
@@ -135,7 +135,7 @@ och betyder inte att ett test misslyckats.
 | `test_grupprattigheter.sql`    | `hex_tillampa_grupprattigheter()` – AD-grupproll → Hex-roll     |
 | `test_client_encoding.py`      | Att lyssnaren alltid sätter UTF-8 som klientkodning             |
 | `test_installer.py`            | `install_hex.py` – ägarskapsomskrivning och installationsordning |
-| `test_installer_livscykel.py`  | Uppgradering, avinstallation och förutsättningskontroller       |
+| `test_installer_livscykel.py`  | Uppgradering, avinstallation, `owner_role=None`, förutsättningar |
 | `test_pg_notify_listener.py`   | `pg_notify`-flödet mot GeoServer (GeoServer mockas)             |
 
 Python-sviterna kräver inte att Hex är installerat. `test_installer.py`
