@@ -116,7 +116,13 @@ Validerar geometrikvalitet för _kba_-scheman (manuellt redigerade data).
 
 - **PostgreSQL 16 eller senare.** Installern kontrollerar serverversionen och
   avbryter mot äldre versioner.
-- **PostGIS och pgcrypto** — skapas automatiskt av installern.
+- **PostGIS installerat på servern** — paketet `postgresql-<version>-postgis-3`
+  eller motsvarande för plattformen. Installern kör `CREATE EXTENSION IF NOT
+  EXISTS postgis`, vilket bara fungerar om PostGIS redan finns på maskinen där
+  PostgreSQL körs. Saknas paketet avbryter installationen med
+  `ERROR: extension "postgis" is not available`.
+- **pgcrypto** — ingår i `postgresql-contrib` och skapas automatiskt av
+  installern.
 - **Python 3** och `psycopg2` (`pip install psycopg2-binary`) för den
   automatiska installationen.
 - **Ägarrollen** (`owner_role`) — skapas automatiskt av installern om den

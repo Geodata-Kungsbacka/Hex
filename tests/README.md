@@ -7,7 +7,9 @@ Hex installerat, samt Python-sviter för GeoServer-lyssnaren.
 
 ## Förutsättningar
 
-- PostgreSQL 16 eller senare med PostGIS, och Hex installerat i testdatabasen
+- PostgreSQL 16 eller senare med PostGIS installerat på servern (paketet
+  `postgresql-<version>-postgis-3` eller motsvarande), och Hex installerat i
+  testdatabasen
   (se [docs/09_installera-uppdatera-hex.md](../docs/09_installera-uppdatera-hex.md)).
 - Anslutning som superuser. Sviterna skapar och tar bort scheman, roller och
   event-triggerberoende objekt.
@@ -22,6 +24,13 @@ Sätt upp en testdatabas:
 ```bash
 createdb hex_test
 ```
+
+> **Anslutning som `postgres`.** På Debian/Ubuntu står `local all postgres peer`
+> i `pg_hba.conf`, vilket betyder att `createdb` och psql-kommandona nedan bara
+> fungerar direkt om du är inloggad som OS-användaren `postgres`. Är du det
+> inte, kör antingen via `su postgres -c '...'` eller anslut över TCP med
+> lösenord (`PGHOST=localhost PGUSER=postgres PGPASSWORD=...`). Samma sak
+> gäller `host`/`password` i `DATABASES` nedan.
 
 Peka sedan `DATABASES` i `install_hex.py` på testdatabasen:
 
@@ -50,8 +59,12 @@ Installern skapar `postgis` och `pgcrypto`, och skapar ägarrollen
 ## Kör alla tester
 
 ```bash
-PGDATABASE=hex_test PGUSER=postgres python3 tests/run_all_tests.py
+PGDATABASE=hex_test PGUSER=postgres PGHOST=localhost PGPASSWORD=... \
+  python3 tests/run_all_tests.py
 ```
+
+`PGHOST`/`PGPASSWORD` behövs inte om du kör som OS-användaren `postgres` och
+peer-autentisering räcker — se noten om `pg_hba.conf` ovan.
 
 Skriptet kör varje svit, tolkar resultaten och skriver ut en sammanfattning.
 Avslutskoden är 0 bara om samtliga sviter passerade, vilket gör det användbart
