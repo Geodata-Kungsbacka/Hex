@@ -582,6 +582,26 @@ class TestListenLoopIntegration(unittest.TestCase):
 
     TIMEOUT = 5  # sekunder att vänta på att tråden plockar upp notifieringen
 
+    def _notifiera_tills(self, villkor, notiser):
+        """
+        Skickar NOTIFY tills villkoret uppfylls eller tiden går ut.
+
+        LISTEN körs i bakgrundstråden. Hinner den inte registrera sig innan
+        första NOTIFY skickas är den notifieringen förlorad för alltid –
+        PostgreSQL levererar bara till sessioner som redan lyssnar. En fast
+        väntetid före första NOTIFY räcker därför inte: under last hinner
+        tråden inte alltid fram, och testet blir instabilt. Att skicka om
+        notifieringen gör testet oberoende av hur snabbt tråden startar.
+        """
+        deadline = time.monotonic() + self.TIMEOUT
+        while time.monotonic() < deadline:
+            for kanal, nyttolast in notiser:
+                pg_notify(kanal, nyttolast)
+            if villkor():
+                return True
+            time.sleep(0.1)
+        return villkor()
+
     def _run_listen_loop(self, gs_mock, stop_event):
         with patch.object(gl, "_fetch_role_credentials", return_value=(TEST_ROLE_NAME, TEST_ROLE_PASSWORD)):
             with patch.object(gl, "_fetch_write_role_credentials", return_value=(TEST_W_ROLE_NAME, TEST_W_ROLE_PASSWORD)):
@@ -615,15 +635,11 @@ class TestListenLoopIntegration(unittest.TestCase):
             target=self._run_listen_loop, args=(gs, stop), daemon=True
         )
         t.start()
-        time.sleep(0.5)  # ge tråden tid att köra LISTEN
 
-        pg_notify(CHANNEL_CREATE, VALID_CREATE_SCHEMA)
-
-        deadline = time.monotonic() + self.TIMEOUT
-        while time.monotonic() < deadline:
-            if gs.create_workspace.called:
-                break
-            time.sleep(0.1)
+        self._notifiera_tills(
+            lambda: gs.create_workspace.called,
+            [(CHANNEL_CREATE, VALID_CREATE_SCHEMA)],
+        )
 
         stop.set()
         t.join(timeout=3)
@@ -640,15 +656,11 @@ class TestListenLoopIntegration(unittest.TestCase):
             target=self._run_listen_loop, args=(gs, stop), daemon=True
         )
         t.start()
-        time.sleep(0.5)
 
-        pg_notify(CHANNEL_DROP, VALID_DROP_SCHEMA)
-
-        deadline = time.monotonic() + self.TIMEOUT
-        while time.monotonic() < deadline:
-            if gs.delete_workspace.called:
-                break
-            time.sleep(0.1)
+        self._notifiera_tills(
+            lambda: gs.delete_workspace.called,
+            [(CHANNEL_DROP, VALID_DROP_SCHEMA)],
+        )
 
         stop.set()
         t.join(timeout=3)
@@ -664,16 +676,12 @@ class TestListenLoopIntegration(unittest.TestCase):
             target=self._run_listen_loop, args=(gs, stop), daemon=True
         )
         t.start()
-        time.sleep(0.5)
 
-        pg_notify(CHANNEL_CREATE, VALID_CREATE_SCHEMA)
-        pg_notify(CHANNEL_DROP,   VALID_DROP_SCHEMA)
-
-        deadline = time.monotonic() + self.TIMEOUT
-        while time.monotonic() < deadline:
-            if gs.create_workspace.called and gs.delete_workspace.called:
-                break
-            time.sleep(0.1)
+        self._notifiera_tills(
+            lambda: gs.create_workspace.called and gs.delete_workspace.called,
+            [(CHANNEL_CREATE, VALID_CREATE_SCHEMA),
+             (CHANNEL_DROP,   VALID_DROP_SCHEMA)],
+        )
 
         stop.set()
         t.join(timeout=3)

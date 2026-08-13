@@ -347,15 +347,28 @@ def _strip_sql_comments(sql: str) -> str:
 def process_sql(sql: str, owner_role: str | None) -> str:
     """Bearbetar SQL-innehåll - ersätter eller tar bort OWNER TO-satser.
 
-    Event-triggers måste ägas av en superuser och behåller därför postgres-ägande.
+    Event-triggers och deras triggerfunktioner måste ägas av en superuser och
+    behåller därför postgres-ägande. Övriga objekt får owner_role.
     """
-    # Event-triggers och SECURITY DEFINER-funktioner kräver superuser-ägande.
     # Klassificeringen görs på SQL:en utan kommentarer – annars räcker det att
     # frasen nämns i en kommentar för att filen felaktigt ska behålla
     # postgres-ägande i stället för att få owner_role.
     kod = _strip_sql_comments(sql).upper()
+
+    # Undantaget gäller event-triggers och de SECURITY DEFINER-funktioner som
+    # ÄR triggerfunktioner (RETURNS event_trigger). De skapar roller och flyttar
+    # ägarskap och behöver därför superuser.
+    #
+    # SECURITY DEFINER ensamt räcker inte som kriterium. En vanlig SECURITY
+    # DEFINER-funktion ska köra som owner_role, inte som postgres: den ska ha
+    # exakt de rättigheter ägarrollen har (t.ex. ADMIN OPTION på schemarollerna)
+    # och inte mer. Undantas den från omskrivningen behåller den i stället den
+    # ägare som råkar stå i filen, oavsett konfigurerat owner_role — vilket ger
+    # fel ägare på ett kluster där den rollen finns, och avbryter hela
+    # installationen på ett kluster där den inte finns.
+    ar_triggerfunktion = re.search(r'RETURNS\s+EVENT_TRIGGER', kod) is not None
     needs_superuser = ('CREATE EVENT TRIGGER' in kod or
-                       'SECURITY DEFINER' in kod)
+                       ('SECURITY DEFINER' in kod and ar_triggerfunktion))
 
     if needs_superuser:
         # Behåll postgres-ägande för superuser-beroende objekt

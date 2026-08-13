@@ -40,10 +40,28 @@ AS $BODY$
  *   CREATE SCHEMA <nytt_namn>           →  Hex etablerar nytt ekosystem från noll
  *
  * TRIGGER: Körs vid ALTER SCHEMA, kontrollerar om satsen är ett RENAME
+ *
+ * DETEKTERING:
+ *   PostgreSQL exponerar ingen text för den enskilda DDL-satsen i en
+ *   event-trigger, så namnbytet måste kännas igen via current_query().
+ *   current_query() returnerar dock den YTTERSTA satsen, inte den sats som
+ *   utlöste triggern. Att bara leta efter frasen "RENAME TO" räcker därför
+ *   inte: Hex kör själv ALTER SCHEMA ... OWNER TO inifrån
+ *   hex_hantera_std_roller vid CREATE SCHEMA, och den satsen träffas då av
+ *   varje yttre sats som råkar innehålla frasen — även i en kommentar, och
+ *   även när den gäller en tabell. Följden blev att CREATE SCHEMA
+ *   misslyckades för klienter som skickar flera satser i samma anrop.
+ *
+ *   Frasen kopplas därför till det faktiska objektet: vid ett namnbyte är
+ *   object_identity det NYA schemanamnet, och satsen måste alltså byta namn
+ *   TILL just det schemat. En ALTER SCHEMA ... OWNER TO matchar aldrig det,
+ *   oavsett vad den yttre satsen innehåller.
  ******************************************************************************/
 DECLARE
     kommando        record;
     schema_namn     text;
+    gammalt_namn    text;
+    namn_monster    text;
 BEGIN
     RAISE NOTICE E'[hex_blockera_schema_namnbyte] ======== START ========';
     RAISE NOTICE '[hex_blockera_schema_namnbyte] Kontrollerar ALTER SCHEMA-sats';
@@ -57,7 +75,27 @@ BEGIN
         LOOP
             schema_namn := replace(split_part(kommando.object_identity, '.', 1), '"', '');
 
-            RAISE NOTICE '[hex_blockera_schema_namnbyte] RENAME TO detekterat för schema: %', schema_namn;
+            -- Escapa regex-metatecken – schemanamnets fria del kan innehålla
+            -- vad som helst om det citerats i CREATE SCHEMA.
+            namn_monster := regexp_replace(schema_namn, '([\\^$.|?*+()\[\]{}])', '\\\1', 'g');
+
+            -- Kräv att satsen byter namn TILL just det här schemat. Annars är
+            -- det inte ett schemanamnbyte, utan en annan ALTER SCHEMA-variant
+            -- (typiskt OWNER TO) som råkar köras medan frasen finns i den
+            -- yttre satsen.
+            IF current_query() !~* ('\mRENAME\s+TO\s+"?' || namn_monster || '"?\M') THEN
+                RAISE NOTICE '[hex_blockera_schema_namnbyte] Ingen namnbytesmålsträff för "%" – annan ALTER SCHEMA-variant, tillåts', schema_namn;
+                CONTINUE;
+            END IF;
+
+            -- Namnet före bytet, för ett användbart felmeddelande. Efter att
+            -- namnbytet blockerats är det gamla namnet det som finns kvar.
+            gammalt_namn := COALESCE(
+                (regexp_match(current_query(),
+                              '\mALTER\s+SCHEMA\s+"?([^"\s]+)"?\s+RENAME\s+TO', 'i'))[1],
+                schema_namn);
+
+            RAISE NOTICE '[hex_blockera_schema_namnbyte] RENAME TO detekterat: % -> %', gammalt_namn, schema_namn;
             RAISE NOTICE '[hex_blockera_schema_namnbyte] !!! BLOCKERAR NAMNBYTE !!!';
 
             RAISE EXCEPTION
@@ -72,7 +110,7 @@ BEGIN
                 'Rätt tillvägagångssätt:\n'
                 '  1. DROP SCHEMA % CASCADE   -- Hex städar upp roller och GeoServer\n'
                 '  2. CREATE SCHEMA <nytt_namn>  -- Hex etablerar nytt ekosystem',
-                schema_namn;
+                gammalt_namn;
         END LOOP;
 
     END IF;
