@@ -16,9 +16,17 @@
 - PostGIS tillgängligt på servern (paketet `postgresql-<version>-postgis-3` eller
   motsvarande). Själva tilläggen `postgis` och `pgcrypto` skapas automatiskt av
   installern med `CREATE EXTENSION IF NOT EXISTS`.
-- Ägarrollen (`owner_role`) måste finnas i databasen innan installationen körs.
-  Installern skapar den inte, den avbryter med
-  `owner_role '<roll>' finns inte i databasen`.
+- PostgreSQL 16 eller senare. Installern läser serverversionen och avbryter mot
+  äldre servrar.
+- Ägarrollen (`owner_role`) behöver inte finnas i förväg. Saknas den skapar
+  installern den som `NOLOGIN` utan lösenord och rapporterar det som en varning
+  på slutet. Rollen behöver aldrig kunna logga in: den äger Hex:s objekt och får
+  `ADMIN OPTION` på schemats `r_`- och `w_`-roller, vilket fungerar för en
+  `NOLOGIN`-roll. Ska den kunna logga in lägger du själv till det med
+  `ALTER ROLE <roll> LOGIN PASSWORD '...';`.
+  Observera att ett felstavat `owner_role` därmed skapar en ny roll i stället
+  för att återanvända den avsedda — läs varningen på slutet av installationen.
+  Roller är gemensamma för hela klustret, inte per databas.
 - Källkoden från repositoryt (`install_hex.py` och `src/`).
 
 ---

@@ -7,7 +7,7 @@ Hex installerat, samt Python-sviter för GeoServer-lyssnaren.
 
 ## Förutsättningar
 
-- PostgreSQL med PostGIS, och Hex installerat i testdatabasen
+- PostgreSQL 16 eller senare med PostGIS, och Hex installerat i testdatabasen
   (se [docs/09_installera-uppdatera-hex.md](../docs/09_installera-uppdatera-hex.md)).
 - Anslutning som superuser. Sviterna skapar och tar bort scheman, roller och
   event-triggerberoende objekt.
@@ -21,10 +21,29 @@ Sätt upp en testdatabas:
 
 ```bash
 createdb hex_test
-psql -d hex_test -c 'CREATE EXTENSION IF NOT EXISTS postgis;'
-# ange hex_test i DATABASES i install_hex.py, sedan:
+```
+
+Peka sedan `DATABASES` i `install_hex.py` på testdatabasen:
+
+```python
+DATABASES = [
+    {
+        "host": "localhost",
+        "port": 5432,
+        "dbname": "hex_test",
+        "user": "postgres",
+        "password": "...",
+        "owner_role": "gis_admin",
+    },
+]
+```
+
+```bash
 python3 install_hex.py
 ```
+
+Installern skapar `postgis` och `pgcrypto`, och skapar ägarrollen
+(`gis_admin` ovan) som `NOLOGIN` om den inte redan finns i klustret.
 
 ---
 

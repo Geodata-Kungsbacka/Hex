@@ -114,17 +114,20 @@ Validerar geometrikvalitet för _kba_-scheman (manuellt redigerade data).
 
 ### Systemkrav
 
-- **PostgreSQL 17 eller senare.** Installern kontrollerar serverversionen och
+- **PostgreSQL 16 eller senare.** Installern kontrollerar serverversionen och
   avbryter mot äldre versioner.
 - **PostGIS och pgcrypto** — skapas automatiskt av installern.
 - **Python 3** och `psycopg2` (`pip install psycopg2-binary`) för den
   automatiska installationen.
+- **Ägarrollen** (`owner_role`) — skapas automatiskt av installern om den
+  saknas, se [Automatisk installation](#automatisk-installation-rekommenderat).
 
 Installern kontrollerar också att `PUBLIC` saknar `CREATE` på schemat `public`
 och varnar annars. Det har varit standard sedan PostgreSQL 15, men en databas
-som uppgraderats från version 14 eller äldre behåller sin gamla ACL. Hex:s
-`SECURITY DEFINER`-funktioner slår upp objekt i `public`, så rättigheten bör
-återkallas:
+som uppgraderats från version 14 eller äldre behåller sin gamla ACL oavsett
+vilken version den körs på i dag — versionsgolvet skyddar alltså inte mot det,
+utan installerns kontroll gör det. Hex:s `SECURITY DEFINER`-funktioner slår upp
+objekt i `public`, så rättigheten bör återkallas:
 
 ```sql
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
@@ -146,10 +149,23 @@ DATABASES = [
         "dbname": "geodata",       # Databas att installera Hex i
         "user": "postgres",
         "password": "losenord_har",
-        "owner_role": "gis_admin", # Ägarroll för Hex-objekt
+        "owner_role": "gis_admin", # Ägarroll för Hex-objekt, skapas om den saknas
     },
 ]
 ```
+
+Finns inte ägarrollen i klustret skapar installern den som `NOLOGIN` utan
+lösenord och rapporterar det som en varning på slutet. Rollen behöver aldrig
+logga in — den äger Hex:s objekt och får `ADMIN OPTION` på schemats `r_`- och
+`w_`-roller, vilket fungerar för en `NOLOGIN`-roll. Ska rollen kunna logga in
+lägger du själv till det:
+
+```sql
+ALTER ROLE gis_admin LOGIN PASSWORD '...';
+```
+
+> **OBS:** Ett felstavat `owner_role` skapar en ny roll i stället för att
+> återanvända den avsedda. Kontrollera varningen på slutet av installationen.
 
 Lägg till fler poster i listan för att installera i flera databaser i samma
 körning — installern loopar över alla och skriver ut en sammanfattning.
