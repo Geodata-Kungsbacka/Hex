@@ -10,5 +10,26 @@
         ]
       }
     ]
+  },
+  "permissions": {
+    "allow": [
+      "Bash(psql:*)",
+      "Bash(createdb:*)",
+      "Bash(dropdb:*)",
+      "Bash(pg_isready:*)",
+      "Bash(pg_lsclusters:*)",
+      "Bash(pg_ctlcluster:*)",
+      "Bash(python3 tests/run_all_tests.py:*)",
+      "Bash(python3 tests/test_client_encoding.py:*)",
+      "Bash(python3 tests/test_installer.py:*)",
+      "Bash(python3 tests/test_installer_livscykel.py:*)",
+      "Bash(python3 tests/test_pg_notify_listener.py:*)",
+      "Bash(python3 install_hex.py:*)",
+      "Bash(git status:*)",
+      "Bash(git log:*)",
+      "Bash(git diff:*)",
+      "Bash(git show:*)",
+      "Bash(git branch:*)"
+    ]
   }
 }
