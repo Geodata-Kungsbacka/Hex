@@ -344,6 +344,22 @@ def _strip_sql_comments(sql: str) -> str:
     return re.sub(r'--[^\n]*', ' ', utan_block)
 
 
+# En hel ALTER ... OWNER TO <roll>;-sats, oavsett hur många rader den är
+# skriven över. Merparten av filerna delar satsen på två rader:
+#
+#     ALTER TYPE public.hex_geom_info
+#         OWNER TO gis_admin;
+#
+# [^;]* kan aldrig passera ett semikolon, så matchningen stannar alltid inom
+# en och samma sats. Kravet på \w+ efter OWNER TO gör att dynamisk SQL i
+# funktionskroppar (format('ALTER TABLE %I.%I OWNER TO %I', ...)) inte träffas,
+# och ^[ \t]*ALTER att satsen måste inleda en rad.
+AGARSKAPSSATS = re.compile(
+    r'^[ \t]*ALTER\b[^;]*?\bOWNER[ \t\r\n]+TO[ \t\r\n]+\w+[ \t]*;[ \t]*\r?\n?',
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
 def process_sql(sql: str, owner_role: str | None) -> str:
     """Bearbetar SQL-innehåll - ersätter eller tar bort OWNER TO-satser.
 
@@ -375,9 +391,13 @@ def process_sql(sql: str, owner_role: str | None) -> str:
         return sql
 
     if not owner_role:
-        # Ta bort OWNER TO-rader helt
-        lines = [line for line in sql.split('\n') if 'OWNER TO' not in line.upper()]
-        return '\n'.join(lines)
+        # Ta bort hela ägarskapssatsen, inte bara raden med OWNER TO. Satsen
+        # är oftast skriven över två rader, och att bara stryka den ena lämnar
+        # kvar ett dinglande "ALTER TYPE public.hex_geom_info" utan avslutning
+        # – vilket ger "syntax error at end of input" redan på första typfilen.
+        # Objekten ägs då i stället av den anslutande användaren, vilket är
+        # precis vad owner_role=None betyder.
+        return AGARSKAPSSATS.sub('', sql)
 
     # Ersätt alla OWNER TO med konfigurerad roll
     return re.sub(r'OWNER TO \w+', f'OWNER TO {owner_role}', sql, flags=re.IGNORECASE)

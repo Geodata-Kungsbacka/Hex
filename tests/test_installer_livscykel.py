@@ -310,6 +310,79 @@ class TestAvinstallation(unittest.TestCase):
 
 
 @unittest.skipUnless(KAN_KORA, "kräver superuser-anslutning till PostgreSQL")
+class TestAgarrollNone(unittest.TestCase):
+    """
+    owner_role=None: den anslutande användaren äger objekten.
+
+    REGRESSION: konfigurationen gick tidigare inte att installera alls.
+    process_sql() tog bort raden med OWNER TO i stället för hela satsen, och
+    eftersom de flesta filer skriver satsen över två rader blev det kvar ett
+    dinglande ALTER utan avslutning. Installationen dog på första typfilen
+    med "syntax error at end of input".
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        _skapa_tom_databas()
+        cfg = _db_config()
+        cfg["owner_role"] = None
+        install_hex.install(cfg, base_path=str(PROJECT_ROOT))
+
+    @classmethod
+    def tearDownClass(cls):
+        _ta_bort_databas()
+
+    def test_installationen_ar_komplett(self):
+        (antal,) = _fraga(
+            "SELECT count(*) FROM pg_event_trigger WHERE evtname LIKE 'hex%'"
+        )[0]
+        self.assertEqual(antal, 10)
+
+    def test_anslutande_anvandare_ager_allt(self):
+        """Utan owner_role ska inga objekt ha någon annan ägare."""
+        anslutande = os.environ.get("PGUSER", "postgres")
+        for sql, vad in (
+            ("SELECT DISTINCT pg_get_userbyid(p.proowner)"
+             " FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace"
+             " WHERE n.nspname = 'public' AND p.proname LIKE 'hex\\_%'", "funktioner"),
+            ("SELECT DISTINCT pg_get_userbyid(evtowner) FROM pg_event_trigger", "event-triggers"),
+            ("SELECT DISTINCT tableowner FROM pg_tables"
+             " WHERE schemaname = 'public' AND tablename LIKE 'hex%'", "tabeller"),
+        ):
+            with self.subTest(objekt=vad):
+                self.assertEqual([r[0] for r in _fraga(sql)], [anslutande])
+
+    def test_hex_fungerar_efter_installation(self):
+        """Installationen ska inte bara gå igenom, utan faktiskt fungera."""
+        conn = _koppla()
+        conn.autocommit = True
+        try:
+            cur = conn.cursor()
+            cur.execute("CREATE SCHEMA sk0_ext_noneprov")
+            cur.execute(
+                "CREATE TABLE sk0_ext_noneprov.prov_p"
+                " (namn text, geom geometry(Point, 3007))"
+            )
+            cur.execute(
+                "SELECT column_name FROM information_schema.columns"
+                " WHERE table_schema = 'sk0_ext_noneprov' AND table_name = 'prov_p'"
+                " ORDER BY ordinal_position"
+            )
+            kolumner = [r[0] for r in cur.fetchall()]
+            # Hex lägger till gid först och flyttar geometrin sist
+            self.assertEqual(kolumner[0], "gid")
+            self.assertEqual(kolumner[-1], "geom")
+
+            cur.execute(
+                "SELECT count(*) FROM pg_roles WHERE rolname LIKE '%sk0\\_ext\\_noneprov'"
+            )
+            self.assertEqual(cur.fetchone()[0], 4)
+            cur.execute("DROP SCHEMA sk0_ext_noneprov CASCADE")
+        finally:
+            conn.close()
+
+
+@unittest.skipUnless(KAN_KORA, "kräver superuser-anslutning till PostgreSQL")
 class TestForutsattningar(unittest.TestCase):
     """kontrollera_forutsattningar() – versionsgolv och skrivbart public."""
 
