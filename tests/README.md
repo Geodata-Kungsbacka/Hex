@@ -62,8 +62,11 @@ SVIT                                 PASS  XFAIL   FAIL   STATUS
 reserved_words_test.sql                24      0      0   OK
 stress_test.sql                        28     14      0   OK
 ...
-TOTALT                                415     14      0
+TOTALT                                437     15      3
 ```
+
+De tre underkända testerna är avsiktliga — de dokumenterar två kända
+defekter, se [Kända fel som sviterna fångar](#kända-fel-som-sviterna-fångar).
 
 Flaggor:
 
@@ -131,8 +134,29 @@ och betyder inte att ett test misslyckats.
 | `test_role_permissions.sql`    | Roller och rättigheter per schema                              |
 | `test_underhall.sql`           | `hex_underhall()` – reparation av triggers, roller, ägarskap    |
 | `test_underhall_hex.sql`       | Ägarskapsreparation och idempotens i underhållet               |
+| `test_schema_namnbyte.sql`     | Blockering av `ALTER SCHEMA ... RENAME TO`                     |
+| `test_grupprattigheter.sql`    | `hex_tillampa_grupprattigheter()` – AD-grupproll → Hex-roll     |
 | `test_client_encoding.py`      | Att lyssnaren alltid sätter UTF-8 som klientkodning             |
+| `test_installer.py`            | `install_hex.py` – ägarskapsomskrivning och installationsordning |
 | `test_pg_notify_listener.py`   | `pg_notify`-flödet mot GeoServer (GeoServer mockas)             |
 
-Python-sviterna kräver inte att Hex är installerat – `test_pg_notify_listener.py`
-använder en riktig databasanslutning för LISTEN/NOTIFY men mockar GeoServer.
+Python-sviterna kräver inte att Hex är installerat. `test_installer.py`
+behöver ingen databas alls – den testar installerns rena funktioner och
+konsistensen i `INSTALL_ORDER` mot filerna på disk.
+
+### Kända fel som sviterna fångar
+
+Tre av testerna misslyckas mot nuvarande kod. De dokumenterar verkliga
+defekter, inte trasiga tester:
+
+- `test_installer.py` (2 fel) — `hex_tillampa_grupprattigheter.sql` har
+  `OWNER TO gis_admin` hårdkodat. `process_sql()` skriver inte om `OWNER TO`
+  i filer som innehåller `SECURITY DEFINER`, så ägarskapet följer inte
+  `owner_role`.
+- `test_schema_namnbyte.sql` (1 fel, N5) — `hex_blockera_schema_namnbyte()`
+  matchar `current_query()` i stället för den faktiska DDL-satsen och ger
+  falskt utslag när frasen `RENAME TO` förekommer i den yttre satsen.
+
+`test_pg_notify_listener.py` använder en riktig databasanslutning för
+LISTEN/NOTIFY men mockar GeoServer. Den har tidsberoende väntetider och kan
+undantagsvis ge falskt utslag under hög last.
