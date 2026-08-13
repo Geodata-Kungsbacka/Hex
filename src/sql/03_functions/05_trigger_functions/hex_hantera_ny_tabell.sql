@@ -4,7 +4,7 @@ CREATE OR REPLACE FUNCTION public.hex_hantera_ny_tabell()
     COST 100
     VOLATILE NOT LEAKPROOF
     SECURITY DEFINER
-    SET search_path = public
+    SET search_path = public, pg_temp
 AS $BODY$
 /******************************************************************************
  * Denna funktion hanterar omstrukturering av tabeller när de skapas. Den:

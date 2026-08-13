@@ -20,6 +20,14 @@ AS $BODY$
  * ANVÄNDNING:
  * Anropas automatiskt av hex_hantera_std_roller() när nya roller skapas.
  * Tilldelar både rättigheter på befintliga objekt och framtida objekt (DEFAULT PRIVILEGES).
+ *
+ * SÄKERHET:
+ * Funktionen är SECURITY INVOKER (standard) — den körs alltså med anroparens
+ * rättigheter och ärver anroparens search_path. Anropad från
+ * hex_hantera_std_roller() (SECURITY DEFINER, ägs av postgres) körs den med
+ * postgres rättigheter och med det låsta search_path som den funktionen sätter.
+ * Anropad direkt, t.ex. från hex_underhall(), körs den med anroparens egna
+ * rättigheter och kan därför inte bevilja mer än anroparen redan har.
  ******************************************************************************/
 BEGIN
     RAISE NOTICE '[hex_tilldela_rollrattigheter] Tilldelar % rättigheter till % på schema %', 
@@ -32,7 +40,8 @@ BEGIN
     IF p_rolltyp = 'read' THEN
         -- Endast läsrättigheter på tabeller och vyer
         EXECUTE format('GRANT SELECT ON ALL TABLES IN SCHEMA %I TO %I', p_schema_namn, p_rollnamn);
-        -- DEFAULT PRIVILEGES för postgres (kör denna funktion via SECURITY DEFINER)
+        -- DEFAULT PRIVILEGES för aktuell roll (postgres när anropet kommer via
+        -- hex_hantera_std_roller, som är SECURITY DEFINER)
         EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA %I GRANT SELECT ON TABLES TO %I',
                       p_schema_namn, p_rollnamn);
         -- DEFAULT PRIVILEGES för ägarrollen (skapar tabeller via FME, QGIS, etc.)
@@ -44,7 +53,7 @@ BEGIN
         -- Alla tabellrättigheter (inkl. TRUNCATE, REFERENCES, TRIGGER)
         EXECUTE format('GRANT ALL ON ALL TABLES IN SCHEMA %I TO %I',
                       p_schema_namn, p_rollnamn);
-        -- DEFAULT PRIVILEGES för postgres (tabeller)
+        -- DEFAULT PRIVILEGES för aktuell roll (tabeller)
         EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA %I GRANT ALL ON TABLES TO %I',
                       p_schema_namn, p_rollnamn);
         -- DEFAULT PRIVILEGES för ägarrollen (tabeller)
@@ -53,7 +62,7 @@ BEGIN
         -- Skrivrättigheter på sekvenser (krävs för INSERT med seriella/identity-kolumner)
         EXECUTE format('GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA %I TO %I',
                       p_schema_namn, p_rollnamn);
-        -- DEFAULT PRIVILEGES för postgres (sekvenser)
+        -- DEFAULT PRIVILEGES för aktuell roll (sekvenser)
         EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA %I GRANT USAGE, SELECT ON SEQUENCES TO %I',
                       p_schema_namn, p_rollnamn);
         -- DEFAULT PRIVILEGES för ägarrollen (sekvenser)

@@ -272,6 +272,67 @@ def _label(db: dict) -> str:
     return f"{db['dbname']}@{db['host']}"
 
 
+MINSTA_SERVERVERSION = 170000  # PostgreSQL 17
+
+
+def skriv_varning(text: str):
+    """Skriver ut en varning med indrag på fortsättningsrader."""
+    rader = text.splitlines()
+    print(f"  VARNING: {rader[0]}")
+    for rad in rader[1:]:
+        print(f"           {rad}")
+
+
+def kontrollera_forutsattningar(cur) -> list[str]:
+    """Kontrollerar databasens förutsättningar innan Hex installeras.
+
+    1. Serverversion. Hex kräver PostgreSQL 17 eller senare. Avbryter installationen.
+    2. CREATE på schema public för PUBLIC. Hex:s SECURITY DEFINER-funktioner låser
+       sitt search_path till 'public, pg_temp'. Den låsningen skyddar bara om public
+       inte är skrivbart för vem som helst — annars kan en godtycklig användare lägga
+       ett objekt i public som skuggar ett Hex-objekt och får det kört som postgres.
+       PostgreSQL 15 tog bort den rättigheten som standard, men databaser som
+       uppgraderats (pg_upgrade eller dump/restore) från äldre versioner behåller
+       sin gamla ACL även på 17. Varnar men avbryter inte — åtgärden är ett
+       medvetet beslut för databasägaren.
+
+    Returnerar varningstexterna. De skrivs ut direkt men samlas också in så att
+    install() kan upprepa dem sist — annars drunknar de i installationsloggen.
+    """
+    cur.execute("SELECT current_setting('server_version_num')::int, version()")
+    versionsnummer, versionstext = cur.fetchone()
+    if versionsnummer < MINSTA_SERVERVERSION:
+        raise RuntimeError(
+            f"Hex kräver PostgreSQL {MINSTA_SERVERVERSION // 10000} eller senare. "
+            f"Ansluten server: {versionstext.split(',')[0]}"
+        )
+
+    # grantee = 0 betyder PUBLIC i aclexplode().
+    cur.execute("""
+        SELECT EXISTS (
+            SELECT 1
+            FROM pg_namespace n, aclexplode(n.nspacl) a
+            WHERE n.nspname = 'public'
+              AND a.grantee = 0
+              AND a.privilege_type = 'CREATE'
+        )
+    """)
+    varningar: list[str] = []
+    if cur.fetchone()[0]:
+        varningar.append(
+            "PUBLIC har CREATE på schema public.\n"
+            "Hex:s SECURITY DEFINER-funktioner körs som postgres och slår upp\n"
+            "objekt i public. Så länge vem som helst kan skapa objekt där kan\n"
+            "ett Hex-objekt skuggas och den skuggande koden köras som postgres.\n"
+            "Åtgärda med:  REVOKE CREATE ON SCHEMA public FROM PUBLIC;\n"
+            "(Databasen är sannolikt uppgraderad från PostgreSQL 14 eller äldre.)"
+        )
+
+    for varning in varningar:
+        skriv_varning(varning)
+    return varningar
+
+
 def _strip_sql_comments(sql: str) -> str:
     """Returnerar SQL:en med blockkommentarer (/* */) och radkommentarer (--) borttagna.
 
@@ -531,6 +592,10 @@ def install(db: dict, base_path="."):
     installed = 0
 
     try:
+        # Serverversion och skrivskydd på public innan något installeras
+        print("Kontrollerar databasens förutsättningar...")
+        varningar = kontrollera_forutsattningar(cur)
+
         # Säkerställ att PostGIS finns
         print("Kontrollerar PostGIS-tillägget...")
         cur.execute("CREATE EXTENSION IF NOT EXISTS postgis")
@@ -602,8 +667,19 @@ COMMENT ON FUNCTION public.hex_systemagare()
                 print("  Inga åtgärder behövdes.")
         except Exception as repair_err:
             conn.rollback()
-            print(f"  Varning: underhåll misslyckades: {repair_err}")
-            print("  Hex är installerat. Kör SELECT * FROM public.hex_underhall() manuellt.")
+            varningar.append(
+                f"Underhåll misslyckades: {str(repair_err).strip()}\n"
+                "Hex är installerat. Kör SELECT * FROM public.hex_underhall() manuellt."
+            )
+            skriv_varning(varningar[-1])
+
+        # Upprepa varningarna sist – annars försvinner de i loggen ovan.
+        if varningar:
+            print("=" * 60)
+            print(f"{len(varningar)} varning(ar) kvar att åtgärda:")
+            for varning in varningar:
+                skriv_varning(varning)
+            print("=" * 60)
 
         print("+++Anthill Inside+++")
 
