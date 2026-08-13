@@ -60,15 +60,39 @@ class TestProcessSqlAgarskap(unittest.TestCase):
         )
         self.assertEqual(install_hex.process_sql(sql, "min_agare"), sql)
 
-    def test_security_definer_behaller_agarskap(self):
-        """Filer med SECURITY DEFINER ska lämnas orörda."""
+    def test_security_definer_triggerfunktion_behaller_postgres(self):
+        """
+        SECURITY DEFINER-funktioner som ÄR triggerfunktioner lämnas orörda.
+
+        De skapar roller och flyttar ägarskap och kräver därför superuser.
+        """
         sql = (
-            "CREATE FUNCTION public.hex_sd() RETURNS void\n"
-            "    SECURITY DEFINER\n    SET search_path = public, pg_temp\n"
+            "CREATE FUNCTION public.hex_sd_trigger() RETURNS event_trigger\n"
+            "    LANGUAGE 'plpgsql'\n    SECURITY DEFINER\n"
+            "    SET search_path = public, pg_temp\n"
             "AS $BODY$ BEGIN END; $BODY$;\n"
-            "ALTER FUNCTION public.hex_sd() OWNER TO postgres;\n"
+            "ALTER FUNCTION public.hex_sd_trigger() OWNER TO postgres;\n"
         )
         self.assertEqual(install_hex.process_sql(sql, "min_agare"), sql)
+
+    def test_security_definer_nyttofunktion_far_agarroll(self):
+        """
+        En vanlig SECURITY DEFINER-funktion ska köra som owner_role.
+
+        Den ska ha exakt ägarrollens rättigheter – inte superuser – och
+        ägarskapet måste därför följa owner_role i stället för det som
+        råkar stå i filen.
+        """
+        sql = (
+            "CREATE FUNCTION public.hex_sd() RETURNS void\n"
+            "    LANGUAGE 'plpgsql'\n    SECURITY DEFINER\n"
+            "    SET search_path = public, pg_temp\n"
+            "AS $BODY$ BEGIN END; $BODY$;\n"
+            "ALTER FUNCTION public.hex_sd() OWNER TO gis_admin;\n"
+        )
+        ut = install_hex.process_sql(sql, "min_agare")
+        self.assertIn("OWNER TO min_agare", ut)
+        self.assertNotIn("OWNER TO gis_admin", ut)
 
     def test_fras_i_kommentar_utloser_inte_undantag(self):
         """
@@ -167,10 +191,15 @@ class TestAgarskapsantagande(unittest.TestCase):
     """
 
     def _filer_som_lamnas_orörda(self):
+        """
+        Filer som process_sql returnerar oförändrade.
+
+        Klassificeringen läses av från installerns faktiska beteende i stället
+        för att upprepas här – annars kan testet och koden glida isär.
+        """
         for path in sorted((PROJECT_ROOT / "src" / "sql").rglob("*.sql")):
             sql = path.read_text(encoding="utf-8")
-            kod = install_hex._strip_sql_comments(sql).upper()
-            if "CREATE EVENT TRIGGER" in kod or "SECURITY DEFINER" in kod:
+            if install_hex.process_sql(sql, "hex_sentinel_agare") == sql:
                 yield path, install_hex._strip_sql_comments(sql)
 
     def test_orörda_filer_äger_till_postgres(self):
