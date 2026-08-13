@@ -11,6 +11,13 @@ Hex installerat, samt Python-sviter för GeoServer-lyssnaren.
   `postgresql-<version>-postgis-3` eller motsvarande), och Hex installerat i
   testdatabasen
   (se [docs/09_installera-uppdatera-hex.md](../docs/09_installera-uppdatera-hex.md)).
+- `psql` på PATH. `run_all_tests.py` kör SQL-sviterna genom klienten och läser
+  de NOTICE/WARNING-rader den skriver ut. Installerar du servern med
+  Debian/Ubuntus `postgresql-16` följer klienten med automatiskt
+  (`postgresql-client-16` är ett beroende), men kör du sviterna från en annan
+  maskin än databasservern — eller mot en hanterad PostgreSQL — måste
+  `postgresql-client-<version>` installeras separat. `install_hex.py` berörs
+  inte: den ansluter via psycopg2.
 - Anslutning som superuser. Sviterna skapar och tar bort scheman, roller och
   event-triggerberoende objekt.
 - För Python-sviterna: `pip install psycopg2-binary requests`.
