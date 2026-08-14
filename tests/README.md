@@ -26,6 +26,18 @@ Hex installerat, samt Python-sviter för GeoServer-lyssnaren.
 > `sk1_kba_stress` och `sk0_ext_fmetest`, och de tar bort roller som hör till
 > dem. Kör dem aldrig mot produktion.
 
+> **Claude Code på webben: hoppa över uppsättningen nedan.** I den miljön gör
+> `.claude/hooks/session-start.sh` allt det här automatiskt vid sessionsstart —
+> installerar PostGIS och Python-beroendena, startar klustret, skapar `hex_test`
+> och installerar Hex i den, och sätter `PG*`-variablerna för sessionen.
+> `tests/run_all_tests.py` går alltså att köra direkt.
+>
+> Hooken anropar `install_hex.install()` med en egen anslutningsdict i stället
+> för att fylla i `DATABASES` i `install_hex.py`. Redigera därför inte
+> `DATABASES` i en webbsession: filen är spårad, och lösenordet skulle checkas
+> in. Hooken kör bara när `CLAUDE_CODE_REMOTE=true` och rör aldrig en lokal
+> PostgreSQL-installation.
+
 Sätt upp en testdatabas:
 
 ```bash
