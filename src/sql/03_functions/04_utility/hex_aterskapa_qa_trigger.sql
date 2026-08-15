@@ -132,8 +132,16 @@ EXCEPTION
 END;
 $BODY$;
 
-ALTER FUNCTION public.hex_aterskapa_qa_trigger(text, text, text)
-    OWNER TO postgres;
+-- Ägaren sätts via hex_systemagare() i stället för ett hårdkodat rollnamn,
+-- så att manuell installation ger samma ägarskap som install_hex.py.
+DO $$
+BEGIN
+    EXECUTE format(
+        'ALTER FUNCTION public.hex_aterskapa_qa_trigger(text, text, text) OWNER TO %I',
+        public.hex_systemagare()
+    );
+END;
+$$;
 
 COMMENT ON FUNCTION public.hex_aterskapa_qa_trigger(text, text, text)
     IS 'Återskapar QA-triggerfunktionen trg_fn_<tabell>_qa med modertabellens aktuella

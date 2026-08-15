@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """
-Test: install_hex.py – ägarskapsomskrivning och installationsordning.
+Test: install_hex.py – installationsordning och ägarskapskonventioner.
 
-Sviten kräver ingen databas. Den testar installerns rena funktioner
-(process_sql, _strip_sql_comments) och konsistensen i INSTALL_ORDER mot
-filerna på disk.
+Sviten kräver ingen databas. Den testar konsistensen i INSTALL_ORDER mot
+filerna på disk, och att SQL-filerna följer repots ägarskapskonvention.
 
-Bakgrund: process_sql() avgör vem som ska äga varje objekt. Filer som
-innehåller CREATE EVENT TRIGGER eller SECURITY DEFINER lämnas orörda,
-eftersom de förutsätts säga 'OWNER TO postgres'. Håller inte det
-antagandet hamnar ägarskapet fel utan att installationen klagar.
+Bakgrund: installern kör SQL-filerna precis som de står. Ägarskapet sätts
+därför i SQL:en, dynamiskt mot hex_systemagare(), så att manuell installation
+och install_hex.py ger samma ägare. Undantaget är superuser-beroende filer
+(event-triggers och deras triggerfunktioner) som måste ägas av postgres och
+sätter det statiskt. Bryts den uppdelningen hamnar ägarskapet fel utan att
+installationen klagar.
 
 Kör med:
     python3 tests/test_installer.py
@@ -25,157 +26,52 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 import install_hex  # noqa: E402
 
+# Ett statiskt rollnamn i en ägarskapssats: OWNER TO gis_admin.
+# Dynamiska satser skriver OWNER TO %I och matchas alltså inte.
 OWNER_TO = re.compile(r"OWNER\s+TO\s+(\w+)", re.IGNORECASE)
 
+# Toppnivåobjekt vars ägarskap måste sättas explicit.
+SKAPAR_OBJEKT = re.compile(
+    r"^\s*CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|TABLE|TYPE|VIEW)\b",
+    re.IGNORECASE | re.MULTILINE,
+)
 
-# ---------------------------------------------------------------------------
-# 1. process_sql – ägarskapsomskrivning
-# ---------------------------------------------------------------------------
-class TestProcessSqlAgarskap(unittest.TestCase):
-    """process_sql ska skriva om OWNER TO till konfigurerad ägarroll."""
+# En dynamisk ägarskapssats, dvs. OWNER TO följt av en format()-specifierare.
+DYNAMISK_AGARE = re.compile(r"OWNER\s+TO\s+%(\w)", re.IGNORECASE)
 
-    VANLIG_SQL = (
-        "CREATE OR REPLACE FUNCTION public.hex_exempel() RETURNS void\n"
-        "    LANGUAGE 'plpgsql'\nAS $BODY$ BEGIN END; $BODY$;\n\n"
-        "ALTER FUNCTION public.hex_exempel() OWNER TO gis_admin;\n"
-    )
 
-    def test_skriver_om_owner_to(self):
-        """En vanlig fil ska få OWNER TO satt till owner_role."""
-        ut = install_hex.process_sql(self.VANLIG_SQL, "min_agare")
-        self.assertIn("OWNER TO min_agare", ut)
-        self.assertNotIn("OWNER TO gis_admin", ut)
+def _strip_sql_comments(sql: str) -> str:
+    """Returnerar SQL:en med blockkommentarer (/* */) och radkommentarer (--) borttagna.
 
-    def test_tar_bort_owner_to_utan_agarroll(self):
-        """owner_role=None ska ta bort ägarskapssatsen helt."""
-        ut = install_hex.process_sql(self.VANLIG_SQL, None)
-        self.assertNotIn("OWNER TO", ut.upper())
+    Används enbart för klassificering – aldrig för SQL som faktiskt körs.
+    """
+    utan_block = re.sub(r"/\*.*?\*/", " ", sql, flags=re.DOTALL)
+    return re.sub(r"--[^\n]*", " ", utan_block)
 
-    def test_tar_bort_flerradig_agarskapssats(self):
-        """
-        En ägarskapssats skriven över flera rader ska tas bort i sin helhet.
 
-        REGRESSION: 49 av filerna skriver satsen som
+def kraver_superuser_agande(sql: str) -> bool:
+    """Anger om filens objekt måste ägas av postgres i stället för ägarrollen.
 
-            ALTER TYPE public.hex_geom_info
-                OWNER TO gis_admin;
+    Undantaget gäller event-triggers och de SECURITY DEFINER-funktioner som ÄR
+    triggerfunktioner (RETURNS event_trigger). De skapar roller och flyttar
+    ägarskap och behöver därför superuser.
 
-        En radbaserad filtrering tar bara bort andra raden och lämnar kvar
-        ett dinglande 'ALTER TYPE public.hex_geom_info' utan avslutning,
-        vilket ger 'syntax error at end of input'.
-        """
-        sql = (
-            "CREATE TYPE public.hex_exempel AS (a int);\n\n"
-            "ALTER TYPE public.hex_exempel\n"
-            "    OWNER TO gis_admin;\n\n"
-            "COMMENT ON TYPE public.hex_exempel IS 'kvar';\n"
-        )
-        ut = install_hex.process_sql(sql, None)
-        self.assertNotIn("OWNER TO", ut.upper())
-        self.assertNotIn("ALTER TYPE", ut.upper())
-        self.assertIn("CREATE TYPE public.hex_exempel", ut)
-        self.assertIn("COMMENT ON TYPE", ut)
-
-    def test_dynamisk_sql_i_funktionskropp_rors_inte(self):
-        """
-        format('... OWNER TO %I', ...) i en funktionskropp ska lämnas i fred.
-
-        Borttagningen får bara träffa verkliga ägarskapssatser, inte SQL som
-        funktionen bygger upp vid körning.
-        """
-        sql = (
-            "CREATE FUNCTION public.hex_x() RETURNS void AS $$\n"
-            "BEGIN\n"
-            "    EXECUTE format('ALTER TABLE %I.%I OWNER TO %I', s, t, r);\n"
-            "END $$ LANGUAGE plpgsql;\n"
-            "ALTER FUNCTION public.hex_x()\n"
-            "    OWNER TO gis_admin;\n"
-        )
-        ut = install_hex.process_sql(sql, None)
-        self.assertIn("format('ALTER TABLE %I.%I OWNER TO %I', s, t, r)", ut)
-        self.assertNotIn("ALTER FUNCTION public.hex_x()", ut)
-
-    def test_event_trigger_behaller_postgres(self):
-        """Filer med CREATE EVENT TRIGGER ska lämnas orörda."""
-        sql = (
-            "CREATE EVENT TRIGGER hex_exempel_trigger ON ddl_command_end\n"
-            "    EXECUTE PROCEDURE public.hex_exempel();\n"
-            "ALTER EVENT TRIGGER hex_exempel_trigger OWNER TO postgres;\n"
-        )
-        self.assertEqual(install_hex.process_sql(sql, "min_agare"), sql)
-
-    def test_security_definer_triggerfunktion_behaller_postgres(self):
-        """
-        SECURITY DEFINER-funktioner som ÄR triggerfunktioner lämnas orörda.
-
-        De skapar roller och flyttar ägarskap och kräver därför superuser.
-        """
-        sql = (
-            "CREATE FUNCTION public.hex_sd_trigger() RETURNS event_trigger\n"
-            "    LANGUAGE 'plpgsql'\n    SECURITY DEFINER\n"
-            "    SET search_path = public, pg_temp\n"
-            "AS $BODY$ BEGIN END; $BODY$;\n"
-            "ALTER FUNCTION public.hex_sd_trigger() OWNER TO postgres;\n"
-        )
-        self.assertEqual(install_hex.process_sql(sql, "min_agare"), sql)
-
-    def test_security_definer_nyttofunktion_far_agarroll(self):
-        """
-        En vanlig SECURITY DEFINER-funktion ska köra som owner_role.
-
-        Den ska ha exakt ägarrollens rättigheter – inte superuser – och
-        ägarskapet måste därför följa owner_role i stället för det som
-        råkar stå i filen.
-        """
-        sql = (
-            "CREATE FUNCTION public.hex_sd() RETURNS void\n"
-            "    LANGUAGE 'plpgsql'\n    SECURITY DEFINER\n"
-            "    SET search_path = public, pg_temp\n"
-            "AS $BODY$ BEGIN END; $BODY$;\n"
-            "ALTER FUNCTION public.hex_sd() OWNER TO gis_admin;\n"
-        )
-        ut = install_hex.process_sql(sql, "min_agare")
-        self.assertIn("OWNER TO min_agare", ut)
-        self.assertNotIn("OWNER TO gis_admin", ut)
-
-    def test_fras_i_kommentar_utloser_inte_undantag(self):
-        """
-        'SECURITY DEFINER' i en kommentar ska inte hindra omskrivningen.
-
-        Klassificeringen görs på SQL utan kommentarer (_strip_sql_comments).
-        """
-        sql = (
-            "-- Den här funktionen är avsiktligt inte SECURITY DEFINER\n"
-            "CREATE FUNCTION public.hex_x() RETURNS void AS $$ BEGIN END; $$ LANGUAGE plpgsql;\n"
-            "ALTER FUNCTION public.hex_x() OWNER TO gis_admin;\n"
-        )
-        ut = install_hex.process_sql(sql, "min_agare")
-        self.assertIn("OWNER TO min_agare", ut)
+    SECURITY DEFINER ensamt räcker inte som kriterium. En vanlig SECURITY
+    DEFINER-funktion ska köra som ägarrollen, inte som postgres: den ska ha
+    exakt de rättigheter ägarrollen har (t.ex. ADMIN OPTION på schemarollerna)
+    och inte mer.
+    """
+    # Klassificeringen görs på SQL:en utan kommentarer – annars räcker det att
+    # frasen nämns i en kommentar för att filen felaktigt ska klassas som
+    # superuser-beroende.
+    kod = _strip_sql_comments(sql).upper()
+    ar_triggerfunktion = re.search(r"RETURNS\s+EVENT_TRIGGER", kod) is not None
+    return ("CREATE EVENT TRIGGER" in kod
+            or ("SECURITY DEFINER" in kod and ar_triggerfunktion))
 
 
 # ---------------------------------------------------------------------------
-# 2. _strip_sql_comments
-# ---------------------------------------------------------------------------
-class TestStripSqlComments(unittest.TestCase):
-
-    def test_tar_bort_radkommentar(self):
-        self.assertNotIn(
-            "SECURITY DEFINER",
-            install_hex._strip_sql_comments("-- SECURITY DEFINER\nSELECT 1;"),
-        )
-
-    def test_tar_bort_blockkommentar(self):
-        self.assertNotIn(
-            "SECURITY DEFINER",
-            install_hex._strip_sql_comments("/* SECURITY DEFINER */\nSELECT 1;"),
-        )
-
-    def test_behaller_kod(self):
-        self.assertIn("SELECT 1", install_hex._strip_sql_comments("-- x\nSELECT 1;"))
-
-
-# ---------------------------------------------------------------------------
-# 3. INSTALL_ORDER mot filerna på disk
+# 1. INSTALL_ORDER mot filerna på disk
 # ---------------------------------------------------------------------------
 class TestInstallOrder(unittest.TestCase):
 
@@ -215,119 +111,188 @@ class TestInstallOrder(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# 4. Ägarskapsantagandet i process_sql
+# 2. Klassificering av superuser-beroende filer
 # ---------------------------------------------------------------------------
-class TestAgarskapsantagande(unittest.TestCase):
+class TestKraverSuperuserAgande(unittest.TestCase):
     """
-    process_sql lämnar event-trigger- och SECURITY DEFINER-filer orörda
-    med motiveringen att de kräver superuser-ägande. Det antagandet håller
-    bara om de filerna faktiskt säger 'OWNER TO postgres'.
+    Klassificeringen avgör vilka filer som får äga statiskt till postgres.
 
-    Säger en sådan fil 'OWNER TO <något annat>' installeras objektet med
-    hårdkodat ägarskap oavsett vilket owner_role som konfigurerats. Två
-    konsekvenser:
-
-      1. På ett kluster där den hårdkodade rollen inte finns avbryts hela
-         installationen (allt körs i en transaktion och rullas tillbaka).
-      2. Finns rollen ändå av en slump hamnar ägarskapet fel, och en
-         SECURITY DEFINER-funktion kör då som fel roll – utan rättigheter
-         på Hex egna tabeller.
+    Klassas en fil fel åt ena hållet hamnar en vanlig funktion på postgres i
+    stället för ägarrollen; åt andra hållet får en event-triggerfunktion en
+    ägare utan de rättigheter den behöver.
     """
 
-    def _filer_som_lamnas_orörda(self):
-        """
-        Filer som process_sql returnerar oförändrade.
+    def test_event_trigger_kraver_superuser(self):
+        sql = (
+            "CREATE EVENT TRIGGER hex_exempel_trigger ON ddl_command_end\n"
+            "    EXECUTE FUNCTION public.hex_exempel();\n"
+        )
+        self.assertTrue(kraver_superuser_agande(sql))
 
-        Klassificeringen läses av från installerns faktiska beteende i stället
-        för att upprepas här – annars kan testet och koden glida isär.
-        """
-        for path in sorted((PROJECT_ROOT / "src" / "sql").rglob("*.sql")):
-            sql = path.read_text(encoding="utf-8")
-            if install_hex.process_sql(sql, "hex_sentinel_agare") == sql:
-                yield path, install_hex._strip_sql_comments(sql)
+    def test_security_definer_triggerfunktion_kraver_superuser(self):
+        sql = (
+            "CREATE OR REPLACE FUNCTION public.hex_sd_trigger()\n"
+            "    RETURNS event_trigger\n"
+            "    LANGUAGE 'plpgsql'\n"
+            "    SECURITY DEFINER\n"
+            "    SET search_path = public, pg_temp\n"
+            "AS $BODY$ BEGIN END; $BODY$;\n"
+        )
+        self.assertTrue(kraver_superuser_agande(sql))
 
-    def test_orörda_filer_äger_till_postgres(self):
+    def test_security_definer_nyttofunktion_kraver_inte_superuser(self):
+        """
+        En vanlig SECURITY DEFINER-funktion ska köra som ägarrollen.
+
+        Den ska ha exakt ägarrollens rättigheter – inte superuserns.
+        """
+        sql = (
+            "CREATE OR REPLACE FUNCTION public.hex_sd()\n"
+            "    RETURNS void\n"
+            "    LANGUAGE 'plpgsql'\n"
+            "    SECURITY DEFINER\n"
+            "    SET search_path = public, pg_temp\n"
+            "AS $BODY$ BEGIN END; $BODY$;\n"
+        )
+        self.assertFalse(kraver_superuser_agande(sql))
+
+    def test_fras_i_kommentar_utloser_inte_undantag(self):
+        """'SECURITY DEFINER' i en kommentar ska inte klassa om filen."""
+        sql = (
+            "-- Den här funktionen är medvetet INTE SECURITY DEFINER.\n"
+            "/* CREATE EVENT TRIGGER nämns bara här. */\n"
+            "CREATE OR REPLACE FUNCTION public.hex_x() RETURNS void\n"
+            "    LANGUAGE 'plpgsql'\nAS $BODY$ BEGIN END; $BODY$;\n"
+        )
+        self.assertFalse(kraver_superuser_agande(sql))
+
+
+# ---------------------------------------------------------------------------
+# 3. Ägarskapskonventionen i SQL-filerna
+# ---------------------------------------------------------------------------
+class TestAgarskapskonvention(unittest.TestCase):
+    """
+    Installern kör filerna precis som de står, så ägarskapet måste vara rätt
+    redan i SQL:en. Ett hårdkodat rollnamn ger fel ägare — eller avbryter
+    installationen om rollen inte finns i klustret.
+    """
+
+    def test_agarskap_satts_via_hex_systemagare(self):
+        """
+        Ingen installerad fil får hårdkoda ett rollnamn i sitt ägarskap.
+
+        Undantaget är de superuser-beroende filerna: de måste ägas av postgres
+        och sätter det statiskt.
+        """
         avvikande = []
-        for path, kod in self._filer_som_lamnas_orörda():
-            for agare in OWNER_TO.findall(kod):
-                if agare.lower() != "postgres":
-                    avvikande.append(
-                        f"{path.relative_to(PROJECT_ROOT)} -> OWNER TO {agare}"
-                    )
-
-        self.assertEqual(
-            avvikande, [],
-            "Filer som process_sql lämnar orörda men som inte äger till "
-            "postgres. Ägarskapet blir hårdkodat i stället för att följa "
-            "owner_role:\n  " + "\n  ".join(avvikande),
-        )
-
-    def test_utan_agarroll_lamnar_inga_agarskapssatser(self):
-        """
-        Med owner_role=None ska ingen installerad fil ha kvar en
-        ägarskapssats — utom de superuser-beroende filer som returneras
-        oförändrade och behåller sitt postgres-ägande.
-        """
-        kvar = []
         for f in install_hex.INSTALL_ORDER:
             sql = (PROJECT_ROOT / f).read_text(encoding="utf-8")
-            ut = install_hex.process_sql(sql, None)
-            if ut == sql:
-                continue  # superuser-beroende fil, avsiktligt orörd
-            kod = install_hex._strip_sql_comments(ut)
-            if re.search(r"\bOWNER\s+TO\s+\w+\s*;", kod, re.IGNORECASE):
-                kvar.append(f)
+            kod = _strip_sql_comments(sql)
+            statiska = OWNER_TO.findall(kod)
 
-        self.assertEqual(
-            kvar, [],
-            "Ägarskapssatser kvar trots owner_role=None:\n  " + "\n  ".join(kvar),
-        )
-
-    def test_utan_agarroll_lamnar_inga_dinglande_satser(self):
-        """
-        Borttagningen får inte klippa mitt i en sats.
-
-        Varje ALTER som inleder en sats ska antingen vara helt borta eller
-        fortfarande avslutas med semikolon.
-        """
-        trasiga = []
-        for f in install_hex.INSTALL_ORDER:
-            sql = (PROJECT_ROOT / f).read_text(encoding="utf-8")
-            ut = install_hex.process_sql(sql, None)
-            if ut == sql:
+            if kraver_superuser_agande(sql):
+                for agare in statiska:
+                    if agare.lower() != "postgres":
+                        avvikande.append(
+                            f"{f}: superuser-beroende fil äger till {agare}, "
+                            "ska vara postgres"
+                        )
                 continue
-            kod = install_hex._strip_sql_comments(ut)
-            # Varje ALTER-sats på toppnivå måste ha ett semikolon efter sig
-            for match in re.finditer(r"^[ \t]*ALTER\b", kod, re.MULTILINE):
-                if ";" not in kod[match.start():]:
-                    trasiga.append(f"{f}: {kod[match.start():][:60]!r}")
 
-        self.assertEqual(
-            trasiga, [],
-            "Dinglande ALTER-satser efter borttagning:\n  " + "\n  ".join(trasiga),
-        )
-
-    def test_process_sql_lamnar_inga_frammande_agare(self):
-        """
-        Efter process_sql med ett eget owner_role ska ingen fil innehålla
-        någon annan ägare än owner_role eller postgres.
-        """
-        owner_role = "hex_test_agare"
-        avvikande = []
-        for f in install_hex.INSTALL_ORDER:
-            sql = (PROJECT_ROOT / f).read_text(encoding="utf-8")
-            ut = install_hex._strip_sql_comments(
-                install_hex.process_sql(sql, owner_role)
-            )
-            for agare in OWNER_TO.findall(ut):
-                if agare.lower() not in (owner_role, "postgres"):
-                    avvikande.append(f"{f} -> OWNER TO {agare}")
+            for agare in statiska:
+                avvikande.append(
+                    f"{f}: hårdkodat OWNER TO {agare}, ska sättas via "
+                    "public.hex_systemagare()"
+                )
+            # En fil som skapar ett objekt utan att sätta ägarskap alls får
+            # ägaren av den som råkar köra filen. Det ger fel ägare i båda
+            # installationsvägarna, utan att någon OWNER TO-sats avslöjar det.
+            if SKAPAR_OBJEKT.search(kod) and not re.search(
+                r"OWNER\s+TO", kod, re.IGNORECASE
+            ):
+                avvikande.append(
+                    f"{f}: skapar objekt utan ägarskapssats – objektet hamnar "
+                    "på den anslutande användaren i stället för ägarrollen"
+                )
 
         self.assertEqual(
             avvikande, [],
-            f"Filer med ägare som varken är owner_role ({owner_role}) eller "
-            "postgres efter process_sql:\n  " + "\n  ".join(avvikande),
+            "Ägarskap som inte följer ägarrollen vid installation:\n  "
+            + "\n  ".join(avvikande),
         )
+
+    def test_dynamiskt_agarskap_citerar_rollnamnet(self):
+        """
+        Dynamiska ägarskapssatser ska använda %I, aldrig %s.
+
+        %s klistrar in rollnamnet ociterat. Ett namn som kräver citattecken
+        ger då syntaxfel, och innehållet i hex_systemagare() körs som SQL i
+        stället för att behandlas som en identifierare.
+        """
+        avvikande = []
+        for f in install_hex.INSTALL_ORDER:
+            kod = _strip_sql_comments(
+                (PROJECT_ROOT / f).read_text(encoding="utf-8")
+            )
+            for spec in DYNAMISK_AGARE.findall(kod):
+                if spec != "I":
+                    avvikande.append(f"{f}: OWNER TO %{spec}, ska vara %I")
+
+        self.assertEqual(
+            avvikande, [],
+            "Dynamiska ägarskapssatser med fel format()-specifierare:\n  "
+            + "\n  ".join(avvikande),
+        )
+
+    def test_dynamiskt_agarskap_gar_via_hex_systemagare(self):
+        """
+        Varje icke-superuser-fil som sätter ägarskap ska hämta rollen från
+        hex_systemagare(), inte från något annat uttryck (t.ex. current_user).
+
+        hex_systemagare() är den enda platsen ägarrollen konfigureras. Går en
+        fil förbi den hamnar objektet på en annan roll än resten av Hex.
+        """
+        avvikande = []
+        for f in install_hex.INSTALL_ORDER:
+            sql = (PROJECT_ROOT / f).read_text(encoding="utf-8")
+            if kraver_superuser_agande(sql):
+                continue
+            kod = _strip_sql_comments(sql)
+            if not DYNAMISK_AGARE.search(kod):
+                continue
+            if "hex_systemagare()" not in kod:
+                avvikande.append(
+                    f"{f}: dynamiskt ägarskap utan public.hex_systemagare()"
+                )
+
+        self.assertEqual(
+            avvikande, [],
+            "Filer som sätter ägarskap utan hex_systemagare():\n  "
+            + "\n  ".join(avvikande),
+        )
+
+
+# ---------------------------------------------------------------------------
+# 4. Hjälpfunktionen bakom klassificeringen
+# ---------------------------------------------------------------------------
+class TestStripSqlComments(unittest.TestCase):
+    """
+    Kommentarstrippningen är det som gör klassificeringen ovan tillförlitlig.
+    Slutar den fungera slutar också ägarskapskontrollerna att fånga något.
+    """
+
+    def test_tar_bort_radkommentar(self):
+        self.assertNotIn(
+            "SECURITY", _strip_sql_comments("-- SECURITY DEFINER\nSELECT 1;")
+        )
+
+    def test_tar_bort_blockkommentar(self):
+        self.assertNotIn(
+            "SECURITY", _strip_sql_comments("/* SECURITY DEFINER */\nSELECT 1;")
+        )
+
+    def test_behaller_kod(self):
+        self.assertIn("SELECT 1", _strip_sql_comments("-- x\nSELECT 1;"))
 
 
 if __name__ == "__main__":

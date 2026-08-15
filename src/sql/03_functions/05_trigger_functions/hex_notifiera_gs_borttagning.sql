@@ -87,8 +87,16 @@ EXCEPTION
 END;
 $BODY$;
 
-ALTER FUNCTION public.hex_notifiera_gs_borttagning()
-    OWNER TO postgres;
+-- Ägaren sätts via hex_systemagare() i stället för ett hårdkodat rollnamn,
+-- så att manuell installation ger samma ägarskap som install_hex.py.
+DO $$
+BEGIN
+    EXECUTE format(
+        'ALTER FUNCTION public.hex_notifiera_gs_borttagning() OWNER TO %I',
+        public.hex_systemagare()
+    );
+END;
+$$;
 
 COMMENT ON FUNCTION public.hex_notifiera_gs_borttagning()
     IS 'Event trigger-funktion som skickar pg_notify till GeoServer-lyssnaren vid DROP SCHEMA.

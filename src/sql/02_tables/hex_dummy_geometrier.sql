@@ -33,7 +33,16 @@ CREATE TABLE IF NOT EXISTS public.hex_dummy_geometrier (
     PRIMARY KEY (schema_namn, tabell_namn, gid)
 );
 
-ALTER TABLE public.hex_dummy_geometrier OWNER TO gis_admin;
+-- Ägaren sätts via hex_systemagare() i stället för ett hårdkodat rollnamn,
+-- så att manuell installation ger samma ägarskap som install_hex.py.
+DO $$
+BEGIN
+    EXECUTE format(
+        'ALTER TABLE public.hex_dummy_geometrier OWNER TO %I',
+        public.hex_systemagare()
+    );
+END;
+$$;
 
 -- Händelsetriggerfunktioner och radtriggrar körs i den anropande
 -- användarens säkerhetskontext. Skrivrättigheter krävs från alla.

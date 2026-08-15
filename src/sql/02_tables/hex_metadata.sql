@@ -19,7 +19,16 @@ CREATE TABLE IF NOT EXISTS public.hex_metadata (
     created_at       timestamptz  NOT NULL DEFAULT now()
 );
 
-ALTER TABLE public.hex_metadata OWNER TO gis_admin;
+-- Ägaren sätts via hex_systemagare() i stället för ett hårdkodat rollnamn,
+-- så att manuell installation ger samma ägarskap som install_hex.py.
+DO $$
+BEGIN
+    EXECUTE format(
+        'ALTER TABLE public.hex_metadata OWNER TO %I',
+        public.hex_systemagare()
+    );
+END;
+$$;
 
 -- Tillåter alla autentiserade användare att hantera sina egna metadata-poster.
 -- Alla skrivningar sker via händelsetriggerfunktioner som körs i den anropande

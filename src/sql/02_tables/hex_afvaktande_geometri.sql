@@ -24,7 +24,16 @@ CREATE TABLE IF NOT EXISTS public.hex_afvaktande_geometri (
     PRIMARY KEY (schema_namn, tabell_namn)
 );
 
-ALTER TABLE public.hex_afvaktande_geometri OWNER TO gis_admin;
+-- Ägaren sätts via hex_systemagare() i stället för ett hårdkodat rollnamn,
+-- så att manuell installation ger samma ägarskap som install_hex.py.
+DO $$
+BEGIN
+    EXECUTE format(
+        'ALTER TABLE public.hex_afvaktande_geometri OWNER TO %I',
+        public.hex_systemagare()
+    );
+END;
+$$;
 
 -- Händelsetriggerfunktioner körs i den anropande användarens säkerhetskontext.
 -- Både läs- och skrivrättigheter krävs från alla autentiserade användare.

@@ -47,7 +47,8 @@ Repots standard är `SET search_path = public, pg_temp`. `pg_temp` sist är medv
 
 ```bash
 # Kommentarer strippas först – annars räcker det att frasen nämns i en kommentar
-# för att filen ska flaggas (samma resonemang som _strip_sql_comments i install_hex.py).
+# för att filen ska flaggas (samma resonemang som _strip_sql_comments i
+# tests/test_installer.py).
 for f in $(grep -rl 'SECURITY DEFINER' src/sql/); do
   perl -0777 -pe 's{/\*.*?\*/}{}gs; s{--[^\n]*}{}g' "$f" | grep -q 'SECURITY DEFINER' || continue
   grep -q 'SET search_path' "$f" || echo "Saknar SET search_path: $f"

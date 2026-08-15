@@ -1028,8 +1028,16 @@ BEGIN
 END;
 $BODY$;
 
-ALTER FUNCTION public.hex_underhall()
-    OWNER TO postgres;
+-- Ägaren sätts via hex_systemagare() i stället för ett hårdkodat rollnamn,
+-- så att manuell installation ger samma ägarskap som install_hex.py.
+DO $$
+BEGIN
+    EXECUTE format(
+        'ALTER FUNCTION public.hex_underhall() OWNER TO %I',
+        public.hex_systemagare()
+    );
+END;
+$$;
 
 -- Bakåtkompatibelt alias: ta bort gamla funktionen om den finns kvar sedan
 -- en tidigare installation (kan ha ett annat returschema och kraschar annars).

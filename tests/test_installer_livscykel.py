@@ -315,10 +315,12 @@ class TestAgarrollNone(unittest.TestCase):
     owner_role=None: den anslutande användaren äger objekten.
 
     REGRESSION: konfigurationen gick tidigare inte att installera alls.
-    process_sql() tog bort raden med OWNER TO i stället för hela satsen, och
-    eftersom de flesta filer skriver satsen över två rader blev det kvar ett
-    dinglande ALTER utan avslutning. Installationen dog på första typfilen
-    med "syntax error at end of input".
+    Installern tog då bort ägarskapssatserna ur SQL:en före körning, och
+    strök raden med OWNER TO i stället för hela satsen. Eftersom de flesta
+    filer skrev satsen över två rader blev det kvar ett dinglande ALTER utan
+    avslutning, och installationen dog på första typfilen med "syntax error
+    at end of input". Filerna sätter numera ägaren mot hex_systemagare() och
+    installern rör inte SQL:en, så borttagningen finns inte längre.
     """
 
     @classmethod

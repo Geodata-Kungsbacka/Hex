@@ -197,6 +197,24 @@ inte över filer och byt inte plats på dem.
 > **OBS:** `hex_systemagare.sql` måste köras först och måste redigeras innan
 > den körs (ändra `'gis_admin'` till din ägarroll). Detta är den enda filen
 > installern inte kör — den genererar funktionen dynamiskt från `owner_role`.
+>
+> Det är också den enda filen du behöver redigera. Övriga filer hårdkodar
+> aldrig ett rollnamn, utan sätter ägarskapet mot `hex_systemagare()`:
+>
+> ```sql
+> DO $$
+> BEGIN
+>     EXECUTE format(
+>         'ALTER TABLE public.hex_metadata OWNER TO %I',
+>         public.hex_systemagare()
+>     );
+> END;
+> $$;
+> ```
+>
+> Manuell installation ger därför exakt samma ägarskap som `install_hex.py`.
+> Undantaget är event-triggers och deras triggerfunktioner, som måste ägas av
+> `postgres` och sätter det statiskt.
 
 ### Detaljerad installationsordning
 
@@ -284,6 +302,42 @@ src/sql/04_triggers/hex_notifiera_gs_borttagning_trigger.sql
 > Ordningen ovan speglar `INSTALL_ORDER` i `install_hex.py` (plus
 > `hex_systemagare.sql`, som installern genererar själv). Ändras den ena
 > måste den andra ändras likadant.
+
+### Vanliga fel vid manuell installation
+
+Installern gör flera saker automatiskt som du måste göra själv vid manuell
+installation: skapa tilläggen, skapa ägarrollen och köra filerna i rätt
+ordning. Nedan är felen det ger, med den faktiska texten PostgreSQL skriver.
+
+**`ERROR: function public.hex_systemagare() does not exist`**
+Kommer redan på första filen. `hex_systemagare.sql` kördes inte först — alla
+övriga filer sätter sitt ägarskap mot den funktionen.
+*Åtgärd:* kör `src/sql/00_config/hex_systemagare.sql` (redigerad) före allt annat.
+
+**`ERROR: role "<ägarroll>" does not exist`**
+Med `CONTEXT: SQL statement "ALTER TABLE ... OWNER TO ..."`. Rollen som
+`hex_systemagare()` returnerar finns inte i klustret. Installern skapar den
+automatiskt, manuell installation gör det inte.
+*Åtgärd:* `CREATE ROLE <ägarroll> NOLOGIN;` — rollen behöver aldrig logga in.
+
+**`ERROR: type geometry does not exist`**
+PostGIS saknas. Felet dyker upp först vid `hex_validera_geometri.sql`, långt
+in i ordningen — tidigare filer går igenom utan tillägget.
+*Åtgärd:* `CREATE EXTENSION postgis;` och kör om från den filen.
+
+**`ERROR: permission denied to create event trigger "..."`**
+Anslutningen är inte superuser. Event-triggers kräver det.
+*Åtgärd:* anslut som `postgres`.
+
+**Inga `gs_r_`/`gs_w_`-roller skapas — men installationen såg ut att lyckas**
+`pgcrypto` saknas. `hex_hantera_std_roller()` behöver `gen_random_bytes()` för
+att generera lösenorden. Det här är det enda felet som inte avbryter något:
+installationen går igenom, `CREATE SCHEMA` fungerar och `r_`/`w_` skapas som
+vanligt — bara GeoServer-tjänstekontona uteblir, med en `WARNING` som är lätt
+att missa.
+*Åtgärd:* `CREATE EXTENSION pgcrypto;` innan installationen. Är skadan redan
+skedd räcker det inte med `hex_underhall()` — rollerna skapas bara vid
+`CREATE SCHEMA`, så berörda scheman måste tas bort och skapas om.
 
 ## Detaljerad funktionsbeskrivning
 

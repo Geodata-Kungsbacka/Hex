@@ -97,8 +97,16 @@ BEGIN
 END;
 $BODY$;
 
-ALTER FUNCTION public.hex_tillampa_grupprattigheter()
-    OWNER TO gis_admin;
+-- Ägaren sätts via hex_systemagare() i stället för ett hårdkodat rollnamn,
+-- så att manuell installation ger samma ägarskap som install_hex.py.
+DO $$
+BEGIN
+    EXECUTE format(
+        'ALTER FUNCTION public.hex_tillampa_grupprattigheter() OWNER TO %I',
+        public.hex_systemagare()
+    );
+END;
+$$;
 
 COMMENT ON FUNCTION public.hex_tillampa_grupprattigheter()
     IS 'Applicerar mappningar i hex_grupprattigheter: beviljar Hex-schemaroller till

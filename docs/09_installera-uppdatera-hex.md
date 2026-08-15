@@ -133,6 +133,15 @@ Om du föredrar att köra SQL direkt, se installationsordningen i `README.md`
 under avsnittet *Detaljerad installationsordning*. Starta alltid med
 `src/sql/00_config/hex_systemagare.sql` och ange ägarrollen där.
 
+Det är den enda filen som ska redigeras. Alla övriga filer läser ägarrollen
+från `hex_systemagare()` i stället för att hårdkoda ett rollnamn, så manuell
+installation ger samma ägarskap som `install_hex.py`. Event-triggers och deras
+triggerfunktioner är undantagna — de måste ägas av `postgres`.
+
+Installern skapar tilläggen (`postgis`, `pgcrypto`) och ägarrollen automatiskt.
+Vid manuell installation måste du göra det själv. Se *Vanliga fel vid manuell
+installation* i `README.md` för felmeddelandena det ger.
+
 ---
 
 ## Kontrollera systemstatus

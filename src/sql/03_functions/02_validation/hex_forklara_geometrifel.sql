@@ -55,8 +55,16 @@ BEGIN
 END;
 $BODY$;
 
-ALTER FUNCTION public.hex_forklara_geometrifel(geometry)
-    OWNER TO postgres;
+-- Ägaren sätts via hex_systemagare() i stället för ett hårdkodat rollnamn,
+-- så att manuell installation ger samma ägarskap som install_hex.py.
+DO $$
+BEGIN
+    EXECUTE format(
+        'ALTER FUNCTION public.hex_forklara_geometrifel(geometry) OWNER TO %I',
+        public.hex_systemagare()
+    );
+END;
+$$;
 
 COMMENT ON FUNCTION public.hex_forklara_geometrifel(geometry)
     IS 'Diagnostiserar geometriproblem och returnerar en läsbar förklaring på svenska.

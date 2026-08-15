@@ -19,7 +19,16 @@ CREATE TABLE IF NOT EXISTS public.hex_systemanvandare (
     beskrivning  text
 );
 
-ALTER TABLE public.hex_systemanvandare OWNER TO gis_admin;
+-- Ägaren sätts via hex_systemagare() i stället för ett hårdkodat rollnamn,
+-- så att manuell installation ger samma ägarskap som install_hex.py.
+DO $$
+BEGIN
+    EXECUTE format(
+        'ALTER TABLE public.hex_systemanvandare OWNER TO %I',
+        public.hex_systemagare()
+    );
+END;
+$$;
 
 -- Händelsetriggerfunktioner körs i den anropande användarens säkerhetskontext.
 -- Läsrättighet krävs av triggerfunktioner som körs som vilken användare som helst.

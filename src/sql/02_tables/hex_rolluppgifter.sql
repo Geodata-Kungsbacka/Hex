@@ -7,8 +7,16 @@ CREATE TABLE IF NOT EXISTS public.hex_rolluppgifter (
     CONSTRAINT hex_rolluppgifter_pkey PRIMARY KEY (rollnamn)
 );
 
-ALTER TABLE public.hex_rolluppgifter
-    OWNER TO postgres;
+-- Ägaren sätts via hex_systemagare() i stället för ett hårdkodat rollnamn,
+-- så att manuell installation ger samma ägarskap som install_hex.py.
+DO $$
+BEGIN
+    EXECUTE format(
+        'ALTER TABLE public.hex_rolluppgifter OWNER TO %I',
+        public.hex_systemagare()
+    );
+END;
+$$;
 
 COMMENT ON TABLE public.hex_rolluppgifter
     IS 'Register över alla Hex-skapade roller per schema.
