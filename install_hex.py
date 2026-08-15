@@ -8,7 +8,6 @@ Användning:
 """
 
 import argparse
-import re
 import psycopg2
 from psycopg2 import sql as pgsql
 from pathlib import Path
@@ -335,79 +334,6 @@ def kontrollera_forutsattningar(cur) -> list[str]:
     return varningar
 
 
-def _strip_sql_comments(sql: str) -> str:
-    """Returnerar SQL:en med blockkommentarer (/* */) och radkommentarer (--) borttagna.
-
-    Används enbart för klassificering – aldrig för SQL som faktiskt körs.
-    """
-    utan_block = re.sub(r'/\*.*?\*/', ' ', sql, flags=re.DOTALL)
-    return re.sub(r'--[^\n]*', ' ', utan_block)
-
-
-# En hel ALTER ... OWNER TO <roll>;-sats, oavsett hur många rader den är
-# skriven över. Merparten av filerna delar satsen på två rader:
-#
-#     ALTER TYPE public.hex_geom_info
-#         OWNER TO gis_admin;
-#
-# [^;]* kan aldrig passera ett semikolon, så matchningen stannar alltid inom
-# en och samma sats. Kravet på \w+ efter OWNER TO gör att dynamisk SQL i
-# funktionskroppar (format('ALTER TABLE %I.%I OWNER TO %I', ...)) inte träffas,
-# och ^[ \t]*ALTER att satsen måste inleda en rad.
-AGARSKAPSSATS = re.compile(
-    r'^[ \t]*ALTER\b[^;]*?\bOWNER[ \t\r\n]+TO[ \t\r\n]+\w+[ \t]*;[ \t]*\r?\n?',
-    re.IGNORECASE | re.MULTILINE,
-)
-
-
-def kraver_superuser_agande(sql: str) -> bool:
-    """Anger om filens objekt måste ägas av en superuser i stället för ägarrollen.
-
-    Undantaget gäller event-triggers och de SECURITY DEFINER-funktioner som ÄR
-    triggerfunktioner (RETURNS event_trigger). De skapar roller och flyttar
-    ägarskap och behöver därför superuser. Sådana filer sätter sitt ägarskap
-    statiskt till postgres; övriga filer sätter det via hex_systemagare().
-
-    SECURITY DEFINER ensamt räcker inte som kriterium. En vanlig SECURITY
-    DEFINER-funktion ska köra som ägarrollen, inte som postgres: den ska ha
-    exakt de rättigheter ägarrollen har (t.ex. ADMIN OPTION på schemarollerna)
-    och inte mer.
-    """
-    # Klassificeringen görs på SQL:en utan kommentarer – annars räcker det att
-    # frasen nämns i en kommentar för att filen felaktigt ska klassas som
-    # superuser-beroende.
-    kod = _strip_sql_comments(sql).upper()
-    ar_triggerfunktion = re.search(r'RETURNS\s+EVENT_TRIGGER', kod) is not None
-    return ('CREATE EVENT TRIGGER' in kod or
-            ('SECURITY DEFINER' in kod and ar_triggerfunktion))
-
-
-def process_sql(sql: str, owner_role: str | None) -> str:
-    """Bearbetar SQL-innehåll - ersätter eller tar bort OWNER TO-satser.
-
-    Filerna sätter numera ägarskapet dynamiskt via hex_systemagare(), så det
-    finns normalt inga statiska OWNER TO-satser kvar att skriva om. Funktionen
-    behålls som skyddsnät: återinförs ett hårdkodat rollnamn i en fil fångas
-    det upp här vid installation — och av
-    test_installer.py::TestAgarskapsantagande innan det når en release.
-    """
-    if kraver_superuser_agande(sql):
-        # Behåll postgres-ägande för superuser-beroende objekt
-        return sql
-
-    if not owner_role:
-        # Ta bort hela ägarskapssatsen, inte bara raden med OWNER TO. Satsen
-        # är oftast skriven över två rader, och att bara stryka den ena lämnar
-        # kvar ett dinglande "ALTER TYPE public.hex_geom_info" utan avslutning
-        # – vilket ger "syntax error at end of input" redan på första typfilen.
-        # Objekten ägs då i stället av den anslutande användaren, vilket är
-        # precis vad owner_role=None betyder.
-        return AGARSKAPSSATS.sub('', sql)
-
-    # Ersätt alla OWNER TO med konfigurerad roll
-    return re.sub(r'OWNER TO \w+', f'OWNER TO {owner_role}', sql, flags=re.IGNORECASE)
-
-
 # =============================================================================
 # UPGRADE HELPERS
 # =============================================================================
@@ -712,9 +638,11 @@ COMMENT ON FUNCTION public.hex_systemagare()
             if not path.exists():
                 raise FileNotFoundError(f"Saknas: {sql_file}")
 
+            # Filerna körs precis som de står. Ägarskapet sätts i SQL:en mot
+            # hex_systemagare(), som skapades ovan från effective_owner, så
+            # installern har inget att skriva om.
             print(f"Installerar {path.name}...")
-            sql = process_sql(path.read_text(encoding='utf-8'), owner_role)
-            cur.execute(sql)
+            cur.execute(path.read_text(encoding='utf-8'))
             installed += 1
 
         # Commit bara om allt lyckas

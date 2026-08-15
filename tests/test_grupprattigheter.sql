@@ -66,10 +66,12 @@ CREATE ROLE ad_gruppratt_test NOLOGIN;
 -- ADMIN OPTION på schemarollerna och rättigheter på hex_grupprattigheter,
 -- och varje GRANT misslyckas.
 --
--- REGRESSIONSVAKT: hex_tillampa_grupprattigheter.sql har 'OWNER TO gis_admin'
--- hårdkodat, och process_sql() i install_hex.py skriver INTE om OWNER TO i
--- filer som innehåller SECURITY DEFINER. Med ett annat owner_role än
--- 'gis_admin' hamnar ägarskapet därför fel.
+-- REGRESSIONSVAKT: hex_tillampa_grupprattigheter.sql hårdkodade tidigare
+-- 'OWNER TO gis_admin'. Installern skrev om rollnamnet, men manuell
+-- installation gjorde det inte — med en ägarroll som hette något annat än
+-- 'gis_admin' hamnade ägarskapet därför fel. Filen sätter numera ägaren mot
+-- hex_systemagare(), och testet nedan kontrollerar att det håller i den
+-- installerade databasen.
 -- ============================================================
 DO $$
 DECLARE
