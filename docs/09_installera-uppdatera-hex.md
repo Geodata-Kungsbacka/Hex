@@ -138,6 +138,10 @@ från `hex_systemagare()` i stället för att hårdkoda ett rollnamn, så manuel
 installation ger samma ägarskap som `install_hex.py`. Event-triggers och deras
 triggerfunktioner är undantagna — de måste ägas av `postgres`.
 
+Installern skapar tilläggen (`postgis`, `pgcrypto`) och ägarrollen automatiskt.
+Vid manuell installation måste du göra det själv. Se *Vanliga fel vid manuell
+installation* i `README.md` för felmeddelandena det ger.
+
 ---
 
 ## Kontrollera systemstatus
