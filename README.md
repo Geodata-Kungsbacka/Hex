@@ -57,18 +57,37 @@ För varje nytt schema skapas automatiskt fyra roller:
 ### 4. **Automatisk GeoServer-publicering och rensning**
 Lyssnaren hanterar två livscykelhändelser automatiskt via `pg_notify`:
 
-**Vid CREATE SCHEMA** (kanal `geoserver_schema`) — för sk0- och sk1-scheman:
-- Skapar en workspace i GeoServer med samma namn som schemat
-- Hämtar autentiseringsuppgifter för GeoServer-tjänstekontot (`gs_r_{schema}`) från tabellen `hex_rolluppgifter`
-- Skapar en direkt PostGIS-datastore i den workspace med dessa uppgifter
+**Vid CREATE SCHEMA** (kanal `geoserver_schema`) — skapar **två** workspaces per schema:
 
-`gs_r_{schema}` skapas automatiskt av `hex_hantera_std_roller()` vid CREATE SCHEMA med ett autogenererat lösenord sparat i `hex_rolluppgifter`. Ingen JNDI-konfiguration i Tomcat krävs.
+| Workspace | Datastore-konto | Rättigheter | Ändamål |
+|---|---|---|---|
+| `{schema}` | `gs_r_{schema}` | SELECT | WMS/WFS-läsning |
+| `{schema}_w` | `gs_w_{schema}` | ALL | WFS-T (redigering via GeoServer) |
 
-**Vid DROP SCHEMA** (kanal `geoserver_schema_drop`) — för sk0- och sk1-scheman:
-- Tar bort workspace från GeoServer med `recurse=true`, vilket raderar datastores och publicerade lager automatiskt
+För varje workspace hämtas tjänstekontots uppgifter ur `hex_rolluppgifter` och en
+direkt PostGIS-datastore skapas med dem. Därefter skapas GeoServer-roller
+(`r_{schema}`, `w_{schema}`) och ACL-regler för båda workspaces.
+
+`gs_r_{schema}` och `gs_w_{schema}` skapas automatiskt av `hex_hantera_std_roller()`
+vid CREATE SCHEMA med autogenererade lösenord sparade i `hex_rolluppgifter`. Ingen
+JNDI-konfiguration i Tomcat krävs.
+
+**Vid DROP SCHEMA** (kanal `geoserver_schema_drop`):
+- Tar bort ACL-reglerna för båda workspaces
+- Tar bort både `{schema}` och `{schema}_w` med `recurse=true`, vilket raderar datastores och publicerade lager automatiskt
+- Tar bort GeoServer-rollerna `r_{schema}` och `w_{schema}`
 - Förhindrar att GeoServer gör upprepade anrop mot ett schema som inte längre existerar
 
-sk2-scheman exkluderas — de kräver manuell konfiguration.
+Vilka scheman som publiceras styrs av kolumnen `publiceras_geoserver` i
+`hex_standardiserade_skyddsnivaer` — som standard `sk0` och `sk1`. `sk2` och `skx`
+publiceras inte och kräver manuell konfiguration. Kolumnen `anonym_las` styr om
+läs-workspacet får `ROLE_ANONYMOUS` i sin ACL-regel (standard `true` för `sk0`).
+Se `docs/08_geoserver-lyssnaren.md`.
+
+**Avstämning:** lyssnaren stämmer av GeoServer mot databasen vid uppstart och
+därefter periodiskt (`HEX_RECONCILE_INTERVAL`, standard 3600 s). Saknade workspaces
+och datastores återskapas, avvikande ACL-regler korrigeras, och datastorens
+autentiseringsuppgifter skrivs om från `hex_rolluppgifter`.
 
 **Felhantering:**
 - Automatisk retry med backoff vid timeout eller anslutningsfel mot GeoServer (upp till 4 försök)
@@ -182,6 +201,11 @@ python install_hex.py --upgrade    # Uppgradera (bevarar inställningar)
 python install_hex.py --uninstall  # Avinstallera
 ```
 
+> **OBS vid `--upgrade`:** konfigurationstabellerna bevaras, men lösenorden i
+> `hex_rolluppgifter` **roteras** — GeoServers datastores behöver de nya
+> uppgifterna. Starta om lyssnartjänsten efter uppgraderingen, se
+> [docs/09](docs/09_installera-uppdatera-hex.md#hex_rolluppgifter-roteras--den-bevaras-inte).
+
 ### Manuell installation
 
 Skapa först tilläggen som Hex kräver (installern gör detta automatiskt):
@@ -213,8 +237,20 @@ inte över filer och byt inte plats på dem.
 > ```
 >
 > Manuell installation ger därför exakt samma ägarskap som `install_hex.py`.
-> Undantaget är event-triggers och deras triggerfunktioner, som måste ägas av
-> `postgres` och sätter det statiskt.
+>
+> Undantagen ägs av `postgres` och sätts statiskt i SQL:en:
+> - **Alla event-triggers** — de skapas av en superuser och behåller
+>   `postgres`-ägande även när `owner_role` är satt.
+> - **`hex_systemagare()`** samt de tre `SECURITY DEFINER`-triggerfunktionerna
+>   `hex_hantera_ny_tabell()`, `hex_hantera_std_roller()` och
+>   `hex_ta_bort_schemaroller()`.
+>
+> Övriga sju triggerfunktioner (`hex_hantera_ny_kolumn`, `hex_hantera_ny_vy`,
+> `hex_hantera_borttagen_tabell`, `hex_validera_schemanamn`,
+> `hex_blockera_schema_namnbyte`, `hex_notifiera_gs`,
+> `hex_notifiera_gs_borttagning`) ägs av ägarrollen som allt annat. De är inte
+> `SECURITY DEFINER` och behöver därför inget `postgres`-ägande — en
+> event-triggerfunktion körs ändå med den anropande användarens rättigheter.
 
 ### Detaljerad installationsordning
 
@@ -310,12 +346,15 @@ installation: skapa tilläggen, skapa ägarrollen och köra filerna i rätt
 ordning. Nedan är felen det ger, med den faktiska texten PostgreSQL skriver.
 
 **`ERROR: function public.hex_systemagare() does not exist`**
-Kommer redan på första filen. `hex_systemagare.sql` kördes inte först — alla
-övriga filer sätter sitt ägarskap mot den funktionen.
+Kommer på `hex_geom_info.sql`, den andra filen i ordningen — den första
+(`hex_geoserver_roller.sql`) skapar bara en roll och rör inget ägarskap.
+`hex_systemagare.sql` kördes inte först, och alla filer därefter sätter sitt
+ägarskap mot den funktionen.
 *Åtgärd:* kör `src/sql/00_config/hex_systemagare.sql` (redigerad) före allt annat.
 
 **`ERROR: role "<ägarroll>" does not exist`**
-Med `CONTEXT: SQL statement "ALTER TABLE ... OWNER TO ..."`. Rollen som
+Med `CONTEXT: SQL statement "ALTER TYPE public.hex_geom_info OWNER TO ..."` —
+alltså samma fil som ovan, den första som sätter ägarskap. Rollen som
 `hex_systemagare()` returnerar finns inte i klustret. Installern skapar den
 automatiskt, manuell installation gör det inte.
 *Åtgärd:* `CREATE ROLE <ägarroll> NOLOGIN;` — rollen behöver aldrig logga in.
@@ -805,7 +844,8 @@ SELECT rollnamn, rolltyp, schema_uttryck, kan_logga_in, arvs_fran, ta_bort_med_s
 FROM hex_standardiserade_roller
 ORDER BY gid;
 
--- Lägg till ett extra GeoServer-skrivkonto för sk2-scheman
+-- Lägg till ett dedikerat läs-tjänstekonto för ett internt verktyg,
+-- men bara för sk2-scheman (som inte publiceras till GeoServer).
 INSERT INTO hex_standardiserade_roller (
     rollnamn,
     rolltyp,
@@ -814,11 +854,11 @@ INSERT INTO hex_standardiserade_roller (
     arvs_fran,
     ta_bort_med_schema
 ) VALUES (
-    'gs_w_{schema}',        -- {schema} ersätts med det faktiska schemanamnet
-    'write',
+    'app_r_{schema}',       -- {schema} ersätts med det faktiska schemanamnet
+    'read',
     'LIKE ''sk2_%''',       -- Matchar alla sk2-scheman
     true,                   -- LOGIN-tjänstekonto med autogenererat lösenord
-    'w_{schema}',           -- Ärver behörigheter från NOLOGIN-gruppen w_{schema}
+    'r_{schema}',           -- Ärver behörigheter från NOLOGIN-gruppen r_{schema}
     true                    -- Tas bort när schemat droppas
 );
 ```
@@ -877,18 +917,38 @@ SELECT evtname, evtevent, evtenabled
 FROM pg_event_trigger 
 ORDER BY evtname;
 
--- Kontrollera standardkolumner för ett schema
-SELECT * FROM hex_standardiserade_kolumner
-WHERE 'sk1_kba_bygg' LIKE schema_uttryck
+-- Lista alla konfigurerade standardkolumner
+SELECT kolumnnamn, ordinal_position, datatyp, schema_uttryck, historik_qa
+FROM hex_standardiserade_kolumner
 ORDER BY ordinal_position;
 
--- Verifiera att funktioner finns
-SELECT proname
-FROM pg_proc
-WHERE proname LIKE 'hantera_%'
-   OR proname LIKE 'validera_%'
-   OR proname LIKE 'notifiera_%'
-ORDER BY proname;
+-- Kontrollera vilka av dem ett visst schema faktiskt får.
+-- OBS: schema_uttryck är ett SQL-predikat ('IS NOT NULL', 'LIKE ''%_kba_%''')
+-- och inte ett LIKE-mönster – det måste evalueras dynamiskt.
+DO $$
+DECLARE
+    mal_schema text := 'sk1_kba_bygg';
+    r record;
+    traffar boolean;
+BEGIN
+    FOR r IN SELECT kolumnnamn, ordinal_position, datatyp, schema_uttryck
+             FROM hex_standardiserade_kolumner ORDER BY ordinal_position
+    LOOP
+        EXECUTE format('SELECT %L %s', mal_schema, r.schema_uttryck) INTO traffar;
+        IF traffar THEN
+            RAISE NOTICE '% (pos %, %)', r.kolumnnamn, r.ordinal_position, r.datatyp;
+        END IF;
+    END LOOP;
+END;
+$$;
+
+-- Verifiera att funktionerna finns (samtliga har hex_-prefix)
+SELECT p.proname
+FROM pg_proc p
+JOIN pg_namespace n ON n.oid = p.pronamespace
+WHERE n.nspname = 'public'
+  AND p.proname LIKE 'hex\_%'
+ORDER BY p.proname;
 ```
 
 ## Avinstallation

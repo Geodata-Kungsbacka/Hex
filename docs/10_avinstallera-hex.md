@@ -93,10 +93,10 @@ DROP FUNCTION IF EXISTS public.hex_validera_tabell(text, text);
 DROP FUNCTION IF EXISTS public.hex_hamta_kolumnstandard(text, text, hex_geom_info);
 DROP FUNCTION IF EXISTS public.hex_hamta_geometri_definition(text, text);
 
--- 7. Konfigurationsfunktioner och roller
+-- 7. Konfigurationsfunktioner
 DROP FUNCTION IF EXISTS public.hex_schema_regex();
 DROP FUNCTION IF EXISTS public.hex_systemagare();
-DROP ROLE IF EXISTS hex_geoserver_roller;
+-- OBS: hex_geoserver_roller tas INTE bort här – se avsnittet nedan.
 
 -- 8. Konfigurationstabeller
 DROP TABLE IF EXISTS public.hex_rolluppgifter;
@@ -117,6 +117,40 @@ DROP TYPE IF EXISTS public.hex_kolumnegenskaper;
 DROP TYPE IF EXISTS public.hex_kolumnkonfig;
 DROP TYPE IF EXISTS public.hex_geom_info;
 ```
+
+---
+
+---
+
+## Rollen `hex_geoserver_roller` — ta inte bort den rutinmässigt
+
+`hex_geoserver_roller` är en **klusterroll**, inte ett databasobjekt. Samma roll
+delas av alla databaser i klustret som kör Hex, och den är målet för
+`pg_hba.conf`-posten `+hex_geoserver_roller`.
+
+Droppar du den när du avinstallerar Hex ur *en* databas förlorar alla
+`gs_r_`/`gs_w_`-konton i klustrets **övriga** databaser sitt gruppmedlemskap.
+De matchar då inte längre `pg_hba.conf`, och GeoServer tappar anslutningen till
+scheman som inte har med den avinstallerade databasen att göra. Därför tar
+varken `install_hex.py --uninstall` eller SQL:en ovan bort rollen.
+
+Ska Hex bort ur **samtliga** databaser i klustret, och rollen inte längre
+behövas, tar du bort den separat efteråt:
+
+```sql
+-- Kontrollera först att inga medlemmar finns kvar
+SELECT m.rolname
+FROM pg_auth_members am
+JOIN pg_roles g ON g.oid = am.roleid
+JOIN pg_roles m ON m.oid = am.member
+WHERE g.rolname = 'hex_geoserver_roller';
+
+-- Tom lista ovan → rollen kan tas bort
+DROP ROLE hex_geoserver_roller;
+```
+
+Glöm inte att ta bort motsvarande `+hex_geoserver_roller`-post ur
+`pg_hba.conf` och köra `SELECT pg_reload_conf();`.
 
 ---
 

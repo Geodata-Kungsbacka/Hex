@@ -824,6 +824,19 @@ hex_notifiera_gs_borttagning()
 Lyssnaren är ett fristående program (eller Windows-tjänst) som kopplar upp
 mot PostgreSQL och väntar på `pg_notify`-meddelanden på **två kanaler**.
 
+> **Två workspaces per schema.** Varje publicerat schema får ett
+> **läs-workspace** `{schema}` (datastore ansluter som `gs_r_{schema}`, SELECT)
+> och ett **skriv-workspace** `{schema}_w` (datastore ansluter som
+> `gs_w_{schema}`, ALL). Skriv-workspacet är det som WFS-T-klienter pekar mot.
+> Saknas `gs_w_`-uppgifter i `hex_rolluppgifter` hoppas skriv-workspacet över
+> och läs-workspacet skapas ändå.
+>
+> Utöver notifieringarna kör lyssnaren en **avstämning** vid uppstart och
+> därefter var `HEX_RECONCILE_INTERVAL` sekund (standard 3600, `0` = av). Den
+> kör samma `handle_schema_notification` för *alla* scheman i databasen, vilket
+> återskapar saknade workspaces/datastores, korrigerar ACL-regler och skriver om
+> datastorens autentiseringsuppgifter från `hex_rolluppgifter`.
+
 ```mermaid
 flowchart TD
     PG_C(["PostgreSQL<br/>hex_notifiera_gs()"])
@@ -847,11 +860,11 @@ flowchart TD
 
     subgraph REST["GeoServerClient (HTTP Basic Auth)"]
         direction TB
-        GS_CREATE["1. POST /rest/workspaces<br/>2. POST /rest/.../datastores<br/>3. POST /rest/security/roles/role/r_{schema}<br/>   POST /rest/security/roles/role/w_{schema}<br/>4. POST /rest/security/acl/layers<br/>→ workspace + datastore + roller + ACL ✓"]
-        GS_DELETE["1. DELETE /rest/security/acl/layers/{regler}<br/>2. DELETE /rest/workspaces/{namn}?recurse=true<br/>   200 = borttagen · 404 = fanns inte (ok)<br/>3. DELETE /rest/security/roles/role/r_{schema}<br/>   DELETE /rest/security/roles/role/w_{schema}<br/>→ workspace + datastores + lager + roller + ACL raderade ✓"]
+        GS_CREATE["1. läs-workspace {schema}<br/>2. läs-datastore (gs_r_)<br/>3. skriv-workspace {schema}_w<br/>4. skriv-datastore (gs_w_)<br/>5. POST /rest/security/roles/role/r_{schema}<br/>   POST /rest/security/roles/role/w_{schema}<br/>6. ACL läs-workspace<br/>7. ACL skriv-workspace<br/>→ 2 workspaces + 2 datastores + roller + ACL ✓"]
+        GS_DELETE["1. DELETE ACL läs-workspace<br/>2. DELETE ACL skriv-workspace<br/>3. DELETE /rest/workspaces/{schema}?recurse=true<br/>4. DELETE /rest/workspaces/{schema}_w?recurse=true<br/>   200 = borttagen · 404 = fanns inte (ok)<br/>5. DELETE /rest/security/roles/role/r_{schema}<br/>   DELETE /rest/security/roles/role/w_{schema}<br/>→ båda workspaces + datastores + lager + roller + ACL raderade ✓"]
     end
 
-    GS_CREATE --> |"nätverksfel"| RETRY["Retry 3 ggr<br/>2 s · 5 s · 10 s"]
+    GS_CREATE --> |"nätverksfel"| RETRY["Retry: 1 + 3 försök<br/>2 s · 5 s · 10 s"]
     GS_DELETE --> |"nätverksfel"| RETRY
     GS_CREATE --> |"4xx / 5xx"| FAIL["Misslyckas direkt<br/>EmailNotifier"]
     GS_DELETE --> |"4xx / 5xx"| FAIL
@@ -895,23 +908,31 @@ flowchart TD
 │                              gs_client)                             │
 │    ├── Laddar mönster från hex_standardiserade_skyddsnivaer /           │
 │    │     hex_standardiserade_datakategorier (dynamiskt, utan omstart)  │
-│    ├── Hämtar credentials för gs_r_sk0_kba_bygg ur hex_rolluppgifter│
-│    ├── → GeoServerClient.create_workspace()                         │
-│    ├── → GeoServerClient.create_pg_datastore()                     │
-│    ├── → GeoServerClient.create_gs_role('r_sk0_kba_bygg')          │
-│    │       POST /rest/security/roles/role/{roll} → 201 Created     │
-│    ├── → GeoServerClient.create_gs_role('w_sk0_kba_bygg')          │
-│    └── → GeoServerClient.create_workspace_acl()                    │
-│             sk0_kba_bygg.*.r = r_sk0_kba_bygg                      │
-│             sk0_kba_bygg.*.w = w_sk0_kba_bygg                      │
+│    ├── Hämtar credentials för gs_r_ och gs_w_ ur hex_rolluppgifter │
+│    ├── Steg 1: create_workspace('sk0_kba_bygg')       (läs)        │
+│    ├── Steg 2: create_pg_datastore(...gs_r_sk0_kba_bygg)           │
+│    ├── Steg 3: create_workspace('sk0_kba_bygg_w')     (skriv)      │
+│    ├── Steg 4: create_pg_datastore(...gs_w_sk0_kba_bygg)           │
+│    │            steg 3–4 hoppas över om gs_w_-uppgifter saknas     │
+│    ├── Steg 5: create_gs_role('r_sk0_kba_bygg')                    │
+│    │           create_gs_role('w_sk0_kba_bygg')                    │
+│    │             POST /rest/security/roles/role/{roll} → 201       │
+│    ├── Steg 6: create_workspace_acl()                              │
+│    │             sk0_kba_bygg.*.r = r_sk0_kba_bygg                 │
+│    │             (+ ROLE_ANONYMOUS om anonym_las = true)           │
+│    └── Steg 7: create_write_workspace_acl()                        │
+│                  sk0_kba_bygg_w.*.r = w_sk0_kba_bygg               │
+│                  sk0_kba_bygg_w.*.w = w_sk0_kba_bygg               │
 │                                                                     │
 │  handle_schema_removal_notification('sk0_kba_bygg', gs_client)     │
 │    ├── Laddar mönster från hex_standardiserade_skyddsnivaer /           │
 │    │     hex_standardiserade_datakategorier (dynamiskt, utan omstart)  │
-│    ├── → GeoServerClient.delete_workspace_acl()                    │
-│    ├── → GeoServerClient.delete_workspace()                        │
-│    ├── → GeoServerClient.delete_gs_role('r_sk0_kba_bygg')          │
-│    └── → GeoServerClient.delete_gs_role('w_sk0_kba_bygg')          │
+│    ├── Steg 1: delete_workspace_acl('sk0_kba_bygg')                │
+│    ├── Steg 2: delete_workspace_acl('sk0_kba_bygg_w')              │
+│    ├── Steg 3: delete_workspace('sk0_kba_bygg')                    │
+│    ├── Steg 4: delete_workspace('sk0_kba_bygg_w')                  │
+│    └── Steg 5: delete_gs_role('r_sk0_kba_bygg')                    │
+│                delete_gs_role('w_sk0_kba_bygg')                    │
 │                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
                                    │
@@ -932,7 +953,8 @@ flowchart TD
 │       → 201 Created                                                 │
 │                                                                     │
 │  3. GET  /rest/workspaces/sk0_kba_bygg/datastores/sk0_kba_bygg.json│
-│       200 = datakälla finns redan → hoppa över                     │
+│       200 = datakälla finns redan → PUT med aktuella uppgifter     │
+│              (så att roterade lösenord slår igenom)                │
 │       404 = finns inte → skapa                                     │
 │                                                                     │
 │  4. POST /rest/workspaces/sk0_kba_bygg/datastores                  │
@@ -955,23 +977,35 @@ flowchart TD
 │     POST /rest/security/roles/role/w_sk0_kba_bygg                  │
 │       → GeoServer-roller r_ och w_ skapade ✓                       │
 │                                                                     │
-│  6. POST /rest/security/acl/layers                                  │
-│       {"sk0_kba_bygg.*.r": "r_sk0_kba_bygg",                       │
-│        "sk0_kba_bygg.*.w": "w_sk0_kba_bygg"}                       │
-│       → Läsrollen får läsrättighet, skrivroll skrivrättighet ✓     │
+│  Steg 3–4 upprepas för skriv-workspacet 'sk0_kba_bygg_w' med       │
+│  gs_w_sk0_kba_bygg-uppgifter. Saknas de hoppas skriv-workspacet    │
+│  över helt (läs-workspacet skapas ändå).                           │
+│                                                                     │
+│  6. POST /rest/security/acl/layers   (läs-workspace)               │
+│       {"sk0_kba_bygg.*.r": "r_sk0_kba_bygg"}                       │
+│       anonym_las = true → "r_sk0_kba_bygg,ROLE_ANONYMOUS"          │
+│       → Läsrollen (ev. + anonym) får läsrättighet ✓                │
+│                                                                     │
+│  7. POST /rest/security/acl/layers   (skriv-workspace)             │
+│       {"sk0_kba_bygg_w.*.r": "w_sk0_kba_bygg",                     │
+│        "sk0_kba_bygg_w.*.w": "w_sk0_kba_bygg"}                     │
+│       → Skrivrollen får läs+skriv, används av WFS-T ✓              │
 │                                                                     │
 │  BORTTAGNING (handle_schema_removal_notification):                  │
 │                                                                     │
 │  1. DELETE /rest/security/acl/layers/sk0_kba_bygg.*.r              │
-│     DELETE /rest/security/acl/layers/sk0_kba_bygg.*.w              │
+│       (läs-workspacets regel)                                      │
+│  2. DELETE /rest/security/acl/layers/sk0_kba_bygg_w.*.r            │
+│     DELETE /rest/security/acl/layers/sk0_kba_bygg_w.*.w            │
 │       200 = borttagen · 404 = fanns inte (ok)                      │
 │                                                                     │
-│  2. DELETE /rest/workspaces/sk0_kba_bygg?recurse=true              │
+│  3. DELETE /rest/workspaces/sk0_kba_bygg?recurse=true              │
+│  4. DELETE /rest/workspaces/sk0_kba_bygg_w?recurse=true            │
 │       200 = borttagen (inkl. datastores och publicerade lager)     │
 │       404 = workspace fanns inte → behandlas som framgång (ok)     │
 │       övrigt → misslyckas, EmailNotifier skickar varning           │
 │                                                                     │
-│  3. DELETE /rest/security/roles/role/r_sk0_kba_bygg                │
+│  5. DELETE /rest/security/roles/role/r_sk0_kba_bygg                │
 │     DELETE /rest/security/roles/role/w_sk0_kba_bygg                │
 │       200 = borttagen · 404 = fanns inte (ok)                      │
 │                                                                     │
