@@ -33,8 +33,16 @@ EXCEPTION
 END;
 $$;
 
-ALTER TABLE public.hex_standardiserade_roller
-    OWNER TO postgres;
+-- Ägaren sätts via hex_systemagare() i stället för ett hårdkodat rollnamn,
+-- så att manuell installation ger samma ägarskap som install_hex.py.
+DO $$
+BEGIN
+    EXECUTE format(
+        'ALTER TABLE public.hex_standardiserade_roller OWNER TO %I',
+        public.hex_systemagare()
+    );
+END;
+$$;
 
 COMMENT ON TABLE public.hex_standardiserade_roller
     IS 'Definierar vilka roller som ska skapas automatiskt för nya scheman.

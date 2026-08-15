@@ -197,6 +197,24 @@ inte över filer och byt inte plats på dem.
 > **OBS:** `hex_systemagare.sql` måste köras först och måste redigeras innan
 > den körs (ändra `'gis_admin'` till din ägarroll). Detta är den enda filen
 > installern inte kör — den genererar funktionen dynamiskt från `owner_role`.
+>
+> Det är också den enda filen du behöver redigera. Övriga filer hårdkodar
+> aldrig ett rollnamn, utan sätter ägarskapet mot `hex_systemagare()`:
+>
+> ```sql
+> DO $$
+> BEGIN
+>     EXECUTE format(
+>         'ALTER TABLE public.hex_metadata OWNER TO %I',
+>         public.hex_systemagare()
+>     );
+> END;
+> $$;
+> ```
+>
+> Manuell installation ger därför exakt samma ägarskap som `install_hex.py`.
+> Undantaget är event-triggers och deras triggerfunktioner, som måste ägas av
+> `postgres` och sätter det statiskt.
 
 ### Detaljerad installationsordning
 

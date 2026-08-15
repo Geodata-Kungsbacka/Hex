@@ -6,10 +6,11 @@ Sviten kräver ingen databas. Den testar installerns rena funktioner
 (process_sql, _strip_sql_comments) och konsistensen i INSTALL_ORDER mot
 filerna på disk.
 
-Bakgrund: process_sql() avgör vem som ska äga varje objekt. Filer som
-innehåller CREATE EVENT TRIGGER eller SECURITY DEFINER lämnas orörda,
-eftersom de förutsätts säga 'OWNER TO postgres'. Håller inte det
-antagandet hamnar ägarskapet fel utan att installationen klagar.
+Bakgrund: ägarskapet sätts i SQL-filerna via hex_systemagare(), så att
+manuell installation och install_hex.py ger samma ägare. Undantaget är
+superuser-beroende filer (event-triggers och deras triggerfunktioner) som
+måste ägas av postgres och sätter det statiskt. Bryts den uppdelningen
+hamnar ägarskapet fel utan att installationen klagar.
 
 Kör med:
     python3 tests/test_installer.py
@@ -26,6 +27,12 @@ sys.path.insert(0, str(PROJECT_ROOT))
 import install_hex  # noqa: E402
 
 OWNER_TO = re.compile(r"OWNER\s+TO\s+(\w+)", re.IGNORECASE)
+
+# Toppnivåobjekt vars ägarskap måste sättas explicit.
+SKAPAR_OBJEKT = re.compile(
+    r"^\s*CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|TABLE|TYPE|VIEW)\b",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -305,6 +312,55 @@ class TestAgarskapsantagande(unittest.TestCase):
         self.assertEqual(
             trasiga, [],
             "Dinglande ALTER-satser efter borttagning:\n  " + "\n  ".join(trasiga),
+        )
+
+    def test_agarskap_sätts_via_hex_systemagare(self):
+        """
+        Ingen installerad fil får hårdkoda ett rollnamn i sitt ägarskap.
+
+        Ägarskapet ska sättas dynamiskt mot hex_systemagare(). Ett hårdkodat
+        namn skrivs bara om av install_hex.py; manuell installation kör filerna
+        precis som de står. Då hamnar objektet antingen på fel roll — eller
+        avbryter hela installationen om rollen inte finns i klustret.
+
+        Undantaget är de superuser-beroende filerna: de måste ägas av postgres
+        och sätter det statiskt. Klassificeringen läses av från installerns egen
+        funktion i stället för att upprepas här, så att testet och koden inte
+        kan glida isär.
+        """
+        avvikande = []
+        for f in install_hex.INSTALL_ORDER:
+            sql = (PROJECT_ROOT / f).read_text(encoding="utf-8")
+            statiska = OWNER_TO.findall(install_hex._strip_sql_comments(sql))
+            if install_hex.kraver_superuser_agande(sql):
+                for agare in statiska:
+                    if agare.lower() != "postgres":
+                        avvikande.append(
+                            f"{f}: superuser-beroende fil äger till {agare}, "
+                            "ska vara postgres"
+                        )
+            else:
+                for agare in statiska:
+                    avvikande.append(
+                        f"{f}: hårdkodat OWNER TO {agare}, ska sättas via "
+                        "public.hex_systemagare()"
+                    )
+                # En fil som skapar ett objekt utan att sätta ägarskap alls får
+                # ägaren av den som råkar köra filen. Det ger fel ägare i båda
+                # installationsvägarna, utan att någon OWNER TO-sats avslöjar det.
+                kod = install_hex._strip_sql_comments(sql)
+                if SKAPAR_OBJEKT.search(kod) and not re.search(
+                    r"OWNER\s+TO", kod, re.IGNORECASE
+                ):
+                    avvikande.append(
+                        f"{f}: skapar objekt utan ägarskapssats – objektet hamnar "
+                        "på den anslutande användaren i stället för ägarrollen"
+                    )
+
+        self.assertEqual(
+            avvikande, [],
+            "Ägarskap som inte följer ägarrollen vid manuell installation:\n  "
+            + "\n  ".join(avvikande),
         )
 
     def test_process_sql_lamnar_inga_frammande_agare(self):

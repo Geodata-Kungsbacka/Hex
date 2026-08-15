@@ -26,8 +26,16 @@ CREATE TABLE IF NOT EXISTS public.hex_standardiserade_kolumner
 
 TABLESPACE pg_default;
 
-ALTER TABLE IF EXISTS public.hex_standardiserade_kolumner
-    OWNER to postgres;
+-- Ägaren sätts via hex_systemagare() i stället för ett hårdkodat rollnamn,
+-- så att manuell installation ger samma ägarskap som install_hex.py.
+DO $$
+BEGIN
+    EXECUTE format(
+        'ALTER TABLE IF EXISTS public.hex_standardiserade_kolumner OWNER TO %I',
+        public.hex_systemagare()
+    );
+END;
+$$;
 
 COMMENT ON TABLE public.hex_standardiserade_kolumner
     IS E'Definierar standardkolumner för tabellstrukturer.\\n\\nordinal_position:\\n  > 0: kolumnen placeras först i angiven ordning\\n  < 0: kolumnen placeras sist i omvänd ordning\\n  NULL/0 är inte tillåtet\\n\\nschema_uttryck:\\n  SQL-uttryck som avgör vilka scheman kolumnen ska appliceras på.\\n  Exempel: "LIKE ''%_ext_%''", "= ''sk0_ext_sgu''", "IS NOT NULL"';

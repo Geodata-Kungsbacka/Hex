@@ -360,33 +360,38 @@ AGARSKAPSSATS = re.compile(
 )
 
 
+def kraver_superuser_agande(sql: str) -> bool:
+    """Anger om filens objekt måste ägas av en superuser i stället för ägarrollen.
+
+    Undantaget gäller event-triggers och de SECURITY DEFINER-funktioner som ÄR
+    triggerfunktioner (RETURNS event_trigger). De skapar roller och flyttar
+    ägarskap och behöver därför superuser. Sådana filer sätter sitt ägarskap
+    statiskt till postgres; övriga filer sätter det via hex_systemagare().
+
+    SECURITY DEFINER ensamt räcker inte som kriterium. En vanlig SECURITY
+    DEFINER-funktion ska köra som ägarrollen, inte som postgres: den ska ha
+    exakt de rättigheter ägarrollen har (t.ex. ADMIN OPTION på schemarollerna)
+    och inte mer.
+    """
+    # Klassificeringen görs på SQL:en utan kommentarer – annars räcker det att
+    # frasen nämns i en kommentar för att filen felaktigt ska klassas som
+    # superuser-beroende.
+    kod = _strip_sql_comments(sql).upper()
+    ar_triggerfunktion = re.search(r'RETURNS\s+EVENT_TRIGGER', kod) is not None
+    return ('CREATE EVENT TRIGGER' in kod or
+            ('SECURITY DEFINER' in kod and ar_triggerfunktion))
+
+
 def process_sql(sql: str, owner_role: str | None) -> str:
     """Bearbetar SQL-innehåll - ersätter eller tar bort OWNER TO-satser.
 
-    Event-triggers och deras triggerfunktioner måste ägas av en superuser och
-    behåller därför postgres-ägande. Övriga objekt får owner_role.
+    Filerna sätter numera ägarskapet dynamiskt via hex_systemagare(), så det
+    finns normalt inga statiska OWNER TO-satser kvar att skriva om. Funktionen
+    behålls som skyddsnät: återinförs ett hårdkodat rollnamn i en fil fångas
+    det upp här vid installation — och av
+    test_installer.py::TestAgarskapsantagande innan det når en release.
     """
-    # Klassificeringen görs på SQL:en utan kommentarer – annars räcker det att
-    # frasen nämns i en kommentar för att filen felaktigt ska behålla
-    # postgres-ägande i stället för att få owner_role.
-    kod = _strip_sql_comments(sql).upper()
-
-    # Undantaget gäller event-triggers och de SECURITY DEFINER-funktioner som
-    # ÄR triggerfunktioner (RETURNS event_trigger). De skapar roller och flyttar
-    # ägarskap och behöver därför superuser.
-    #
-    # SECURITY DEFINER ensamt räcker inte som kriterium. En vanlig SECURITY
-    # DEFINER-funktion ska köra som owner_role, inte som postgres: den ska ha
-    # exakt de rättigheter ägarrollen har (t.ex. ADMIN OPTION på schemarollerna)
-    # och inte mer. Undantas den från omskrivningen behåller den i stället den
-    # ägare som råkar stå i filen, oavsett konfigurerat owner_role — vilket ger
-    # fel ägare på ett kluster där den rollen finns, och avbryter hela
-    # installationen på ett kluster där den inte finns.
-    ar_triggerfunktion = re.search(r'RETURNS\s+EVENT_TRIGGER', kod) is not None
-    needs_superuser = ('CREATE EVENT TRIGGER' in kod or
-                       ('SECURITY DEFINER' in kod and ar_triggerfunktion))
-
-    if needs_superuser:
+    if kraver_superuser_agande(sql):
         # Behåll postgres-ägande för superuser-beroende objekt
         return sql
 
@@ -640,9 +645,13 @@ def install(db: dict, base_path="."):
         print("Kontrollerar pgcrypto-tillägget...")
         cur.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto")
 
-        # Säkerställ att ägarrollen finns. Saknas den skapas den här — annars
-        # kan Hex inte installeras i en ny databas utan ett manuellt CREATE ROLE
-        # i förväg, vilket är lätt att missa.
+        # Bestäm vilken roll som ska äga Hex:s objekt. Rollen bakas in i
+        # hex_systemagare(), och SQL-filerna sätter sitt ägarskap mot den
+        # funktionen i stället för mot ett hårdkodat rollnamn.
+        #
+        # Med ett konfigurerat owner_role säkerställs att rollen finns. Saknas
+        # den skapas den här — annars kan Hex inte installeras i en ny databas
+        # utan ett manuellt CREATE ROLE i förväg, vilket är lätt att missa.
         #
         # Rollen skapas NOLOGIN och utan lösenord. Den behöver aldrig logga in:
         # den äger Hex:s objekt och får ADMIN OPTION på schemats r_/w_-roller,
@@ -651,29 +660,33 @@ def install(db: dict, base_path="."):
         #
         # OBS: roller är gemensamma för hela klustret, inte per databas. Skapas
         # rollen här finns den även för klustrets övriga databaser.
-        effective_owner = owner_role or 'postgres'
-        cur.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (effective_owner,))
-        if not cur.fetchone():
-            if owner_role is None:
-                # owner_role=None betyder "anslutande användare äger objekten".
-                # Att den rollen saknas är inte något installern kan reparera.
-                raise ValueError(
-                    f"Rollen '{effective_owner}' finns inte i databasen"
+        if owner_role is None:
+            # owner_role=None betyder "den anslutande användaren äger objekten".
+            # Ägaren måste ändå ha ett namn: SQL-filerna sätter ägarskap via
+            # hex_systemagare(), som bakas in nedan. Läs därför av den faktiska
+            # anslutningen i stället för att anta 'postgres' — annars pekar
+            # hex_systemagare() på fel roll så snart installationen körs som en
+            # annan superuser än postgres.
+            cur.execute("SELECT current_user")
+            effective_owner = cur.fetchone()[0]
+        else:
+            effective_owner = owner_role
+            cur.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (effective_owner,))
+            if not cur.fetchone():
+                print(f"Ägarrollen '{effective_owner}' saknas – skapar den (NOLOGIN)...")
+                cur.execute(
+                    pgsql.SQL("CREATE ROLE {} NOLOGIN").format(
+                        pgsql.Identifier(effective_owner)
+                    )
                 )
-            print(f"Ägarrollen '{effective_owner}' saknas – skapar den (NOLOGIN)...")
-            cur.execute(
-                pgsql.SQL("CREATE ROLE {} NOLOGIN").format(
-                    pgsql.Identifier(effective_owner)
+                varningar.append(
+                    f"Ägarrollen '{effective_owner}' fanns inte och skapades av installern.\n"
+                    "Den är NOLOGIN och saknar lösenord. Kontrollera att namnet är rätt\n"
+                    "stavat – ett felstavat owner_role skapar en ny roll i stället för\n"
+                    "att återanvända den avsedda. Behöver rollen kunna logga in:\n"
+                    f"  ALTER ROLE {effective_owner} LOGIN PASSWORD '...';"
                 )
-            )
-            varningar.append(
-                f"Ägarrollen '{effective_owner}' fanns inte och skapades av installern.\n"
-                "Den är NOLOGIN och saknar lösenord. Kontrollera att namnet är rätt\n"
-                "stavat – ett felstavat owner_role skapar en ny roll i stället för\n"
-                "att återanvända den avsedda. Behöver rollen kunna logga in:\n"
-                f"  ALTER ROLE {effective_owner} LOGIN PASSWORD '...';"
-            )
-            skriv_varning(varningar[-1])
+                skriv_varning(varningar[-1])
 
         # Skapa hex_systemagare()-funktionen dynamiskt
         system_owner_sql = f"""

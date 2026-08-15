@@ -17,7 +17,16 @@ CREATE TABLE IF NOT EXISTS public.hex_grupprattigheter (
     UNIQUE (ad_grupproll, hex_roll)
 );
 
-ALTER TABLE public.hex_grupprattigheter OWNER TO gis_admin;
+-- Ägaren sätts via hex_systemagare() i stället för ett hårdkodat rollnamn,
+-- så att manuell installation ger samma ägarskap som install_hex.py.
+DO $$
+BEGIN
+    EXECUTE format(
+        'ALTER TABLE public.hex_grupprattigheter OWNER TO %I',
+        public.hex_systemagare()
+    );
+END;
+$$;
 
 COMMENT ON TABLE public.hex_grupprattigheter IS
     'DBA-hanterad mappning: vilka AD-synkade grupproller ska beviljas vilka Hex-schemaroller.

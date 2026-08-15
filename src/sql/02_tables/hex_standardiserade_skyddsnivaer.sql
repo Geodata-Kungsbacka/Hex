@@ -16,8 +16,16 @@ CREATE TABLE IF NOT EXISTS public.hex_standardiserade_skyddsnivaer (
 ALTER TABLE public.hex_standardiserade_skyddsnivaer
     ADD COLUMN IF NOT EXISTS anonym_las boolean NOT NULL DEFAULT false;
 
-ALTER TABLE public.hex_standardiserade_skyddsnivaer
-    OWNER TO postgres;
+-- Ägaren sätts via hex_systemagare() i stället för ett hårdkodat rollnamn,
+-- så att manuell installation ger samma ägarskap som install_hex.py.
+DO $$
+BEGIN
+    EXECUTE format(
+        'ALTER TABLE public.hex_standardiserade_skyddsnivaer OWNER TO %I',
+        public.hex_systemagare()
+    );
+END;
+$$;
 
 COMMENT ON TABLE public.hex_standardiserade_skyddsnivaer
     IS 'Definierar giltiga säkerhetsnivåprefix (sk0, sk1, sk2, skx, ...) och deras egenskaper.

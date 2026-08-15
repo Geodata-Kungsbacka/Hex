@@ -96,8 +96,16 @@ EXCEPTION
 END;
 $BODY$;
 
-ALTER FUNCTION public.hex_lagg_till_dummy_geometri(text, text, hex_geom_info)
-    OWNER TO postgres;
+-- Ägaren sätts via hex_systemagare() i stället för ett hårdkodat rollnamn,
+-- så att manuell installation ger samma ägarskap som install_hex.py.
+DO $$
+BEGIN
+    EXECUTE format(
+        'ALTER FUNCTION public.hex_lagg_till_dummy_geometri(text, text, hex_geom_info) OWNER TO %I',
+        public.hex_systemagare()
+    );
+END;
+$$;
 
 COMMENT ON FUNCTION public.hex_lagg_till_dummy_geometri(text, text, hex_geom_info)
     IS 'Lägger till en minimal dummy-geometrirad i en geometritabell för att QGIS
