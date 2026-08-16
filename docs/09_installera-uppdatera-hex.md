@@ -6,6 +6,10 @@
 
 ## Förutsättningar
 
+- Målplattformen är Windows Server 2022, och kommandona nedan är skrivna för
+  Windows. Installern är plattformsoberoende och fungerar lika bra på Linux —
+  byt då `python` mot `python3`. Se [Systemkrav i README](../README.md#systemkrav)
+  för vad som skiljer plattformarna åt.
 - Python 3 installerat på maskinen som kör installationsskriptet.
 - Python-paketet `psycopg2` installerat: `pip install psycopg2-binary`.
   Installern importerar det direkt vid start och avbryter med
