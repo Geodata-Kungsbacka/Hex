@@ -61,6 +61,18 @@ TABELL_RAD = re.compile(r"\|\s*(PASS|FAIL|XFAIL)\s*\|")
 NOTICE_PASS = re.compile(r"NOTICE:.*\b(PASSED|GODKÄNT)\b")
 WARNING_FAIL = re.compile(r"WARNING:.*\b(FAILED|MISSLYCKAT|BUG)\b")
 
+# Antal underkända i unittests sammanfattningsrad. Lookbehind krävs: utan den
+# matchar mönstret även slutet av "expected failures=N", och en svit vars rad
+# saknar riktiga failures ("FAILED (errors=1, expected failures=2)") skulle få
+# sina förväntade fel inräknade som underkända.
+FAILURES = r"(?<!expected )failures=(\d+)"
+
+
+def _rakna(utdata: str, monster: str) -> int:
+    """Plockar ut ett heltal ur unittests sammanfattningsrad, 0 om det saknas."""
+    traff = re.search(monster, utdata)
+    return int(traff.group(1)) if traff else 0
+
 
 class Resultat:
     def __init__(self, namn):
@@ -161,18 +173,31 @@ def kor_python_svit(filnamn: str) -> Resultat:
     # unittest avslutar med 0 även när samtliga tester hoppades över, så utan
     # den här avräkningen rapporteras en svit som inte körde något som idel
     # godkända tester.
-    hoppade = re.search(r"skipped=(\d+)", res.utdata)
-    res.overhoppade = int(hoppade.group(1)) if hoppade else 0
+    res.overhoppade = _rakna(res.utdata, r"skipped=(\d+)")
+
+    # "expected failures=N" är unittests motsvarighet till SQL-sviternas XFAIL:
+    # testet kördes och gav det förväntade felet.
+    res.xfail = _rakna(res.utdata, r"expected failures=(\d+)")
 
     if res.exitkod == 0:
-        res.passerade = antal - res.overhoppade
+        res.passerade = max(antal - res.overhoppade - res.xfail, 0)
     else:
-        fel = re.search(r"failures=(\d+)", res.utdata)
-        errors = re.search(r"errors=(\d+)", res.utdata)
-        res.misslyckade = int(fel.group(1) if fel else 0) + int(
-            errors.group(1) if errors else 0
-        ) or max(antal, 1)
-        res.passerade = max(antal - res.misslyckade - res.overhoppade, 0)
+        # Oväntade framgångar är underkända: ett test märkt
+        # @unittest.expectedFailure som plötsligt lyckas betyder att märkningen
+        # inte följt med koden.
+        rapporterade = (
+            _rakna(res.utdata, FAILURES)
+            + _rakna(res.utdata, r"errors=(\d+)")
+            + _rakna(res.utdata, r"unexpected successes=(\d+)")
+        )
+        # Avslutskoden var skild från noll utan att ett enda underkänt test
+        # rapporterades – sviten kraschade innan sammanfattningen skrevs.
+        # Räkna det som ett fel. Att skriva av hela sviten (max(antal, 1))
+        # rapporterade tester som faktiskt kördes och passerade som underkända.
+        res.misslyckade = rapporterade or 1
+        res.passerade = max(
+            antal - res.misslyckade - res.overhoppade - res.xfail, 0
+        )
 
     return res
 

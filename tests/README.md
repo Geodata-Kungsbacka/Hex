@@ -148,8 +148,10 @@ SQL-sviterna rapporterar på två sätt. Båda tolkas av `run_all_tests.py`:
 | `XFAIL` | Förväntat fel – Hex blockerade korrekt något otillåtet. Räknas som godkänt |
 | `FAIL`  | Underkänt                                                           |
 
-Python-sviterna bidrar dessutom med `SKIP`-kolumnen i sammanfattningen.
-Blanda inte ihop den med `XFAIL`: ett `XFAIL` kördes och gav det förväntade
+Python-sviterna bidrar dessutom med `SKIP`-kolumnen i sammanfattningen, och
+räknas in i `XFAIL` när unittest rapporterar `expected failures=N` — det är
+samma sak som SQL-sviternas `XFAIL`, ett test som kördes och gav det förväntade
+felet. Blanda inte ihop kolumnerna: ett `XFAIL` kördes och gav det förväntade
 felet, medan ett `SKIP` aldrig kördes alls. Överhoppade tester räknas därför
 bort från `PASS` — unittest avslutar med 0 även när samtliga tester hoppades
 över, så utan avräkningen skulle en svit som inte körde något redovisas som
