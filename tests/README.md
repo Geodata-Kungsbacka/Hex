@@ -90,11 +90,11 @@ Avslutskoden är 0 bara om samtliga sviter passerade, vilket gör det användbar
 i CI.
 
 ```
-SVIT                                 PASS  XFAIL   FAIL   STATUS
-reserved_words_test.sql                24      0      0   OK
-stress_test.sql                        28     14      0   OK
+SVIT                                 PASS  XFAIL   SKIP   FAIL   STATUS
+reserved_words_test.sql                24      0      0      0   OK
+stress_test.sql                        28     14      0      0   OK
 ...
-TOTALT                                458     15      0
+TOTALT                                458     15      0      0
 ```
 
 Flaggor:
@@ -104,6 +104,13 @@ Flaggor:
 | `--only sql`      | Kör bara SQL-sviterna                   |
 | `--only python`   | Kör bara Python-sviterna                |
 | `-v`, `--verbose` | Skriv ut fullständig utdata per svit    |
+| `--strikt`        | Underkänn sviter med överhoppade tester |
+
+`--strikt` är avsett för CI. Lokalt är ett överhopp ofta avsiktligt —
+`test_installer_livscykel.py` hoppar över sig själv när ingen
+superuser-anslutning finns — men i CI betyder det nästan alltid en
+felkonfigurerad anslutning, och då ska bygget gå rött i stället för att
+redovisa tester som aldrig kördes.
 
 Anslutningen styrs med libpq:s standardvariabler (`PGDATABASE`, `PGUSER`,
 `PGHOST`, `PGPORT`, `PGPASSWORD`). Utan dem används `hex_test` på `localhost`
@@ -140,6 +147,16 @@ SQL-sviterna rapporterar på två sätt. Båda tolkas av `run_all_tests.py`:
 | `PASS`  | Testet gjorde det som förväntades                                   |
 | `XFAIL` | Förväntat fel – Hex blockerade korrekt något otillåtet. Räknas som godkänt |
 | `FAIL`  | Underkänt                                                           |
+
+Python-sviterna bidrar dessutom med `SKIP`-kolumnen i sammanfattningen, och
+räknas in i `XFAIL` när unittest rapporterar `expected failures=N` — det är
+samma sak som SQL-sviternas `XFAIL`, ett test som kördes och gav det förväntade
+felet. Blanda inte ihop kolumnerna: ett `XFAIL` kördes och gav det förväntade
+felet, medan ett `SKIP` aldrig kördes alls. Överhoppade tester räknas därför
+bort från `PASS` — unittest avslutar med 0 även när samtliga tester hoppades
+över, så utan avräkningen skulle en svit som inte körde något redovisas som
+idel godkända tester. En svit som inte rapporterar ett enda resultat underkänns
+alltid, oavsett avslutskod.
 
 SRID-varningar (`har SRID 3006 – förväntar 3007`) är avsiktliga i flera sviter
 och betyder inte att ett test misslyckats.

@@ -7,6 +7,7 @@ Användning:
     python3 tests/run_all_tests.py --only sql      # bara SQL-sviterna
     python3 tests/run_all_tests.py --only python   # bara Python-sviterna
     python3 tests/run_all_tests.py -v              # visa utdata från varje svit
+    python3 tests/run_all_tests.py --strikt        # överhoppade tester underkänns
 
 Anslutning styrs med standardvariablerna för libpq. Standardvärden nedan
 matchar DATABASES i install_hex.py:
@@ -25,6 +26,13 @@ SQL-sviterna rapporterar på två sätt och båda tolkas här:
 
 XFAIL betyder "förväntat fel" – att Hex korrekt blockerade något otillåtet –
 och räknas som godkänt.
+
+SKIP är något annat: testet kördes aldrig. unittest avslutar med 0 även när
+samtliga tester hoppades över, så överhoppade tester räknas bort från PASS och
+redovisas i en egen kolumn. Med --strikt underkänns sviten i stället, vilket är
+rätt läge i CI där ett överhopp betyder felkonfigurerad anslutning snarare än
+ett medvetet val. En svit som inte rapporterar ett enda resultat underkänns
+alltid – den kördes aldrig klart.
 """
 
 import argparse
@@ -53,6 +61,18 @@ TABELL_RAD = re.compile(r"\|\s*(PASS|FAIL|XFAIL)\s*\|")
 NOTICE_PASS = re.compile(r"NOTICE:.*\b(PASSED|GODKÄNT)\b")
 WARNING_FAIL = re.compile(r"WARNING:.*\b(FAILED|MISSLYCKAT|BUG)\b")
 
+# Antal underkända i unittests sammanfattningsrad. Lookbehind krävs: utan den
+# matchar mönstret även slutet av "expected failures=N", och en svit vars rad
+# saknar riktiga failures ("FAILED (errors=1, expected failures=2)") skulle få
+# sina förväntade fel inräknade som underkända.
+FAILURES = r"(?<!expected )failures=(\d+)"
+
+
+def _rakna(utdata: str, monster: str) -> int:
+    """Plockar ut ett heltal ur unittests sammanfattningsrad, 0 om det saknas."""
+    traff = re.search(monster, utdata)
+    return int(traff.group(1)) if traff else 0
+
 
 class Resultat:
     def __init__(self, namn):
@@ -60,16 +80,33 @@ class Resultat:
         self.passerade = 0
         self.misslyckade = 0
         self.xfail = 0
+        self.overhoppade = 0
         self.exitkod = 0
         self.utdata = ""
+        # Sätts av main() när --strikt är angivet.
+        self.strikt = False
 
     @property
     def ok(self):
-        return self.exitkod == 0 and self.misslyckade == 0
+        if self.exitkod != 0 or self.misslyckade > 0:
+            return False
+        # En svit som inte rapporterade ett enda resultat kördes aldrig klart.
+        # Det är alltid ett fel, oavsett avslutskod.
+        if self.tom:
+            return False
+        # Överhoppade tester är godkända lokalt (livscykelsviten hoppar över
+        # sig själv utan superuser) men aldrig i CI.
+        if self.strikt and self.overhoppade:
+            return False
+        return True
+
+    @property
+    def tom(self):
+        return self.antal == 0
 
     @property
     def antal(self):
-        return self.passerade + self.misslyckade + self.xfail
+        return self.passerade + self.misslyckade + self.xfail + self.overhoppade
 
 
 def _psql_env():
@@ -131,15 +168,36 @@ def kor_python_svit(filnamn: str) -> Resultat:
     # unittest skriver "Ran N tests" och OK/FAILED till stderr
     matchning = re.search(r"^Ran (\d+) tests?", res.utdata, re.MULTILINE)
     antal = int(matchning.group(1)) if matchning else 0
+
+    # "OK (skipped=18)" respektive "FAILED (failures=1, skipped=2)".
+    # unittest avslutar med 0 även när samtliga tester hoppades över, så utan
+    # den här avräkningen rapporteras en svit som inte körde något som idel
+    # godkända tester.
+    res.overhoppade = _rakna(res.utdata, r"skipped=(\d+)")
+
+    # "expected failures=N" är unittests motsvarighet till SQL-sviternas XFAIL:
+    # testet kördes och gav det förväntade felet.
+    res.xfail = _rakna(res.utdata, r"expected failures=(\d+)")
+
     if res.exitkod == 0:
-        res.passerade = antal
+        res.passerade = max(antal - res.overhoppade - res.xfail, 0)
     else:
-        fel = re.search(r"failures=(\d+)", res.utdata)
-        errors = re.search(r"errors=(\d+)", res.utdata)
-        res.misslyckade = int(fel.group(1) if fel else 0) + int(
-            errors.group(1) if errors else 0
-        ) or max(antal, 1)
-        res.passerade = max(antal - res.misslyckade, 0)
+        # Oväntade framgångar är underkända: ett test märkt
+        # @unittest.expectedFailure som plötsligt lyckas betyder att märkningen
+        # inte följt med koden.
+        rapporterade = (
+            _rakna(res.utdata, FAILURES)
+            + _rakna(res.utdata, r"errors=(\d+)")
+            + _rakna(res.utdata, r"unexpected successes=(\d+)")
+        )
+        # Avslutskoden var skild från noll utan att ett enda underkänt test
+        # rapporterades – sviten kraschade innan sammanfattningen skrevs.
+        # Räkna det som ett fel. Att skriva av hela sviten (max(antal, 1))
+        # rapporterade tester som faktiskt kördes och passerade som underkända.
+        res.misslyckade = rapporterade or 1
+        res.passerade = max(
+            antal - res.misslyckade - res.overhoppade - res.xfail, 0
+        )
 
     return res
 
@@ -153,6 +211,11 @@ def main():
     )
     parser.add_argument(
         "-v", "--verbose", action="store_true", help="Visa utdata från varje svit"
+    )
+    parser.add_argument(
+        "--strikt",
+        action="store_true",
+        help="Underkänn sviter med överhoppade tester (avsett för CI)",
     )
     args = parser.parse_args()
 
@@ -174,21 +237,26 @@ def main():
             print(f"  kör {namn} ...", flush=True)
             resultat.append(kor_python_svit(namn))
 
+    for r in resultat:
+        r.strikt = args.strikt
+
     print()
     print("=" * 72)
-    print(f"{'SVIT':<34}{'PASS':>7}{'XFAIL':>7}{'FAIL':>7}   STATUS")
+    print(f"{'SVIT':<34}{'PASS':>7}{'XFAIL':>7}{'SKIP':>7}{'FAIL':>7}   STATUS")
     print("=" * 72)
     for r in resultat:
         status = "OK" if r.ok else "MISSLYCKAD"
         print(
-            f"{r.namn:<34}{r.passerade:>7}{r.xfail:>7}{r.misslyckade:>7}   {status}"
+            f"{r.namn:<34}{r.passerade:>7}{r.xfail:>7}"
+            f"{r.overhoppade:>7}{r.misslyckade:>7}   {status}"
         )
 
     tot_pass = sum(r.passerade for r in resultat)
     tot_xfail = sum(r.xfail for r in resultat)
+    tot_skip = sum(r.overhoppade for r in resultat)
     tot_fail = sum(r.misslyckade for r in resultat)
     print("-" * 72)
-    print(f"{'TOTALT':<34}{tot_pass:>7}{tot_xfail:>7}{tot_fail:>7}")
+    print(f"{'TOTALT':<34}{tot_pass:>7}{tot_xfail:>7}{tot_skip:>7}{tot_fail:>7}")
     print("=" * 72)
 
     misslyckade = [r for r in resultat if not r.ok]
@@ -209,6 +277,13 @@ def main():
     if misslyckade:
         print(f"\n{len(misslyckade)} svit(er) misslyckades.")
         return 1
+
+    if tot_skip:
+        print(
+            f"\nAlla {len(resultat)} sviter passerade "
+            f"({tot_skip} test överhoppade – kör med --strikt för att underkänna dem)."
+        )
+        return 0
 
     print(f"\nAlla {len(resultat)} sviter passerade.")
     return 0
