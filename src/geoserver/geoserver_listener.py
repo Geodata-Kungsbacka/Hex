@@ -1020,7 +1020,7 @@ def _load_schema_pattern(cur):
 
         if not skyddsnivaer or not kategorier:
             log.warning(
-                "Schenanamnsmönster: konfigurationstabellerna är tomma – "
+                "Schemanamnsmönster: konfigurationstabellerna är tomma – "
                 "behåller nuvarande mönster '%s'",
                 current.pattern,
             )
@@ -1031,11 +1031,11 @@ def _load_schema_pattern(cur):
         pattern = re.compile(rf"^({prefix_alts})_({kat_alts})_.+$")
 
         _thread_local.schema_pattern = pattern
-        log.info("Schenanamnsmönster uppdaterat från DB: %s", pattern.pattern)
+        log.info("Schemanamnsmönster uppdaterat från DB: %s", pattern.pattern)
 
     except Exception as e:
         log.warning(
-            "Kunde inte ladda schenanamnsmönster från DB: %s – "
+            "Kunde inte ladda schemanamnsmönster från DB: %s – "
             "behåller nuvarande mönster '%s'",
             e, current.pattern,
         )
