@@ -119,11 +119,36 @@ Följande tabeller bevaras automatiskt vid `--upgrade`:
 - `hex_standardiserade_skyddsnivaer` — anpassade skyddsnivåer
 - `hex_systemanvandare` — registrerade systemanvändare
 - `hex_grupprattigheter` — AD-grupp-till-Hex-roll-mappningar
-- `hex_rolluppgifter` — autogenererade lösenord för `gs_r_`/`gs_w_`-roller
 
 > **OBS:** `--upgrade` bevarar konfigurationsdata men tar bort och återskapar
 > alla Hex-funktioner, triggers och typer. Kör gärna en manuell säkerhetskopia
 > av databasen innan uppgradering i produktionsmiljö.
+
+### `hex_rolluppgifter` roteras — den bevaras inte
+
+Lösenorden för `gs_r_`/`gs_w_`-rollerna **byts ut** vid varje `--upgrade`.
+Avinstallationen droppar `hex_rolluppgifter`, och när installationen därefter
+kör `hex_underhall()` ser den inloggningsroller utan sparade uppgifter och
+backfyller dem: nytt lösenord via `gen_random_bytes()`, `ALTER ROLE ... PASSWORD`
+och en ny rad i tabellen. Det sker innan de sparade raderna återställs, så de
+gamla lösenorden skrivs aldrig tillbaka.
+
+Databasen är konsekvent efteråt — rollen, tabellen och gruppmedlemskapen
+(`hex_geoserver_roller` samt `arvs_fran`) stämmer överens, och de nya
+uppgifterna fungerar direkt för inloggning.
+
+Det som däremot inte hänger med automatiskt är **GeoServers datastores**, som
+har sitt eget sparade lösenord. Lyssnaren skriver om dem från
+`hex_rolluppgifter` vid varje avstämning, men det sker först vid uppstart eller
+efter `HEX_RECONCILE_INTERVAL` (standard 3600 s). Fram till dess misslyckas
+GeoServers anslutningar för de berörda schemana.
+
+**Åtgärd:** starta om lyssnartjänsten direkt efter en uppgradering i stället för
+att vänta ut avstämningsintervallet:
+
+```cmd
+py geoserver_service.py restart
+```
 
 ---
 
@@ -135,8 +160,14 @@ under avsnittet *Detaljerad installationsordning*. Starta alltid med
 
 Det är den enda filen som ska redigeras. Alla övriga filer läser ägarrollen
 från `hex_systemagare()` i stället för att hårdkoda ett rollnamn, så manuell
-installation ger samma ägarskap som `install_hex.py`. Event-triggers och deras
-triggerfunktioner är undantagna — de måste ägas av `postgres`.
+installation ger samma ägarskap som `install_hex.py`.
+
+Undantagen som statiskt ägs av `postgres` är samtliga event-triggers,
+`hex_systemagare()` och de tre `SECURITY DEFINER`-triggerfunktionerna
+`hex_hantera_ny_tabell()`, `hex_hantera_std_roller()` och
+`hex_ta_bort_schemaroller()`. Övriga triggerfunktioner ägs av ägarrollen —
+de är inte `SECURITY DEFINER` och körs ändå med den anropande användarens
+rättigheter.
 
 Installern skapar tilläggen (`postgis`, `pgcrypto`) och ägarrollen automatiskt.
 Vid manuell installation måste du göra det själv. Se *Vanliga fel vid manuell

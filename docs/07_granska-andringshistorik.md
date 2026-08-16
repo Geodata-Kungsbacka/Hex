@@ -15,7 +15,7 @@ plus tre extra:
 |--------|-------------|
 | `h_typ` | `U` = uppdatering, `D` = radering |
 | `h_tidpunkt` | Tidpunkt för händelsen |
-| `h_av` | Databasanvändaren som utförde ändringen |
+| `h_av` | Databasanvändaren som utförde ändringen (`session_user` — den autentiserade inloggningen, opåverkad av `SET ROLE`) |
 
 Historiktabellen loggar automatiskt vid varje `UPDATE` och `DELETE`.
 `INSERT` loggas inte – de syns i originaltabellen.

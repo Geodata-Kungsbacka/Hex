@@ -60,10 +60,18 @@ ORDER BY gid;
 Roller skapas automatiskt baserat på innehållet i `hex_standardiserade_roller`
 — inga specifika applikationsnamn är hårdkodade.
 
-Exempel: lägg till ett extra GeoServer-skrivkonto som bara ska skapas för
-`sk2`-scheman (som annars inte publiceras till GeoServer via
-`hex_notifiera_gs`, men kan behöva ett dedikerat läs/skriv-konto för ett
-internt verktyg).
+> **OBS:** `rollnamn` har ett unikt index. En ny mall måste därför ha ett
+> namnmönster som inte redan finns — de fyra fördefinierade (`r_{schema}`,
+> `w_{schema}`, `gs_r_{schema}`, `gs_w_{schema}`) matchar dessutom redan
+> *alla* scheman via `schema_uttryck = 'IS NOT NULL'`. Att försöka lägga till
+> t.ex. ännu en `gs_w_{schema}`-rad för en delmängd scheman ger
+> `duplicate key value violates unique constraint
+> "hex_standardiserade_roller_rollnamn_key"`. Vill du ändra villkoret för en
+> befintlig mall är det en `UPDATE` av dess `schema_uttryck`, inte en ny rad.
+
+Exempel: lägg till ett dedikerat läs-tjänstekonto för ett internt verktyg som
+bara ska skapas för `sk2`-scheman (som inte publiceras till GeoServer via
+`hex_notifiera_gs` och därför inte nås via GeoServers datastore-konton).
 
 ```sql
 INSERT INTO hex_standardiserade_roller (
@@ -74,18 +82,18 @@ INSERT INTO hex_standardiserade_roller (
     arvs_fran,
     ta_bort_med_schema
 ) VALUES (
-    'gs_w_{schema}',        -- {schema} ersätts med det faktiska schemanamnet
-    'write',
+    'app_r_{schema}',       -- {schema} ersätts med det faktiska schemanamnet
+    'read',
     'LIKE ''sk2_%''',       -- Matchar alla sk2-scheman
     true,                   -- LOGIN-tjänstekonto med autogenererat lösenord
-    'w_{schema}',           -- Ärver behörigheter från NOLOGIN-gruppen w_{schema}
+    'r_{schema}',           -- Ärver behörigheter från NOLOGIN-gruppen r_{schema}
     true                    -- Tas bort när schemat droppas
 );
 ```
 
-Ett LOGIN-tjänstekonto `gs_w_<schema>` skapas nu automatiskt för alla
+Ett LOGIN-tjänstekonto `app_r_<schema>` skapas nu automatiskt för alla
 kommande `sk2`-scheman, med lösenord sparat i `hex_rolluppgifter` och
-rättigheter ärvda från `w_<schema>`.
+rättigheter ärvda från `r_<schema>`.
 
 ---
 
@@ -107,7 +115,7 @@ Tar bort mallen, men **inte** roller som redan skapats:
 
 ```sql
 DELETE FROM hex_standardiserade_roller
-WHERE rollnamn = 'gs_w_{schema}' AND schema_uttryck = 'LIKE ''sk2_%''';
+WHERE rollnamn = 'app_r_{schema}';
 ```
 
 ---

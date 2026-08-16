@@ -94,7 +94,7 @@ SVIT                                 PASS  XFAIL   FAIL   STATUS
 reserved_words_test.sql                24      0      0   OK
 stress_test.sql                        28     14      0   OK
 ...
-TOTALT                                463     15      0
+TOTALT                                458     15      0
 ```
 
 Flaggor:

@@ -13,12 +13,19 @@ automatiskt när en tabell skapas med `CREATE TABLE`. Standarduppsättningen är
 |--------|----------|-----|--------|---------------|
 | `gid` | 1 (först) | `integer GENERATED ALWAYS AS IDENTITY` | Alla | – |
 | `skapad_tidpunkt` | −4 (sist) | `timestamptz DEFAULT now()` | Alla | DEFAULT |
-| `skapad_av` | −3 (sist) | `character varying DEFAULT current_user` | `_kba_` | DEFAULT |
+| `skapad_av` | −3 (sist) | `character varying DEFAULT session_user` | `_kba_` | DEFAULT |
 | `andrad_tidpunkt` | −2 (sist) | `timestamptz` | `_kba_` | Trigger |
 | `andrad_av` | −1 (sist) | `character varying` | `_kba_` | Trigger |
 
 > `skapad_av`, `andrad_tidpunkt` och `andrad_av` läggs bara till i `_kba_`-scheman
 > (manuellt redigerad kommunal data). Externa och systemscheman får bara `gid` och `skapad_tidpunkt`.
+
+> **`session_user`, inte `current_user`.** Hex använder genomgående
+> `session_user` för användarspårning — i `skapad_av`, i QA-triggerns
+> `andrad_av` och i historiktabellernas `h_av`. Det är medvetet: `session_user`
+> är den faktiskt autentiserade inloggningen och påverkas inte av `SET ROLE`
+> eller av att koden råkar köras i en `SECURITY DEFINER`-funktion, vilket
+> `current_user` gör.
 
 Negativa positioner placeras sist i tabellen, i stigande ordning, direkt före geometrikolumnen.
 
@@ -31,7 +38,7 @@ Negativa positioner placeras sist i tabellen, i stigande ordning, direkt före g
 | `kolumnnamn` | Kolumnens namn |
 | `ordinal_position` | Positiv = räknas från start, negativ = placeras sist |
 | `datatyp` | SQL-typ, t.ex. `text`, `timestamptz`, `integer` |
-| `default_varde` | DEFAULT-uttryck, t.ex. `now()`, `current_user` |
+| `default_varde` | DEFAULT-uttryck, t.ex. `NOW()`, `session_user` |
 | `schema_uttryck` | Filtrera vilka scheman som får kolumnen (se nedan) |
 | `historik_qa` | `true` = uppdateras av trigger, `false` = använder DEFAULT |
 | `beskrivning` | Fritext för dokumentation |
