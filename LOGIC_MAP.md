@@ -183,8 +183,8 @@ flowchart TD
     ARV --> NG
 
     NG["hex_notifiera_gs<br/>trigger 2"]
-    NG --> |"prefix = sk0 / sk1"| NOTIFY["pg_notify<br/>geoserver_schema<br/>sk0_kba_bygg<br/>(köad, ej levererad förrän COMMIT)"]
-    NG --> |"sk2 / systemschema"| SKIP(["hoppar över"])
+    NG --> |"prefix har publiceras_geoserver=true<br/>(standard: sk0 / sk1)"| NOTIFY["pg_notify<br/>geoserver_schema<br/>sk0_kba_bygg<br/>(köad, ej levererad förrän COMMIT)"]
+    NG --> |"publiceras_geoserver=false<br/>(standard: sk2 / skx) eller systemschema"| SKIP(["hoppar över"])
     NOTIFY --> VS
     SKIP --> VS
 
@@ -258,9 +258,11 @@ rullas de tillbaka tillsammans med schemat.
 ```
 hex_notifiera_gs()
   ├── Hoppar över systemscheman
-  ├── Extraherar prefix: sk0 eller sk1
-  │     (sk2 exponeras inte mot GeoServer)
-  ├── Om prefix = sk0 eller sk1:
+  ├── Slår upp schemats prefix i hex_standardiserade_skyddsnivaer
+  │     WHERE publiceras_geoserver = true AND schema_namn LIKE prefix || '_%'
+  │     (standardkonfiguration: sk0 och sk1 publiceras, sk2 och skx inte —
+  │      ändra kolumnen publiceras_geoserver för att styra om det)
+  ├── Om prefixet hittades:
   │     pg_notify('geoserver_schema', 'sk0_kba_bygg')
   │     (levereras till lyssnare först vid COMMIT — ett senare rollback
   │      i Steg 3 gör att notifieringen aldrig når GeoServer)
@@ -284,7 +286,9 @@ hex_validera_schemanamn()
   ├── Bygger mönster dynamiskt från konfigurationstabellerna:
   │     hex_standardiserade_skyddsnivaer  → prefix-del  (t.ex. sk0|sk1|sk2|skx)
   │     hex_standardiserade_datakategorier → kategori-del (t.ex. ext|kba|sys)
-  │     Resultat: ^(sk0|sk1|sk2|skx)_(ext|kba|sys)_.+$
+  │     Resultat med standardkonfigurationen: ^(sk0|sk1|sk2|skx)_(ext|kba|sys)_.+$
+  │     (mönstret byggs om vid varje anrop — lägg till en rad i respektive
+  │      konfigurationstabell för att utöka det, ingen kodändring behövs)
   │     sk0 / sk1 / sk2  = säkerhetsnivå (0=öppen, 1=kommunal, 2=skyddad)
   │     skx              = okänd / oklassificerad (endast GIS-administratörer)
   │     ext              = extern datakälla (bulkladdad, t.ex. via FME)
@@ -333,7 +337,7 @@ flowchart TD
     subgraph POST["Fas 3 – Efterbehandling"]
         direction TB
         GIST["Skapa GiST-index på geom<br/>alla scheman med geometri"]
-        GIST --> GC{"schema matchar<br/>^sk0-2_kba_ ?"}
+        GIST --> GC{"datakategori med<br/>hex_validera_geometri=true?<br/>(standard: kba)"}
         GC --> |ja| VC["ADD CHECK hex_validera_geometri<br/>OGC · ej tom · ej exakta dubbletter<br/>inga kurvsegment"]
         GC --> |nej| HQA
         VC --> HQA["hex_skapa_historik_qa"]
@@ -461,8 +465,14 @@ hex_hantera_ny_tabell()
   │            namnkollision med historiktabellens index på _h-versionen)
   │
   ├── [9] GEOMETRIVALIDERING (villkorligt, hoppas över för afvaktande tabeller)
-  │     ├── Gäller BARA scheman som matchar ^sk[0-2]_kba_
-  │     │     (externt laddade _ext_-scheman valideras i FME, inte här)
+  │     ├── Gäller scheman vars datakategori har hex_validera_geometri = true
+  │     │     i hex_standardiserade_datakategorier — i standardkonfigurationen
+  │     │     bara kba, dvs. alla skyddsnivåer: sk0_kba_*, sk1_kba_*, sk2_kba_*
+  │     │     och skx_kba_*
+  │     │     (ext har false som standard — externt laddade _ext_-scheman
+  │     │      valideras i FME, inte här. Sätt kolumnen till true på ext-raden
+  │     │      för att slå på validering även där.)
+  │     │     Matchning: schema_namn ~ (hex_schema_regex() || prefix || '_')
   │     └── ADD CONSTRAINT … CHECK (hex_validera_geometri(geom))
   │                 → hex_validera_geometri(geom)
   │                       ├── ST_IsValid()            — OGC-korrekt topologi

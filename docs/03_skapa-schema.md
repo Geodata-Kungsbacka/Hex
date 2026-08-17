@@ -9,7 +9,7 @@
 När ett schema skapas triggar Hex automatiskt tre saker:
 
 - **Rollskapande** – läs- och skrivrättighetsroller skapas enligt konfigurationen i `hex_standardiserade_roller`.
-- **GeoServer-publicering** – för `sk0`- och `sk1`-scheman skickas en notifiering till GeoServer-lyssnaren som skapar en workspace och PostGIS-datastore.
+- **GeoServer-publicering** – för skyddsnivåer med `publiceras_geoserver = true` i `hex_standardiserade_skyddsnivaer` (standardkonfiguration: `sk0` och `sk1`) skickas en notifiering till GeoServer-lyssnaren som skapar en workspace och PostGIS-datastore.
 - **Namnvalidering** – ogiltiga namn blockeras, vilket river tillbaka schemat och allt ovanstående i samma transaktion.
 
 > **Körordning:** PostgreSQL kör Hex tre `CREATE SCHEMA`-triggers i alfabetisk
@@ -25,7 +25,7 @@ När ett schema skapas triggar Hex automatiskt tre saker:
 
 ## Namngivningskonvention
 
-Schemanamn måste följa mönstret: **`<skyddsnivå>_(ext|kba|sys)_<beskrivning>`**
+Schemanamn måste följa mönstret: **`<skyddsnivå>_<datakategori>_<beskrivning>`**
 
 Giltiga skyddsnivåer och datakategorier hämtas dynamiskt ur konfigurationstabellerna
 `hex_standardiserade_skyddsnivaer` och `hex_standardiserade_datakategorier`. Med
@@ -46,7 +46,11 @@ standardkonfigurationen gäller:
 ## Förutsättningar
 
 - Anslutning som PostgreSQL-roll med rättighet att skapa scheman (normalt ägarrollen, t.ex. `gis_admin`).
-- Beslut om säkerhetsnivå (sk0/sk1/sk2/skx), kategori (ext/kba/sys) och ett beskrivande namn.
+- Beslut om säkerhetsnivå, datakategori och ett beskrivande namn. Med
+  standardkonfigurationen: nivå `sk0`/`sk1`/`sk2`/`skx` och kategori
+  `ext`/`kba`/`sys` (se tabellen ovan). Kör frågan under
+  [Ogiltiga namn](#ogiltiga-namn--blockeras-av-hex) för att se vad som
+  faktiskt är registrerat i din databas.
 
 ---
 
@@ -74,11 +78,14 @@ WHERE rolname LIKE '%_parkering%'
 ORDER BY rolname;
 ```
 
-Du bör se fyra roller: `r_sk1_kba_parkering` och `w_sk1_kba_parkering`
+Med standardkonfigurationen i `hex_standardiserade_roller` bör du se fyra
+roller: `r_sk1_kba_parkering` och `w_sk1_kba_parkering`
 (NOLOGIN-behörighetsgrupper för AD-användare) samt `gs_r_sk1_kba_parkering`
 och `gs_w_sk1_kba_parkering` (LOGIN-tjänstekonton för GeoServer, med
-lösenord i `hex_rolluppgifter`). Alla fyra skapas per schema – det finns
-inga delade roller som spänner över flera scheman, se
+lösenord i `hex_rolluppgifter`). Har du lagt till egna rollmallar ser du fler
+– se [04_hantera-rollmallar.md](04_hantera-rollmallar.md). De fyra
+standardmallarna skapas per schema – det finns inga delade roller som
+spänner över flera scheman, se
 [02_lagg-till-databasanvandare.md](02_lagg-till-databasanvandare.md#bakgrund).
 
 ### 3. Ge användare åtkomst
@@ -92,11 +99,22 @@ tilldelar roller till användare.
 
 ```sql
 CREATE SCHEMA min_data;        -- FEL: Följer inte mönstret
-CREATE SCHEMA sk3_ext_test;    -- FEL: sk3 finns inte (giltiga: sk0, sk1, sk2, skx)
-CREATE SCHEMA sk0_foo_bygg;    -- FEL: "foo" är inte en giltig datakategori
+CREATE SCHEMA sk3_ext_test;    -- FEL: sk3 finns inte i hex_standardiserade_skyddsnivaer
+CREATE SCHEMA sk0_foo_bygg;    -- FEL: "foo" finns inte i hex_standardiserade_datakategorier
 ```
 
 Felmeddelandet berättar exakt vilket mönster som krävs.
+
+Mönstret byggs om vid varje validering, så listan över giltiga värden är alltid
+det som står i konfigurationstabellerna just nu:
+
+```sql
+SELECT prefix, beskrivning FROM hex_standardiserade_skyddsnivaer ORDER BY prefix;
+SELECT prefix, beskrivning FROM hex_standardiserade_datakategorier ORDER BY prefix;
+```
+
+Behöver du en ny nivå eller kategori lägger du till en rad i respektive tabell —
+ingen kodändring krävs.
 
 > **Tips – versaler:** PostgreSQL omvandlar automatiskt onoterade identifierare till
 > gemener, så `CREATE SCHEMA SK1_kba_bygg` skapar i praktiken `sk1_kba_bygg` och godkänns.

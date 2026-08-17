@@ -130,7 +130,8 @@ WFS-URL: https://geoserver.example.com/geoserver/{schema}_w/wfs
 ```
 
 Åtkomstkontroll via GeoServer ACL:
-- `{schema}.*.r` = `r_{schema}` (och eventuellt `ROLE_ANONYMOUS` för sk0)
+- `{schema}.*.r` = `r_{schema}` (och `ROLE_ANONYMOUS` för prefix med
+  `anonym_las = true` — standard bara `sk0`, se [Bakgrund](#bakgrund))
 - `{schema}_w.*.r` = `w_{schema}`
 - `{schema}_w.*.w` = `w_{schema}`
 
@@ -190,15 +191,17 @@ som systemövergripande miljövariabler:
 GeoServer ansluter till PostgreSQL via direkta PostGIS-datastores (inte JNDI).
 Autentiseringsuppgifterna hanteras automatiskt av Hex:
 
-- Vid **CREATE SCHEMA** skapar `hex_hantera_std_roller()` fyra roller automatiskt:
+- Vid **CREATE SCHEMA** skapar `hex_hantera_std_roller()` roller enligt mallarna i
+  `hex_standardiserade_roller`. Standardkonfigurationen ger fyra roller:
   - `r_{schema}` och `w_{schema}` — NOLOGIN behörighetsgrupper, tilldelas AD-användare/grupper
   - `gs_r_{schema}` och `gs_w_{schema}` — LOGIN GeoServer-tjänstekonton med autogenererade
     lösenord sparade i `hex_rolluppgifter`. Tjänstekontona ärver behörigheter från
     `r_{schema}` respektive `w_{schema}` via gruppmedlemskap.
 - Lyssnaren hämtar `gs_r_{schema}`-uppgifterna och konfigurerar läs-datastoren,
   samt `gs_w_{schema}`-uppgifterna för skriv-datastoren.
-- Vid **DROP SCHEMA** tas båda workspaces, alla fyra roller och deras poster
-  i `hex_rolluppgifter` bort automatiskt.
+- Vid **DROP SCHEMA** tas båda workspaces bort automatiskt, tillsammans med de
+  roller vars mall har `ta_bort_med_schema = true` (standard: alla fyra) och
+  deras poster i `hex_rolluppgifter`.
 
 Det krävs normalt ingen manuell åtgärd. Om du behöver en `pg_hba.conf`-post
 för GeoServers direktanslutningar, tillåt `hex_geoserver_roller`-gruppen (som innehåller

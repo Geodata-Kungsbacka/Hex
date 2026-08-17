@@ -17,8 +17,11 @@ automatiskt när en tabell skapas med `CREATE TABLE`. Standarduppsättningen är
 | `andrad_tidpunkt` | −2 (sist) | `timestamptz` | `_kba_` | Trigger |
 | `andrad_av` | −1 (sist) | `character varying` | `_kba_` | Trigger |
 
-> `skapad_av`, `andrad_tidpunkt` och `andrad_av` läggs bara till i `_kba_`-scheman
-> (manuellt redigerad kommunal data). Externa och systemscheman får bara `gid` och `skapad_tidpunkt`.
+> Filtreringen ovan följer av `schema_uttryck` på respektive rad, inte av någon
+> hårdkodad regel: med standardkonfigurationen läggs `skapad_av`,
+> `andrad_tidpunkt` och `andrad_av` bara till i `_kba_`-scheman (manuellt
+> redigerad kommunal data), så externa och systemscheman får bara `gid` och
+> `skapad_tidpunkt`. Ändra `schema_uttryck` för att flytta gränsen.
 
 > **`session_user`, inte `current_user`.** Hex använder genomgående
 > `session_user` för användarspårning — i `skapad_av`, i QA-triggerns
@@ -41,6 +44,7 @@ Negativa positioner placeras sist i tabellen, i stigande ordning, direkt före g
 | `default_varde` | DEFAULT-uttryck, t.ex. `NOW()`, `session_user` |
 | `schema_uttryck` | Filtrera vilka scheman som får kolumnen (se nedan) |
 | `historik_qa` | `true` = uppdateras av trigger, `false` = använder DEFAULT |
+| `anvandare_kan_redigera` | `false` = värdet tvingas till `default_varde` av en INSERT-trigger, så att en klient (t.ex. FME) inte kan skriva ett eget värde. Kräver att `default_varde` är satt. Samtliga fem standardkolumner har `false`. |
 | `beskrivning` | Fritext för dokumentation |
 
 ---

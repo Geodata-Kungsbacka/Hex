@@ -12,7 +12,7 @@ Detta system automatiserar databasstrukturering i PostgreSQL med PostGIS-stöd. 
 
 ### 1. **Automatisk tabellstrukturering**
 När du skapar en tabell med `CREATE TABLE` omstruktureras den automatiskt med:
-- Standardkolumner som `gid` (primärnyckel), `skapad_tidpunkt`, `skapad_av`, `andrad_tidpunkt`, `andrad_av`
+- Standardkolumner enligt konfigurationstabellen `hex_standardiserade_kolumner` — i standardkonfigurationen `gid` (primärnyckel), `skapad_tidpunkt`, `skapad_av`, `andrad_tidpunkt` och `andrad_av`
 - Korrekt kolumnordning (standardkolumner först/sist, geometri alltid sist)
 - Bevarande av alla ursprungliga hex_tabellregler och begränsningar
 
@@ -46,11 +46,13 @@ Systemet kräver specifika suffix baserat på geometrityp:
 - Tabeller utan geometri får inte använda dessa suffix
 
 ### 3. **Automatisk rollhantering**
-För varje nytt schema skapas automatiskt fyra roller:
+Vilka roller som skapas för ett nytt schema styrs av rollmallarna i `hex_standardiserade_roller`. I standardkonfigurationen finns fyra mallar, som alla matchar samtliga scheman (`schema_uttryck = 'IS NOT NULL'`):
 - `r_schemanamn` — NOLOGIN behörighetsgrupp med läsrättigheter (tilldelas AD-användare och AD-grupper)
 - `w_schemanamn` — NOLOGIN behörighetsgrupp med skrivrättigheter (tilldelas AD-användare och AD-grupper)
 - `gs_r_schemanamn` — LOGIN GeoServer-läs-tjänstekonto, ärver rättigheter från `r_`
 - `gs_w_schemanamn` — LOGIN GeoServer-skriv-tjänstekonto, ärver rättigheter från `w_`
+
+Lägg till, ändra eller ta bort rader i `hex_standardiserade_roller` för att styra uppsättningen — se [docs/04_hantera-rollmallar.md](docs/04_hantera-rollmallar.md).
 
 `gs_r_` och `gs_w_` får autogenererade lösenord sparade i `hex_rolluppgifter` och ingår i `hex_geoserver_roller` för pg_hba.conf-matchning. `r_` och `w_` är NOLOGIN och ingår aldrig i `hex_geoserver_roller`.
 
@@ -116,10 +118,10 @@ Systemet hanterar detta via tabellen `hex_systemanvandare`. När en session matc
 ### 6. **Historik och kvalitetssäkring**
 För scheman konfigurerade med QA-kolumner skapas:
 - Historiktabeller (`tabellnamn_h`) som loggar alla ändringar
-- Triggers som automatiskt uppdaterar `andrad_tidpunkt` och `andrad_av`
+- Triggers som automatiskt uppdaterar de standardkolumner som har `historik_qa = true` i `hex_standardiserade_kolumner` (standardkonfiguration: `andrad_tidpunkt` och `andrad_av`)
 
 #### `hex_validera_geometri(geom)`
-Validerar geometrikvalitet för _kba_-scheman (manuellt redigerade data).
+Validerar geometrikvalitet för scheman vars datakategori har `hex_validera_geometri = true` i `hex_standardiserade_datakategorier` (standardkonfiguration: `_kba_`, manuellt redigerade data).
 
 **Kontroller**:
 - ST_IsValid - geometrin följer OGC-specifikationen
@@ -127,7 +129,7 @@ Validerar geometrikvalitet för _kba_-scheman (manuellt redigerade data).
 - Inga exakta konsekutiva duplicerade punkter (ST_RemoveRepeatedPoints, nolltolerans)
 - NOT ST_HasArc - geometrin innehåller inga kurvsegment
 
-**Användning**: Används som CHECK constraint, appliceras automatiskt av `hex_hantera_ny_tabell` för _kba_-scheman.
+**Användning**: Används som CHECK constraint, appliceras automatiskt av `hex_hantera_ny_tabell` på scheman vars datakategori har `hex_validera_geometri = true` (standardkonfiguration: `_kba_`).
 
 ## Installation
 
@@ -622,7 +624,7 @@ skedd räcker det inte med `hex_underhall()` — rollerna skapas bara vid
 6. Återskapar alla regler
 7. Återskapar alla egenskaper
 8. Skapar GiST-index för geometrikolumn
-9. Lägger till geometrivalidering för _kba_-scheman
+9. Lägger till geometrivalidering för scheman vars datakategori har `hex_validera_geometri = true` i `hex_standardiserade_datakategorier` (standardkonfiguration: `_kba_`)
 10. Skapar historik/QA om konfigurerat
 
 **Trigger**: Körs automatiskt vid CREATE TABLE.
@@ -743,7 +745,8 @@ CREATE TABLE sk1_kba_bygg.vattenledningar_l (
     geom geometry(LineString, 3007)
 );
 
--- Resultatet blir automatiskt:
+-- Resultatet blir automatiskt (med standardkonfigurationen i
+-- hex_standardiserade_kolumner, och eftersom schemat är ett _kba_-schema):
 -- gid (primärnyckel)
 -- diameter
 -- material  
@@ -753,6 +756,12 @@ CREATE TABLE sk1_kba_bygg.vattenledningar_l (
 -- andrad_av
 -- geom (flyttad sist)
 ```
+
+Vilka standardkolumner som läggs till styrs av `schema_uttryck` per rad i
+`hex_standardiserade_kolumner`. I standardkonfigurationen får alla scheman `gid`
+och `skapad_tidpunkt`, medan `skapad_av`, `andrad_tidpunkt` och `andrad_av` bara
+läggs till i `_kba_`-scheman. Samma tabell i t.ex. `sk0_ext_sgu` hade alltså
+bara fått `gid` och `skapad_tidpunkt`.
 
 ### Lägga till kolumner
 

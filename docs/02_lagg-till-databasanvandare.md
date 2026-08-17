@@ -6,8 +6,11 @@
 
 ## Bakgrund
 
-Hex skapar automatiskt fyra roller för **varje** schema när det skapas,
-oavsett säkerhetsnivå (sk0/sk1/sk2/skx):
+Vilka roller Hex skapar när ett schema skapas styrs av rollmallarna i
+`hex_standardiserade_roller` (se
+[04_hantera-rollmallar.md](04_hantera-rollmallar.md)). Med
+standardkonfigurationen skapas fyra roller för **varje** schema, oavsett
+säkerhetsnivå — alla fyra mallarna har `schema_uttryck = 'IS NOT NULL'`:
 
 | Roll | Typ | Rättigheter | Tilldelas till |
 |------|-----|-------------|-----------------|
