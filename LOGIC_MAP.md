@@ -152,20 +152,6 @@ En kvarliggande rad indikerar att verktyget aldrig slutförde sitt andra steg.
 
 ## 2. CREATE SCHEMA
 
-> **Körordning:** PostgreSQL kör flera event triggers på samma DDL-event i
-> **alfabetisk ordning efter triggernamn**, inte i den ordning man tänker sig
-> logiskt. Med Hex tre triggernamn (`hex_hantera_std_roller_trigger`,
-> `hex_notifiera_gs_trigger`, `hex_validera_schemanamn_trigger`) blir
-> den faktiska körordningen `h` → `n` → `v`: **roller skapas, GeoServer
-> notifieras, och namnet valideras sist.** Det är alltså tvärtom mot vad man
-> intuitivt skulle förvänta sig (namnvalidering → rollskapande → notifiering).
-> Det spelar ingen praktisk roll: hela `CREATE SCHEMA`-satsen körs i en
-> transaktion, så ett ogiltigt namn som upptäcks sist rullar ändå tillbaka
-> schemat och alla roller som redan skapats. `pg_notify` levereras dessutom
-> inte till lyssnare förrän vid `COMMIT`, så en köad men aldrig committad
-> notifiering försvinner spårlöst vid rollback — GeoServer får aldrig reda på
-> det schema som ändå inte kom att existera.
-
 ```mermaid
 flowchart TD
     START(["CREATE SCHEMA sk0_kba_bygg"])
