@@ -1497,7 +1497,7 @@ class TestReconcileGeoServerSchemas(unittest.TestCase):
 class TestLoadSchemaPattern(unittest.TestCase):
     """
     Enhetstester för _load_schema_pattern – verifierar att det trådlokala
-    schenanamnsmönstret byggs korrekt från konfigurationstabellerna och att
+    schemanamnsmönstret byggs korrekt från konfigurationstabellerna och att
     fallback till SCHEMA_PATTERN fungerar när tabellerna är tomma eller vid fel.
     """
 

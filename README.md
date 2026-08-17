@@ -133,6 +133,8 @@ Validerar geometrikvalitet för _kba_-scheman (manuellt redigerade data).
 
 ### Systemkrav
 
+- **Målplattform: Windows Server.** Hex körs i produktion på Windows Server 2022,
+  och kommandona i dokumentationen är skrivna för Windows (`python`, `py`).
 - **PostgreSQL 16 eller senare.** Installern kontrollerar serverversionen och
   avbryter mot äldre versioner.
 - **PostGIS installerat på servern** — paketet `postgresql-<version>-postgis-3`
@@ -146,6 +148,16 @@ Validerar geometrikvalitet för _kba_-scheman (manuellt redigerade data).
   automatiska installationen.
 - **Ägarrollen** (`owner_role`) — skapas automatiskt av installern om den
   saknas, se [Automatisk installation](#automatisk-installation-rekommenderat).
+
+> **Linux?** Databasdelen är plattformsoberoende — `install_hex.py`, all SQL och
+> hela testsviten körs lika bra på Linux. Enda skillnaden är kommandonamnet: byt
+> `python` mot `python3`, eftersom Debian/Ubuntu inte installerar något
+> `python`-kommando som standard.
+>
+> Undantaget är `src/geoserver/geoserver_service.py` — en Windows-tjänst byggd på
+> pywin32 som inte går att köra på Linux. Lyssnaren i sig
+> (`geoserver_listener.py`) har inga Windows-beroenden och har en egen `main()`,
+> men att köra den under en Linux-processövervakare är inte en testad uppsättning.
 
 Installern kontrollerar också att `PUBLIC` saknar `CREATE` på schemat `public`
 och varnar annars. Det har varit standard sedan PostgreSQL 15, men en databas
