@@ -84,6 +84,62 @@ log.propagate = False
 # CONFIGURATION
 # =============================================================================
 
+# Lägen för uppstädning av föräldralösa GeoServer-workspaces.
+# Styrs av HEX_ORPHAN_CLEANUP och läses av _reconcile_geoserver_schemas.
+CLEANUP_OFF     = "off"       # Endast varning i loggen (standard)
+CLEANUP_DRY_RUN = "dry-run"   # Loggar vad som skulle tas bort, tar inte bort
+CLEANUP_ON      = "on"        # Tar bort workspaces som Hex säkert äger
+
+# Accepterade stavningar per läge – ett stavfel ska varken aktivera borttagning
+# eller tyst avaktivera en uppstädning som driftansvarig tror är påslagen.
+_CLEANUP_ALIASES = {
+    "":         CLEANUP_OFF,
+    "off":      CLEANUP_OFF,
+    "false":    CLEANUP_OFF,
+    "0":        CLEANUP_OFF,
+    "nej":      CLEANUP_OFF,
+    "dry-run":  CLEANUP_DRY_RUN,
+    "dry_run":  CLEANUP_DRY_RUN,
+    "dryrun":   CLEANUP_DRY_RUN,
+    "on":       CLEANUP_ON,
+    "true":     CLEANUP_ON,
+    "1":        CLEANUP_ON,
+    "ja":       CLEANUP_ON,
+}
+
+
+def resolve_env_path():
+    """Returnerar sökvägen till .env-filen som ska laddas.
+
+    HEX_ENV_FILE pekar ut en fil utanför kodkatalogen. Det gör att
+    installationsmappen kan bytas ut vid uppgradering utan att konfigurationen
+    följer med — och utan att en öppen .env i mappen blockerar utbytet.
+    Utan variabeln används .env i skriptets katalog som tidigare.
+    """
+    override = os.environ.get("HEX_ENV_FILE", "").strip().strip('"')
+    if override:
+        return Path(override)
+    return Path(__file__).parent / ".env"
+
+
+def _read_cleanup_mode():
+    """Läser HEX_ORPHAN_CLEANUP och översätter till ett giltigt uppstädningsläge.
+
+    Okända värden ger CLEANUP_OFF plus en varning: borttagning aktiveras aldrig
+    av ett värde vi inte känner igen.
+    """
+    raw = os.environ.get("HEX_ORPHAN_CLEANUP", "").strip().lower()
+    mode = _CLEANUP_ALIASES.get(raw)
+    if mode is None:
+        log.warning(
+            "HEX_ORPHAN_CLEANUP='%s' är inte ett giltigt värde (off | dry-run | on) – "
+            "uppstädning av föräldralösa workspaces förblir avstängd.",
+            raw,
+        )
+        return CLEANUP_OFF
+    return mode
+
+
 def load_config():
     """Laddar konfiguration från miljövariabler.
 
@@ -94,8 +150,8 @@ def load_config():
     1. Nytt flerdatabas-format: HEX_DB_1_DBNAME, HEX_DB_1_HOST osv.
     2. Gammalt enkeldatabas-format: HEX_PG_DBNAME, HEX_PG_HOST osv.
     """
-    # Försök ladda .env från samma katalog som skriptet
-    env_path = Path(__file__).parent / ".env"
+    # Försök ladda .env – sökvägen kan pekas ut med HEX_ENV_FILE
+    env_path = resolve_env_path()
     if env_path.exists():
         try:
             from dotenv import load_dotenv
@@ -121,6 +177,8 @@ def load_config():
         "reconnect_delay": int(os.environ.get("HEX_RECONNECT_DELAY", "5")),
         # Periodisk avstämning – intervall i sekunder (0 = avaktiverad)
         "reconcile_interval": int(os.environ.get("HEX_RECONCILE_INTERVAL", "3600")),
+        # Uppstädning av föräldralösa workspaces: off | dry-run | on
+        "orphan_cleanup": _read_cleanup_mode(),
         # Databaser
         "databases": _parse_database_configs(),
         # E-post (valfritt - inaktivt om HEX_SMTP_TO inte är satt)
@@ -547,6 +605,94 @@ class GeoServerClient:
             "GET", f"{self.rest_url}/workspaces/{workspace}/datastores/{name}.json"
         )
         return resp.status_code == 200
+
+    # REST-resurser per lagringstyp: (URL-segment, JSON-rotnyckel, JSON-postnyckel).
+    # Används av list_store_names för att inventera en workspace innan uppstädning.
+    STORE_RESOURCES = {
+        "datastores":     ("dataStores",     "dataStore"),
+        "coveragestores": ("coverageStores", "coverageStore"),
+        "wmsstores":      ("wmsStores",      "wmsStore"),
+        "wmtsstores":     ("wmtsStores",     "wmtsStore"),
+    }
+
+    def list_store_names(self, workspace, store_type):
+        """Listar namnen på en workspaces lagringar av en given typ.
+
+        Args:
+            workspace:  Workspace-namn.
+            store_type: Nyckel i STORE_RESOURCES, t.ex. 'datastores' eller
+                        'coveragestores'.
+
+        Returns:
+            Lista med namn (tom lista om inga finns), eller None om GeoServer
+            inte kunde svara. None betyder "vet inte" och ska aldrig tolkas som
+            "tom" av anropande kod — uppstädning måste avstå vid osäkerhet.
+        """
+        root_key, item_key = self.STORE_RESOURCES[store_type]
+        try:
+            resp = self._request_with_retry(
+                "GET", f"{self.rest_url}/workspaces/{workspace}/{store_type}.json"
+            )
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            log.warning("  Kunde inte lista %s i workspace '%s': %s", store_type, workspace, e)
+            return None
+
+        # 404 = workspace eller resurstyp saknas helt; det är detsamma som tomt.
+        if resp.status_code == 404:
+            return []
+        if resp.status_code != 200:
+            log.warning(
+                "  Kunde inte lista %s i workspace '%s': HTTP %d",
+                store_type, workspace, resp.status_code,
+            )
+            return None
+
+        try:
+            payload = resp.json().get(root_key)
+        except ValueError:
+            log.warning("  Ogiltigt JSON-svar vid listning av %s i '%s'", store_type, workspace)
+            return None
+
+        # GeoServer serialiserar en tom samling som strängen "" i stället för {}.
+        if not isinstance(payload, dict):
+            return []
+        entries = payload.get(item_key) or []
+        return [e.get("name") for e in entries if e.get("name")]
+
+    def get_datastore_parameters(self, workspace, store_name):
+        """Hämtar en datastores connectionParameters som en dict.
+
+        Returns:
+            Dict med parametrar (t.ex. {'dbtype': 'postgis', 'host': ...}),
+            eller None om datastoren inte kunde läsas.
+        """
+        try:
+            resp = self._request_with_retry(
+                "GET", f"{self.rest_url}/workspaces/{workspace}/datastores/{store_name}.json"
+            )
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            log.warning("  Kunde inte läsa datastore '%s/%s': %s", workspace, store_name, e)
+            return None
+
+        if resp.status_code != 200:
+            log.warning(
+                "  Kunde inte läsa datastore '%s/%s': HTTP %d",
+                workspace, store_name, resp.status_code,
+            )
+            return None
+
+        try:
+            entries = (
+                resp.json()
+                .get("dataStore", {})
+                .get("connectionParameters", {})
+                .get("entry", [])
+            )
+        except ValueError:
+            log.warning("  Ogiltigt JSON-svar för datastore '%s/%s'", workspace, store_name)
+            return None
+
+        return {e.get("@key"): e.get("$") for e in entries if e.get("@key")}
 
     def get_namespace_uri(self, name):
         """Hämtar namespace-URI för en workspace, eller None om ej hittad."""
@@ -1336,7 +1482,10 @@ def _fetch_publishable_schemas(db_config):
     alla övervakade databaser, så att startavstämningens varplansvarning
     inte slår falskt vid multi-databaskonfiguration.
 
-    Returnerar tom mängd vid anslutningsfel eller om tabellerna saknas.
+    Returnerar en mängd schemanamn (tom om databasen saknar publicerbara
+    scheman) eller None om databasen inte kunde läsas. Skillnaden är viktig:
+    en tom mängd är ett svar, None är avsaknad av svar, och uppstädning av
+    föräldralösa workspaces får aldrig köras på avsaknad av svar.
     """
     try:
         conn = psycopg2.connect(
@@ -1369,7 +1518,7 @@ def _fetch_publishable_schemas(db_config):
             "Kunde inte hämta scheman från '%s' för startavstämning: %s",
             db_config["dbname"], e,
         )
-        return set()
+        return None
 
 
 def _fetch_skyddsnivaer_config(db_config):
@@ -1407,8 +1556,227 @@ def _fetch_skyddsnivaer_config(db_config):
         return None
 
 
+# =============================================================================
+# FÖRÄLDRALÖSA WORKSPACES
+# =============================================================================
 
-def _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label="", all_pg_schemas=None):
+# Klassificering av en workspace som saknar motsvarande PostgreSQL-schema.
+WS_HEX     = "hex"      # Innehåller bara PostGIS-datastores mot ett övervakat schema
+WS_FOREIGN = "foreign"  # Innehåller något Hex inte skapat (raster, WMS, annan databas)
+WS_EMPTY   = "empty"    # Saknar lagringar helt
+WS_UNKNOWN = "unknown"  # Kunde inte inventeras – GeoServer svarade inte
+
+
+def _publishable_prefixes(cur, tag=""):
+    """Hämtar de skyddsnivåprefix databasen publicerar till GeoServer.
+
+    Läser hex_standardiserade_skyddsnivaer i stället för att härleda prefixen ur
+    de scheman som råkar finnas. En databas som är tömd (eller nyinstallerad)
+    äger fortfarande sina prefix och ska larma om workspaces som blivit kvar i
+    GeoServer — härledning ur befintliga scheman gav tystnad i just det läget.
+
+    Returnerar en mängd prefix, eller en tom mängd om frågan misslyckades.
+    """
+    try:
+        cur.execute(
+            "SELECT prefix FROM public.hex_standardiserade_skyddsnivaer"
+            " WHERE publiceras_geoserver = true"
+        )
+        return {row[0] for row in cur.fetchall()}
+    except Exception as e:
+        log.warning(
+            "%sKunde inte läsa publicerbara prefix ur hex_standardiserade_skyddsnivaer: %s",
+            tag, e,
+        )
+        return set()
+
+
+def _collect_known_schemas(pg_schemas, db_config, all_db_configs, all_pg_schemas, tag=""):
+    """Bygger mängden schemanamn som finns i någon övervakad databas just nu.
+
+    Args:
+        pg_schemas:     Färska scheman från denna databas (redan hämtade).
+        db_config:      Denna databas konfiguration.
+        all_db_configs: Samtliga övervakade databaser, eller None.
+        all_pg_schemas: Startmängden från run_all_listeners (kan vara inaktuell).
+        tag:            Logg-prefix.
+
+    Returns:
+        (kända scheman, complete) där complete är False om minst en annan
+        övervakad databas inte kunde läsas. Vid False får ingen borttagning
+        ske — ett schema kan finnas i databasen vi inte nådde.
+
+    Startmängden all_pg_schemas byggs en gång vid uppstart och blir inaktuell
+    i takt med att scheman skapas. Den läggs bara till mängden (aldrig
+    ersätter den), eftersom en för stor känd-mängd bara ger färre borttagningar.
+    """
+    known = set(pg_schemas)
+    if all_pg_schemas:
+        known |= set(all_pg_schemas)
+
+    others = [
+        db for db in (all_db_configs or [])
+        if (db.get("host"), db.get("port"), db.get("dbname"))
+        != (db_config.get("host"), db_config.get("port"), db_config.get("dbname"))
+    ]
+    if not others:
+        # Enkeldatabasläge: pg_schemas är färskt och fullständigt.
+        return known, True
+
+    complete = True
+    for other in others:
+        fetched = _fetch_publishable_schemas(other)
+        if fetched is None:
+            complete = False
+            log.warning(
+                "%sAvstämning: databasen '%s' kunde inte läsas – "
+                "föräldralösa workspaces kan inte avgöras säkert denna gång",
+                tag, other.get("dbname"),
+            )
+        else:
+            known |= fetched
+    return known, complete
+
+
+def _classify_workspace(gs_client, ws_names, schema_name, db_targets):
+    """Avgör om en föräldralös workspace är skapad av Hex och trygg att ta bort.
+
+    En workspace räknas som Hex:s egen (WS_HEX) bara om samtliga dessa gäller
+    för varje workspace-namn i ws_names:
+
+      - Den innehåller inga coverage-, WMS- eller WMTS-lagringar. Det skyddar
+        en manuell rasterpublicering vars namn råkar matcha schemamönstret.
+      - Den innehåller minst en datastore.
+      - Varje datastore är av typen postgis, pekar på en av de övervakade
+        databaserna (host, port, databas) och exponerar exakt schema_name.
+
+    Allt annat ger WS_FOREIGN (rör inte), WS_EMPTY (inga lagringar alls) eller
+    WS_UNKNOWN (GeoServer svarade inte – vi vet inget och avstår).
+    """
+    saw_datastore = False
+
+    for ws in sorted(ws_names):
+        for store_type in ("coveragestores", "wmsstores", "wmtsstores"):
+            names = gs_client.list_store_names(ws, store_type)
+            if names is None:
+                return WS_UNKNOWN, f"kunde inte lista {store_type} i '{ws}'"
+            if names:
+                return WS_FOREIGN, f"'{ws}' innehåller {store_type}: {', '.join(sorted(names))}"
+
+        datastores = gs_client.list_store_names(ws, "datastores")
+        if datastores is None:
+            return WS_UNKNOWN, f"kunde inte lista datastores i '{ws}'"
+
+        for store in sorted(datastores):
+            params = gs_client.get_datastore_parameters(ws, store)
+            if params is None:
+                return WS_UNKNOWN, f"kunde inte läsa datastore '{ws}/{store}'"
+
+            dbtype = (params.get("dbtype") or "").lower()
+            if dbtype != "postgis":
+                return WS_FOREIGN, (
+                    f"datastore '{ws}/{store}' har dbtype "
+                    f"'{dbtype or 'okänd'}', inte postgis"
+                )
+
+            target = (params.get("host"), str(params.get("port")), params.get("database"))
+            if target not in db_targets:
+                return WS_FOREIGN, (
+                    f"datastore '{ws}/{store}' pekar på {target[0]}:{target[1]}/{target[2]} "
+                    "som inte är en övervakad databas"
+                )
+
+            if params.get("schema") != schema_name:
+                return WS_FOREIGN, (
+                    f"datastore '{ws}/{store}' exponerar schemat "
+                    f"'{params.get('schema')}', inte '{schema_name}'"
+                )
+            saw_datastore = True
+
+    if not saw_datastore:
+        return WS_EMPTY, "inga lagringar alls"
+    return WS_HEX, "endast PostGIS-datastores mot det saknade schemat"
+
+
+def _handle_orphan_workspace(schema_name, ws_names, gs_client, pg_conn, db_targets,
+                             cleanup_mode, verification_complete, db_label="", tag=""):
+    """Varnar om — och städar eventuellt bort — en föräldralös workspace.
+
+    Args:
+        schema_name:           Schemat som saknas i samtliga övervakade databaser.
+        ws_names:              Workspace-namn som hör till schemat ('X' och 'X_w').
+        gs_client:             GeoServerClient-instans.
+        pg_conn:               PG-anslutning (används av borttagningsflödet).
+        db_targets:            Mängd (host, port, dbnamn) för övervakade databaser.
+        cleanup_mode:          CLEANUP_OFF | CLEANUP_DRY_RUN | CLEANUP_ON.
+        verification_complete: False om någon övervakad databas inte kunde läsas.
+        db_label, tag:         Loggetiketter.
+    """
+    namn = ", ".join(sorted(ws_names))
+
+    if cleanup_mode == CLEANUP_OFF:
+        log.warning(
+            "%sAvstämning: workspace %s finns i GeoServer men PG-schemat '%s' "
+            "saknas i samtliga övervakade databaser – kräver manuell DBA-granskning "
+            "(sätt HEX_ORPHAN_CLEANUP=dry-run för att se vad en uppstädning skulle göra)",
+            tag, namn, schema_name,
+        )
+        return
+
+    if not verification_complete:
+        log.warning(
+            "%sAvstämning: workspace %s ser föräldralös ut men minst en övervakad "
+            "databas kunde inte läsas – ingen uppstädning görs denna gång",
+            tag, namn,
+        )
+        return
+
+    verdict, reason = _classify_workspace(gs_client, ws_names, schema_name, db_targets)
+
+    if verdict == WS_UNKNOWN:
+        log.warning(
+            "%sAvstämning: workspace %s kunde inte inventeras (%s) – lämnas orörd",
+            tag, namn, reason,
+        )
+        return
+
+    if verdict == WS_FOREIGN:
+        log.warning(
+            "%sAvstämning: workspace %s matchar schemamönstret men %s – "
+            "lämnas orörd, Hex städar bara det Hex har skapat",
+            tag, namn, reason,
+        )
+        return
+
+    if verdict == WS_EMPTY:
+        log.warning(
+            "%sAvstämning: workspace %s saknar PG-schema och har %s – "
+            "lämnas orörd, kräver manuell DBA-granskning",
+            tag, namn, reason,
+        )
+        return
+
+    if cleanup_mode == CLEANUP_DRY_RUN:
+        log.warning(
+            "%sAvstämning [DRY-RUN]: skulle ta bort workspace %s "
+            "(PG-schemat '%s' saknas, %s). Sätt HEX_ORPHAN_CLEANUP=on för skarp körning.",
+            tag, namn, schema_name, reason,
+        )
+        return
+
+    log.warning(
+        "%sAvstämning: tar bort föräldralös workspace %s – PG-schemat '%s' saknas i "
+        "samtliga övervakade databaser (%s)",
+        tag, namn, schema_name, reason,
+    )
+    if handle_schema_removal_notification(schema_name, gs_client, pg_conn=pg_conn, db_label=db_label):
+        log.info("%sAvstämning: workspace %s borttagen", tag, namn)
+    else:
+        log.error("%sAvstämning: workspace %s kunde inte tas bort", tag, namn)
+
+
+def _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label="", all_pg_schemas=None,
+                                 all_db_configs=None, cleanup_mode=CLEANUP_OFF):
     """Avstämning: skapar saknade GeoServer-workspaces och datastores för befintliga PG-scheman.
 
     Körs vid uppstart och periodiskt (se _periodic_reconcile_loop). Använder den
@@ -1420,10 +1788,15 @@ def _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label="", all_pg_
         gs_client:      GeoServerClient-instans
         db_label:       Logg-prefix
         all_pg_schemas: Samlad mängd scheman från ALLA övervakade databaser,
-                        förbyggd av run_all_listeners. Används för att avgöra
-                        om en GeoServer-workspace verkligen är föräldralös eller
-                        om den tillhör en annan övervakad databas. Om None
-                        används endast denna databas scheman.
+                        förbyggd av run_all_listeners vid uppstart. Används som
+                        säkerhetsnät i orphan-kontrollen. Om None används endast
+                        denna databas scheman.
+        all_db_configs: Samtliga övervakade databaser. Används för att läsa om
+                        schemamängden färskt vid varje avstämning (startmängden
+                        blir inaktuell) och för att avgöra vilka datastores som
+                        pekar på en övervakad databas. Om None antas enkeldatabas.
+        cleanup_mode:   CLEANUP_OFF (endast varning), CLEANUP_DRY_RUN (loggar vad
+                        som skulle tas bort) eller CLEANUP_ON (tar bort).
 
     Logik:
       a) Hämtar publicerbara scheman från denna databas (pg_namespace).
@@ -1433,8 +1806,9 @@ def _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label="", all_pg_
          aktuella autentiseringsuppgifter från hex_rolluppgifter (så att
          lösenordsändringar efter ominstallation slår igenom vid omstart).
       d) Loggar INFO för varje nyskapad workspace.
-      e) Loggar WARNING för varje GeoServer-workspace som saknar PG-schema i
-         SAMTLIGA övervakade databaser (ingen borttagning görs automatiskt).
+      e) Varnar för varje GeoServer-workspace som saknar PG-schema i SAMTLIGA
+         övervakade databaser, och tar bort den om cleanup_mode tillåter det
+         OCH workspacen bevisligen är skapad av Hex (se _classify_workspace).
       f) Alla fel loggas; funktionen avbryter aldrig LISTEN-loopen.
     """
     tag = _db_tag(db_label)
@@ -1515,38 +1889,67 @@ def _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label="", all_pg_
                     tag, schema_name, e,
                 )
 
-        # e) Workspaces i GeoServer utan motsvarande PG-schema – logga varning, gör inget.
-        #    I multi-DB-läge (all_pg_schemas angiven) begränsas varningar till de prefix
-        #    som denna databas faktiskt hanterar, så att varje äkta föräldralös workspace
-        #    bara rapporteras av rätt databas (sk0_oppen → sk0_*, skx_utveckling → skx_*).
-        #    Databaser utan egna scheman hoppas över helt i multi-DB-läge.
-        #    Förväntade skriv-workspaces ('<schema>_w') är kända och ska inte larma.
-        known_schemas = all_pg_schemas if all_pg_schemas is not None else pg_schemas
-        known_schemas = known_schemas | {
-            f"{s}{WRITE_WORKSPACE_SUFFIX}" for s in known_schemas
-        }
-        own_prefixes = {name.split("_")[0] for name in pg_schemas}
-        _pattern = _get_schema_pattern()
-        if own_prefixes:
-            extra_in_gs = {
-                ws for ws in gs_workspaces - known_schemas
-                if _pattern.match(ws) and ws.split("_")[0] in own_prefixes
-            }
-        elif all_pg_schemas is None:
-            # Enskild databas utan egna scheman: rapportera alla matchande föräldralösa
-            extra_in_gs = {ws for ws in gs_workspaces - known_schemas if _pattern.match(ws)}
-        else:
-            # Multi-DB utan egna scheman: denna databas äger inga prefix – hoppa över
-            extra_in_gs = set()
-        for ws_name in sorted(extra_in_gs):
-            log.warning(
-                "%sStartavstämning: workspace '%s' finns i GeoServer men "
-                "PG-schemat saknas i samtliga övervakade databaser – "
-                "kräver manuell DBA-granskning",
-                tag, ws_name,
-            )
+        # e) Workspaces i GeoServer utan motsvarande PG-schema.
+        #    Kända scheman läses färskt från samtliga övervakade databaser – den
+        #    förbyggda startmängden blir inaktuell så fort ett schema skapas.
+        known_schemas, verification_complete = _collect_known_schemas(
+            pg_schemas, db_config, all_db_configs, all_pg_schemas, tag
+        )
 
-        if not missing_in_gs and not extra_in_gs:
+        #    I multi-DB-läge begränsas kontrollen till de prefix denna databas
+        #    publicerar, så att varje tråd rapporterar sina egna workspaces.
+        #    Prefixen läses ur konfigurationen (hex_standardiserade_skyddsnivaer),
+        #    inte ur befintliga scheman: en tömd databas äger fortfarande sina
+        #    prefix och måste kunna larma om kvarlämnade workspaces.
+        own_prefixes = None
+        if all_db_configs and len(all_db_configs) > 1:
+            own_prefixes = _publishable_prefixes(cur, tag) or {
+                name.split("_")[0] for name in pg_schemas
+            }
+
+        #    Gruppera per schema: läs-workspacen '<schema>' och skriv-workspacen
+        #    '<schema>_w' hör ihop och ska bedömas och städas som en enhet.
+        _pattern = _get_schema_pattern()
+        orphans = {}
+        for ws in gs_workspaces:
+            if ws in known_schemas:
+                continue                      # workspacen har ett levande schema
+            if ws.endswith(WRITE_WORKSPACE_SUFFIX):
+                base = ws[: -len(WRITE_WORKSPACE_SUFFIX)]
+                if base in known_schemas:
+                    continue                  # skriv-workspace till ett levande schema
+            else:
+                base = ws
+            if not _pattern.match(base):
+                continue                      # inte ett Hex-schemanamn – rör inte
+            if own_prefixes is not None and base.split("_")[0] not in own_prefixes:
+                continue                      # en annan databas prefix
+            orphans.setdefault(base, set()).add(ws)
+
+        db_targets = {
+            (db["host"], str(db["port"]), db["dbname"])
+            for db in (all_db_configs or [db_config])
+        }
+        for schema_name in sorted(orphans):
+            try:
+                _handle_orphan_workspace(
+                    schema_name,
+                    orphans[schema_name],
+                    gs_client,
+                    cur.connection,
+                    db_targets,
+                    cleanup_mode,
+                    verification_complete,
+                    db_label=db_label,
+                    tag=tag,
+                )
+            except Exception as e:
+                log.error(
+                    "%sAvstämning: fel vid hantering av föräldralös workspace '%s': %s",
+                    tag, schema_name, e,
+                )
+
+        if not missing_in_gs and not orphans:
             log.info("%sStartavstämning: GeoServer och PostgreSQL är i synk", tag)
 
     except Exception as e:
@@ -1562,7 +1965,8 @@ def _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label="", all_pg_
 # POSTGRESQL LISTENER
 # =============================================================================
 
-def _periodic_reconcile_loop(db_config, gs_client, stop_event, interval_seconds, db_label="", all_pg_schemas=None):
+def _periodic_reconcile_loop(db_config, gs_client, stop_event, interval_seconds, db_label="",
+                            all_pg_schemas=None, all_db_configs=None, cleanup_mode=CLEANUP_OFF):
     """Periodisk avstämning som kör _reconcile_geoserver_schemas på ett fast intervall.
 
     Öppnar en egen kortlivad PG-anslutning per körning, oberoende av
@@ -1575,6 +1979,8 @@ def _periodic_reconcile_loop(db_config, gs_client, stop_event, interval_seconds,
         interval_seconds: Sekunder mellan körningar.
         db_label:         Logg-prefix.
         all_pg_schemas:   Samlad schema-mängd från alla övervakade databaser (se run_all_listeners).
+        all_db_configs:   Samtliga övervakade databaser (se _reconcile_geoserver_schemas).
+        cleanup_mode:     Uppstädningsläge för föräldralösa workspaces.
     """
     tag = _db_tag(db_label)
     log.info(
@@ -1597,7 +2003,10 @@ def _periodic_reconcile_loop(db_config, gs_client, stop_event, interval_seconds,
             conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
             try:
                 with conn.cursor() as cur:
-                    _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label, all_pg_schemas)
+                    _reconcile_geoserver_schemas(
+                        cur, db_config, gs_client, db_label, all_pg_schemas,
+                        all_db_configs=all_db_configs, cleanup_mode=cleanup_mode,
+                    )
             finally:
                 conn.close()
         except psycopg2.OperationalError as e:
@@ -1658,7 +2067,9 @@ def _dispatch_notification_error(channel, db_label, schema_name, error, notifier
         if notifier:
             notifier.notify_schema_failure(schema_name, db_label, error)
 
-def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None, notifier=None, all_pg_schemas=None, reconcile_interval=0):
+def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None, notifier=None,
+                all_pg_schemas=None, reconcile_interval=0, all_db_configs=None,
+                cleanup_mode=CLEANUP_OFF):
     """Huvudloop som lyssnar på pg_notify och hanterar notifieringar för en databas.
 
     Args:
@@ -1671,6 +2082,8 @@ def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None, notifier
         all_pg_schemas:     Samlad schema-mängd från alla övervakade databaser,
                             förbyggd av run_all_listeners för korrekt orphan-kontroll.
         reconcile_interval: Sekunder mellan periodiska avstämningar (0 = avaktiverat).
+        all_db_configs:     Samtliga övervakade databaser (se _reconcile_geoserver_schemas).
+        cleanup_mode:       Uppstädningsläge för föräldralösa workspaces.
     """
     db_label = db_config["dbname"]
     was_disconnected = False  # Sparar om vi tappat anslutning för återhämtningsnotifiering
@@ -1685,6 +2098,7 @@ def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None, notifier
         t = threading.Thread(
             target=_periodic_reconcile_loop,
             args=(db_config, gs_client, stop_event, reconcile_interval, db_label, all_pg_schemas),
+            kwargs={"all_db_configs": all_db_configs, "cleanup_mode": cleanup_mode},
             name=f"reconcile-{db_label}",
             daemon=True,
         )
@@ -1720,7 +2134,10 @@ def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None, notifier
 
             # Startavstämning – körs vid varje (åter)anslutning för att fånga upp
             # scheman som skapades medan lyssnaren var nere.
-            _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label, all_pg_schemas)
+            _reconcile_geoserver_schemas(
+                cur, db_config, gs_client, db_label, all_pg_schemas,
+                all_db_configs=all_db_configs, cleanup_mode=cleanup_mode,
+            )
 
             # Skicka återhämtningsnotifiering om vi tappat anslutning tidigare
             if was_disconnected:
@@ -1811,13 +2228,26 @@ def run_all_listeners(config, dry_run=False, stop_event=None):
 
     databases = config["databases"]
     notifier = EmailNotifier(config["smtp"])
+    cleanup_mode = config.get("orphan_cleanup", CLEANUP_OFF)
+    if cleanup_mode == CLEANUP_ON:
+        log.info(
+            "Uppstädning av föräldralösa workspaces: PÅ – workspaces som bara "
+            "innehåller PostGIS-datastores mot ett saknat schema tas bort automatiskt."
+        )
+    elif cleanup_mode == CLEANUP_DRY_RUN:
+        log.info(
+            "Uppstädning av föräldralösa workspaces: DRY-RUN – loggar vad som "
+            "skulle tas bort, tar inte bort något."
+        )
 
     # Bygg en samlad schema-mängd över alla databaser för korrekt orphan-kontroll
     # i startavstämningen. Varje enskild databas-tråd jämför annars bara mot sina
     # egna scheman och larmar falskt om workspaces som tillhör en annan databas.
     all_pg_schemas = set()
     for db_config in databases:
-        all_pg_schemas |= _fetch_publishable_schemas(db_config)
+        fetched = _fetch_publishable_schemas(db_config)
+        if fetched:
+            all_pg_schemas |= fetched
 
     # Varna om databaserna har olika hex_standardiserade_skyddsnivaer-konfigurationer.
     # Varje tråd använder sin egen databas mönster (via _thread_local), men skilda
@@ -1851,7 +2281,11 @@ def run_all_listeners(config, dry_run=False, stop_event=None):
             dry_run=dry_run,
             namespace_uri_base=config.get("gs_namespace_base", ""),
         )
-        listen_loop(databases[0], config["reconnect_delay"], gs_client, stop_event, notifier, all_pg_schemas, config.get("reconcile_interval", 0))
+        listen_loop(
+            databases[0], config["reconnect_delay"], gs_client, stop_event, notifier,
+            all_pg_schemas, config.get("reconcile_interval", 0),
+            all_db_configs=databases, cleanup_mode=cleanup_mode,
+        )
         return
 
     # Flera databaser - en tråd per databas
@@ -1868,6 +2302,7 @@ def run_all_listeners(config, dry_run=False, stop_event=None):
         t = threading.Thread(
             target=listen_loop,
             args=(db_config, config["reconnect_delay"], gs_client, stop_event, notifier, all_pg_schemas, config.get("reconcile_interval", 0)),
+            kwargs={"all_db_configs": databases, "cleanup_mode": cleanup_mode},
             name=f"listener-{db_config['dbname']}",
             daemon=True,
         )
@@ -1918,6 +2353,7 @@ def main():
     for db in config["databases"]:
         log.info("  [%s] %s@%s:%d/%s",
                  db["dbname"], db["user"], db["host"], db["port"], db["dbname"])
+    log.info("Uppstädning: %s (HEX_ORPHAN_CLEANUP)", config["orphan_cleanup"])
     if config["smtp"]["enabled"]:
         log.info("E-post:     %s -> %s", config["smtp"]["host"], config["smtp"]["to_addr"])
     else:

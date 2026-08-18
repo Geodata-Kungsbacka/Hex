@@ -7,16 +7,29 @@ Installera, starta och hantera tjänsten via kommandoraden:
     python geoserver_service.py install     Installera tjänsten
     python geoserver_service.py start       Starta tjänsten
     python geoserver_service.py stop        Stoppa tjänsten
+    python geoserver_service.py restart     Starta om tjänsten
+    python geoserver_service.py update      Uppdatera tjänstens registrering
     python geoserver_service.py remove      Avinstallera tjänsten
     python geoserver_service.py status      Visa tjänstens status
 
+Kommandona är verb utan bindestreck eftersom pywin32:s HandleCommandLine äger
+kommandoradsgrammatiken (samma stil som "net start"/"sc"). Installern
+install_hex.py använder däremot argparse-flaggor (--upgrade, --uninstall).
+
+Vid uppgradering av koden räcker stop -> byt filer -> start. install/remove
+behövs bara när sökvägen till skriptet, Python-tolken eller tjänstenamnet
+ändras; ändrad sökväg eller tolk kan även skrivas om med "update".
+
 Eller hantera via services.msc (Windows Services).
 
-Konfiguration laddas från miljövariabler (systemvida) eller .env-fil
-i samma katalog som detta skript.
+Konfiguration laddas från miljövariabler (systemvida) eller en .env-fil.
+.env söks i samma katalog som detta skript, om inte miljövariabeln HEX_ENV_FILE
+pekar ut en annan sökväg. Lägg .env utanför kodkatalogen på en server där
+katalogen byts ut vid uppgradering.
 
 Loggning sker till Windows Event Log (Application) och till fil:
     D:\\Hex\\Logs\\hex_geoserver_listener.log
+Katalogen styrs av HEX_LOG_DIR och bör ligga utanför kodkatalogen av samma skäl.
 
 Krav:
     pip install psycopg2 requests python-dotenv pywin32
@@ -39,12 +52,21 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from geoserver_listener import load_config, GeoServerClient, run_all_listeners, log
+from geoserver_listener import (
+    load_config,
+    resolve_env_path,
+    GeoServerClient,
+    run_all_listeners,
+    log,
+)
 
 # Ladda .env tidigt så att HEX_LOG_DIR finns tillgänglig när LOG_DIR beräknas nedan.
 # load_config() laddar .env igen senare men override=False innebär att variabler som
 # redan satts här (från .env) inte skrivs över av systemets miljövariabler.
-_env_path = SCRIPT_DIR / ".env"
+# Sökvägen kommer från resolve_env_path(): HEX_ENV_FILE om den är satt, annars
+# .env i skriptets katalog. Att lägga .env utanför kodkatalogen gör att mappen
+# kan bytas ut vid uppgradering utan att konfigurationen följer med.
+_env_path = resolve_env_path()
 if _env_path.exists():
     try:
         from dotenv import load_dotenv
@@ -130,12 +152,14 @@ class HexGeoServerService(win32serviceutil.ServiceFramework):
 
             config = load_config()
 
+            log.info("Konfig:     %s", _env_path if _env_path.exists() else "endast miljövariabler")
             log.info("GeoServer:  %s", config["gs_url"])
             log.info("Anslutning: direkt PostGIS (autentiseringsuppgifter från hex_rolluppgifter)")
             log.info("Databaser:  %d st", len(config["databases"]))
             for db in config["databases"]:
                 log.info("  [%s] %s@%s:%d/%s",
                          db["dbname"], db["user"], db["host"], db["port"], db["dbname"])
+            log.info("Uppstädning: %s (HEX_ORPHAN_CLEANUP)", config["orphan_cleanup"])
 
             gs_client = GeoServerClient(
                 base_url=config["gs_url"],

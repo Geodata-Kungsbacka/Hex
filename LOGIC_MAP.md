@@ -832,6 +832,15 @@ mot PostgreSQL och väntar på `pg_notify`-meddelanden på **två kanaler**.
 > kör samma `handle_schema_notification` för *alla* scheman i databasen, vilket
 > återskapar saknade workspaces/datastores, korrigerar ACL-regler och skriver om
 > datastorens autentiseringsuppgifter från `hex_rolluppgifter`.
+>
+> Åt andra hållet letar avstämningen efter **föräldralösa workspaces**: namn som
+> matchar schemamönstret men vars schema saknas i samtliga övervakade databaser.
+> Ägarskapet avgörs av `hex_standardiserade_skyddsnivaer` (publicerbara prefix),
+> inte av vilka scheman som råkar finnas — annars tystnar kontrollen i en tömd
+> databas. `HEX_ORPHAN_CLEANUP` (`off` | `dry-run` | `on`) styr om de bara
+> loggas eller tas bort. Borttagning kräver att `_classify_workspace()` bevisar
+> att workspacen bara innehåller PostGIS-datastores mot ett övervakat mål med
+> exakt det saknade schemat, och att alla övervakade databaser gick att läsa.
 
 ```mermaid
 flowchart TD
@@ -1020,9 +1029,9 @@ flowchart TD
 HexGeoServerService (win32serviceutil.ServiceFramework)
   Tjänstnamn:    HexGeoServerListener
   Visningsnamn:  Hex GeoServer Schema Listener
-  Loggfiler:     C:\ProgramData\Hex\geoserver_listener.log
-                 (roterande, 5 MB, 5 kopior)
-  Kommandon:     install / start / stop / remove / status
+  Loggfiler:     D:\Hex\Logs\hex_geoserver_listener.log
+                 (roterar vid midnatt, 14 dagars historik)
+  Kommandon:     install / start / stop / restart / update / remove / status
 ```
 
 ---

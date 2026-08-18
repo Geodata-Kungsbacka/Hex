@@ -443,6 +443,16 @@ copy .env.example .env
 notepad .env
 ```
 
+> **Produktion:** lägg `.env` utanför kodkatalogen och peka ut den med den
+> systemvida miljövariabeln `HEX_ENV_FILE`. Då kan installationsmappen bytas ut
+> vid uppgradering utan att konfigurationen följer med — och utan att en öppen
+> `.env` låser mappen. Se
+> [09_installera-uppdatera-hex.md](../../docs/09_installera-uppdatera-hex.md#uppdatera-lyssnartjänsten-på-geoserver-servern).
+>
+> ```cmd
+> setx /M HEX_ENV_FILE "D:\Hex\config\.env"
+> ```
+
 Fyll i dina värden i `.env`:
 
 ```env
@@ -513,6 +523,29 @@ HEX_RECONCILE_INTERVAL=3600   # sekunder mellan kontroller; 0 = avaktiverat
 > **OBS:** Periodisk avstämning skapar aldrig om publicerade lager (feature types)
 > – enbart workspaces, datastores, GeoServer-roller och ACL-regler. Lager måste
 > republiseras manuellt via GeoServer UI eller REST API.
+
+#### Kvarlämnade workspaces (valfritt)
+
+Avstämningen upptäcker även workspaces i GeoServer vars PostgreSQL-schema saknas
+i samtliga övervakade databaser — t.ex. efter en ominstallation av databasen.
+Standard är att bara logga en varning.
+
+```env
+HEX_ORPHAN_CLEANUP=off       # Endast varning i loggen (standard)
+HEX_ORPHAN_CLEANUP=dry-run   # Loggar vad en uppstädning skulle ta bort
+HEX_ORPHAN_CLEANUP=on        # Tar bort workspacen
+```
+
+| Variabel | Standard | Beskrivning |
+|---|---|---|
+| `HEX_ORPHAN_CLEANUP` | `off` | `off`, `dry-run` eller `on` |
+
+Med `on` tas en workspace bort endast om den bevisligen är skapad av Hex: inga
+raster-, WMS- eller WMTS-lagringar, och samtliga datastores är PostGIS mot en
+övervakad databas och exponerar exakt det saknade schemat. En manuell
+rasterpublicering vars namn råkar matcha schemamönstret rörs aldrig. Kör
+`dry-run` först och läs loggen. Fullständig beskrivning finns i
+[08_geoserver-lyssnaren.md](../../docs/08_geoserver-lyssnaren.md#kvarlämnade-workspaces-i-geoserver).
 
 #### E-postnotifieringar (valfritt)
 
@@ -766,12 +799,12 @@ py geoserver_service.py status
 
 Kontrollera loggfilen:
 ```cmd
-type D:\ProgramData\Hex\geoserver_listener.log
+type D:\Hex\Logs\hex_geoserver_listener.log
 ```
 
 Eller följ loggen i realtid:
 ```cmd
-powershell Get-Content D:\ProgramData\Hex\geoserver_listener.log -Wait -Tail 20
+powershell Get-Content D:\Hex\Logs\hex_geoserver_listener.log -Wait -Tail 20
 ```
 
 ---
@@ -788,7 +821,7 @@ CREATE SCHEMA sk1_kba_parkering;
 
 Kontrollera loggen:
 ```cmd
-type D:\ProgramData\Hex\geoserver_listener.log
+type D:\Hex\Logs\hex_geoserver_listener.log
 ```
 
 Kontrollera GeoServer:
@@ -811,12 +844,23 @@ Kontrollera GeoServer:
 | `python geoserver_service.py stop` | Stoppa |
 | `python geoserver_service.py restart` | Starta om (t.ex. efter konfigändring) |
 | `python geoserver_service.py status` | Visa status |
+| `python geoserver_service.py update` | Skriv om registreringen (ny sökväg eller Python-tolk) |
 | `python geoserver_service.py remove` | Avinstallera tjänsten |
 | `net start HexGeoServerListener` | Starta (alternativ) |
 | `net stop HexGeoServerListener` | Stoppa (alternativ) |
 
+Kommandona är verb utan bindestreck därför att pywin32:s `HandleCommandLine`
+äger kommandoradsgrammatiken — samma stil som `net start` och `sc`. Installern
+`install_hex.py` använder argparse och därmed flaggor (`--upgrade`,
+`--uninstall`). Skillnaden är konvention, inte funktion.
+
 Tjänsten startar automatiskt med Windows om du ställt in det i services.msc
 (Startup type: Automatic).
+
+**Uppdatera koden:** `stop` → byt filer → `start`. `remove` + `install` behövs
+bara när registreringen ändras (sökväg, Python-tolk, tjänstenamn eller
+uppgraderad pywin32). Se
+[09_installera-uppdatera-hex.md](../../docs/09_installera-uppdatera-hex.md#uppdatera-lyssnartjänsten-på-geoserver-servern).
 
 ---
 
@@ -824,32 +868,33 @@ Tjänsten startar automatiskt med Windows om du ställt in det i services.msc
 
 | Fil | Beskrivning |
 |---|---|
-| `D:\ProgramData\Hex\geoserver_listener.log` | Huvudlogg (standardsökväg) |
+| `D:\Hex\Logs\hex_geoserver_listener.log` | Huvudlogg (standardsökväg) |
 | Windows Event Viewer > Application | Start/stopp-händelser |
 
-Loggen roterar automatiskt vid 5 MB (5 gamla filer sparas).
+Loggen roterar vid midnatt och 14 dagars historik sparas.
 
 ### Anpassa loggkatalogen med HEX_LOG_DIR
 
-Loggfilens plats styrs av miljövariabeln `HEX_LOG_DIR`. Om den inte är satt
-används standardvärdet `D:\ProgramData\Hex`.
-
-Sätt den i `.env` för att lägga loggen nära övriga installationsfiler:
+Loggkatalogen styrs av miljövariabeln `HEX_LOG_DIR`. Om den inte är satt
+används standardvärdet `D:\Hex\Logs`.
 
 ```env
-HEX_LOG_DIR=D:\Hex\src\geoserver\logs
+HEX_LOG_DIR=D:\Hex\Logs
 ```
+
+> **Lägg inte loggen i kodkatalogen.** Tjänsten håller loggfilen öppen medan den
+> kör, vilket hindrar att katalogen byts ut vid en uppgradering. Standardvärdet
+> ligger redan utanför `src\geoserver`.
 
 Katalogen skapas automatiskt om den inte finns. Den exakta sökvägen loggas
 vid uppstart:
 
 ```
-[INFO] Loggfil: D:\Hex\src\geoserver\logs\geoserver_listener.log
+[INFO] Loggfil: D:\Hex\Logs\hex_geoserver_listener.log
 ```
 
 > **OBS:** Kommandona för att läsa loggen i steg 9d och 10 nedan använder
-> standardsökvägen `D:\ProgramData\Hex`. Ersätt med din sökväg om du har
-> satt `HEX_LOG_DIR`.
+> standardsökvägen. Ersätt med din sökväg om du har satt `HEX_LOG_DIR`.
 
 ---
 
