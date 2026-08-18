@@ -12,13 +12,14 @@ Installera, starta och hantera tjänsten via kommandoraden:
     python geoserver_service.py remove      Avinstallera tjänsten
     python geoserver_service.py status      Visa tjänstens status
 
-Kommandona är verb utan bindestreck eftersom pywin32:s HandleCommandLine äger
-kommandoradsgrammatiken (samma stil som "net start"/"sc"). Installern
-install_hex.py använder däremot argparse-flaggor (--upgrade, --uninstall).
+Kommandona är verb utan bindestreck: pywin32:s HandleCommandLine äger
+kommandoradsgrammatiken (samma stil som "net start"/"sc"). Utan argument alls
+startas tjänsten av Windows tjänstehanterare, se __main__ längst ned.
 
 Vid uppgradering av koden räcker stop -> byt filer -> start. install/remove
-behövs bara när sökvägen till skriptet, Python-tolken eller tjänstenamnet
-ändras; ändrad sökväg eller tolk kan även skrivas om med "update".
+behövs bara när registreringen ändras (sökväg, Python-tolk eller tjänstnamn);
+ändrad sökväg eller tolk kan även skrivas om med "update".
+Se docs/09_installera-uppdatera-hex.md.
 
 Eller hantera via services.msc (Windows Services).
 

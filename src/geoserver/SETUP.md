@@ -849,17 +849,16 @@ Kontrollera GeoServer:
 | `net start HexGeoServerListener` | Starta (alternativ) |
 | `net stop HexGeoServerListener` | Stoppa (alternativ) |
 
-Kommandona är verb utan bindestreck därför att pywin32:s `HandleCommandLine`
-äger kommandoradsgrammatiken — samma stil som `net start` och `sc`. Installern
-`install_hex.py` använder argparse och därmed flaggor (`--upgrade`,
-`--uninstall`). Skillnaden är konvention, inte funktion.
+> **OBS:** Kommandona är verb utan bindestreck (pywin32:s `HandleCommandLine`,
+> samma stil som `net start` och `sc`), medan `install_hex.py` använder
+> argparse-flaggor (`--upgrade`, `--uninstall`).
 
 Tjänsten startar automatiskt med Windows om du ställt in det i services.msc
 (Startup type: Automatic).
 
 **Uppdatera koden:** `stop` → byt filer → `start`. `remove` + `install` behövs
-bara när registreringen ändras (sökväg, Python-tolk, tjänstenamn eller
-uppgraderad pywin32). Se
+bara när registreringen ändras (sökväg, Python-tolk, tjänstnamn eller
+uppgraderad pywin32). Fullständig rutin i
 [09_installera-uppdatera-hex.md](../../docs/09_installera-uppdatera-hex.md#uppdatera-lyssnartjänsten-på-geoserver-servern).
 
 ---

@@ -184,7 +184,7 @@ villkor måste vara uppfyllda:
 
 | Villkor | Skyddar mot |
 | --- | --- |
-| Namnet matchar schemamönstret | Andra organisationers workspaces |
+| Namnet matchar schemamönstret | Workspaces utanför Hex namnkonvention |
 | Inga coverage-, WMS- eller WMTS-lagringar | Manuell rasterpublicering vars namn matchar mönstret |
 | Minst en datastore finns | Tom workspace som någon just har börjat bygga |
 | Varje datastore är `dbtype = postgis` | Shapefile-kataloger och andra format |
