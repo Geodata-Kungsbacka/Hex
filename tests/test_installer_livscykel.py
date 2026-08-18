@@ -310,6 +310,118 @@ class TestAvinstallation(unittest.TestCase):
 
 
 @unittest.skipUnless(KAN_KORA, "kräver superuser-anslutning till PostgreSQL")
+class TestArvdaObjekt(unittest.TestCase):
+    """
+    En databas installerad före namnbytet till hex_-prefix bär kvar objekt
+    under sina gamla namn. Den kvarlämnade event-triggern hantera_ny_tabell_trigger
+    är det som gör dem farliga: den avfyras på nästa CREATE TABLE, slår mot
+    public.hex_systemanvandare innan tabellen hunnit skapas och river hela
+    installationstransaktionen.
+    """
+
+    # Ett representativt urval ärvda objekt – event-trigger med funktion,
+    # en gammal typ och två gamla tabeller.
+    ARVT_SQL = """
+    CREATE FUNCTION public.hantera_ny_tabell() RETURNS event_trigger
+        LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
+    DECLARE ar_systemanvandare boolean;
+    BEGIN
+        SELECT EXISTS (
+            SELECT 1 FROM public.hex_systemanvandare
+            WHERE anvandare IN (lower(session_user))
+        ) INTO ar_systemanvandare;
+    END; $$;
+
+    CREATE TYPE public.geom_info AS (typ text);
+    CREATE TABLE public.standardiserade_skyddsnivaer (prefix text);
+    CREATE TABLE public.hex_role_credentials (rolname text);
+
+    -- Sist: annars avfyras triggern på tabellerna ovan och river uppsättningen.
+    CREATE EVENT TRIGGER hantera_ny_tabell_trigger ON DDL_COMMAND_END
+        WHEN TAG IN ('CREATE TABLE')
+        EXECUTE PROCEDURE public.hantera_ny_tabell();
+    """
+
+    def setUp(self):
+        _skapa_tom_databas()
+        conn = _koppla()
+        try:
+            conn.cursor().execute(self.ARVT_SQL)
+            conn.commit()
+        finally:
+            conn.close()
+
+    def tearDown(self):
+        _ta_bort_databas()
+
+    def test_installation_gar_igenom(self):
+        """Ärvda event-triggers får inte stoppa en ren installation."""
+        install_hex.install(_db_config(), base_path=str(PROJECT_ROOT))
+        (antal,) = _fraga(
+            "SELECT count(*) FROM pg_event_trigger WHERE evtname LIKE 'hex%'"
+        )[0]
+        self.assertEqual(antal, 10)
+
+    def test_installation_tar_bort_arvda_event_triggers(self):
+        """
+        Bara event-triggarna rensas vid installation. Tabellerna kan bära
+        data och lämnas orörda tills användaren avinstallerar.
+        """
+        install_hex.install(_db_config(), base_path=str(PROJECT_ROOT))
+        kvar = _fraga(
+            "SELECT evtname FROM pg_event_trigger WHERE evtname NOT LIKE 'hex%'"
+        )
+        self.assertEqual(kvar, [])
+        self.assertEqual(
+            _fraga(
+                "SELECT count(*) FROM pg_tables"
+                " WHERE schemaname = 'public'"
+                " AND tablename = 'standardiserade_skyddsnivaer'"
+            )[0][0],
+            1,
+        )
+
+    def test_avinstallation_tar_bort_alla_arvda_objekt(self):
+        """Avinstallationen ska lämna databasen fri från gamla namn."""
+        install_hex.install(_db_config(), base_path=str(PROJECT_ROOT))
+        install_hex.uninstall(_db_config())
+
+        self.assertEqual(_fraga("SELECT evtname FROM pg_event_trigger"), [])
+        self.assertEqual(
+            _fraga(
+                "SELECT p.proname FROM pg_proc p"
+                " JOIN pg_namespace n ON n.oid = p.pronamespace"
+                " WHERE n.nspname = 'public' AND p.proname = 'hantera_ny_tabell'"
+            ),
+            [],
+        )
+        self.assertEqual(
+            _fraga(
+                "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
+                " AND tablename IN ('standardiserade_skyddsnivaer',"
+                " 'hex_role_credentials') ORDER BY 1"
+            ),
+            [],
+        )
+        self.assertEqual(
+            _fraga(
+                "SELECT t.typname FROM pg_type t"
+                " JOIN pg_namespace n ON n.oid = t.typnamespace"
+                " WHERE n.nspname = 'public' AND t.typname = 'geom_info'"
+            ),
+            [],
+        )
+
+    def test_uppgradering_gar_igenom(self):
+        """upgrade() ska klara samma databas – det var vägen felet uppstod på."""
+        install_hex.upgrade(_db_config(), base_path=str(PROJECT_ROOT))
+        (antal,) = _fraga(
+            "SELECT count(*) FROM pg_event_trigger WHERE evtname LIKE 'hex%'"
+        )[0]
+        self.assertEqual(antal, 10)
+
+
+@unittest.skipUnless(KAN_KORA, "kräver superuser-anslutning till PostgreSQL")
 class TestAgarrollNone(unittest.TestCase):
     """
     owner_role=None: den anslutande användaren äger objekten.

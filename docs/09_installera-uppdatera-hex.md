@@ -128,6 +128,32 @@ Följande tabeller bevaras automatiskt vid `--upgrade`:
 > alla Hex-funktioner, triggers och typer. Kör gärna en manuell säkerhetskopia
 > av databasen innan uppgradering i produktionsmiljö.
 
+### Uppgradering från en version före `hex_`-prefixet
+
+Databaser installerade innan alla objekt fick `hex_`-prefix bär kvar funktioner,
+typer, tabeller och event-triggers under sina gamla namn (`hantera_ny_tabell()`,
+`geom_info`, `standardiserade_skyddsnivaer` med flera).
+
+De gamla event-triggarna är aktiva och avfyras på nästa `CREATE TABLE`. En
+kvarlämnad `hantera_ny_tabell()` slår mot `public.hex_systemanvandare` innan
+installationen hunnit skapa tabellen, och hela transaktionen rullas tillbaka:
+
+```
+MISSLYCKADES: FEL:  relationen "public.hex_systemanvandare" existerar inte
+CONTEXT:  PL/pgSQL-funktion hantera_ny_tabell() rad 54 vid SQL-sats
+```
+
+Installern hanterar det själv:
+
+- **Installation** rensar bort ärvda event-triggers innan något annat körs, så
+  de inte kan avbryta installationen. Ärvda tabeller lämnas orörda — de kan
+  bära data, och en ren installation kastar inget.
+- **Avinstallation och `--upgrade`** tar dessutom bort ärvda funktioner, typer
+  och tabeller, så databasen inte lämnas med två uppsättningar objekt.
+
+Se du felet ovan kör du en avinstallation följt av en installation, eller
+`--upgrade` direkt.
+
 ### `hex_rolluppgifter` roteras — den bevaras inte
 
 Lösenorden för `gs_r_`/`gs_w_`-rollerna **byts ut** vid varje `--upgrade`.
