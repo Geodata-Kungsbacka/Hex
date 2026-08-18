@@ -11,7 +11,7 @@ Hex installerat, samt Python-sviter för GeoServer-lyssnaren.
   `postgresql-<version>-postgis-3` eller motsvarande), och Hex installerat i
   testdatabasen
   (se [docs/09_installera-uppdatera-hex.md](../docs/09_installera-uppdatera-hex.md)).
-- `psql` på PATH. `run_all_tests.py` kör SQL-sviterna genom klienten och läser
+- `psql` på PATH. `test_run_all.py` kör SQL-sviterna genom klienten och läser
   de NOTICE/WARNING-rader den skriver ut. Installerar du servern med
   Debian/Ubuntus `postgresql-16` följer klienten med automatiskt
   (`postgresql-client-16` är ett beroende), men kör du sviterna från en annan
@@ -30,7 +30,7 @@ Hex installerat, samt Python-sviter för GeoServer-lyssnaren.
 > `.claude/hooks/session-start.sh` allt det här automatiskt vid sessionsstart —
 > installerar PostGIS och Python-beroendena, startar klustret, skapar `hex_test`
 > och installerar Hex i den, och sätter `PG*`-variablerna för sessionen.
-> `tests/run_all_tests.py` går alltså att köra direkt.
+> `tests/test_run_all.py` går alltså att köra direkt.
 >
 > Hooken anropar `install_hex.install()` med en egen anslutningsdict i stället
 > för att fylla i `DATABASES` i `install_hex.py`. Redigera därför inte
@@ -79,7 +79,7 @@ Installern skapar `postgis` och `pgcrypto`, och skapar ägarrollen
 
 ```bash
 PGDATABASE=hex_test PGUSER=postgres PGHOST=localhost PGPASSWORD=... \
-  python3 tests/run_all_tests.py
+  python3 tests/test_run_all.py
 ```
 
 `PGHOST`/`PGPASSWORD` behövs inte om du kör som OS-användaren `postgres` och
@@ -91,8 +91,10 @@ i CI.
 
 ```
 SVIT                                 PASS  XFAIL   SKIP   FAIL   STATUS
-reserved_words_test.sql                24      0      0      0   OK
-stress_test.sql                        28     14      0      0   OK
+...
+test_reserved_words.sql                24      0      0      0   OK
+...
+test_stress.sql                        28     14      0      0   OK
 ...
 TOTALT                                458     15      0      0
 ```
@@ -133,7 +135,7 @@ PGHOST=localhost PGUSER=postgres PGPASSWORD=hemligt python3 tests/test_pg_notify
 
 ## Resultatkonventioner
 
-SQL-sviterna rapporterar på två sätt. Båda tolkas av `run_all_tests.py`:
+SQL-sviterna rapporterar på två sätt. Båda tolkas av `test_run_all.py`:
 
 1. **Meddelandenivå** — `NOTICE ... PASSED` (eller `GODKÄNT`) är godkänt,
    `WARNING ... FAILED` (eller `MISSLYCKAT` / `BUG`) är underkänt. Att köra
@@ -167,8 +169,8 @@ och betyder inte att ett test misslyckats.
 
 | Fil                            | Täcker                                                        |
 |--------------------------------|---------------------------------------------------------------|
-| `reserved_words_test.sql`      | Kolumnnamn som är reserverade ord i QA-triggers                |
-| `stress_test.sql`              | Namnvalidering, rollhantering, historik, konfigurationsgränser |
+| `test_reserved_words.sql`      | Kolumnnamn som är reserverade ord i QA-triggers                |
+| `test_stress.sql`              | Namnvalidering, rollhantering, historik, konfigurationsgränser |
 | `test_dummy_srid.sql`          | Dummy-geometrier och registrering av avvikande SRID            |
 | `test_edge_cases.sql`          | CREATE/ALTER TABLE-varianter, schemanamngivning, specialfall   |
 | `test_extended_ab.sql`         | sk2-scheman och vy-validering                                  |

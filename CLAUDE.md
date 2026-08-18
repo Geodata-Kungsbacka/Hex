@@ -6,6 +6,35 @@ Alla kodkommentarer och all dokumentation (docstrings, inline-kommentarer, markd
 
 ---
 
+## Namnkonvention för filer
+
+**Varje ny fil prefixas efter vad den är:**
+
+| Typ | Prefix | Exempel |
+| --- | --- | --- |
+| Operativa filer (databasobjekt i `src/sql/`) | `hex_` | `hex_metadata.sql`, `hex_validera_schemanamn.sql` |
+| Testfiler i `tests/` | `test_` | `test_reserved_words.sql`, `test_pg_notify_listener.py` |
+
+Regler:
+
+- Prefixet står **först** i filnamnet – inte i mitten och inte på slutet
+  (`test_stress.sql`, aldrig `stress_test.sql`).
+- Filnamnet ska spegla objektet filen skapar, så att `hex_metadata.sql`
+  innehåller `CREATE TABLE public.hex_metadata`. Byter objektet namn ska filen
+  och posten i `INSTALL_ORDER` i `install_hex.py` följa med.
+- Samtliga filer under `src/sql/` har `hex_`-prefix. En ny fil utan prefix där
+  är ett fel, inte ett undantag.
+- Undantagna är de operativa Python-filerna i repotets rot och i
+  `src/geoserver/` (`install_hex.py`, `geoserver_listener.py`,
+  `geoserver_service.py`). De namnger program, inte databasobjekt, och
+  behåller sina namn.
+- `tests/test_run_all.py` är testkörare snarare än testsvit, men följer
+  konventionen ändå. Den utesluter sig själv ur sin egen `test_*.py`-sökning
+  via `Path(__file__).name`, så prefixet gör den inte till en svit som kör
+  sig själv.
+
+---
+
 ## Checklista för SQL-granskning
 
 Kör de här kontrollerna mot `src/sql/` när du granskar SQL-ändringar.

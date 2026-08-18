@@ -3,17 +3,17 @@
 Kör alla Hex-testsviter och skriver ut en samlad sammanfattning.
 
 Användning:
-    python3 tests/run_all_tests.py                 # kör allt
-    python3 tests/run_all_tests.py --only sql      # bara SQL-sviterna
-    python3 tests/run_all_tests.py --only python   # bara Python-sviterna
-    python3 tests/run_all_tests.py -v              # visa utdata från varje svit
-    python3 tests/run_all_tests.py --strikt        # överhoppade tester underkänns
+    python3 tests/test_run_all.py                 # kör allt
+    python3 tests/test_run_all.py --only sql      # bara SQL-sviterna
+    python3 tests/test_run_all.py --only python   # bara Python-sviterna
+    python3 tests/test_run_all.py -v              # visa utdata från varje svit
+    python3 tests/test_run_all.py --strikt        # överhoppade tester underkänns
 
 Anslutning styrs med standardvariablerna för libpq. Standardvärden nedan
 matchar DATABASES i install_hex.py:
 
     PGDATABASE=hex_test PGUSER=postgres PGHOST=localhost PGPASSWORD=... \
-        python3 tests/run_all_tests.py
+        python3 tests/test_run_all.py
 
 Hex måste vara installerat i måldatabasen innan SQL-sviterna körs.
 
