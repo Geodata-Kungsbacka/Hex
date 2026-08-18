@@ -11,7 +11,7 @@
 --   1. hex_skapa_historik_qa – triggerskapande vid CREATE TABLE
 --   2. hex_hantera_ny_kolumn – triggerregenerering vid ALTER TABLE
 --
--- Kör som: sudo -u postgres psql -d hex_test -f tests/reserved_words_test.sql
+-- Kör som: sudo -u postgres psql -d hex_test -f tests/test_reserved_words.sql
 -- =============================================================================
 
 \set ON_ERROR_STOP off

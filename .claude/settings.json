@@ -19,7 +19,7 @@
       "Bash(pg_isready:*)",
       "Bash(pg_lsclusters:*)",
       "Bash(pg_ctlcluster:*)",
-      "Bash(python3 tests/run_all_tests.py:*)",
+      "Bash(python3 tests/test_run_all.py:*)",
       "Bash(python3 tests/test_client_encoding.py:*)",
       "Bash(python3 tests/test_installer.py:*)",
       "Bash(python3 tests/test_installer_livscykel.py:*)",

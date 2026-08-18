@@ -3,7 +3,7 @@
 #
 # Containern saknar körande PostgreSQL-kluster, PostGIS och Python-beroenden vid
 # start. Utan det här skriptet måste varje session sätta upp samma sak för hand
-# innan tests/run_all_tests.py kan köras.
+# innan tests/test_run_all.py kan köras.
 #
 # Skriptet är idempotent: varje steg hoppas över om det redan är gjort.
 set -euo pipefail
@@ -117,7 +117,7 @@ else
 fi
 
 # 7. Anslutningsvariabler för resten av sessionen, så att både psql och
-#    tests/run_all_tests.py hittar databasen utan extra flaggor.
+#    tests/test_run_all.py hittar databasen utan extra flaggor.
 #
 #    Hooken körs vid varje sessionsstart — startup, resume, clear, compact och
 #    fork — och filen skrivs med >>. Utan kontrollen nedan läggs samma fyra
@@ -132,4 +132,4 @@ if ! grep -q "^export PGDATABASE=$TESTDB\$" "$CLAUDE_ENV_FILE" 2>/dev/null; then
   } >> "$CLAUDE_ENV_FILE"
 fi
 
-echo "== Klart: $TESTDB är redo för tests/run_all_tests.py =="
+echo "== Klart: $TESTDB är redo för tests/test_run_all.py =="

@@ -1,6 +1,6 @@
 -- =============================================================================
 -- HEX STRESSTEST  (~35 tester)
--- Kör som: sudo -u postgres psql -d hex_test -f tests/stress_test.sql
+-- Kör som: sudo -u postgres psql -d hex_test -f tests/test_stress.sql
 -- =============================================================================
 
 \set ON_ERROR_STOP off
