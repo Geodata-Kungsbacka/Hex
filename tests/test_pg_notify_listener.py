@@ -2135,6 +2135,375 @@ class TestCleanupModeAndEnvPath(unittest.TestCase):
             self.assertEqual(gl.resolve_env_path(), Path(r"D:\Hex\config\.env"))
 
 
+class TestGsVersionsKontroll(unittest.TestCase):
+    """
+    Versionsparsning och varning för otestade GeoServer-versioner.
+
+    Varningen är rent informativ men ska träffa rätt: en uppgradering till en
+    otestad version ska synas i loggen, medan de versioner lyssnaren är
+    verifierad mot ska passera tyst.
+    """
+
+    def test_parsar_vanliga_versionsstrangar(self):
+        for text, forvantat in [
+            ("2.28.0", (2, 28)),
+            ("3.0.0", (3, 0)),
+            ("2.27.3", (2, 27)),
+            ("3.1-SNAPSHOT", (3, 1)),
+            ("  2.28.1  ", (2, 28)),
+        ]:
+            self.assertEqual(gl._parsa_gs_version(text), forvantat, text)
+
+    def test_otolkbar_version_ger_none(self):
+        for text in ["okänd", "", None, "abc", 2.28]:
+            self.assertIsNone(gl._parsa_gs_version(text), repr(text))
+
+    def test_testade_versioner_varnar_inte(self):
+        """2.27-3.0 är verifierade – de ska passera utan varning."""
+        for text in ["2.27.0", "2.28.0", "2.28.1", "3.0.0"]:
+            logger = logging.getLogger("geoserver_listener")
+            with patch.object(logger, "warning") as warn:
+                gl._varna_om_otestad_gs_version(text)
+                self.assertFalse(warn.called, f"{text} varnade oväntat")
+
+    def test_otestad_version_varnar(self):
+        """Både äldre och nyare versioner än det testade intervallet varnar."""
+        for text in ["2.26.4", "3.1.0", "4.0.0"]:
+            with self.assertLogs("geoserver_listener", level="WARNING") as cm:
+                gl._varna_om_otestad_gs_version(text)
+            self.assertIn(text, "\n".join(cm.output))
+
+    def test_otolkbar_version_varnar_men_stoppar_inte(self):
+        with self.assertLogs("geoserver_listener", level="WARNING"):
+            gl._varna_om_otestad_gs_version("okänd")
+
+
+class TestGsRollApiKompat(unittest.TestCase):
+    """
+    Regression: GeoServers rollendpoint svarar olika i 2.x och 3.x.
+
+    Verifierat mot riktiga servrar (GeoServer 2.28.0 och 3.0.0):
+
+      Fall                     2.28.0                      3.0.0
+      -----------------------  --------------------------  ------------------
+      POST ny roll             201                         201
+      POST befintlig roll      404 + "already exists"      400 + generiskt
+      DELETE befintlig roll    200                         200
+      DELETE saknad roll       404                         400
+
+    I 3.x bytte felhanteraren i RolesRestController både statuskod (404 -> 400)
+    och svarstext: orsaken skrivs numera bara till serverloggen och svaret
+    innehåller ett generiskt meddelande. Varken statuskod eller text går alltså
+    att matcha på längre, så tvetydiga svar verifieras mot /security/roles.
+
+    Utan detta returnerar create_gs_role False vid varje omkörning mot 3.x,
+    vilket avbryter handle_schema_notification i steg 5 – före ACL-stegen –
+    för varje redan publicerat schema vid varje avstämning.
+    """
+
+    # Autentiska svarskroppar från de två versionerna.
+    KROPP_228_FINNS = (
+        '{"servlet":"dispatcher","message":"The role r_sk0_kba_test already exists",'
+        '"url":"/geoserver/rest/security/roles/role/r_sk0_kba_test","status":"404"}'
+    )
+    KROPP_300_GENERISK = (
+        '{"origin":"dispatcher","message":"Role Rest Request failed with '
+        'IllegalArgumentException: Check the logs for further details",'
+        '"url":"http://gs/geoserver/rest/security/roles/role/r_sk0_kba_test",'
+        '"status":"400"}'
+    )
+
+    ROLL = "r_sk0_kba_test"
+
+    def _make_client(self):
+        return gl.GeoServerClient(
+            base_url="http://geoserver.example.com",
+            user="admin",
+            password="secret",
+        )
+
+    def _svar(self, status, text="", json_data=None):
+        resp = MagicMock()
+        resp.status_code = status
+        resp.text = text
+        if json_data is None:
+            resp.json.side_effect = ValueError("ingen JSON")
+        else:
+            resp.json.return_value = json_data
+        return resp
+
+    def _rollista(self, *roller):
+        return self._svar(200, json_data={"roles": list(roller)})
+
+    # -- create_gs_role ----------------------------------------------------
+
+    def test_create_dubblett_228_oforandrad(self):
+        """2.28: 404 + 'already exists' avgörs direkt, utan extra anrop."""
+        client = self._make_client()
+        with patch.object(client, "_request_with_retry",
+                          return_value=self._svar(404, self.KROPP_228_FINNS)) as req:
+            self.assertTrue(client.create_gs_role(self.ROLL))
+        self.assertEqual(req.call_count, 1, "2.28-vägen ska inte kosta extra anrop")
+
+    def test_create_dubblett_300_bekraftas(self):
+        """3.0: 400 + generisk text -> slås upp mot /security/roles."""
+        client = self._make_client()
+        with patch.object(client, "_request_with_retry", side_effect=[
+            self._svar(400, self.KROPP_300_GENERISK),
+            self._rollista("ADMIN", self.ROLL),
+        ]) as req:
+            self.assertTrue(client.create_gs_role(self.ROLL))
+        self.assertEqual(req.call_count, 2)
+        self.assertIn("/security/roles.json", req.call_args_list[1][0][1])
+
+    def test_create_400_nar_rollen_verkligen_saknas(self):
+        """400 där rollen inte finns är ett äkta fel och ska underkännas."""
+        client = self._make_client()
+        with patch.object(client, "_request_with_retry", side_effect=[
+            self._svar(400, self.KROPP_300_GENERISK),
+            self._rollista("ADMIN"),
+        ]):
+            self.assertFalse(client.create_gs_role(self.ROLL))
+
+    def test_create_400_nar_rollistan_inte_gar_att_hamta(self):
+        """Okänt utfall får aldrig tolkas som framgång."""
+        client = self._make_client()
+        with patch.object(client, "_request_with_retry", side_effect=[
+            self._svar(400, self.KROPP_300_GENERISK),
+            self._svar(500, "trasig"),
+        ]):
+            self.assertFalse(client.create_gs_role(self.ROLL))
+
+    def test_create_201_kostar_inget_extra_anrop(self):
+        client = self._make_client()
+        with patch.object(client, "_request_with_retry",
+                          return_value=self._svar(201)) as req:
+            self.assertTrue(client.create_gs_role(self.ROLL))
+        self.assertEqual(req.call_count, 1)
+
+    def test_create_409_kostar_inget_extra_anrop(self):
+        client = self._make_client()
+        with patch.object(client, "_request_with_retry",
+                          return_value=self._svar(409)) as req:
+            self.assertTrue(client.create_gs_role(self.ROLL))
+        self.assertEqual(req.call_count, 1)
+
+    # -- delete_gs_role ----------------------------------------------------
+
+    def test_delete_saknad_228_oforandrad(self):
+        """2.28: 404 avgörs direkt, utan extra anrop."""
+        client = self._make_client()
+        with patch.object(client, "_request_with_retry",
+                          return_value=self._svar(404)) as req:
+            self.assertTrue(client.delete_gs_role(self.ROLL))
+        self.assertEqual(req.call_count, 1, "2.28-vägen ska inte kosta extra anrop")
+
+    def test_delete_saknad_300_bekraftas(self):
+        """3.0: 400 -> slås upp; rollen saknas alltså borttagningen är klar."""
+        client = self._make_client()
+        with patch.object(client, "_request_with_retry", side_effect=[
+            self._svar(400, self.KROPP_300_GENERISK),
+            self._rollista("ADMIN"),
+        ]) as req:
+            self.assertTrue(client.delete_gs_role(self.ROLL))
+        self.assertEqual(req.call_count, 2)
+
+    def test_delete_400_nar_rollen_finns_kvar(self):
+        """400 medan rollen ligger kvar är ett äkta fel."""
+        client = self._make_client()
+        with patch.object(client, "_request_with_retry", side_effect=[
+            self._svar(400, self.KROPP_300_GENERISK),
+            self._rollista("ADMIN", self.ROLL),
+        ]):
+            self.assertFalse(client.delete_gs_role(self.ROLL))
+
+    def test_delete_200_kostar_inget_extra_anrop(self):
+        client = self._make_client()
+        with patch.object(client, "_request_with_retry",
+                          return_value=self._svar(200)) as req:
+            self.assertTrue(client.delete_gs_role(self.ROLL))
+        self.assertEqual(req.call_count, 1)
+
+    # -- list_gs_roles -----------------------------------------------------
+
+    def test_list_gs_roles_parsar_svaret(self):
+        client = self._make_client()
+        with patch.object(client, "_request_with_retry",
+                          return_value=self._rollista("ADMIN", "GROUP_ADMIN")):
+            self.assertEqual(client.list_gs_roles(), {"ADMIN", "GROUP_ADMIN"})
+
+    def test_list_gs_roles_returnerar_none_vid_fel(self):
+        """None betyder 'vet inte' och får aldrig förväxlas med tom mängd."""
+        client = self._make_client()
+        for svar in [self._svar(404), self._svar(500, "fel"), self._svar(200)]:
+            with patch.object(client, "_request_with_retry", return_value=svar):
+                self.assertIsNone(client.list_gs_roles())
+
+    def test_list_gs_roles_none_vid_natverksfel(self):
+        client = self._make_client()
+        with patch.object(client, "_request_with_retry",
+                          side_effect=requests.exceptions.ConnectionError("nere")):
+            self.assertIsNone(client.list_gs_roles())
+
+
+class TestRestWireKontrakt(unittest.TestCase):
+    """
+    Kontraktstester på HTTP-nivå.
+
+    Övriga sviter mockar _request_with_retry och testar därför aldrig vad som
+    faktiskt skickas. Här mockas requests.Session.request i stället, så att
+    metod, URL, headers och kropp verifieras – det lager där en förändring i
+    GeoServers REST-API först märks.
+    """
+
+    def _make_client(self):
+        return gl.GeoServerClient(
+            base_url="http://geoserver.example.com/",
+            user="admin",
+            password="secret",
+            namespace_uri_base="https://gis.example.se",
+        )
+
+    def _patcha_session(self, client, status=200, json_data=None, text=""):
+        resp = MagicMock()
+        resp.status_code = status
+        resp.text = text
+        if json_data is None:
+            resp.json.side_effect = ValueError("ingen JSON")
+        else:
+            resp.json.return_value = json_data
+        return patch.object(client.session, "request", return_value=resp)
+
+    def test_content_type_satts_inte_sessionsbrett(self):
+        """
+        Content-Type hör till kroppen. Ett sessionsbrett värde påstår att även
+        kroppslösa GET/DELETE/POST har en JSON-kropp. GeoServer 2.28 och 3.0
+        svarar identiskt med och utan headern (verifierat mot båda), men
+        påståendet är fel och Spring blir strängare för varje version.
+        """
+        client = self._make_client()
+        self.assertNotIn("Content-Type", client.session.headers)
+        self.assertEqual(client.session.headers.get("Accept"), "application/json")
+
+    def test_bas_url_normaliseras(self):
+        client = self._make_client()
+        self.assertEqual(client.rest_url, "http://geoserver.example.com/rest")
+
+    def test_rollskapande_skickar_ratt_metod_och_url(self):
+        client = self._make_client()
+        with self._patcha_session(client, status=201) as req:
+            client.create_gs_role("r_sk0_kba_test")
+        metod, url = req.call_args[0]
+        self.assertEqual(metod, "POST")
+        self.assertEqual(
+            url,
+            "http://geoserver.example.com/rest/security/roles/role/r_sk0_kba_test",
+        )
+        self.assertIsNone(req.call_args[1].get("json"),
+                          "rollskapande ska inte skicka någon kropp")
+
+    def test_rollistning_anvander_verifierad_sokvag(self):
+        """
+        '/rest/security/roles.json' fungerar i både 2.28 och 3.0.
+        Användarhandbokens '/rest/roles/' ger 404 i båda, och avslutande
+        snedstreck ger 404 i 3.x - därför testas den exakta sökvägen.
+        """
+        client = self._make_client()
+        with self._patcha_session(client, json_data={"roles": []}) as req:
+            client.list_gs_roles()
+        metod, url = req.call_args[0]
+        self.assertEqual(metod, "GET")
+        self.assertEqual(
+            url, "http://geoserver.example.com/rest/security/roles.json"
+        )
+        self.assertFalse(url.endswith("/"), "avslutande snedstreck ger 404 i 3.x")
+
+    def test_ingen_url_har_avslutande_snedstreck(self):
+        """
+        Spring 6+ slutade matcha avslutande snedstreck. Verifierat: 2.28 svarar
+        200 på '/rest/security/roles/' medan 3.0 svarar 404. Ingen av
+        lyssnarens URL:er får sluta med snedstreck.
+        """
+        client = self._make_client()
+        anrop = []
+
+        def registrera(*args, **kwargs):
+            anrop.append(args[1])
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.text = ""
+            resp.json.return_value = {
+                "workspaces": {"workspace": []},
+                "roles": [],
+                "namespace": {"uri": "https://gis.example.se/sk0_kba_test"},
+                "dataStore": {"connectionParameters": {"entry": []}},
+            }
+            return resp
+
+        with patch.object(client.session, "request", side_effect=registrera):
+            client.workspace_exists("sk0_kba_test")
+            client.list_gs_roles()
+            client.get_namespace_uri("sk0_kba_test")
+            client.datastore_exists("sk0_kba_test", "sk0_kba_test")
+            client.list_store_names("sk0_kba_test", "datastores")
+            client.get_acl_rules()
+
+        self.assertTrue(anrop, "inga anrop registrerades")
+        for url in anrop:
+            bana = url.split("?")[0]
+            self.assertFalse(bana.endswith("/"), f"avslutande snedstreck: {url}")
+
+    def test_datastore_skickar_forvantade_anslutningsparametrar(self):
+        """
+        Parameternamnen kommer från GeoTools och är oförändrade i GeoServer 3
+        - inklusive felstavningen 'Estimated extends', som måste behållas.
+        """
+        client = self._make_client()
+        with patch.object(client, "_get_datastore_user", return_value=None):
+            with self._patcha_session(client, status=201) as req:
+                client.create_pg_datastore(
+                    "sk0_kba_test", "sk0_kba_test", "db.example.se", 5432,
+                    "geodata_sk0", "sk0_kba_test", "gs_r_sk0_kba_test", "hemligt",
+                )
+        payload = req.call_args[1]["json"]
+        entries = {e["@key"]: e["$"] for e in
+                   payload["dataStore"]["connectionParameters"]["entry"]}
+        self.assertEqual(entries["dbtype"], "postgis")
+        self.assertEqual(entries["schema"], "sk0_kba_test")
+        self.assertEqual(entries["user"], "gs_r_sk0_kba_test")
+        self.assertEqual(entries["port"], "5432")
+        self.assertEqual(entries["namespace"], "https://gis.example.se/sk0_kba_test")
+        for nyckel in ("Expose primary keys", "fetch size", "Loose bbox",
+                       "Estimated extends", "encode functions",
+                       "validate connections", "max connections", "min connections"):
+            self.assertIn(nyckel, entries, f"saknad parameter: {nyckel}")
+
+    def test_workspace_borttagning_anvander_recurse(self):
+        client = self._make_client()
+        with self._patcha_session(client, status=200) as req:
+            client.delete_workspace("sk0_kba_test")
+        metod, url = req.call_args[0]
+        self.assertEqual(metod, "DELETE")
+        self.assertIn("recurse=true", url)
+
+    def test_about_version_tolkas_som_i_bada_versionerna(self):
+        """
+        Svarsformatet för /about/version.json är identiskt i 2.28.0 och 3.0.0
+        (verifierat mot båda servrarna). Notera att GeoTools 'Version' är ett
+        heltal medan GeoServers är en sträng - bara GeoServer-posten läses.
+        """
+        client = self._make_client()
+        svar_300 = {"about": {"resource": [
+            {"@name": "GeoServer", "Version": "3.0.0"},
+            {"@name": "GeoTools", "Version": 35},
+            {"@name": "GeoWebCache", "Version": "2.0.0"},
+        ]}}
+        with self._patcha_session(client, json_data=svar_300):
+            with self.assertLogs("geoserver_listener", level="INFO") as cm:
+                self.assertTrue(client.test_connection())
+        self.assertIn("3.0.0", "\n".join(cm.output))
+
+
 # ---------------------------------------------------------------------------
 # Startpunkt
 # ---------------------------------------------------------------------------

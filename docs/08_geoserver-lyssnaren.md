@@ -271,8 +271,42 @@ py geoserver_service.py remove
 
 ---
 
+## Stödda GeoServer-versioner
+
+Lyssnaren är verifierad mot **GeoServer 2.27, 2.28 och 3.0**. Samma kodväg
+används för alla tre — ingen konfiguration behöver ändras vid uppgradering.
+
+Vid uppstart loggas den anslutna versionen:
+
+```
+[INFO] Ansluten till GeoServer 2.28.0 på http://localhost:8080/geoserver
+```
+
+Ligger versionen utanför det verifierade intervallet loggas dessutom:
+
+```
+[WARNING] GeoServer 3.1.0 ligger utanför det testade intervallet 2.27-3.0.
+          Lyssnaren fortsätter, men verifiera särskilt roll- och ACL-hanteringen.
+```
+
+Varningen stoppar ingenting — den är en påminnelse om att köra igenom
+steg 10 (verifiera hela flödet) i `SETUP.md` efter en GeoServer-uppgradering.
+
+> **Bakgrund till versionsspannet:** GeoServer 3 ändrade felhanteringen i
+> rollendpointen. En roll som redan finns gav tidigare `404` med orsaken i
+> klartext, men ger i 3.x `400` med ett generiskt meddelande som bara hänvisar
+> till serverloggen. Lyssnaren hanterar båda: när svaret är tvetydigt frågar
+> den `/rest/security/roles` vad som faktiskt gäller i stället för att tolka
+> felmeddelandet. Utan det hade varje avstämning mot en 3.x-server misslyckats
+> för redan publicerade scheman.
+
+Kraven på servermiljön skiljer sig däremot åt — GeoServer 3.0 kräver
+**Tomcat 11.0** för WAR-distributionen. Se `src/geoserver/SETUP.md`,
+avsnittet *Stödda GeoServer-versioner*, för hela listan.
+
+---
+
 ## Fullständig installationsguide
 
 Se `src/geoserver/SETUP.md` för komplett installations- och
-konfigurationsdokumentation inklusive Python-beroenden, tjänstekonton
-och CSRF-inställningar i GeoServer.
+konfigurationsdokumentation inklusive Python-beroenden och tjänstekonton.

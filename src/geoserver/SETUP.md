@@ -5,6 +5,40 @@ GeoServer workspace/store-skaparen på Windows Server 2022.
 
 ---
 
+## Stödda GeoServer-versioner
+
+Lyssnaren är verifierad mot **GeoServer 2.27, 2.28 och 3.0** och använder samma
+kodväg för alla tre. Vid uppstart loggas den anslutna versionen, och en varning
+skrivs om den ligger utanför det intervallet — lyssnaren fortsätter ändå.
+
+**Om du uppgraderar till GeoServer 3.x**, notera att det är GeoServer-servern
+som ställer krav, inte lyssnaren:
+
+| Krav | GeoServer 2.28 | GeoServer 3.0 |
+| --- | --- | --- |
+| Java | 17 eller 21 | 17 eller 21 |
+| Servletmotor (WAR-distribution) | Tomcat 10.1 | **Tomcat 11.0** (Jakarta EE Servlet 6.1) |
+| Fristående distribution | Jetty 10 | Jetty 12.1 |
+
+Övrigt att känna till vid uppgradering till 3.x:
+
+- **H2-datastoren är borttagen.** Berör inte Hex — lyssnaren skapar enbart
+  PostGIS-datastores — men kontrollera om något lager publicerats manuellt mot H2.
+- **WCS 1.0/1.1, WorldImage och ArcGRID är numera tillägg** och måste installeras
+  separat om de används.
+- **Keycloak- och OAuth2-tilläggen är avvecklade** och ersätts av ett gemensamt
+  OIDC-tillägg. Om GeoServer-inloggningen går via något av dem: se till att
+  kontot i `HEX_GS_USER` är ett lokalt konto i GeoServers egen användartjänst,
+  så att lyssnaren kan logga in oavsett hur den federerade inloggningen migreras.
+- **Loggplatsen** konfigureras inte längre i webbgränssnittet eller via REST,
+  utan med `GEOSERVER_LOG_LOCATION`. Berör inte lyssnarens egen loggfil
+  (`HEX_LOG_DIR`), bara GeoServers.
+
+Datakatalogen (`data_dir`) behöver inte konverteras vid uppgraderingen, men
+uppgraderingen är inte reversibel — ta en säkerhetskopia först.
+
+---
+
 ## Översikt
 
 Lyssnaren hanterar två riktningar automatiskt via var sin pg_notify-kanal.
@@ -398,38 +432,38 @@ standardkontot `admin`:
 
 ---
 
-## Steg 4: Tillåt localhost i GeoServer CSRF-filter
+## Steg 4: CSRF-filtret — behövs normalt inte för lyssnaren
 
-GeoServer blockerar POST/PUT/DELETE-anrop från ursprung den inte känner igen.
-Eftersom lyssnaren anropar GeoServer REST API från `localhost` måste vi
-vitlista det i GeoServers `web.xml`.
+> **Kort svar:** hoppa över det här steget. GeoServers CSRF-filter skyddar
+> webbgränssnittet (Wicket), inte REST-API:et. Lyssnaren anropar bara REST.
 
-**Hitta filen:**
-```
-<GeoServer-katalog>\webapps\geoserver\WEB-INF\web.xml
-```
+Steget fanns tidigare med som obligatoriskt. Verifierat mot GeoServer 2.28.0
+och 3.0.0 med standardkonfiguration — helt utan `GEOSERVER_CSRF_WHITELIST` —
+lyckas samtliga skrivande REST-anrop (`POST`/`PUT`/`DELETE`), även när
+`Host`-headern pekar på en helt främmande domän:
 
-**Lägg till `localhost` i CSRF-vitlistan:**
+| Anrop | GeoServer 2.28.0 | GeoServer 3.0.0 |
+| --- | --- | --- |
+| `POST /rest/workspaces` | 201 | 201 |
+| `DELETE /rest/workspaces/...?recurse=true` | 200 | 200 |
+
+**Om du redan har `localhost` i vitlistan gör den ingen skada** — låt den ligga
+kvar. Ta bara bort den om du städar konfigurationen, och testa lyssnaren
+efteråt (steg 6).
+
+**Vitlistan behövs däremot fortfarande** om *du själv* når GeoServers
+webbgränssnitt via en proxy och får `403 Origin does not correspond to request`.
+Det är ett separat problem från lyssnaren. Parametern finns kvar i GeoServer 3:
 
 ```xml
 <context-param>
     <param-name>GEOSERVER_CSRF_WHITELIST</param-name>
-    <param-value>[din-geoserver-doman], localhost</param-value>
+    <param-value>[din-geoserver-doman]</param-value>
 </context-param>
 ```
 
-> **OBS:** Om parametern redan finns, lägg bara till `, localhost` i
-> befintligt `<param-value>`. Starta om GeoServer efteråt.
->
-> **OBS – koppling till `HEX_GS_URL`:** CSRF-filtret matchar på `Host`-headerns
-> värde i anropet. Om du konfigurerar `HEX_GS_URL` med en literal IP-adress i
-> stället för `localhost` (t.ex. `http://127.0.0.1:8080/geoserver`, vilket
-> rekommenderas — se Steg 3), måste vitlistan matcha den adressen:
-> ```xml
-> <param-value>[din-geoserver-doman], 127.0.0.1</param-value>
-> ```
-> Vitlistar du `localhost` men lyssnaren anropar via `127.0.0.1` (eller vice
-> versa) blockerar CSRF-filtret anropen. Håll `HEX_GS_URL` och vitlistan i sync.
+Den kan också sättas som systemegenskap (`-DGEOSERVER_CSRF_WHITELIST=...`)
+eller miljövariabel.
 
 ---
 
@@ -479,8 +513,8 @@ HEX_DB_2_DBNAME=geodata_sk1
 > **OBS – `localhost` kontra literal IP-adress:** På Windows Server rekommenderas
 > att ersätta `localhost` med `127.0.0.1` (IPv4) för både `HEX_PG_HOST` och
 > `HEX_GS_URL`. Se Steg 3 för förklaring av varför `localhost` kan orsaka
-> anslutningsfel, och Steg 4 för hur CSRF-vitlistan i GeoServer måste uppdateras
-> om du ändrar `HEX_GS_URL`.
+> anslutningsfel. (CSRF-vitlistan behöver inte hållas i synk med `HEX_GS_URL` —
+> filtret gäller inte REST-API:et, se Steg 4.)
 
 Varje `HEX_DB_N_`-grupp måste ha ett `DBNAME`. HOST/PORT/USER/PASSWORD kan anges
 per databas om de skiljer sig från standardvärdena ovan (t.ex. `HEX_DB_2_HOST=annan-server`).
@@ -637,7 +671,7 @@ Förväntad utskrift:
 2026-02-13 10:00:00 [INFO]   [geodata_sk0] hex_listener@localhost:5432/geodata_sk0
 2026-02-13 10:00:00 [INFO]   [geodata_sk1] hex_listener@localhost:5432/geodata_sk1
 2026-02-13 10:00:00 [INFO] ============================================================
-2026-02-13 10:00:00 [INFO] Ansluten till GeoServer 2.26.x på http://localhost:8080/geoserver
+2026-02-13 10:00:00 [INFO] Ansluten till GeoServer 2.28.0 på http://localhost:8080/geoserver
 2026-02-13 10:00:00 [INFO] Anslutningstest lyckat
 ```
 
