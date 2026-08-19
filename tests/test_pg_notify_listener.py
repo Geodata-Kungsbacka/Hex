@@ -1727,7 +1727,8 @@ class TestPeriodicReconcileLoop(unittest.TestCase):
         stop = threading.Event()
         periodic_called = threading.Event()
 
-        def fake_periodic(db_config, gs_client, stop_event, interval_seconds, db_label="", all_pg_schemas=None):
+        def fake_periodic(db_config, gs_client, stop_event, interval_seconds, db_label="",
+                          all_pg_schemas=None, **kwargs):
             periodic_called.set()
             stop_event.wait()
 
@@ -1778,6 +1779,360 @@ class TestLoadConfig(unittest.TestCase):
         with patch.dict(os.environ, env, clear=True):
             config = gl.load_config()
         self.assertEqual(config["reconcile_interval"], 0)
+
+
+# ---------------------------------------------------------------------------
+# Föräldralösa workspaces: upptäckt och uppstädning
+# ---------------------------------------------------------------------------
+
+class _FakeCursor:
+    """Cursor-mock som svarar olika på schemafrågan och prefixfrågan."""
+
+    def __init__(self, schemas=(), prefixes=()):
+        self._schemas = list(schemas)
+        self._prefixes = list(prefixes)
+        self._result = []
+        self.connection = MagicMock()
+
+    def execute(self, sql, params=None):
+        if "pg_namespace" in sql:
+            self._result = [(namn,) for namn in self._schemas]
+        elif "hex_standardiserade_skyddsnivaer" in sql:
+            self._result = [(prefix,) for prefix in self._prefixes]
+        else:
+            self._result = []
+
+    def fetchall(self):
+        return self._result
+
+
+class _FakeGeoServer:
+    """GeoServer-mock med inventerings-API (list_store_names/get_datastore_parameters)."""
+
+    def __init__(self, workspaces, stores=None, params=None, unreachable=()):
+        self.rest_url = "http://geoserver.example.com/rest"
+        self.workspaces = list(workspaces)
+        self.stores = stores or {}
+        self.params = params or {}
+        self.unreachable = set(unreachable)      # (workspace, store_type) som ger None
+        self.create_workspace = MagicMock(return_value=True)
+        self.create_pg_datastore = MagicMock(return_value=True)
+        self.delete_workspace = MagicMock(return_value=True)
+        self.delete_workspace_acl = MagicMock(return_value=True)
+        self.delete_gs_role = MagicMock(return_value=True)
+
+    def _request_with_retry(self, method, url, **kwargs):
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {
+            "workspaces": {"workspace": [{"name": n} for n in self.workspaces]}
+        }
+        return resp
+
+    def list_store_names(self, workspace, store_type):
+        if (workspace, store_type) in self.unreachable:
+            return None
+        return list(self.stores.get(workspace, {}).get(store_type, []))
+
+    def get_datastore_parameters(self, workspace, store_name):
+        return self.params.get((workspace, store_name))
+
+
+DB_A = {"host": "pg1", "port": 5432, "dbname": "geodata_sk0",
+        "user": "hex_listener", "password": "pw"}
+DB_B = {"host": "pg1", "port": 5432, "dbname": "geodata_sk1",
+        "user": "hex_listener", "password": "pw"}
+
+# Datastore som Hex själv skulle ha skapat för schemat sk0_kba_gamla i DB_A.
+def _hex_params(schema="sk0_kba_gamla", dbname="geodata_sk0"):
+    return {
+        "dbtype": "postgis",
+        "host": "pg1",
+        "port": "5432",
+        "database": dbname,
+        "schema": schema,
+    }
+
+
+def _hex_workspace_stores(ws_names):
+    """Stores-dict där varje workspace har exakt en PostGIS-datastore."""
+    return {ws: {"datastores": [ws]} for ws in ws_names}
+
+
+class TestOrphanWorkspaceDetection(unittest.TestCase):
+    """
+    Upptäckt av workspaces vars PG-schema är borta.
+
+    Regressionsskydd för felet där en tömd databas rapporterade "i synk" trots
+    kvarlämnade workspaces i GeoServer: ägarprefixen härleddes ur befintliga
+    scheman, och utan scheman fanns inga prefix att jämföra mot.
+    """
+
+    def _reconcile(self, cur, gs, **kwargs):
+        with patch.object(gl, "handle_schema_notification", return_value=True):
+            gl._reconcile_geoserver_schemas(cur, DB_A, gs, "geodata_sk0", **kwargs)
+
+    def test_empty_database_still_reports_orphans(self):
+        """Databas utan scheman + workspaces i GeoServer → varning, inte "i synk"."""
+        cur = _FakeCursor(schemas=[], prefixes=["sk0", "sk1"])
+        gs = _FakeGeoServer(["sk0_kba_gamla", "sk0_kba_gamla_w"])
+
+        with self.assertLogs("geoserver_listener", level="WARNING") as cm:
+            self._reconcile(cur, gs, all_pg_schemas=set(), all_db_configs=[DB_A])
+
+        self.assertTrue(
+            [rad for rad in cm.output if "sk0_kba_gamla" in rad],
+            "Föräldralös workspace rapporterades inte",
+        )
+        self.assertFalse(
+            [rad for rad in cm.output if "i synk" in rad],
+            "Avstämningen påstod att GeoServer och PostgreSQL var i synk",
+        )
+
+    def test_empty_database_multi_db_uses_configured_prefixes(self):
+        """Flerdatabasläge: prefixen läses ur konfigurationen, inte ur befintliga scheman."""
+        cur = _FakeCursor(schemas=[], prefixes=["sk0", "sk1"])
+        gs = _FakeGeoServer(["sk0_kba_gamla"])
+
+        with patch.object(gl, "_fetch_publishable_schemas", return_value=set()):
+            with self.assertLogs("geoserver_listener", level="WARNING") as cm:
+                self._reconcile(cur, gs, all_pg_schemas=set(), all_db_configs=[DB_A, DB_B])
+
+        self.assertTrue([rad for rad in cm.output if "sk0_kba_gamla" in rad])
+
+    def test_other_databases_prefix_is_not_reported(self):
+        """Flerdatabasläge: en workspace med ett annat prefix rapporteras inte här."""
+        cur = _FakeCursor(schemas=[], prefixes=["sk0"])
+        gs = _FakeGeoServer(["sk1_kba_annan"])
+
+        with patch.object(gl, "_fetch_publishable_schemas", return_value=set()):
+            with self.assertLogs("geoserver_listener", level="INFO") as cm:
+                self._reconcile(cur, gs, all_pg_schemas=set(), all_db_configs=[DB_A, DB_B])
+
+        self.assertFalse([rad for rad in cm.output if "sk1_kba_annan" in rad])
+
+    def test_write_workspace_of_live_schema_is_not_orphan(self):
+        """'<schema>_w' till ett levande schema räknas inte som föräldralös."""
+        cur = _FakeCursor(schemas=["sk0_kba_aktiv"], prefixes=["sk0"])
+        gs = _FakeGeoServer(["sk0_kba_aktiv", "sk0_kba_aktiv_w"])
+
+        with self.assertLogs("geoserver_listener", level="INFO") as cm:
+            self._reconcile(cur, gs, all_pg_schemas={"sk0_kba_aktiv"}, all_db_configs=[DB_A])
+
+        self.assertTrue([rad for rad in cm.output if "i synk" in rad])
+
+    def test_stale_startup_set_does_not_hide_new_schemas(self):
+        """Färska scheman från andra databaser hämtas om vid varje avstämning."""
+        cur = _FakeCursor(schemas=[], prefixes=["sk0"])
+        gs = _FakeGeoServer(["sk0_kba_ny"])
+
+        # Schemat skapades i DB_B efter uppstart – startmängden känner inte till det.
+        with patch.object(gl, "_fetch_publishable_schemas", return_value={"sk0_kba_ny"}):
+            with self.assertLogs("geoserver_listener", level="INFO") as cm:
+                self._reconcile(cur, gs, all_pg_schemas=set(), all_db_configs=[DB_A, DB_B])
+
+        self.assertTrue([rad for rad in cm.output if "i synk" in rad])
+
+
+class TestOrphanWorkspaceCleanup(unittest.TestCase):
+    """Uppstädning av föräldralösa workspaces – lägena off, dry-run och on."""
+
+    SCHEMA = "sk0_kba_gamla"
+    WS = ["sk0_kba_gamla", "sk0_kba_gamla_w"]
+
+    def _run(self, gs, cleanup_mode, all_db_configs=None, prefixes=("sk0",)):
+        """Kör avstämningen och returnerar mocken för borttagningsflödet."""
+        cur = _FakeCursor(schemas=[], prefixes=list(prefixes))
+        with patch.object(gl, "handle_schema_notification", return_value=True):
+            with patch.object(gl, "handle_schema_removal_notification",
+                              return_value=True) as removal:
+                gl._reconcile_geoserver_schemas(
+                    cur, DB_A, gs, "geodata_sk0",
+                    all_pg_schemas=set(),
+                    all_db_configs=all_db_configs or [DB_A],
+                    cleanup_mode=cleanup_mode,
+                )
+        return removal
+
+    def _hex_owned_gs(self):
+        return _FakeGeoServer(
+            self.WS,
+            stores=_hex_workspace_stores(self.WS),
+            params={(ws, ws): _hex_params() for ws in self.WS},
+        )
+
+    def test_off_is_default_and_never_deletes(self):
+        """CLEANUP_OFF (standard) varnar men tar aldrig bort."""
+        removal = self._run(self._hex_owned_gs(), gl.CLEANUP_OFF)
+        removal.assert_not_called()
+
+    def test_dry_run_logs_but_does_not_delete(self):
+        """CLEANUP_DRY_RUN loggar vad som skulle tas bort utan att ta bort."""
+        gs = self._hex_owned_gs()
+        with self.assertLogs("geoserver_listener", level="WARNING") as cm:
+            removal = self._run(gs, gl.CLEANUP_DRY_RUN)
+        removal.assert_not_called()
+        self.assertTrue([rad for rad in cm.output if "DRY-RUN" in rad and self.SCHEMA in rad])
+
+    def test_on_deletes_hex_owned_workspace(self):
+        """CLEANUP_ON tar bort en workspace som bara har Hex:s egna PostGIS-datastores."""
+        removal = self._run(self._hex_owned_gs(), gl.CLEANUP_ON)
+        removal.assert_called_once()
+        self.assertEqual(removal.call_args.args[0], self.SCHEMA)
+
+    def test_coveragestore_protects_manual_raster_publication(self):
+        """En manuell rasterpublicering med matchande namn rörs aldrig."""
+        gs = _FakeGeoServer(
+            ["sk0_kba_gamla"],
+            stores={"sk0_kba_gamla": {"coveragestores": ["ortofoto_2025"]}},
+        )
+        with self.assertLogs("geoserver_listener", level="WARNING") as cm:
+            removal = self._run(gs, gl.CLEANUP_ON)
+        removal.assert_not_called()
+        self.assertTrue([rad for rad in cm.output if "coveragestores" in rad])
+
+    def test_datastore_towards_other_database_is_not_deleted(self):
+        """Datastore mot en databas vi inte övervakar → workspacen lämnas orörd."""
+        gs = _FakeGeoServer(
+            ["sk0_kba_gamla"],
+            stores={"sk0_kba_gamla": {"datastores": ["sk0_kba_gamla"]}},
+            params={("sk0_kba_gamla", "sk0_kba_gamla"):
+                    _hex_params(dbname="nagon_annan_databas")},
+        )
+        removal = self._run(gs, gl.CLEANUP_ON)
+        removal.assert_not_called()
+
+    def test_datastore_exposing_other_schema_is_not_deleted(self):
+        """Datastore som exponerar ett annat schema än workspacenamnet lämnas orörd."""
+        gs = _FakeGeoServer(
+            ["sk0_kba_gamla"],
+            stores={"sk0_kba_gamla": {"datastores": ["sk0_kba_gamla"]}},
+            params={("sk0_kba_gamla", "sk0_kba_gamla"): _hex_params(schema="sk0_kba_annat")},
+        )
+        removal = self._run(gs, gl.CLEANUP_ON)
+        removal.assert_not_called()
+
+    def test_non_postgis_datastore_is_not_deleted(self):
+        """Shapefile-datastore (dbtype != postgis) lämnas orörd."""
+        gs = _FakeGeoServer(
+            ["sk0_kba_gamla"],
+            stores={"sk0_kba_gamla": {"datastores": ["mapp"]}},
+            params={("sk0_kba_gamla", "mapp"): {"url": "file:data/mapp"}},
+        )
+        removal = self._run(gs, gl.CLEANUP_ON)
+        removal.assert_not_called()
+
+    def test_empty_workspace_is_not_deleted(self):
+        """Workspace helt utan lagringar lämnas orörd och kräver manuell granskning."""
+        gs = _FakeGeoServer(["sk0_kba_gamla"], stores={})
+        with self.assertLogs("geoserver_listener", level="WARNING") as cm:
+            removal = self._run(gs, gl.CLEANUP_ON)
+        removal.assert_not_called()
+        self.assertTrue([rad for rad in cm.output if "inga lagringar" in rad])
+
+    def test_unreadable_geoserver_inventory_is_not_deleted(self):
+        """Om GeoServer inte kan inventeras tas ingenting bort."""
+        gs = _FakeGeoServer(
+            ["sk0_kba_gamla"],
+            stores={"sk0_kba_gamla": {"datastores": ["sk0_kba_gamla"]}},
+            params={("sk0_kba_gamla", "sk0_kba_gamla"): _hex_params()},
+            unreachable={("sk0_kba_gamla", "coveragestores")},
+        )
+        removal = self._run(gs, gl.CLEANUP_ON)
+        removal.assert_not_called()
+
+    def test_unreadable_database_blocks_cleanup(self):
+        """Om en övervakad databas inte kan läsas tas ingenting bort."""
+        gs = self._hex_owned_gs()
+        with patch.object(gl, "_fetch_publishable_schemas", return_value=None):
+            with self.assertLogs("geoserver_listener", level="WARNING") as cm:
+                removal = self._run(gs, gl.CLEANUP_ON, all_db_configs=[DB_A, DB_B])
+        removal.assert_not_called()
+        self.assertTrue([rad for rad in cm.output if "kunde inte läsas" in rad])
+
+
+class TestStoreInventoryParsing(unittest.TestCase):
+    """GeoServerClient.list_store_names och get_datastore_parameters."""
+
+    def _client(self, status_code, payload):
+        client = gl.GeoServerClient("http://gs.example.com/geoserver", "u", "p")
+        resp = MagicMock()
+        resp.status_code = status_code
+        resp.json.return_value = payload
+        client._request_with_retry = MagicMock(return_value=resp)
+        return client
+
+    def test_empty_collection_is_serialized_as_string(self):
+        """GeoServer returnerar "" för en tom samling – ska ge tom lista, inte None."""
+        client = self._client(200, {"dataStores": ""})
+        self.assertEqual(client.list_store_names("ws", "datastores"), [])
+
+    def test_names_are_extracted(self):
+        client = self._client(200, {"coverageStores": {"coverageStore": [{"name": "raster"}]}})
+        self.assertEqual(client.list_store_names("ws", "coveragestores"), ["raster"])
+
+    def test_404_is_empty_not_unknown(self):
+        client = self._client(404, {})
+        self.assertEqual(client.list_store_names("ws", "wmsstores"), [])
+
+    def test_http_error_gives_none(self):
+        """500 betyder "vet inte" – aldrig tom lista, som skulle kunna tillåta borttagning."""
+        client = self._client(500, {})
+        self.assertIsNone(client.list_store_names("ws", "datastores"))
+
+    def test_connection_error_gives_none(self):
+        client = gl.GeoServerClient("http://gs.example.com/geoserver", "u", "p")
+        client._request_with_retry = MagicMock(
+            side_effect=requests.exceptions.ConnectionError("nere")
+        )
+        self.assertIsNone(client.list_store_names("ws", "datastores"))
+
+    def test_connection_parameters_become_dict(self):
+        client = self._client(200, {
+            "dataStore": {
+                "connectionParameters": {
+                    "entry": [
+                        {"@key": "dbtype", "$": "postgis"},
+                        {"@key": "schema", "$": "sk0_kba_test"},
+                    ]
+                }
+            }
+        })
+        self.assertEqual(
+            client.get_datastore_parameters("ws", "store"),
+            {"dbtype": "postgis", "schema": "sk0_kba_test"},
+        )
+
+
+class TestCleanupModeAndEnvPath(unittest.TestCase):
+    """HEX_ORPHAN_CLEANUP och HEX_ENV_FILE."""
+
+    def test_default_is_off(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(gl._read_cleanup_mode(), gl.CLEANUP_OFF)
+
+    def test_aliases(self):
+        for varde, forvantat in [
+            ("on", gl.CLEANUP_ON), ("true", gl.CLEANUP_ON), ("1", gl.CLEANUP_ON),
+            ("dry-run", gl.CLEANUP_DRY_RUN), ("dry_run", gl.CLEANUP_DRY_RUN),
+            ("OFF", gl.CLEANUP_OFF), ("false", gl.CLEANUP_OFF),
+        ]:
+            with patch.dict(os.environ, {"HEX_ORPHAN_CLEANUP": varde}, clear=True):
+                self.assertEqual(gl._read_cleanup_mode(), forvantat, varde)
+
+    def test_unknown_value_falls_back_to_off(self):
+        """Ett stavfel får aldrig aktivera borttagning."""
+        with patch.dict(os.environ, {"HEX_ORPHAN_CLEANUP": "yes-please"}, clear=True):
+            with self.assertLogs("geoserver_listener", level="WARNING"):
+                self.assertEqual(gl._read_cleanup_mode(), gl.CLEANUP_OFF)
+
+    def test_env_file_defaults_to_script_directory(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(gl.resolve_env_path(), SRC_PATH / ".env")
+
+    def test_env_file_override(self):
+        with patch.dict(os.environ, {"HEX_ENV_FILE": r"D:\Hex\config\.env"}, clear=True):
+            self.assertEqual(gl.resolve_env_path(), Path(r"D:\Hex\config\.env"))
 
 
 # ---------------------------------------------------------------------------

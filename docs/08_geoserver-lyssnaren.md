@@ -81,19 +81,19 @@ py geoserver_service.py status
 ### Visa loggen
 
 Loggens plats styrs av `.env`-variabeln `HEX_LOG_DIR` (standard:
-`D:\ProgramData\Hex`):
+`D:\Hex\Logs`):
 
 ```cmd
-type %HEX_LOG_DIR%\geoserver_listener.log
+type %HEX_LOG_DIR%\hex_geoserver_listener.log
 ```
 
 Följ loggen i realtid:
 ```cmd
-powershell Get-Content "$env:HEX_LOG_DIR\geoserver_listener.log" -Wait -Tail 20
+powershell Get-Content "$env:HEX_LOG_DIR\hex_geoserver_listener.log" -Wait -Tail 20
 ```
 
 Om `HEX_LOG_DIR` inte är satt som systemmiljövariabel, ersätt med den faktiska
-sökvägen (t.ex. `D:\ProgramData\Hex\geoserver_listener.log`).
+sökvägen (t.ex. `D:\Hex\Logs\hex_geoserver_listener.log`).
 
 ---
 
@@ -155,18 +155,67 @@ Vid varje avstämning jämförs GeoServers befintliga workspaces mot scheman i P
 Både läs- och skriv-workspaces skapas om de saknas, och avvikande ACL-regler korrigeras.
 Eventuella fel loggas men stoppar inte lyssnaren.
 
+### Kvarlämnade workspaces i GeoServer
+
+Avstämningen tittar också åt andra hållet: workspaces som finns i GeoServer men
+vars PostgreSQL-schema saknas i **samtliga** övervakade databaser. Det inträffar
+t.ex. när en databas installeras om, när ett schema tas bort medan tjänsten är
+stoppad, eller när en `DROP SCHEMA` inte hann notifieras.
+
+Ägarskapet avgörs av databasens konfiguration — de prefix som har
+`publiceras_geoserver = true` i `hex_standardiserade_skyddsnivaer` — inte av
+vilka scheman som råkar finnas just nu. En tömd eller nyinstallerad databas
+larmar därför fortfarande om kvarlämnade workspaces.
+
+Standardbeteendet är att bara logga en varning. Vad som ska hända styrs av
+`HEX_ORPHAN_CLEANUP`:
+
+```env
+HEX_ORPHAN_CLEANUP=off       # Endast varning i loggen (standard)
+HEX_ORPHAN_CLEANUP=dry-run   # Loggar vad en uppstädning skulle ta bort
+HEX_ORPHAN_CLEANUP=on        # Tar bort workspacen
+```
+
+Med `on` tas workspacen bort via samma flöde som en `DROP SCHEMA`-notifiering:
+läs-workspace, skriv-workspace, ACL-regler och GeoServer-rollerna `r_`/`w_`.
+
+**Borttagning kräver att workspacen bevisligen är skapad av Hex.** Samtliga
+villkor måste vara uppfyllda:
+
+| Villkor | Skyddar mot |
+| --- | --- |
+| Namnet matchar schemamönstret | Workspaces utanför Hex namnkonvention |
+| Inga coverage-, WMS- eller WMTS-lagringar | Manuell rasterpublicering vars namn matchar mönstret |
+| Minst en datastore finns | Tom workspace som någon just har börjat bygga |
+| Varje datastore är `dbtype = postgis` | Shapefile-kataloger och andra format |
+| Varje datastore pekar på en övervakad databas (host, port, databas) | Datastores mot andra databaser |
+| Varje datastore exponerar exakt det saknade schemat | Handpåläggning i en Hex-workspace |
+| Alla övervakade databaser kunde läsas vid avstämningen | Att ett driftavbrott i en databas tolkas som "schemat är borta" |
+
+Faller något villkor loggas en varning som säger vilket, och workspacen lämnas
+orörd för manuell granskning. En publicering som gjorts direkt mot en mapp med
+raster tas alltså aldrig bort, även om namnet matchar mönstret.
+
+> **Rekommendation:** kör `dry-run` först, läs igenom loggen och verifiera att
+> bara det du förväntar dig listas, innan du sätter `on`.
+
 ---
 
 ## Uppdatera konfigurationen (lösenord m.m.)
 
-Inställningarna finns i antingen en `.env`-fil i `src/geoserver/` eller
-som systemövergripande miljövariabler:
+Inställningarna finns i antingen en `.env`-fil eller som systemövergripande
+miljövariabler. `.env` söks i `src/geoserver/`, om inte miljövariabeln
+`HEX_ENV_FILE` pekar ut en annan sökväg — lägg filen utanför kodkatalogen på en
+server där katalogen byts ut vid uppgradering.
 
 1. Redigera `.env` (eller uppdatera systemvariablerna).
 2. Starta om tjänsten:
    ```cmd
    py geoserver_service.py restart
    ```
+
+Sökvägen till konfigurationsfilen loggas vid uppstart, så loggen visar vilken
+fil tjänsten faktiskt läste.
 
 ---
 

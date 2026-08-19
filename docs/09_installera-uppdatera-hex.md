@@ -182,6 +182,128 @@ py geoserver_service.py restart
 
 ---
 
+## Uppdatera lyssnartjänsten på GeoServer-servern
+
+**Gäller:** Ny version av `geoserver_listener.py` eller `geoserver_service.py`
+på servern där Windows-tjänsten `HexGeoServerListener` kör.
+
+Tjänsten registrerar en sökväg till `geoserver_service.py` och en Python-tolk.
+Koden läses in först när tjänsten startar, så ny kod kräver `stop` och `start`
+— inte `remove` och `install`. Registreringen behöver bara skrivas om när
+sökvägen, tolken eller tjänstnamnet ändras (se
+[Tjänstkommandon](#tjänstkommandon)).
+
+### Förutsättning: konfiguration och loggar utanför kodkatalogen
+
+Tjänsten håller `.env` och loggfilen öppna medan den kör. Ligger de i
+kodkatalogen kan katalogen inte ersättas medan tjänsten är installerad, och en
+uppdatering kräver att tjänsten först tas bort.
+
+Två inställningar flyttar ut dem. Kör en gång, som administratör:
+
+```cmd
+setx /M HEX_ENV_FILE "D:\Hex\config\.env"
+setx /M HEX_LOG_DIR  "D:\Hex\Logs"
+```
+
+| Variabel | Standard | Läses av |
+| --- | --- | --- |
+| `HEX_ENV_FILE` | `src/geoserver/.env` | `geoserver_listener.py` och `geoserver_service.py`, före all annan konfiguration |
+| `HEX_LOG_DIR` | `D:\Hex\Logs` | `geoserver_service.py` vid uppstart |
+
+Flytta den befintliga `.env` till den nya sökvägen innan variabeln sätts, annars
+startar tjänsten utan konfiguration. Sökvägen tjänsten faktiskt läste loggas vid
+uppstart.
+
+> **OBS:** `HEX_LOG_DIR` pekar redan som standard utanför `src\geoserver`. Sätt
+> den bara om loggen ska ligga någon annanstans — aldrig i kodkatalogen.
+
+### Steg 1 – Stoppa tjänsten
+
+```cmd
+py geoserver_service.py stop
+py geoserver_service.py status        :: ska visa "Stoppad"
+```
+
+Stoppet släpper `.env`, loggfilen och databasanslutningarna.
+
+### Steg 2 – Hämta ny kod i befintlig katalog
+
+```cmd
+git -C D:\Hex pull
+```
+
+Uppdatera koden på plats i stället för att ersätta hela katalogen. `git pull`
+skriver bara om spårade filer; `.env` är gitignorerad och loggfilen ligger
+utanför git. Ett utbyte av hela katalogen kräver däremot att varje fil i den går
+att stänga.
+
+### Steg 3 – Uppdatera Python-beroenden vid behov
+
+```cmd
+py -m pip install --upgrade psycopg2-binary requests python-dotenv pywin32
+```
+
+### Steg 4 – Starta tjänsten
+
+```cmd
+py geoserver_service.py start
+py geoserver_service.py status        :: ska visa "Kör"
+```
+
+### Verifiera
+
+Läs loggen (`D:\Hex\Logs\hex_geoserver_listener.log`). En lyckad start loggar
+GeoServer-URL, konfigurationsfilens sökväg, antal databaser, uppstädningsläge och
+att avstämningen körts.
+
+> **Uppgraderas både databasen och tjänsten:** kör `python install_hex.py --upgrade`
+> medan tjänsten är stoppad och starta tjänsten efteråt. `hex_rolluppgifter` är då
+> redan omroterad när lyssnaren startar och skriver om GeoServers datastores vid
+> uppstartsavstämningen. Se
+> [`hex_rolluppgifter` roteras](#hex_rolluppgifter-roteras--den-bevaras-inte).
+
+### Tjänstkommandon
+
+| Ändring | Åtgärd |
+| --- | --- |
+| Kodfiler byts ut (`git pull`) | `stop` → `start` |
+| `.env` eller andra miljövariabler ändras | `restart` |
+| Katalogen flyttas (t.ex. `D:\Hex` → `E:\Hex`) | `update`, annars `remove` + `install` |
+| Ny Python-tolk eller nytt virtuellt env | `update`, annars `remove` + `install` |
+| Visningsnamn eller beskrivning ändras i koden | `update` |
+| `_svc_name_` ändras i koden | `remove` + `install` |
+| `pywin32` uppgraderas | `remove` + `install` (tjänste-EXE:n `pythonservice.exe` byts) |
+
+`update` är pywin32:s kommando för att skriva om en befintlig registrering utan
+att ta bort den:
+
+```cmd
+py geoserver_service.py update
+```
+
+> **OBS – två olika kommandoradskonventioner.** `geoserver_service.py` tar verb
+> utan bindestreck (`install`, `start`, `update`) därför att pywin32:s
+> `win32serviceutil.HandleCommandLine()` äger grammatiken, i samma stil som
+> `net start` och `sc`. `install_hex.py` använder `argparse` och därmed flaggor
+> (`--upgrade`, `--uninstall`). Verben kan inte bytas mot flaggor: Windows
+> tjänstehanterare startar skriptet helt utan argument, och den grenen
+> (`len(sys.argv) == 1` i `__main__`) lämnar över till
+> `StartServiceCtrlDispatcher()` i stället för att tolka ett kommando.
+
+### Felsökning: en fil går inte att ersätta
+
+1. Kontrollera att tjänsten verkligen är stoppad: `sc query HexGeoServerListener`.
+   En tjänst i `STOP_PENDING` håller kvar sina filhandtag.
+2. Stäng editorer och Utforskarfönster som står i katalogen. En öppen `.env` i
+   Anteckningar eller en förhandsgranskad loggfil räcker för att blockera.
+3. Identifiera processen som håller filen med Resursövervakaren
+   (`resmon` → CPU → Associerade handtag → sök på filnamnet).
+4. Använd inte `taskkill /F` på en tjänst som går att stoppa normalt. En avbruten
+   lyssnare lämnar sina PostgreSQL-anslutningar öppna tills servern städar upp dem.
+
+---
+
 ## Manuell installation (alternativ)
 
 Om du föredrar att köra SQL direkt, se installationsordningen i `README.md`

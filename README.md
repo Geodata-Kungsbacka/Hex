@@ -91,6 +91,12 @@ därefter periodiskt (`HEX_RECONCILE_INTERVAL`, standard 3600 s). Saknade worksp
 och datastores återskapas, avvikande ACL-regler korrigeras, och datastorens
 autentiseringsuppgifter skrivs om från `hex_rolluppgifter`.
 
+Avstämningen rapporterar också workspaces vars PostgreSQL-schema saknas i
+samtliga övervakade databaser. Standard är att bara varna; `HEX_ORPHAN_CLEANUP`
+(`off` | `dry-run` | `on`) kan låta lyssnaren städa bort dem — men bara när
+workspacen bevisligen är skapad av Hex, aldrig en manuell rasterpublicering vars
+namn råkar matcha schemamönstret. Se `docs/08_geoserver-lyssnaren.md`.
+
 **Felhantering:**
 - Automatisk retry med backoff vid timeout eller anslutningsfel mot GeoServer (upp till 4 försök)
 - Valfria e-postnotifieringar vid misslyckad publicering, misslyckad workspace-borttagning, PostgreSQL-anslutningsavbrott och återhämtning
