@@ -414,6 +414,53 @@ class EmailNotifier:
 # GEOSERVER REST API
 # =============================================================================
 
+# GeoServer-versioner som lyssnaren är verifierad mot. Intervallet anges som
+# (major, minor) och är inklusivt i båda ändar. Lyssnarens REST-anrop är
+# testade mot 2.28.0 och 3.0.0; 2.27 ingår eftersom regressionshanteringen av
+# 404 "already exists" härrör därifrån.
+GS_VERSION_TESTAD_LAGST = (2, 27)
+GS_VERSION_TESTAD_HOGST = (3, 0)
+
+
+def _parsa_gs_version(gs_version):
+    """Plockar ut (major, minor) ur en GeoServer-versionssträng.
+
+    Hanterar former som '2.28.0', '3.0.0', '3.1-SNAPSHOT' och '2.28-RC'.
+    Returnerar None om strängen inte går att tolka (t.ex. 'okänd').
+    """
+    if not isinstance(gs_version, str):
+        return None
+    m = re.match(r"^\s*(\d+)\.(\d+)", gs_version)
+    if not m:
+        return None
+    return (int(m.group(1)), int(m.group(2)))
+
+
+def _varna_om_otestad_gs_version(gs_version):
+    """Loggar en varning om GeoServer-versionen ligger utanför testat intervall.
+
+    Rent informativt – lyssnaren fortsätter alltid. Syftet är att en
+    GeoServer-uppgradering ska synas direkt i loggen i stället för att visa
+    sig som svårtolkade fel längre fram.
+    """
+    version = _parsa_gs_version(gs_version)
+    if version is None:
+        log.warning(
+            "Kunde inte tolka GeoServer-versionen '%s' - fortsätter ändå",
+            gs_version,
+        )
+        return
+
+    if version < GS_VERSION_TESTAD_LAGST or version > GS_VERSION_TESTAD_HOGST:
+        log.warning(
+            "GeoServer %s ligger utanför det testade intervallet %d.%d-%d.%d. "
+            "Lyssnaren fortsätter, men verifiera särskilt roll- och ACL-hanteringen.",
+            gs_version,
+            GS_VERSION_TESTAD_LAGST[0], GS_VERSION_TESTAD_LAGST[1],
+            GS_VERSION_TESTAD_HOGST[0], GS_VERSION_TESTAD_HOGST[1],
+        )
+
+
 class GeoServerClient:
     """Klient för GeoServer REST API."""
 
@@ -433,8 +480,13 @@ class GeoServerClient:
         self.namespace_uri_base = (namespace_uri_base or self.base_url).rstrip("/")
         self.session = requests.Session()
         self.session.auth = self.auth
+        # Enbart Accept sätts sessionsbrett. Content-Type hör till kroppen och
+        # sätts av requests själv för varje anrop som skickar json=, så ett
+        # sessionsbrett värde skulle bara påstå att kroppslösa GET-, DELETE-
+        # och POST-anrop har en JSON-kropp de inte har. GeoServer 2.28 och 3.0
+        # svarar identiskt med och utan headern (verifierat mot båda), men
+        # Spring blir strängare för varje version och påståendet är ändå fel.
         self.session.headers.update({
-            "Content-Type": "application/json",
             "Accept": "application/json",
         })
 
@@ -493,6 +545,7 @@ class GeoServerClient:
                         gs_version = r.get("Version", "okänd")
                         break
                 log.info("Ansluten till GeoServer %s på %s", gs_version, self.base_url)
+                _varna_om_otestad_gs_version(gs_version)
                 return True
             elif resp.status_code == 401:
                 log.error("Autentisering misslyckades - kontrollera användarnamn/lösenord")
@@ -908,10 +961,84 @@ class GeoServerClient:
             )
             return False
 
+    # Statuskoder där GeoServer kan mena "rollen fanns redan" respektive
+    # "rollen fanns inte", utan att svaret går att skilja från ett äkta fel.
+    # GeoServer 2.x svarar 404 med orsaken i klartext ("... already exists").
+    # GeoServer 3.x svarar 400 med ett generiskt meddelande som bara hänvisar
+    # till serverloggen, så svarstexten går inte längre att matcha på.
+    # Se _gs_role_finns för hur tvetydigheten löses.
+    ROLL_TVETYDIGA_STATUSAR = (400, 404, 500)
+
+    def list_gs_roles(self):
+        """Hämtar samtliga rollnamn från GeoServers aktiva rolltjänst.
+
+        Endpointen är '/rest/security/roles.json' och svarar {"roles": [...]}
+        identiskt i 2.27, 2.28 och 3.0. (Användarhandboken anger '/rest/roles/',
+        vilket ger 404 i samtliga versioner – använd inte den sökvägen. Notera
+        också att avslutande snedstreck ger 404 i 3.x.)
+
+        Returns:
+            Mängd med rollnamn, eller None om GeoServer inte kunde svara.
+            None betyder "vet inte" och får aldrig tolkas som "tom".
+        """
+        try:
+            resp = self._request_with_retry(
+                "GET", f"{self.rest_url}/security/roles.json"
+            )
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            log.warning("  Kunde inte hämta GeoServer-roller: %s", e)
+            return None
+
+        if resp.status_code != 200:
+            log.warning(
+                "  Kunde inte hämta GeoServer-roller: HTTP %d", resp.status_code
+            )
+            return None
+
+        try:
+            roller = resp.json().get("roles")
+        except ValueError:
+            log.warning("  Ogiltigt JSON-svar vid hämtning av GeoServer-roller")
+            return None
+
+        if not isinstance(roller, list):
+            return None
+
+        return {r for r in roller if isinstance(r, str)}
+
+    def _gs_role_finns(self, role_name):
+        """Kontrollerar mot GeoServer om en roll existerar.
+
+        Används för att tolka tvetydiga felsvar från rollendpointen: i stället
+        för att gissa utifrån statuskod och svarstext frågar vi GeoServer vad
+        som faktiskt gäller.
+
+        Returns:
+            True om rollen finns, False om den inte finns, None om GeoServer
+            inte kunde svara (då är utfallet okänt och får inte antas).
+        """
+        roller = self.list_gs_roles()
+        if roller is None:
+            return None
+        return role_name in roller
+
     def create_gs_role(self, role_name):
         """Skapar en GeoServer-roll om den inte redan finns.
 
         Returnerar True om rollen skapades eller redan existerar.
+
+        Idempotensen måste hålla över flera GeoServer-generationer eftersom
+        avstämningen kör om anropet för varje publicerat schema:
+
+          201                        Rollen skapades.
+          409                        Rollen fanns redan.
+          404 + "already exists"     GeoServer 2.x: rollen fanns redan.
+          400 (generiskt meddelande) GeoServer 3.x: kan vara "fanns redan" –
+                                     verifieras mot /security/roles.
+
+        De tre första fallen avgörs direkt på svaret, precis som tidigare.
+        Först när svaret är tvetydigt görs ett extra anrop för att kontrollera
+        om rollen finns; det sker alltså aldrig i det normala flödet.
         """
         if self.dry_run:
             log.info("  [DRY-RUN] Skulle skapa GeoServer-roll: %s", role_name)
@@ -928,6 +1055,15 @@ class GeoServerClient:
         ):
             log.info("  GeoServer-roll '%s' finns redan - hoppar över", role_name)
             return True
+        elif resp.status_code in self.ROLL_TVETYDIGA_STATUSAR and (
+            self._gs_role_finns(role_name) is True
+        ):
+            log.info(
+                "  GeoServer-roll '%s' finns redan (HTTP %d, bekräftat via"
+                " /security/roles) - hoppar över",
+                role_name, resp.status_code,
+            )
+            return True
         else:
             log.error(
                 "  Misslyckades att skapa GeoServer-roll '%s': %d %s",
@@ -939,6 +1075,10 @@ class GeoServerClient:
         """Tar bort en GeoServer-roll.
 
         Returnerar True om rollen togs bort eller inte hittades (idempotent).
+
+        Samma versionsskillnad som i create_gs_role gäller här: en roll som
+        inte finns ger 404 i GeoServer 2.x men 400 i 3.x. Ett 400-svar
+        verifieras därför mot /security/roles innan det underkänns.
         """
         if self.dry_run:
             log.info("  [DRY-RUN] Skulle ta bort GeoServer-roll: %s", role_name)
@@ -952,6 +1092,15 @@ class GeoServerClient:
             return True
         elif resp.status_code == 404:
             log.info("  GeoServer-roll '%s' hittades inte - inget att ta bort", role_name)
+            return True
+        elif resp.status_code in self.ROLL_TVETYDIGA_STATUSAR and (
+            self._gs_role_finns(role_name) is False
+        ):
+            log.info(
+                "  GeoServer-roll '%s' hittades inte (HTTP %d, bekräftat via"
+                " /security/roles) - inget att ta bort",
+                role_name, resp.status_code,
+            )
             return True
         else:
             log.error(
