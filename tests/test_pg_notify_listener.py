@@ -1050,6 +1050,140 @@ class TestCreateWorkspaceAcl(unittest.TestCase):
                 self.assertTrue(client.create_workspace_acl("skx_kba_fg", anonymous_read=True))
 
 
+class TestAclRollordning(unittest.TestCase):
+    """
+    REGRESSION: ACL-regler med flera roller skrevs om vid varje avstämning.
+
+    GeoServer lagrar en flerrollsregel som en kommaseparerad sträng men
+    returnerar den i sin egen ordning: 'r_sk0_ext_sgu,ROLE_ANONYMOUS' kommer
+    tillbaka som 'ROLE_ANONYMOUS,r_sk0_ext_sgu'. Jämförelsen var en
+    strängjämförelse, så lyssnaren bedömde regeln som felaktig, gjorde DELETE
+    + POST, och fick tillbaka samma omkastade ordning nästa gång. Resultatet
+    blev en oändlig skrivloop mot produktion — synlig i loggen som samma regel
+    "korrigerad" vid varje periodisk avstämning, utan att någonsin konvergera.
+
+    Bara scheman med anonym_las = true drabbades: en regel med en enda roll
+    har ingen ordning att vara oense om.
+    """
+
+    def _make_client(self):
+        return gl.GeoServerClient(
+            base_url="http://geoserver.example.com",
+            user="admin",
+            password="secret",
+        )
+
+    def _mock_response(self, status_code, text=""):
+        resp = MagicMock()
+        resp.status_code = status_code
+        resp.text = text
+        return resp
+
+    # --- _rollmangd ---------------------------------------------------------
+
+    def test_rollmangd_ignorerar_ordning(self):
+        self.assertEqual(
+            gl.GeoServerClient._rollmangd("r_x,ROLE_ANONYMOUS"),
+            gl.GeoServerClient._rollmangd("ROLE_ANONYMOUS,r_x"),
+        )
+
+    def test_rollmangd_tolererar_mellanslag(self):
+        self.assertEqual(
+            gl.GeoServerClient._rollmangd("r_x, ROLE_ANONYMOUS"),
+            frozenset({"r_x", "ROLE_ANONYMOUS"}),
+        )
+
+    def test_rollmangd_hanterar_tomt_varde(self):
+        """En saknad regel (None) ska ge tom mängd, inte krascha."""
+        self.assertEqual(gl.GeoServerClient._rollmangd(None), frozenset())
+        self.assertEqual(gl.GeoServerClient._rollmangd(""), frozenset())
+        self.assertEqual(gl.GeoServerClient._rollmangd("r_x,"), frozenset({"r_x"}))
+
+    # --- _ensure_acl_rules --------------------------------------------------
+
+    def test_omvand_rollordning_ger_ingen_skrivning(self):
+        """Kärnan i buggen: omkastad ordning ska bedömas som korrekt."""
+        client = self._make_client()
+        gs_svar = {"sk0_ext_sgu.*.r": "ROLE_ANONYMOUS,r_sk0_ext_sgu"}
+        with patch.object(client, "get_acl_rules", return_value=gs_svar):
+            with patch.object(client, "_request_with_retry") as mock_req:
+                resultat = client._ensure_acl_rules("sk0_ext_sgu", {
+                    "sk0_ext_sgu.*.r": "r_sk0_ext_sgu,ROLE_ANONYMOUS",
+                })
+        self.assertTrue(resultat)
+        self.assertEqual(
+            mock_req.call_count, 0,
+            "regeln skrevs om trots att den bara hade omkastad ordning",
+        )
+
+    def test_upprepad_avstamning_konvergerar(self):
+        """
+        Andra avstämningen efter en skrivning får tillbaka GeoServers ordning
+        och ska då lämna regeln i fred. Det är just detta som saknades: i
+        loggen korrigerades samma regel om och om igen.
+        """
+        client = self._make_client()
+        forvantat = {"sk0_ext_sjv.*.r": "r_sk0_ext_sjv,ROLE_ANONYMOUS"}
+        gs_svar = {"sk0_ext_sjv.*.r": "ROLE_ANONYMOUS,r_sk0_ext_sjv"}
+        for varv in range(3):
+            with patch.object(client, "get_acl_rules", return_value=gs_svar):
+                with patch.object(client, "_request_with_retry") as mock_req:
+                    client._ensure_acl_rules("sk0_ext_sjv", forvantat)
+            self.assertEqual(
+                mock_req.call_count, 0, f"skrivning skedde på varv {varv + 1}"
+            )
+
+    def test_verkligt_fel_roll_repareras_fortfarande(self):
+        """
+        Rättningen får inte göra kontrollen tandlös: en regel med en annan
+        uppsättning roller ska fortfarande lagas.
+        """
+        client = self._make_client()
+        gs_svar = {"sk0_ext_sgu.*.r": "ROLE_AUTHENTICATED,r_sk0_ext_sgu"}
+        with patch.object(client, "get_acl_rules", return_value=gs_svar):
+            with patch.object(client, "_request_with_retry") as mock_req:
+                mock_req.side_effect = [
+                    self._mock_response(200),   # DELETE
+                    self._mock_response(201),   # POST
+                ]
+                resultat = client._ensure_acl_rules("sk0_ext_sgu", {
+                    "sk0_ext_sgu.*.r": "r_sk0_ext_sgu,ROLE_ANONYMOUS",
+                })
+        self.assertTrue(resultat)
+        self.assertEqual(mock_req.call_count, 2)
+
+    def test_anonym_roll_som_tagits_bort_repareras(self):
+        """
+        Delmängd är inte likhet: har någon plockat bort ROLE_ANONYMOUS i
+        GeoServers gränssnitt ska lyssnaren lägga tillbaka den.
+        """
+        client = self._make_client()
+        gs_svar = {"sk0_ext_sgu.*.r": "r_sk0_ext_sgu"}
+        with patch.object(client, "get_acl_rules", return_value=gs_svar):
+            with patch.object(client, "_request_with_retry") as mock_req:
+                mock_req.side_effect = [
+                    self._mock_response(200),
+                    self._mock_response(201),
+                ]
+                resultat = client._ensure_acl_rules("sk0_ext_sgu", {
+                    "sk0_ext_sgu.*.r": "r_sk0_ext_sgu,ROLE_ANONYMOUS",
+                })
+        self.assertTrue(resultat)
+        self.assertEqual(mock_req.call_count, 2)
+
+    def test_enkelrollsregel_paverkas_inte(self):
+        """Regler med en enda roll ska bete sig precis som förut."""
+        client = self._make_client()
+        gs_svar = {"sk1_kba_bm_w.*.w": "w_sk1_kba_bm"}
+        with patch.object(client, "get_acl_rules", return_value=gs_svar):
+            with patch.object(client, "_request_with_retry") as mock_req:
+                resultat = client._ensure_acl_rules("sk1_kba_bm_w", {
+                    "sk1_kba_bm_w.*.w": "w_sk1_kba_bm",
+                })
+        self.assertTrue(resultat)
+        self.assertEqual(mock_req.call_count, 0)
+
+
 class TestCreatePgDatastore(unittest.TestCase):
     """
     Enhetstester för GeoServerClient.create_pg_datastore som verifierar att

@@ -1200,6 +1200,26 @@ class GeoServerClient:
             return None
         return resp.json()
 
+    @staticmethod
+    def _rollmangd(varde):
+        """Delar upp en ACL-regels rollista i en mängd rollnamn.
+
+        GeoServer lagrar flera roller som en kommaseparerad sträng, men
+        returnerar dem inte nödvändigtvis i den ordning de skickades in:
+        'r_sk0_ext_sgu,ROLE_ANONYMOUS' kommer tillbaka som
+        'ROLE_ANONYMOUS,r_sk0_ext_sgu'. Ordningen saknar betydelse för
+        behörigheten, så jämförelsen måste ske på mängden — annars tror
+        lyssnaren att regeln är fel vid varje avstämning och skriver om den
+        i all evighet.
+
+        None (regeln saknas) ger en tom mängd.
+        """
+        if not varde:
+            return frozenset()
+        return frozenset(
+            del_.strip() for del_ in varde.split(",") if del_.strip()
+        )
+
     def _ensure_acl_rules(self, workspace, expected_rules):
         """Verifierar och korrigerar ACL-regler mot förväntat utfall.
 
@@ -1226,7 +1246,9 @@ class GeoServerClient:
         for rule_key, expected_role in expected_rules.items():
             current_role = all_rules.get(rule_key)
 
-            if current_role == expected_role:
+            # Mängdjämförelse, inte strängjämförelse: GeoServer normaliserar
+            # ordningen på flerrollsregler (se _rollmangd).
+            if self._rollmangd(current_role) == self._rollmangd(expected_role):
                 log.info("  ACL-regel '%s' är korrekt – hoppar över", rule_key)
                 continue
 
