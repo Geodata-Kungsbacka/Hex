@@ -218,6 +218,75 @@ Sker det skriver installern ut vilka tabeller den läste ur:
 > `hex_standardiserade_roller` mot en säkerhetskopia och lägg tillbaka det som
 > saknas. Uppgraderingen kan inte återskapa värden som redan hunnit droppas.
 
+### Reparera en databas som redan uppgraderats
+
+Uppgraderade du innan rättningarna ovan fanns på plats är konfigurationen och
+drifttillståndet redan droppat. Konfigurationen går bara att hämta ur en
+säkerhetskopia, men två av tillståndstabellerna kan byggas om ur databasen själv.
+
+**`hex_metadata`** härleds ur QA-triggerfunktionerna, som lever i användarschemana
+och överlever en avinstallation. Frågan är idempotent:
+
+```sql
+INSERT INTO public.hex_metadata
+    (parent_oid, parent_schema, parent_table, history_schema, history_table, trigger_funktion)
+SELECT p.oid, n.nspname, p.relname, n.nspname, h.relname, f.proname
+FROM   pg_class     p
+JOIN   pg_namespace n ON n.oid = p.relnamespace
+JOIN   pg_proc      f ON f.pronamespace = n.oid
+                     AND f.proname = 'trg_fn_' || p.relname || '_qa'
+JOIN   pg_class     h ON h.relnamespace = n.oid
+                     AND h.relname = left(p.relname, 61) || '_h'
+                     AND h.relkind = 'r'
+WHERE  p.relkind = 'r'
+  AND  n.nspname ~ public.hex_schema_regex()
+ON CONFLICT (parent_oid) DO NOTHING;
+```
+
+> Tabeller som döpts om *efter* att `hex_metadata` gick förlorad går inte att
+> matcha — `trg_fn_<tabell>_qa` bär det gamla namnet. Samma begränsning som
+> `hex_underhall()` dokumenterar för sin QA-triggeråterkoppling.
+
+**`hex_dummy_geometrier`** går inte att bygga om — registret var det enda som
+visste vilken `gid` som var dummyn. Däremot kan kvarglömda dummy-rader spåras på
+sin geometri: alla dummies ligger i rutan 160000–160100 / 6395000–6395100.
+
+```sql
+WITH kandidater AS (
+    SELECT n.nspname AS schema_namn, c.relname AS tabell_namn
+    FROM   pg_class     c
+    JOIN   pg_namespace n ON n.oid = c.relnamespace
+    WHERE  c.relkind = 'r'
+      AND  n.nspname ~ public.hex_schema_regex()
+      AND  c.relname NOT LIKE '%\_h'
+      AND  EXISTS (SELECT 1 FROM pg_attribute a JOIN pg_type t ON t.oid = a.atttypid
+                   WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+                     AND a.attname = 'geom' AND t.typname = 'geometry')
+      AND  NOT EXISTS (SELECT 1 FROM pg_trigger tg
+                       WHERE tg.tgrelid = c.oid AND tg.tgname = 'hex_ta_bort_dummy')
+      AND  NOT EXISTS (SELECT 1 FROM public.hex_dummy_geometrier d
+                       WHERE d.schema_namn = n.nspname AND d.tabell_namn = c.relname)
+)
+SELECT k.schema_namn, k.tabell_namn, m.antal_rader, m.antal_dummy
+FROM   kandidater k
+CROSS JOIN LATERAL (
+    SELECT (xpath('/row/a/text()', x))[1]::text::bigint AS antal_rader,
+           (xpath('/row/d/text()', x))[1]::text::bigint AS antal_dummy
+    FROM query_to_xml(format(
+        'SELECT count(*) AS a,'
+        ' count(*) FILTER (WHERE geom && ST_SetSRID('
+        '   ST_MakeEnvelope(159999, 6394999, 160101, 6395101), ST_SRID(geom))) AS d'
+        ' FROM %I.%I', k.schema_namn, k.tabell_namn), false, true, '') AS x
+) m
+WHERE  m.antal_dummy > 0
+ORDER BY 1, 2;
+```
+
+Resultatet är en **granskningslista**, inte ett facit: rutan ligger i SWEREF99 12 00
+och kan i teorin innehålla riktig data. En rad med `antal_rader = 1` och
+`antal_dummy = 1` i en tabell som aldrig fyllts är däremot med stor sannolikhet
+en kvarglömd dummy. Ta bort den manuellt när du kontrollerat den.
+
 ### `hex_rolluppgifter` roteras — den bevaras inte
 
 Lösenorden för `gs_r_`/`gs_w_`-rollerna **byts ut** vid varje `--upgrade`.
