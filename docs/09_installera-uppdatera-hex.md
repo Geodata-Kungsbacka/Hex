@@ -116,7 +116,9 @@ git pull                          # Hämta senaste versionen
 python install_hex.py --upgrade   # Uppgradera med bevarade inställningar
 ```
 
-Följande tabeller bevaras automatiskt vid `--upgrade`:
+Följande tabeller bevaras automatiskt vid `--upgrade`.
+
+**Konfiguration** — dina ändringar av standardraderna, och rader du lagt till själv:
 - `hex_standardiserade_kolumner` — anpassade standardkolumner
 - `hex_standardiserade_roller` — anpassade rollmallar
 - `hex_standardiserade_datakategorier` — anpassade datakategorier
@@ -124,9 +126,41 @@ Följande tabeller bevaras automatiskt vid `--upgrade`:
 - `hex_systemanvandare` — registrerade systemanvändare
 - `hex_grupprattigheter` — AD-grupp-till-Hex-roll-mappningar
 
+**Drifttillstånd** — vad Hex redan gjort med dina tabeller. Innehållet går inte
+att härleda ur databasen i efterhand, till skillnad från triggers och funktioner:
+- `hex_metadata` — mappning tabell-OID → historiktabell och QA-trigger
+- `hex_dummy_geometrier` — tabeller som fortfarande bär en dummy-rad
+- `hex_afvaktande_geometri` — tabeller mitt i FME:s tvåstegsmönster
+- `hex_avvikande_srid` — granskningslista över fel koordinatsystem
+
+> **Undantag:** `kan_logga_in` och `arvs_fran` på de fyra standardrollerna
+> (`r_`, `w_`, `gs_r_`, `gs_w_`) återställs *inte* — dem äger Hex. `r_`/`w_`
+> måste vara NOLOGIN, annars hamnar de i `hex_geoserver_roller` och öppnar
+> `pg_hba.conf` för behörighetsgrupperna. På rollmallar du lagt till själv
+> bevaras båda kolumnerna som vanligt.
+
 > **OBS:** `--upgrade` bevarar konfigurationsdata men tar bort och återskapar
 > alla Hex-funktioner, triggers och typer. Kör gärna en manuell säkerhetskopia
 > av databasen innan uppgradering i produktionsmiljö.
+
+### Ominstallation utan `--upgrade`
+
+`python install_hex.py` mot en databas som redan kör Hex droppar ingenting — den
+kör om SQL-filerna, som är skrivna för att vara idempotenta. Dina ändringar i
+konfigurationstabellerna ligger kvar: `default_varde`, `historik_qa`,
+`schema_uttryck`, `beskrivning`, `publiceras_geoserver`, `anonym_las` med flera.
+
+Det enda undantaget är samma som ovan: `kan_logga_in` och `arvs_fran` på de fyra
+standardrollerna rättas vid varje körning.
+
+> **Tidigare beteende:** `hex_standardiserade_kolumner` och
+> `hex_standardiserade_roller` hade `ON CONFLICT ... DO UPDATE`, och
+> `hex_standardiserade_skyddsnivaer` en villkorslös `UPDATE` av `sk0.anonym_las`.
+> De var avsedda som engångsmigreringar men avfyrades vid *varje* installation,
+> så en vanlig ominstallation återställde `default_varde`, `historik_qa`,
+> `anvandare_kan_redigera`, `rolltyp`, `beskrivning` och `sk0.anonym_las` till
+> standardvärdena — tyst, och utan någon snapshot som kunde lägga tillbaka dem.
+> Migreringarna körs numera bara den gång kolumnen faktiskt tillkommer.
 
 ### Uppgradering från en version före `hex_`-prefixet
 

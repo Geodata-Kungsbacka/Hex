@@ -67,11 +67,18 @@ INSERT INTO hex_standardiserade_roller (rollnamn, rolltyp, schema_uttryck, kan_l
     ('w_{schema}',    'write', 'IS NOT NULL', false, NULL,          'Skrivbehörighetsgrupp – tilldelas AD-användare och AD-grupper'),
     ('gs_r_{schema}', 'read',  'IS NOT NULL', true,  'r_{schema}',  'GeoServer läs-tjänstekonto – ärver behörigheter från r_{schema}'),
     ('gs_w_{schema}', 'write', 'IS NOT NULL', true,  'w_{schema}',  'GeoServer skriv-tjänstekonto – ärver behörigheter från w_{schema}')
+-- kan_logga_in och arvs_fran rättas på VARJE installation och är avsiktligt inte
+-- DBA:ns att ändra på de fyra standardraderna: en databas från tiden före
+-- 4-rollsrefaktorn har r_/w_ med LOGIN sparat, och de rollerna hamnar då i
+-- hex_geoserver_roller och öppnar pg_hba för behörighetsgrupperna (95ead68).
+-- install_hex.py listar samma två kolumner under hex_agda, så återställningen
+-- efter --upgrade inte skriver tillbaka de gamla värdena.
+--
+-- rolltyp och beskrivning skrivs däremot INTE över. De är beskrivande, och en
+-- DBA som ändrat dem ska inte få ändringen struken vid nästa ominstallation.
 ON CONFLICT (rollnamn) DO UPDATE
     SET kan_logga_in = EXCLUDED.kan_logga_in,
-        arvs_fran    = EXCLUDED.arvs_fran,
-        rolltyp      = EXCLUDED.rolltyp,
-        beskrivning  = EXCLUDED.beskrivning;
+        arvs_fran    = EXCLUDED.arvs_fran;
 
 -- Alla databasanvändare som skapar tabeller behöver läsa dessa konfigurationstabeller,
 -- eftersom triggerfunktionerna (hex_hantera_ny_tabell, hex_hantera_ny_kolumn) körs

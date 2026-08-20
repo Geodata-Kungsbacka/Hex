@@ -13,8 +13,35 @@ CREATE TABLE IF NOT EXISTS public.hex_standardiserade_skyddsnivaer (
 );
 
 -- Safe for existing installations: adds the column without touching existing rows.
-ALTER TABLE public.hex_standardiserade_skyddsnivaer
-    ADD COLUMN IF NOT EXISTS anonym_las boolean NOT NULL DEFAULT false;
+--
+-- Backfyllningen av sk0 nedan är en ENGÅNGSMIGRERING och får bara köras samma
+-- gång som kolumnen faktiskt tillkom. Kördes den varje installation skulle en
+-- DBA som medvetet stängt av anonym läsning för sk0 få den påtvingad tillbaka
+-- vid nästa `python install_hex.py`. Vi noterar därför om kolumnen fanns innan.
+DO $$
+DECLARE
+    kolumnen_fanns boolean;
+BEGIN
+    SELECT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name   = 'hex_standardiserade_skyddsnivaer'
+          AND column_name  = 'anonym_las'
+    ) INTO kolumnen_fanns;
+
+    ALTER TABLE public.hex_standardiserade_skyddsnivaer
+        ADD COLUMN IF NOT EXISTS anonym_las boolean NOT NULL DEFAULT false;
+
+    -- sk0 är öppen publik data och ska tillåta anonyma WMS/WFS-läsningar.
+    -- Vid en ny installation finns kolumnen redan i CREATE TABLE ovan, och
+    -- INSERT-satsen längre ned sätter sk0 till true på egen hand.
+    IF NOT kolumnen_fanns THEN
+        UPDATE public.hex_standardiserade_skyddsnivaer
+            SET anonym_las = true
+            WHERE prefix = 'sk0';
+    END IF;
+END;
+$$;
 
 -- Ägaren sätts via hex_systemagare() i stället för ett hårdkodat rollnamn,
 -- så att manuell installation ger samma ägarskap som install_hex.py.
@@ -51,12 +78,6 @@ VALUES
     ('sk2', 'Begränsad känslig data',                                   false, false),
     ('skx', 'Okänd / oklassificerad data (endast GIS-administratörer)', false, false)
 ON CONFLICT (prefix) DO NOTHING;
-
--- Migration for existing installations: sk0 is open public data and should
--- allow anonymous WMS/WFS reads now that the anonym_las column exists.
-UPDATE public.hex_standardiserade_skyddsnivaer
-    SET anonym_las = true
-    WHERE prefix = 'sk0' AND NOT anonym_las;
 
 -- Trigger functions (hex_hantera_ny_tabell, hex_validera_schemanamn, hex_notifiera_gs) run as
 -- SECURITY INVOKER, so the calling user needs SELECT on this table.

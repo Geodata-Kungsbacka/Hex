@@ -310,6 +310,12 @@ DROP TYPE IF EXISTS public.hex_geom_info;
 # =============================================================================
 # PRESERVE CONFIG — tables with default rows the user can customise.
 # key: natural unique column; restore: data columns to carry across upgrade.
+#
+# hex_agda (valfri): kolumner som Hex äger på sina *egna* standardrader. De
+# återställs inte över en rad som installationen just lagt tillbaka — SQL-filens
+# ON CONFLICT ... DO UPDATE har sista ordet där. På rader DBA lagt till själv
+# återställs de som vanligt; sådana rader finns inte i standarduppsättningen och
+# går INSERT-vägen.
 # =============================================================================
 
 PRESERVE_CONFIG = {
@@ -323,11 +329,16 @@ PRESERVE_CONFIG = {
     },
     "hex_standardiserade_kolumner": {
         "key": "kolumnnamn",
-        "restore": ["ordinal_position", "datatyp", "default_varde", "schema_uttryck", "historik_qa", "beskrivning"],
+        "restore": ["ordinal_position", "datatyp", "default_varde", "schema_uttryck", "historik_qa", "beskrivning", "anvandare_kan_redigera"],
     },
     "hex_standardiserade_roller": {
         "key": "rollnamn",
         "restore": ["rolltyp", "schema_uttryck", "ta_bort_med_schema", "kan_logga_in", "arvs_fran", "beskrivning"],
+        # r_/w_ ska vara NOLOGIN och gs_r_/gs_w_ ärva från dem. En databas från
+        # tiden före 4-rollsrefaktorn har r_/w_ med with_login = true sparat, och
+        # skrevs det tillbaka hit skulle rollerna skapas med LOGIN igen och hamna
+        # i hex_geoserver_roller — precis det pg_hba-hål 95ead68 stängde.
+        "hex_agda": ["kan_logga_in", "arvs_fran"],
     },
 }
 
@@ -337,6 +348,41 @@ PRESERVE_USER_DATA = {
     "hex_systemanvandare": ["anvandare", "beskrivning"],
     "hex_grupprattigheter": ["ad_grupproll", "hex_roll", "beskrivning"],
     "hex_rolluppgifter": ["rollnamn", "losenord", "kan_logga_in"],
+}
+
+# =============================================================================
+# PRESERVE STATE — drifttillstånd, varken standardvärden eller DBA-konfiguration.
+#
+# Tabellerna beskriver vad Hex redan gjort med användarnas tabeller. De droppas
+# av UNINSTALL_SQL och installationen skapar dem tomma igen, och till skillnad
+# från triggers och funktioner kan innehållet inte härledas ur databasen:
+#
+#   hex_metadata            OID -> historiktabell och QA-trigger. Utan den slutar
+#                           historiken följa med vid ALTER TABLE ... RENAME TO.
+#   hex_dummy_geometrier    Vilka tabeller som fortfarande bär en dummy-rad.
+#                           hex_underhall() bygger hex_ta_bort_dummy-triggern ur
+#                           den här tabellen; är den tom återkopplas triggern
+#                           aldrig och dummy-raden blir kvar för alltid.
+#   hex_afvaktande_geometri Tabeller mitt i FME:s tvåstegsmönster, som väntar på
+#                           sin geometrikolumn.
+#   hex_avvikande_srid      Granskningslista över tabeller med fel koordinatsystem.
+#
+# Alla kolumner bevaras — inga av dem är identiteter eller genereras om.
+# Raderna läggs tillbaka som de var; tabellerna är tomma efter installationen.
+# =============================================================================
+
+PRESERVE_STATE = {
+    "hex_metadata": [
+        "parent_oid", "parent_schema", "parent_table",
+        "history_schema", "history_table", "trigger_funktion", "created_at",
+    ],
+    "hex_dummy_geometrier": ["schema_namn", "tabell_namn", "gid", "registrerad"],
+    "hex_afvaktande_geometri": [
+        "schema_namn", "tabell_namn", "registrerad", "registrerad_av",
+    ],
+    "hex_avvikande_srid": [
+        "schema_namn", "tabell_namn", "srid", "registrerad", "registrerad_av",
+    ],
 }
 
 # =============================================================================
@@ -542,6 +588,9 @@ def snapshot_settings(cur) -> dict:
     for table, user_cols in PRESERVE_USER_DATA.items():
         _las(table, user_cols)
 
+    for table, state_cols in PRESERVE_STATE.items():
+        _las(table, state_cols)
+
     if arvda:
         skriv_varning(
             "Inställningar lästes ur tabeller med namn från tiden före hex_-prefixet:\n"
@@ -552,12 +601,29 @@ def snapshot_settings(cur) -> dict:
     return snapshot
 
 
+def _raden_ar_giltig(cur, table: str, row: dict) -> bool:
+    """Avgör om en sparad rad fortfarande beskriver något som finns kvar.
+
+    Bara hex_metadata behöver kontrollen: den nycklas på pg_class.oid, och en OID
+    som pekar på en tabell som inte längre finns skulle bli en död post som
+    hex_hantera_borttagen_tabell() aldrig städar bort. Uppgraderingen rör inte
+    användartabeller, så det ska normalt inte hända — men snapshoten togs före
+    avinstallationen, och en OID är billig att verifiera.
+    """
+    if table != "hex_metadata" or "parent_oid" not in row:
+        return True
+    cur.execute("SELECT 1 FROM pg_class WHERE oid = %s", (row["parent_oid"],))
+    return cur.fetchone() is not None
+
+
 def restore_settings(cur, snapshot: dict):
     """Återställer rader från snapshot efter en ny installation.
 
     PRESERVE_CONFIG: UPDATEar rader som matchar naturlig nyckel;
                      INSERTar rader som inte längre finns i nya defaults (användartillagda).
+                     Kolumner listade under hex_agda hoppas över i UPDATEn.
     PRESERVE_USER_DATA: INSERTar alla sparade rader med ON CONFLICT DO NOTHING.
+    PRESERVE_STATE: samma sak för drifttillståndet (hex_metadata m.fl.).
     Strukturell difftolerens: återställer bara kolumner som finns i både snapshot och ny tabell.
     """
     for table, cfg in PRESERVE_CONFIG.items():
@@ -577,7 +643,13 @@ def restore_settings(cur, snapshot: dict):
         restorable_cols = [c for c in old_cols if c in new_cols]
         if key_col not in restorable_cols:
             continue
-        restore_cols = [c for c in restorable_cols if c != key_col]
+        # Kolumner Hex äger på sina egna standardrader lämnas åt SQL-filens
+        # ON CONFLICT ... DO UPDATE. De ingår fortfarande i INSERT-vägen nedan,
+        # som bara gäller rader DBA lagt till själv.
+        hex_agda = set(cfg.get("hex_agda", ()))
+        restore_cols = [
+            c for c in restorable_cols if c != key_col and c not in hex_agda
+        ]
 
         for row in data["rows"]:
             row_dict = dict(zip(old_cols, row))
@@ -633,36 +705,49 @@ def restore_settings(cur, snapshot: dict):
                     insert_params,
                 )
 
-    for table, user_cols in PRESERVE_USER_DATA.items():
-        if table not in snapshot:
-            continue
-        data = snapshot[table]
-        if not data["rows"]:
-            continue
-        if not _table_exists(cur, table):
-            continue
-
-        new_cols = _table_columns(cur, table)
-        old_cols = data["cols"]
-        restorable_cols = [c for c in old_cols if c in new_cols]
-        if not restorable_cols:
-            continue
-
-        for row in data["rows"]:
-            row_dict = dict(zip(old_cols, row))
-            insert_params = {c: row_dict[c] for c in restorable_cols if c in row_dict}
-            if not insert_params:
+    def _lagg_tillbaka(tabeller):
+        """INSERTar tillbaka sparade rader i tabeller som installationen tömt."""
+        for table in tabeller:
+            if table not in snapshot:
                 continue
-            cur.execute(
-                pgsql.SQL(
-                    "INSERT INTO public.{} ({}) VALUES ({}) ON CONFLICT DO NOTHING"
-                ).format(
-                    pgsql.Identifier(table),
-                    pgsql.SQL(", ").join(pgsql.Identifier(c) for c in insert_params),
-                    pgsql.SQL(", ").join(pgsql.Placeholder(c) for c in insert_params),
-                ),
-                insert_params,
-            )
+            data = snapshot[table]
+            if not data["rows"]:
+                continue
+            if not _table_exists(cur, table):
+                continue
+
+            new_cols = _table_columns(cur, table)
+            old_cols = data["cols"]
+            restorable_cols = [c for c in old_cols if c in new_cols]
+            if not restorable_cols:
+                continue
+
+            for row in data["rows"]:
+                row_dict = dict(zip(old_cols, row))
+                if not _raden_ar_giltig(cur, table, row_dict):
+                    continue
+                insert_params = {
+                    c: row_dict[c] for c in restorable_cols if c in row_dict
+                }
+                if not insert_params:
+                    continue
+                cur.execute(
+                    pgsql.SQL(
+                        "INSERT INTO public.{} ({}) VALUES ({}) ON CONFLICT DO NOTHING"
+                    ).format(
+                        pgsql.Identifier(table),
+                        pgsql.SQL(", ").join(
+                            pgsql.Identifier(c) for c in insert_params
+                        ),
+                        pgsql.SQL(", ").join(
+                            pgsql.Placeholder(c) for c in insert_params
+                        ),
+                    ),
+                    insert_params,
+                )
+
+    _lagg_tillbaka(PRESERVE_USER_DATA)
+    _lagg_tillbaka(PRESERVE_STATE)
 
 
 def upgrade(db: dict, base_path="."):
@@ -705,6 +790,14 @@ def upgrade(db: dict, base_path="."):
         print("Återställer inställningar...")
         restore_settings(cur, snapshot)
         conn.commit()
+
+        # Underhållet i install() körde mot tomma tillståndstabeller. Kör om det
+        # nu när raderna är tillbaka, annars återkopplas aldrig de triggers som
+        # härleds ur hex_dummy_geometrier.
+        fel = kor_underhall(cur, conn)
+        if fel:
+            skriv_varning(fel)
+
         print("Uppgradering klar.")
         print("+++Upgrade Complete+++")
     except Exception as e:
@@ -747,6 +840,41 @@ def uninstall(db: dict):
     finally:
         cur.close()
         conn.close()
+
+
+def kor_underhall(cur, conn) -> str | None:
+    """Kör hex_underhall() och skriver ut vad den åtgärdade.
+
+    Returnerar en varningstext om körningen misslyckades, annars None.
+    Anropas både efter installation och efter att en uppgradering lagt
+    tillbaka inställningarna — hex_underhall() bygger bland annat
+    hex_ta_bort_dummy-triggern ur hex_dummy_geometrier, som är tom fram tills
+    återställningen kört.
+    """
+    print("Underhåller Hex-struktur (triggers, roller, behörigheter)...")
+    try:
+        cur.execute(
+            "SELECT schema_namn, tabell_namn, trigger_namn, atgard"
+            " FROM public.hex_underhall()"
+        )
+        rows = cur.fetchall()
+        conn.commit()
+    except Exception as repair_err:
+        conn.rollback()
+        return (
+            f"Underhåll misslyckades: {str(repair_err).strip()}\n"
+            "Hex är installerat. Kör SELECT * FROM public.hex_underhall() manuellt."
+        )
+
+    created = [(s, t, tr, a) for s, t, tr, a in rows if a not in ("redan finns",)]
+    if created:
+        for s, t, tr, a in created:
+            prefix = f"{s}." if s and s != "-" else ""
+            print(f"  ✓ {prefix}{t} → {tr} ({a})")
+        print(f"  {len(created)} åtgärd(er) genomförda.")
+    else:
+        print("  Inga åtgärder behövdes.")
+    return None
 
 
 def install(db: dict, base_path="."):
@@ -873,29 +1001,10 @@ COMMENT ON FUNCTION public.hex_systemagare()
         # Underhåll: verifiera och reparera triggers, roller och behörigheter
         # på befintliga tabeller och scheman (separat steg så att ett fel här
         # aldrig rullar tillbaka huvudinstallationen).
-        print("Underhåller Hex-struktur (triggers, roller, behörigheter)...")
-        try:
-            cur.execute(
-                "SELECT schema_namn, tabell_namn, trigger_namn, atgard"
-                " FROM public.hex_underhall()"
-            )
-            rows = cur.fetchall()
-            conn.commit()
-            created = [(s, t, tr, a) for s, t, tr, a in rows if a not in ("redan finns",)]
-            if created:
-                for s, t, tr, a in created:
-                    prefix = f"{s}." if s and s != "-" else ""
-                    print(f"  ✓ {prefix}{t} → {tr} ({a})")
-                print(f"  {len(created)} åtgärd(er) genomförda.")
-            else:
-                print("  Inga åtgärder behövdes.")
-        except Exception as repair_err:
-            conn.rollback()
-            varningar.append(
-                f"Underhåll misslyckades: {str(repair_err).strip()}\n"
-                "Hex är installerat. Kör SELECT * FROM public.hex_underhall() manuellt."
-            )
-            skriv_varning(varningar[-1])
+        fel = kor_underhall(cur, conn)
+        if fel:
+            varningar.append(fel)
+            skriv_varning(fel)
 
         # Upprepa varningarna sist – annars försvinner de i loggen ovan.
         if varningar:

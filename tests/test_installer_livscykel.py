@@ -337,6 +337,11 @@ class TestUppgraderingFranArvdaNamn(unittest.TestCase):
             "UPDATE public.hex_standardiserade_roller"
             " SET beskrivning = 'DBA-anpassad' WHERE rollnamn = 'w_{schema}'"
         )
+        # Så såg det ut före 4-rollsrefaktorn: behörighetsgrupperna hade LOGIN.
+        cur.execute(
+            "UPDATE public.hex_standardiserade_roller"
+            " SET kan_logga_in = true WHERE rollnamn IN ('r_{schema}', 'w_{schema}')"
+        )
         cur.execute(
             "INSERT INTO public.hex_rolluppgifter (rollnamn, losenord, kan_logga_in)"
             " VALUES ('gs_r_sk0_ext_arvd', 'hemligt', true)"
@@ -404,6 +409,25 @@ class TestUppgraderingFranArvdaNamn(unittest.TestCase):
         )
         self.assertEqual(rader, [("DBA-anpassad",)])
 
+    def test_login_flaggan_aterstalls_inte(self):
+        """
+        SÄKERHET: kan_logga_in får inte skrivas tillbaka från snapshoten.
+
+        En databas från tiden före 4-rollsrefaktorn har r_/w_ med with_login =
+        true. Skrevs det värdet tillbaka efter installationen skulle rollerna
+        skapas med LOGIN och hamna i hex_geoserver_roller — pg_hba-hålet som
+        95ead68 stängde. Kolumnen är listad under hex_agda i PRESERVE_CONFIG.
+        """
+        rader = _fraga(
+            "SELECT rollnamn, kan_logga_in FROM public.hex_standardiserade_roller"
+            " WHERE rollnamn IN ('r_{schema}', 'w_{schema}', 'gs_r_{schema}')"
+            " ORDER BY 1"
+        )
+        self.assertEqual(
+            rader,
+            [("gs_r_{schema}", True), ("r_{schema}", False), ("w_{schema}", False)],
+        )
+
     def test_rolluppgifter_bevaras(self):
         """hex_role_credentials(rolname, password, rolcanlogin) -> hex_rolluppgifter."""
         rader = _fraga(
@@ -433,6 +457,211 @@ class TestUppgraderingFranArvdaNamn(unittest.TestCase):
                     f" GROUP BY {nyckel} HAVING count(*) > 1"
                 )
                 self.assertEqual(rader, [], f"dubbletter i {tabell}")
+
+
+@unittest.skipUnless(KAN_KORA, "kräver superuser-anslutning till PostgreSQL")
+class TestUppgraderingBevararDrifttillstand(unittest.TestCase):
+    """
+    REGRESSION: PRESERVE_STATE – drifttillståndet överlevde inte uppgraderingen.
+
+    hex_metadata, hex_dummy_geometrier, hex_afvaktande_geometri och
+    hex_avvikande_srid droppas av UNINSTALL_SQL och skapades tomma igen. Till
+    skillnad från triggers och funktioner går innehållet inte att härleda ur
+    databasen, och två saker slutade fungera efteråt:
+
+      * hex_underhall() bygger hex_ta_bort_dummy-triggern ur hex_dummy_geometrier.
+        Tom tabell -> ingen trigger -> dummy-raden blev kvar när första riktiga
+        raden infogades, och läckte ut i vyerna FME läser.
+      * hex_metadata är mappningen OID -> historiktabell. Tom tabell -> historiken
+        följde inte med vid ALTER TABLE ... RENAME TO, utan blev en föräldralös
+        tabell under det gamla namnet.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        _skapa_tom_databas()
+        install_hex.install(_db_config(), base_path=str(PROJECT_ROOT))
+
+        conn = _koppla()
+        conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute("CREATE SCHEMA sk0_kba_drift")
+        cur.execute(
+            "CREATE TABLE sk0_kba_drift.hus_p"
+            " (namn text, geom geometry(Point, 3007))"
+        )
+        # Tabell med avvikande koordinatsystem – granskningsraden ska överleva.
+        cur.execute(
+            "CREATE TABLE sk0_kba_drift.fel_srid_p"
+            " (namn text, geom geometry(Point, 3006))"
+        )
+        conn.close()
+
+        cls.fore = {
+            tabell: _fraga(f"SELECT count(*) FROM public.{tabell}")[0][0]
+            for tabell in (
+                "hex_metadata",
+                "hex_dummy_geometrier",
+                "hex_avvikande_srid",
+            )
+        }
+
+        install_hex.upgrade(_db_config(), base_path=str(PROJECT_ROOT))
+
+        # Läs av tillståndet direkt efter uppgraderingen. De två funktionsproven
+        # nedan ändrar tabellerna (INSERT tar bort dummy-raden, RENAME skriver om
+        # hex_metadata) och kör före de läsande i unittests bokstavsordning.
+        cls.efter = {
+            tabell: _fraga(f"SELECT count(*) FROM public.{tabell}")[0][0]
+            for tabell in cls.fore
+        }
+        cls.metadata_hus_p = _fraga(
+            "SELECT parent_schema, parent_table, history_table FROM public.hex_metadata"
+            " WHERE parent_table = 'hus_p'"
+        )
+
+    @classmethod
+    def tearDownClass(cls):
+        _ta_bort_databas()
+
+    def test_utgangslaget_hade_tillstand(self):
+        """Provet är meningslöst om tabellerna var tomma redan före."""
+        for tabell, antal in self.fore.items():
+            with self.subTest(tabell=tabell):
+                self.assertGreater(antal, 0, f"{tabell} var tom redan före uppgraderingen")
+
+    def test_tillstandet_finns_kvar(self):
+        for tabell, antal in self.fore.items():
+            with self.subTest(tabell=tabell):
+                self.assertEqual(
+                    self.efter[tabell], antal,
+                    f"{tabell} tappade rader vid uppgradering",
+                )
+
+    def test_metadata_pekar_pa_ratt_tabell(self):
+        self.assertEqual(
+            self.metadata_hus_p, [("sk0_kba_drift", "hus_p", "hus_p_h")]
+        )
+
+    def test_dummy_raden_tas_bort_vid_forsta_riktiga_insert(self):
+        """hex_ta_bort_dummy måste vara återkopplad efter uppgraderingen."""
+        conn = _koppla()
+        conn.autocommit = True
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO sk0_kba_drift.hus_p (namn, geom)"
+                " VALUES ('riktig', ST_SetSRID(ST_MakePoint(1, 1), 3007))"
+            )
+            cur.execute("SELECT count(*) FROM sk0_kba_drift.hus_p")
+            self.assertEqual(
+                cur.fetchone()[0], 1, "dummy-raden blev kvar bredvid den riktiga"
+            )
+        finally:
+            conn.close()
+
+    def test_historiken_foljer_med_vid_namnbyte(self):
+        """Utan hex_metadata blir hus_p_h föräldralös när tabellen döps om."""
+        conn = _koppla()
+        conn.autocommit = True
+        try:
+            conn.cursor().execute(
+                "ALTER TABLE sk0_kba_drift.hus_p RENAME TO byggnad_p"
+            )
+        finally:
+            conn.close()
+        tabeller = [
+            r[0]
+            for r in _fraga(
+                "SELECT tablename FROM pg_tables WHERE schemaname = 'sk0_kba_drift'"
+                " ORDER BY 1"
+            )
+        ]
+        self.assertIn("byggnad_p_h", tabeller)
+        self.assertNotIn("hus_p_h", tabeller)
+
+
+@unittest.skipUnless(KAN_KORA, "kräver superuser-anslutning till PostgreSQL")
+class TestOminstallationBevararKonfig(unittest.TestCase):
+    """
+    REGRESSION: en vanlig ominstallation (utan --upgrade) skrev över DBA:ns
+    inställningar. Ingen snapshot finns på den vägen, så värdena var borta.
+
+    Tre satser gjorde det: ON CONFLICT DO UPDATE i hex_standardiserade_kolumner
+    och hex_standardiserade_roller, samt en villkorslös UPDATE av sk0.anonym_las.
+    De två förstnämnda var engångsmigreringar som aldrig slutade avfyras.
+
+    Undantaget är kan_logga_in och arvs_fran på de fyra standardrollerna. Dem
+    äger Hex: r_/w_ måste vara NOLOGIN, annars hamnar de i hex_geoserver_roller.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        _skapa_tom_databas()
+        install_hex.install(_db_config(), base_path=str(PROJECT_ROOT))
+
+        conn = _koppla()
+        conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE public.hex_standardiserade_kolumner"
+            " SET default_varde = 'CURRENT_TIMESTAMP', historik_qa = true,"
+            "     anvandare_kan_redigera = true"
+            " WHERE kolumnnamn = 'skapad_tidpunkt'"
+        )
+        cur.execute(
+            "UPDATE public.hex_standardiserade_skyddsnivaer"
+            " SET anonym_las = false WHERE prefix = 'sk0'"
+        )
+        cur.execute(
+            "UPDATE public.hex_standardiserade_roller"
+            " SET beskrivning = 'DBA-anpassad', rolltyp = 'write'"
+            " WHERE rollnamn = 'gs_r_{schema}'"
+        )
+        # Det Hex äger: r_ ska tvingas tillbaka till NOLOGIN.
+        cur.execute(
+            "UPDATE public.hex_standardiserade_roller"
+            " SET kan_logga_in = true WHERE rollnamn = 'r_{schema}'"
+        )
+        conn.close()
+
+        install_hex.install(_db_config(), base_path=str(PROJECT_ROOT))
+
+    @classmethod
+    def tearDownClass(cls):
+        _ta_bort_databas()
+
+    def test_andrat_standardvarde_bevaras(self):
+        """docs/05 beskriver UPDATE av default_varde som ett stött arbetssätt."""
+        rader = _fraga(
+            "SELECT default_varde, historik_qa, anvandare_kan_redigera"
+            " FROM public.hex_standardiserade_kolumner"
+            " WHERE kolumnnamn = 'skapad_tidpunkt'"
+        )
+        self.assertEqual(rader, [("CURRENT_TIMESTAMP", True, True)])
+
+    def test_avstangd_anonym_lasning_bevaras(self):
+        """Engångsmigreringen av sk0 får inte avfyras vid varje installation."""
+        rader = _fraga(
+            "SELECT anonym_las FROM public.hex_standardiserade_skyddsnivaer"
+            " WHERE prefix = 'sk0'"
+        )
+        self.assertEqual(rader, [(False,)])
+
+    def test_beskrivande_rollkolumner_bevaras(self):
+        rader = _fraga(
+            "SELECT beskrivning, rolltyp FROM public.hex_standardiserade_roller"
+            " WHERE rollnamn = 'gs_r_{schema}'"
+        )
+        self.assertEqual(rader, [("DBA-anpassad", "write")])
+
+    def test_login_flaggan_tvingas_tillbaka(self):
+        """kan_logga_in är Hex:s – r_/w_ måste vara NOLOGIN (95ead68)."""
+        rader = _fraga(
+            "SELECT rollnamn, kan_logga_in FROM public.hex_standardiserade_roller"
+            " WHERE rollnamn IN ('r_{schema}', 'w_{schema}') ORDER BY 1"
+        )
+        self.assertEqual(rader, [("r_{schema}", False), ("w_{schema}", False)])
 
 
 @unittest.skipUnless(KAN_KORA, "kräver superuser-anslutning till PostgreSQL")
