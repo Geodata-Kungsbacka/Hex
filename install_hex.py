@@ -334,10 +334,12 @@ PRESERVE_CONFIG = {
     "hex_standardiserade_roller": {
         "key": "rollnamn",
         "restore": ["rolltyp", "schema_uttryck", "ta_bort_med_schema", "kan_logga_in", "arvs_fran", "beskrivning"],
-        # r_/w_ ska vara NOLOGIN och gs_r_/gs_w_ ärva från dem. En databas från
-        # tiden före 4-rollsrefaktorn har r_/w_ med with_login = true sparat, och
-        # skrevs det tillbaka hit skulle rollerna skapas med LOGIN igen och hamna
-        # i hex_geoserver_roller — precis det pg_hba-hål 95ead68 stängde.
+        # r_/w_ ska vara NOLOGIN och gs_r_/gs_w_ ärva från dem. Blir en
+        # behörighetsgrupp LOGIN hamnar den i hex_geoserver_roller och öppnar
+        # pg_hba.conf för den — pg_hba-hålet 95ead68 stängde. Invarianten gäller
+        # oavsett hur värdet blev fel: en DBA som satt kan_logga_in = true för
+        # hand får det rättat vid nästa uppgradering, precis som en databas från
+        # tiden före 4-rollsrefaktorn (där kolumnen hette with_login) får det.
         "hex_agda": ["kan_logga_in", "arvs_fran"],
     },
 }
