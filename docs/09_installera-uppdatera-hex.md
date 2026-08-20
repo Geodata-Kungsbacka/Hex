@@ -221,8 +221,48 @@ Sker det skriver installern ut vilka tabeller den läste ur:
 ### Reparera en databas som redan uppgraderats
 
 Uppgraderade du innan rättningarna ovan fanns på plats är konfigurationen och
-drifttillståndet redan droppat. Konfigurationen går bara att hämta ur en
-säkerhetskopia, men två av tillståndstabellerna kan byggas om ur databasen själv.
+drifttillståndet redan droppat. Mer går att återvinna än man först tror: spåren
+finns kvar i scheman, roller, triggerfunktioner och geometrikolumner.
+
+`reparera_hex.py` läser de spåren. Kör den utan flaggor för en ren diagnos som
+inte ändrar någonting:
+
+```bash
+python reparera_hex.py
+```
+
+Den går igenom samma databaser som `install_hex.py` (listan `DATABASES`) och
+delar fynden i tre grupper:
+
+| Grupp | Innehåll |
+| --- | --- |
+| Härledbart | Oregistrerade prefix, `hex_metadata`, `hex_avvikande_srid`, `hex_afvaktande_geometri` |
+| Kräver granskning | Borttagna rollmallar, kvarglömda dummy-rader, avvikande standardvärden |
+| Går inte att härleda | `publiceras_geoserver` och `anonym_las` per prefix |
+
+Åtgärda den första gruppen med:
+
+```bash
+python reparera_hex.py --reparera
+```
+
+Verktyget tar aldrig bort data. Det avslutar med `hex_underhall()`, så att
+återförda scheman får sina roller, behörigheter och GeoServer-notifieringar.
+
+> **Det allvarligaste fyndet först:** försvann en egen prefixrad ur
+> `hex_standardiserade_skyddsnivaer` finns schemat kvar i databasen, men faller
+> ur `hex_schema_regex()`. Då slutar *allt* underhåll gälla det — ägarskaps-
+> överföring, triggerreparation, GeoServer-notifiering och rollstädning vid drop.
+> Schemat ligger tyst utanför Hex. `reparera_hex.py` registrerar prefixet igen,
+> men med `publiceras_geoserver = false`: om schemat ska publiceras går inte att
+> härleda, och ett schema ska aldrig av misstag hamna på GeoServer.
+
+Efter reparationen återstår ett DBA-beslut: vilka prefix som ska publiceras.
+Sätt värdet och kör `SELECT * FROM public.hex_underhall();` så skickas
+notifieringen — ingen ny uppgradering behövs.
+
+Frågorna nedan är desamma som verktyget använder, för den som hellre kör dem
+för hand.
 
 **`hex_metadata`** härleds ur QA-triggerfunktionerna, som lever i användarschemana
 och överlever en avinstallation. Frågan är idempotent:
