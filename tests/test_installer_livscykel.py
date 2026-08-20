@@ -261,6 +261,181 @@ class TestUppgradering(unittest.TestCase):
 
 
 @unittest.skipUnless(KAN_KORA, "kräver superuser-anslutning till PostgreSQL")
+class TestUppgraderingFranArvdaNamn(unittest.TestCase):
+    """
+    REGRESSION: uppgradering från en installation gjord före hex_-prefixet.
+
+    snapshot_settings() letade bara efter de hex_-prefixade tabellnamnen. I en
+    databas som ännu bar de gamla namnen hittade den ingenting, medan
+    LEGACY_UNINSTALL_SQL droppade de gamla tabellerna strax därpå. Uppgraderingen
+    sparade alltså noll rader, installerade om standardvärdena och hade inget att
+    lägga tillbaka – DBA:ns egna inställningar (t.ex. publiceras_geoserver = true
+    för skx) försvann tyst.
+
+    Sviten installerar den nuvarande versionen och döper sedan tillbaka tabeller
+    och kolumner till namnen de hade före bytet. Det ger samma utgångsläge som en
+    databas som aldrig hunnit uppgraderas, utan att gammal kod behöver checkas ut.
+    """
+
+    # Namnen som gällde före bytet. Kolumnbytena speglar
+    # install_hex.LEGACY_TABLE_NAMES.
+    ARVDA_NAMN_SQL = """
+    ALTER TABLE public.hex_standardiserade_skyddsnivaer
+        RENAME TO standardiserade_skyddsnivaer;
+
+    ALTER TABLE public.hex_standardiserade_datakategorier
+        RENAME TO standardiserade_datakategorier;
+    ALTER TABLE public.standardiserade_datakategorier
+        RENAME COLUMN hex_validera_geometri TO validera_geometri;
+
+    ALTER TABLE public.hex_standardiserade_kolumner
+        RENAME TO standardiserade_kolumner;
+    -- Kolumnen tillkom efter namnbytet och saknas i en ärvd databas.
+    ALTER TABLE public.standardiserade_kolumner
+        DROP COLUMN anvandare_kan_redigera;
+
+    ALTER TABLE public.hex_standardiserade_roller
+        RENAME TO standardiserade_roller;
+    ALTER TABLE public.standardiserade_roller
+        RENAME COLUMN kan_logga_in TO with_login;
+
+    ALTER TABLE public.hex_rolluppgifter RENAME TO hex_role_credentials;
+    ALTER TABLE public.hex_role_credentials RENAME COLUMN rollnamn TO rolname;
+    ALTER TABLE public.hex_role_credentials RENAME COLUMN losenord TO password;
+    ALTER TABLE public.hex_role_credentials RENAME COLUMN kan_logga_in TO rolcanlogin;
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        _skapa_tom_databas()
+        install_hex.install(_db_config(), base_path=str(PROJECT_ROOT))
+
+        conn = _koppla()
+        conn.autocommit = True
+        cur = conn.cursor()
+
+        # DBA-anpassningar, samma slag som i TestUppgradering men i en databas
+        # som strax får sina gamla tabellnamn tillbaka.
+        cur.execute(
+            "UPDATE public.hex_standardiserade_skyddsnivaer"
+            " SET publiceras_geoserver = true WHERE prefix = 'skx'"
+        )
+        cur.execute(
+            "INSERT INTO public.hex_standardiserade_skyddsnivaer"
+            " (prefix, beskrivning, publiceras_geoserver, anonym_las)"
+            " VALUES ('sk7', 'Egen skyddsnivå för test', true, false)"
+        )
+        cur.execute(
+            "UPDATE public.hex_standardiserade_datakategorier"
+            " SET hex_validera_geometri = true WHERE prefix = 'ext'"
+        )
+        cur.execute(
+            "UPDATE public.hex_standardiserade_kolumner"
+            " SET default_varde = 'CURRENT_TIMESTAMP' WHERE kolumnnamn = 'skapad_tidpunkt'"
+        )
+        cur.execute(
+            "UPDATE public.hex_standardiserade_roller"
+            " SET beskrivning = 'DBA-anpassad' WHERE rollnamn = 'w_{schema}'"
+        )
+        cur.execute(
+            "INSERT INTO public.hex_rolluppgifter (rollnamn, losenord, kan_logga_in)"
+            " VALUES ('gs_r_sk0_ext_arvd', 'hemligt', true)"
+        )
+        cur.execute(
+            "INSERT INTO public.hex_systemanvandare (anvandare, beskrivning)"
+            " VALUES ('etl_arvd', 'Tillagd av DBA')"
+        )
+
+        # Tillbaka till de gamla namnen, och uppgradera därifrån.
+        cur.execute(cls.ARVDA_NAMN_SQL)
+        conn.close()
+
+        install_hex.upgrade(_db_config(), base_path=str(PROJECT_ROOT))
+
+    @classmethod
+    def tearDownClass(cls):
+        _ta_bort_databas()
+
+    def test_tabellerna_bar_de_nya_namnen(self):
+        """Uppgraderingen ska lämna databasen med enbart hex_-prefixade namn."""
+        kvar = _fraga(
+            "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
+            " AND tablename IN ('standardiserade_skyddsnivaer',"
+            " 'standardiserade_datakategorier', 'standardiserade_kolumner',"
+            " 'standardiserade_roller', 'hex_role_credentials') ORDER BY 1"
+        )
+        self.assertEqual([r[0] for r in kvar], [])
+
+    def test_andrad_systemrad_bevaras(self):
+        """Det rapporterade felet: skx skulle publiceras och blev återställd."""
+        rader = _fraga(
+            "SELECT publiceras_geoserver FROM public.hex_standardiserade_skyddsnivaer"
+            " WHERE prefix = 'skx'"
+        )
+        self.assertEqual(rader, [(True,)])
+
+    def test_egen_tillagd_rad_bevaras(self):
+        rader = _fraga(
+            "SELECT beskrivning, publiceras_geoserver"
+            " FROM public.hex_standardiserade_skyddsnivaer WHERE prefix = 'sk7'"
+        )
+        self.assertEqual(rader, [("Egen skyddsnivå för test", True)])
+
+    def test_omdopt_kolumn_bevaras(self):
+        """validera_geometri hette så före bytet och ska landa i hex_validera_geometri."""
+        rader = _fraga(
+            "SELECT hex_validera_geometri FROM public.hex_standardiserade_datakategorier"
+            " WHERE prefix = 'ext'"
+        )
+        self.assertEqual(rader, [(True,)])
+
+    def test_kolumnstandard_bevaras(self):
+        """Tabellen saknade anvandare_kan_redigera – övriga kolumner ska ändå med."""
+        rader = _fraga(
+            "SELECT default_varde FROM public.hex_standardiserade_kolumner"
+            " WHERE kolumnnamn = 'skapad_tidpunkt'"
+        )
+        self.assertEqual(rader, [("CURRENT_TIMESTAMP",)])
+
+    def test_rollbeskrivning_bevaras(self):
+        rader = _fraga(
+            "SELECT beskrivning FROM public.hex_standardiserade_roller"
+            " WHERE rollnamn = 'w_{schema}'"
+        )
+        self.assertEqual(rader, [("DBA-anpassad",)])
+
+    def test_rolluppgifter_bevaras(self):
+        """hex_role_credentials(rolname, password, rolcanlogin) -> hex_rolluppgifter."""
+        rader = _fraga(
+            "SELECT losenord, kan_logga_in FROM public.hex_rolluppgifter"
+            " WHERE rollnamn = 'gs_r_sk0_ext_arvd'"
+        )
+        self.assertEqual(rader, [("hemligt", True)])
+
+    def test_anvandarhanterad_tabell_bevaras(self):
+        """hex_systemanvandare bytte aldrig namn och ska bevaras som förr."""
+        rader = _fraga(
+            "SELECT anvandare FROM public.hex_systemanvandare WHERE anvandare = 'etl_arvd'"
+        )
+        self.assertEqual(rader, [("etl_arvd",)])
+
+    def test_inga_dubbletter(self):
+        for tabell, nyckel in (
+            ("hex_standardiserade_skyddsnivaer", "prefix"),
+            ("hex_standardiserade_datakategorier", "prefix"),
+            ("hex_standardiserade_kolumner", "kolumnnamn"),
+            ("hex_standardiserade_roller", "rollnamn"),
+            ("hex_rolluppgifter", "rollnamn"),
+        ):
+            with self.subTest(tabell=tabell):
+                rader = _fraga(
+                    f"SELECT {nyckel}, count(*) FROM public.{tabell}"
+                    f" GROUP BY {nyckel} HAVING count(*) > 1"
+                )
+                self.assertEqual(rader, [], f"dubbletter i {tabell}")
+
+
+@unittest.skipUnless(KAN_KORA, "kräver superuser-anslutning till PostgreSQL")
 class TestAvinstallation(unittest.TestCase):
     """uninstall() ska inte lämna kvar några Hex-objekt i databasen."""
 

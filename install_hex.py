@@ -340,6 +340,40 @@ PRESERVE_USER_DATA = {
 }
 
 # =============================================================================
+# ÄRVDA TABELL- OCH KOLUMNNAMN — namn från tiden före hex_-prefixet.
+#
+# En databas som installerades före namnbytet bär sina inställningar under de
+# gamla namnen. snapshot_settings() letade bara efter de nya namnen och hittade
+# ingenting, medan LEGACY_UNINSTALL_SQL droppade de gamla tabellerna. En
+# uppgradering från en sådan databas sparade alltså noll rader, installerade om
+# standardvärdena och lämnade inget att återställa: DBA:ns egna ändringar
+# (t.ex. publiceras_geoserver = true för skx) försvann tyst.
+#
+# Kartan används bara som reservväg. Finns den hex_-prefixade tabellen läses
+# den, oavsett om den gamla också ligger kvar.
+#
+# Värdet är (ärvt tabellnamn, {ärvt kolumnnamn: nytt kolumnnamn}). Kolumner som
+# behållit sitt namn utelämnas ur kartan.
+# =============================================================================
+
+LEGACY_TABLE_NAMES = {
+    "hex_standardiserade_skyddsnivaer": ("standardiserade_skyddsnivaer", {}),
+    "hex_standardiserade_datakategorier": (
+        "standardiserade_datakategorier",
+        {"validera_geometri": "hex_validera_geometri"},
+    ),
+    "hex_standardiserade_kolumner": ("standardiserade_kolumner", {}),
+    "hex_standardiserade_roller": (
+        "standardiserade_roller",
+        {"with_login": "kan_logga_in"},
+    ),
+    "hex_rolluppgifter": (
+        "hex_role_credentials",
+        {"rolname": "rollnamn", "password": "losenord", "rolcanlogin": "kan_logga_in"},
+    ),
+}
+
+# =============================================================================
 # HELPERS
 # =============================================================================
 
@@ -439,39 +473,81 @@ def kontrollera_forutsattningar(cur) -> list[str]:
 # UPGRADE HELPERS
 # =============================================================================
 
+def _snapshot_kalla(cur, table: str):
+    """Väljer vilken tabell inställningarna för *table* ska läsas ur.
+
+    Returnerar (kalltabell, {nytt kolumnnamn: kolumnnamn i kalltabellen}).
+    Den hex_-prefixade tabellen har företräde. Saknas den letas det ärvda
+    namnet upp i LEGACY_TABLE_NAMES, så att en databas som ännu inte hunnit
+    genom namnbytet ändå får sina inställningar sparade. Hittas ingen tabell
+    returneras (None, {}).
+    """
+    if _table_exists(cur, table):
+        return table, {c: c for c in _table_columns(cur, table)}
+
+    arvt = LEGACY_TABLE_NAMES.get(table)
+    if arvt is None:
+        return None, {}
+
+    arvt_namn, kolumnbyten = arvt
+    if not _table_exists(cur, arvt_namn):
+        return None, {}
+
+    # Kolumnbytena går från gammalt till nytt namn; kartan vi returnerar går åt
+    # andra hållet, eftersom SELECT ska ställas mot kalltabellens egna namn.
+    return arvt_namn, {
+        kolumnbyten.get(c, c): c for c in _table_columns(cur, arvt_namn)
+    }
+
+
 def snapshot_settings(cur) -> dict:
-    """Läser alla rader från PRESERVE_*-tabeller innan avinstallation."""
+    """Läser alla rader från PRESERVE_*-tabeller innan avinstallation.
+
+    Snapshoten nycklas alltid på det nya (hex_-prefixade) tabell- och
+    kolumnnamnet, även när raderna hämtats ur en ärvd tabell. restore_settings()
+    behöver därför inte känna till de gamla namnen.
+    """
     snapshot = {}
+    arvda = []
+
+    def _las(table, kolumner):
+        """Läser *kolumner* (nya namn) ur rätt källtabell. Returnerar hämtade namn."""
+        kalla, kolumnkarta = _snapshot_kalla(cur, table)
+        if kalla is None:
+            return None
+        tillgangliga = [c for c in kolumner if c in kolumnkarta]
+        if not tillgangliga:
+            return None
+        cur.execute(
+            pgsql.SQL("SELECT {} FROM public.{}").format(
+                pgsql.SQL(", ").join(
+                    pgsql.Identifier(kolumnkarta[c]) for c in tillgangliga
+                ),
+                pgsql.Identifier(kalla),
+            )
+        )
+        snapshot[table] = {"rows": cur.fetchall(), "cols": tillgangliga}
+        if kalla != table:
+            arvda.append(f"{kalla} -> {table}")
+        return tillgangliga
 
     for table, cfg in PRESERVE_CONFIG.items():
-        if not _table_exists(cur, table):
-            continue
-        cols = _table_columns(cur, table)
         key = cfg["key"]
-        restore_cols = [c for c in cfg["restore"] if c in cols]
-        all_cols = [key] + restore_cols
-        cur.execute(
-            pgsql.SQL("SELECT {} FROM public.{}").format(
-                pgsql.SQL(", ").join(pgsql.Identifier(c) for c in all_cols),
-                pgsql.Identifier(table),
-            )
-        )
-        snapshot[table] = {"rows": cur.fetchall(), "cols": all_cols}
+        tillgangliga = _las(table, [key] + list(cfg["restore"]))
+        # Utan den naturliga nyckeln går raderna inte att matcha vid
+        # återställning. Behåll dem inte – de skulle bara dubbleras.
+        if tillgangliga is not None and key not in tillgangliga:
+            del snapshot[table]
 
     for table, user_cols in PRESERVE_USER_DATA.items():
-        if not _table_exists(cur, table):
-            continue
-        cols = _table_columns(cur, table)
-        available_cols = [c for c in user_cols if c in cols]
-        if not available_cols:
-            continue
-        cur.execute(
-            pgsql.SQL("SELECT {} FROM public.{}").format(
-                pgsql.SQL(", ").join(pgsql.Identifier(c) for c in available_cols),
-                pgsql.Identifier(table),
-            )
+        _las(table, user_cols)
+
+    if arvda:
+        skriv_varning(
+            "Inställningar lästes ur tabeller med namn från tiden före hex_-prefixet:\n"
+            + "\n".join(f"  {rad}" for rad in arvda)
+            + "\nDe återställs under de nya namnen."
         )
-        snapshot[table] = {"rows": cur.fetchall(), "cols": available_cols}
 
     return snapshot
 
@@ -525,7 +601,23 @@ def restore_settings(cur, snapshot: dict):
                     params,
                 )
 
-            if cur.rowcount == 0:
+            if restore_cols:
+                traffar = cur.rowcount
+            else:
+                # Utan datakolumner kördes ingen UPDATE, och cur.rowcount skulle
+                # då bära resultatet från föregående sats. Fråga i stället efter
+                # raden direkt.
+                cur.execute(
+                    pgsql.SQL("SELECT 1 FROM public.{} WHERE {} = {}").format(
+                        pgsql.Identifier(table),
+                        pgsql.Identifier(key_col),
+                        pgsql.Placeholder(key_col),
+                    ),
+                    {key_col: key_val},
+                )
+                traffar = len(cur.fetchall())
+
+            if traffar == 0:
                 # User-added row — insert it back
                 insert_cols = restorable_cols
                 insert_params = {c: row_dict[c] for c in insert_cols}
@@ -588,6 +680,16 @@ def upgrade(db: dict, base_path="."):
         snapshot = snapshot_settings(cur)
         total = sum(len(d["rows"]) for d in snapshot.values())
         print(f"  {total} rad(er) sparade från {len(snapshot)} tabell(er).")
+        # En tom snapshot betyder att avinstallationen strax kastar allt utan att
+        # något kan läggas tillbaka. Det är normalt i en tom databas, men i en
+        # databas som redan kör Hex är det ett tecken på att konfigurationen inte
+        # hittades - och då ska det synas innan tabellerna droppas.
+        if total == 0:
+            skriv_varning(
+                "Inga inställningar hittades att spara.\n"
+                "Är detta en databas som redan kör Hex kommer dess konfiguration\n"
+                "att ersättas av standardvärden vid ominstallationen."
+            )
     finally:
         cur.close()
         conn.close()

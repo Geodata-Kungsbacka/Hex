@@ -154,6 +154,36 @@ Installern hanterar det själv:
 Se du felet ovan kör du en avinstallation följt av en installation, eller
 `--upgrade` direkt.
 
+`--upgrade` letar också efter inställningar under de gamla tabellnamnen. Hittas
+konfigurationen där läses den därifrån och återställs under det nya namnet, och
+kolumner som bytt namn på vägen översätts:
+
+| Före `hex_`-prefixet | Efter |
+| --- | --- |
+| `standardiserade_skyddsnivaer` | `hex_standardiserade_skyddsnivaer` |
+| `standardiserade_datakategorier` (`validera_geometri`) | `hex_standardiserade_datakategorier` (`hex_validera_geometri`) |
+| `standardiserade_kolumner` | `hex_standardiserade_kolumner` |
+| `standardiserade_roller` (`with_login`) | `hex_standardiserade_roller` (`kan_logga_in`) |
+| `hex_role_credentials` (`rolname`, `password`, `rolcanlogin`) | `hex_rolluppgifter` (`rollnamn`, `losenord`, `kan_logga_in`) |
+
+Sker det skriver installern ut vilka tabeller den läste ur:
+
+```
+  VARNING: Inställningar lästes ur tabeller med namn från tiden före hex_-prefixet:
+             standardiserade_skyddsnivaer -> hex_standardiserade_skyddsnivaer
+           De återställs under de nya namnen.
+```
+
+> **Tidigare beteende:** före den här rättningen letade `--upgrade` bara efter de
+> `hex_`-prefixade namnen. I en databas som ännu bar de gamla sparades noll rader
+> (`0 rad(er) sparade från 0 tabell(er)`), avinstallationen droppade de gamla
+> tabellerna och installationen la tillbaka standardvärdena. Egna ändringar —
+> till exempel `publiceras_geoserver = true` för `skx` — försvann tyst. Har du
+> uppgraderat en sådan databas: jämför `hex_standardiserade_skyddsnivaer`,
+> `hex_standardiserade_datakategorier`, `hex_standardiserade_kolumner` och
+> `hex_standardiserade_roller` mot en säkerhetskopia och lägg tillbaka det som
+> saknas. Uppgraderingen kan inte återskapa värden som redan hunnit droppas.
+
 ### `hex_rolluppgifter` roteras — den bevaras inte
 
 Lösenorden för `gs_r_`/`gs_w_`-rollerna **byts ut** vid varje `--upgrade`.
