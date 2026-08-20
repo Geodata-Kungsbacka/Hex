@@ -793,9 +793,16 @@ def upgrade(db: dict, base_path="."):
         restore_settings(cur, snapshot)
         conn.commit()
 
-        # Underhållet i install() körde mot tomma tillståndstabeller. Kör om det
-        # nu när raderna är tillbaka, annars återkopplas aldrig de triggers som
-        # härleds ur hex_dummy_geometrier.
+        # Underhållet i install() körde mot tomma tillståndstabeller OCH mot
+        # standardkonfigurationen — restore_settings() hade inte kört än. Kör om
+        # det nu när raderna är tillbaka. Två saker hänger på det:
+        #   * triggers som härleds ur hex_dummy_geometrier återkopplas
+        #   * steg 10 i hex_underhall() skickar geoserver_schema-notiser utifrån
+        #     hex_standardiserade_skyddsnivaer. Före återställningen står den på
+        #     INSERT-defaultarna, så ett prefix kunden satt till
+        #     publiceras_geoserver = true (t.ex. skx) hoppades över. Eftersom
+        #     uppgraderingen samtidigt roterar gs_r_/gs_w_-lösenorden blev
+        #     GeoServers datastore kvar med gamla uppgifter för just de schemana.
         fel = kor_underhall(cur, conn)
         if fel:
             skriv_varning(fel)

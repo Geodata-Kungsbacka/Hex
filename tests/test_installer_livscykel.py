@@ -18,7 +18,9 @@ Kör med:
 """
 
 import os
+import select
 import sys
+import time
 import unittest
 from pathlib import Path
 
@@ -662,6 +664,159 @@ class TestOminstallationBevararKonfig(unittest.TestCase):
             " WHERE rollnamn IN ('r_{schema}', 'w_{schema}') ORDER BY 1"
         )
         self.assertEqual(rader, [("r_{schema}", False), ("w_{schema}", False)])
+
+
+@unittest.skipUnless(KAN_KORA, "kräver superuser-anslutning till PostgreSQL")
+class TestUppgraderingNotifierarGeoServer(unittest.TestCase):
+    """
+    REGRESSION: GeoServer-notifieringen såg inte kundens publiceras_geoserver.
+
+    Steg 10 i hex_underhall() skickar pg_notify('geoserver_schema', <schema>)
+    för varje schema vars prefix har publiceras_geoserver = true. install()
+    avslutar med att köra hex_underhall() — och i upgrade() sker det INNAN
+    restore_settings() lagt tillbaka kundens konfiguration. Vid det laget står
+    hex_standardiserade_skyddsnivaer på INSERT-defaultarna (sk0/sk1 true,
+    sk2/skx false), så ett skx-schema som ska publiceras hoppades över.
+
+    Samma uppgradering roterar dessutom gs_r_/gs_w_-lösenorden. Ett schema som
+    aldrig notifierades fick alltså nya lösenord i databasen medan GeoServers
+    datastore blev kvar med de gamla — trasigt tills någon körde
+    hex_underhall() manuellt eller startade om lyssnaren.
+
+    upgrade() kör numera om underhållet efter återställningen.
+    """
+
+    SCHEMAN = ("sk0_kba_gs", "skx_kba_gs", "sk9_kba_gs")
+
+    @staticmethod
+    def _samla_notiser(conn, vanta=2.0):
+        """Läser notiser tills anslutningen varit tyst i `vanta` sekunder.
+
+        Ett ensamt poll() läser bara det som råkar ligga i bufferten just då och
+        missar notiser som skickats från en senare transaktion.
+        """
+        ut = []
+        slut = time.time() + vanta
+        while time.time() < slut:
+            if select.select([conn], [], [], 0.2)[0]:
+                conn.poll()
+                while conn.notifies:
+                    ut.append(conn.notifies.pop(0).payload)
+                slut = time.time() + vanta
+        return ut
+
+    @classmethod
+    def setUpClass(cls):
+        _skapa_tom_databas()
+        install_hex.install(_db_config(), base_path=str(PROJECT_ROOT))
+
+        conn = _koppla()
+        conn.autocommit = True
+        cur = conn.cursor()
+        # Kundens konfiguration: skx publiceras (avviker från default), och ett
+        # helt eget prefix läggs till.
+        cur.execute(
+            "UPDATE public.hex_standardiserade_skyddsnivaer"
+            " SET publiceras_geoserver = true WHERE prefix = 'skx'"
+        )
+        cur.execute(
+            "INSERT INTO public.hex_standardiserade_skyddsnivaer"
+            " (prefix, beskrivning, publiceras_geoserver, anonym_las)"
+            " VALUES ('sk9', 'DBA-tillagd nivå', true, false)"
+        )
+        for schema in cls.SCHEMAN:
+            cur.execute(f"CREATE SCHEMA {schema}")
+        conn.close()
+
+        # Lyssna innan uppgraderingen startar – notiser levereras vid COMMIT.
+        lyssnare = _koppla()
+        lyssnare.autocommit = True
+        lyssnare.cursor().execute("LISTEN geoserver_schema")
+        cls._samla_notiser(lyssnare, vanta=0.5)  # rensa det som redan skickats
+
+        install_hex.upgrade(_db_config(), base_path=str(PROJECT_ROOT))
+
+        cls.notiser = cls._samla_notiser(lyssnare)
+        lyssnare.close()
+
+        cls.konfig = _fraga(
+            "SELECT prefix, beskrivning, publiceras_geoserver, anonym_las"
+            " FROM public.hex_standardiserade_skyddsnivaer ORDER BY prefix"
+        )
+        cls.uppgifter = _fraga(
+            "SELECT rollnamn, losenord FROM public.hex_rolluppgifter"
+            " WHERE rollnamn LIKE 'gs\\_%' ORDER BY rollnamn"
+        )
+
+    @classmethod
+    def tearDownClass(cls):
+        try:
+            conn = _koppla()
+            conn.autocommit = True
+            cur = conn.cursor()
+            for schema in cls.SCHEMAN:
+                cur.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
+            conn.close()
+        except Exception:  # pragma: no cover
+            pass
+        _ta_bort_databas()
+        for schema in cls.SCHEMAN:
+            for prefix in ("r_", "w_", "gs_r_", "gs_w_"):
+                try:
+                    _admin_exec(f'DROP ROLE IF EXISTS "{prefix}{schema}"')
+                except Exception:  # pragma: no cover
+                    pass
+
+    def test_standardschemat_notifieras(self):
+        """sk0 publicerades redan i defaultkonfigurationen."""
+        self.assertIn("sk0_kba_gs", self.notiser)
+
+    def test_skx_schemat_notifieras(self):
+        """Kärnan i buggen: skx står som false i defaultarna, true hos kunden."""
+        self.assertIn(
+            "skx_kba_gs", self.notiser,
+            "skx_kba_gs fick ingen geoserver_schema-notis under uppgraderingen"
+            f" (mottagna: {self.notiser})",
+        )
+
+    def test_dba_tillagt_prefix_notifieras(self):
+        """Ett prefix som inte alls finns i INSERT-defaultarna."""
+        self.assertIn(
+            "sk9_kba_gs", self.notiser,
+            f"sk9_kba_gs fick ingen notis (mottagna: {self.notiser})",
+        )
+
+    def test_ej_publicerat_prefix_notifieras_inte(self):
+        """Notifieringen ska följa konfigurationen, inte skicka till alla."""
+        self.assertNotIn("sk2_kba_gs", self.notiser)
+
+    def test_konfigurationen_overlevde(self):
+        """Ingen regression i själva bevarandet."""
+        self.assertEqual(
+            self.konfig,
+            [
+                ("sk0", "Öppen publik data", True, True),
+                ("sk1", "Kommunal data med begränsad åtkomst", True, False),
+                ("sk2", "Begränsad känslig data", False, False),
+                ("sk9", "DBA-tillagd nivå", True, False),
+                ("skx", "Okänd / oklassificerad data (endast GIS-administratörer)", True, False),
+            ],
+        )
+
+    def test_lagrade_uppgifter_stammer_med_rollernas_losenord(self):
+        """
+        Uppgraderingen roterar gs_-lösenorden. Det som ligger i
+        hex_rolluppgifter måste vara det roller faktiskt autentiserar med,
+        annars sätter lyssnaren upp en datastore som inte kan logga in.
+        """
+        self.assertTrue(self.uppgifter, "inga gs_-uppgifter att kontrollera")
+        params = {k: v for k, v in _db_config().items() if k != "owner_role"}
+        for rollnamn, losenord in self.uppgifter:
+            with self.subTest(roll=rollnamn):
+                anslutning = psycopg2.connect(
+                    **{**params, "user": rollnamn, "password": losenord}
+                )
+                anslutning.close()
 
 
 @unittest.skipUnless(KAN_KORA, "kräver superuser-anslutning till PostgreSQL")
