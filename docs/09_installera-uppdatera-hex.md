@@ -116,7 +116,9 @@ git pull                          # Hämta senaste versionen
 python install_hex.py --upgrade   # Uppgradera med bevarade inställningar
 ```
 
-Följande tabeller bevaras automatiskt vid `--upgrade`:
+Följande tabeller bevaras automatiskt vid `--upgrade`.
+
+**Konfiguration** — dina ändringar av standardraderna, och rader du lagt till själv:
 - `hex_standardiserade_kolumner` — anpassade standardkolumner
 - `hex_standardiserade_roller` — anpassade rollmallar
 - `hex_standardiserade_datakategorier` — anpassade datakategorier
@@ -124,9 +126,41 @@ Följande tabeller bevaras automatiskt vid `--upgrade`:
 - `hex_systemanvandare` — registrerade systemanvändare
 - `hex_grupprattigheter` — AD-grupp-till-Hex-roll-mappningar
 
+**Drifttillstånd** — vad Hex redan gjort med dina tabeller. Innehållet går inte
+att härleda ur databasen i efterhand, till skillnad från triggers och funktioner:
+- `hex_metadata` — mappning tabell-OID → historiktabell och QA-trigger
+- `hex_dummy_geometrier` — tabeller som fortfarande bär en dummy-rad
+- `hex_afvaktande_geometri` — tabeller mitt i FME:s tvåstegsmönster
+- `hex_avvikande_srid` — granskningslista över fel koordinatsystem
+
+> **Undantag:** `kan_logga_in` och `arvs_fran` på de fyra standardrollerna
+> (`r_`, `w_`, `gs_r_`, `gs_w_`) återställs *inte* — dem äger Hex. `r_`/`w_`
+> måste vara NOLOGIN, annars hamnar de i `hex_geoserver_roller` och öppnar
+> `pg_hba.conf` för behörighetsgrupperna. På rollmallar du lagt till själv
+> bevaras båda kolumnerna som vanligt.
+
 > **OBS:** `--upgrade` bevarar konfigurationsdata men tar bort och återskapar
 > alla Hex-funktioner, triggers och typer. Kör gärna en manuell säkerhetskopia
 > av databasen innan uppgradering i produktionsmiljö.
+
+### Ominstallation utan `--upgrade`
+
+`python install_hex.py` mot en databas som redan kör Hex droppar ingenting — den
+kör om SQL-filerna, som är skrivna för att vara idempotenta. Dina ändringar i
+konfigurationstabellerna ligger kvar: `default_varde`, `historik_qa`,
+`schema_uttryck`, `beskrivning`, `publiceras_geoserver`, `anonym_las` med flera.
+
+Det enda undantaget är samma som ovan: `kan_logga_in` och `arvs_fran` på de fyra
+standardrollerna rättas vid varje körning.
+
+> **Tidigare beteende:** `hex_standardiserade_kolumner` och
+> `hex_standardiserade_roller` hade `ON CONFLICT ... DO UPDATE`, och
+> `hex_standardiserade_skyddsnivaer` en villkorslös `UPDATE` av `sk0.anonym_las`.
+> De var avsedda som engångsmigreringar men avfyrades vid *varje* installation,
+> så en vanlig ominstallation återställde `default_varde`, `historik_qa`,
+> `anvandare_kan_redigera`, `rolltyp`, `beskrivning` och `sk0.anonym_las` till
+> standardvärdena — tyst, och utan någon snapshot som kunde lägga tillbaka dem.
+> Migreringarna körs numera bara den gång kolumnen faktiskt tillkommer.
 
 ### Uppgradering från en version före `hex_`-prefixet
 
@@ -153,6 +187,145 @@ Installern hanterar det själv:
 
 Se du felet ovan kör du en avinstallation följt av en installation, eller
 `--upgrade` direkt.
+
+`--upgrade` letar också efter inställningar under de gamla tabellnamnen. Hittas
+konfigurationen där läses den därifrån och återställs under det nya namnet, och
+kolumner som bytt namn på vägen översätts:
+
+| Före `hex_`-prefixet | Efter |
+| --- | --- |
+| `standardiserade_skyddsnivaer` | `hex_standardiserade_skyddsnivaer` |
+| `standardiserade_datakategorier` (`validera_geometri`) | `hex_standardiserade_datakategorier` (`hex_validera_geometri`) |
+| `standardiserade_kolumner` | `hex_standardiserade_kolumner` |
+| `standardiserade_roller` (`with_login`) | `hex_standardiserade_roller` (`kan_logga_in`) |
+| `hex_role_credentials` (`rolname`, `password`, `rolcanlogin`) | `hex_rolluppgifter` (`rollnamn`, `losenord`, `kan_logga_in`) |
+
+Sker det skriver installern ut vilka tabeller den läste ur:
+
+```
+  VARNING: Inställningar lästes ur tabeller med namn från tiden före hex_-prefixet:
+             standardiserade_skyddsnivaer -> hex_standardiserade_skyddsnivaer
+           De återställs under de nya namnen.
+```
+
+> **Tidigare beteende:** före den här rättningen letade `--upgrade` bara efter de
+> `hex_`-prefixade namnen. I en databas som ännu bar de gamla sparades noll rader
+> (`0 rad(er) sparade från 0 tabell(er)`), avinstallationen droppade de gamla
+> tabellerna och installationen la tillbaka standardvärdena. Egna ändringar —
+> till exempel `publiceras_geoserver = true` för `skx` — försvann tyst. Har du
+> uppgraderat en sådan databas: jämför `hex_standardiserade_skyddsnivaer`,
+> `hex_standardiserade_datakategorier`, `hex_standardiserade_kolumner` och
+> `hex_standardiserade_roller` mot en säkerhetskopia och lägg tillbaka det som
+> saknas. Uppgraderingen kan inte återskapa värden som redan hunnit droppas.
+
+### Reparera en databas som redan uppgraderats
+
+Uppgraderade du innan rättningarna ovan fanns på plats är konfigurationen och
+drifttillståndet redan droppat. Mer går att återvinna än man först tror: spåren
+finns kvar i scheman, roller, triggerfunktioner och geometrikolumner.
+
+`reparera_hex.py` läser de spåren. Kör den utan flaggor för en ren diagnos som
+inte ändrar någonting:
+
+```bash
+python reparera_hex.py
+```
+
+Den går igenom samma databaser som `install_hex.py` (listan `DATABASES`) och
+delar fynden i tre grupper:
+
+| Grupp | Innehåll |
+| --- | --- |
+| Härledbart | Oregistrerade prefix, `hex_metadata`, `hex_avvikande_srid`, `hex_afvaktande_geometri` |
+| Kräver granskning | Borttagna rollmallar, kvarglömda dummy-rader, avvikande standardvärden |
+| Går inte att härleda | `publiceras_geoserver` och `anonym_las` per prefix |
+
+Åtgärda den första gruppen med:
+
+```bash
+python reparera_hex.py --reparera
+```
+
+Verktyget tar aldrig bort data. Det avslutar med `hex_underhall()`, så att
+återförda scheman får sina roller, behörigheter och GeoServer-notifieringar.
+
+> **Det allvarligaste fyndet först:** försvann en egen prefixrad ur
+> `hex_standardiserade_skyddsnivaer` finns schemat kvar i databasen, men faller
+> ur `hex_schema_regex()`. Då slutar *allt* underhåll gälla det — ägarskaps-
+> överföring, triggerreparation, GeoServer-notifiering och rollstädning vid drop.
+> Schemat ligger tyst utanför Hex. `reparera_hex.py` registrerar prefixet igen,
+> men med `publiceras_geoserver = false`: om schemat ska publiceras går inte att
+> härleda, och ett schema ska aldrig av misstag hamna på GeoServer.
+
+Efter reparationen återstår ett DBA-beslut: vilka prefix som ska publiceras.
+Sätt värdet och kör `SELECT * FROM public.hex_underhall();` så skickas
+notifieringen — ingen ny uppgradering behövs.
+
+Frågorna nedan är desamma som verktyget använder, för den som hellre kör dem
+för hand.
+
+**`hex_metadata`** härleds ur QA-triggerfunktionerna, som lever i användarschemana
+och överlever en avinstallation. Frågan är idempotent:
+
+```sql
+INSERT INTO public.hex_metadata
+    (parent_oid, parent_schema, parent_table, history_schema, history_table, trigger_funktion)
+SELECT p.oid, n.nspname, p.relname, n.nspname, h.relname, f.proname
+FROM   pg_class     p
+JOIN   pg_namespace n ON n.oid = p.relnamespace
+JOIN   pg_proc      f ON f.pronamespace = n.oid
+                     AND f.proname = 'trg_fn_' || p.relname || '_qa'
+JOIN   pg_class     h ON h.relnamespace = n.oid
+                     AND h.relname = left(p.relname, 61) || '_h'
+                     AND h.relkind = 'r'
+WHERE  p.relkind = 'r'
+  AND  n.nspname ~ public.hex_schema_regex()
+ON CONFLICT (parent_oid) DO NOTHING;
+```
+
+> Tabeller som döpts om *efter* att `hex_metadata` gick förlorad går inte att
+> matcha — `trg_fn_<tabell>_qa` bär det gamla namnet. Samma begränsning som
+> `hex_underhall()` dokumenterar för sin QA-triggeråterkoppling.
+
+**`hex_dummy_geometrier`** går inte att bygga om — registret var det enda som
+visste vilken `gid` som var dummyn. Däremot kan kvarglömda dummy-rader spåras på
+sin geometri: alla dummies ligger i rutan 160000–160100 / 6395000–6395100.
+
+```sql
+WITH kandidater AS (
+    SELECT n.nspname AS schema_namn, c.relname AS tabell_namn
+    FROM   pg_class     c
+    JOIN   pg_namespace n ON n.oid = c.relnamespace
+    WHERE  c.relkind = 'r'
+      AND  n.nspname ~ public.hex_schema_regex()
+      AND  c.relname NOT LIKE '%\_h'
+      AND  EXISTS (SELECT 1 FROM pg_attribute a JOIN pg_type t ON t.oid = a.atttypid
+                   WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+                     AND a.attname = 'geom' AND t.typname = 'geometry')
+      AND  NOT EXISTS (SELECT 1 FROM pg_trigger tg
+                       WHERE tg.tgrelid = c.oid AND tg.tgname = 'hex_ta_bort_dummy')
+      AND  NOT EXISTS (SELECT 1 FROM public.hex_dummy_geometrier d
+                       WHERE d.schema_namn = n.nspname AND d.tabell_namn = c.relname)
+)
+SELECT k.schema_namn, k.tabell_namn, m.antal_rader, m.antal_dummy
+FROM   kandidater k
+CROSS JOIN LATERAL (
+    SELECT (xpath('/row/a/text()', x))[1]::text::bigint AS antal_rader,
+           (xpath('/row/d/text()', x))[1]::text::bigint AS antal_dummy
+    FROM query_to_xml(format(
+        'SELECT count(*) AS a,'
+        ' count(*) FILTER (WHERE geom && ST_SetSRID('
+        '   ST_MakeEnvelope(159999, 6394999, 160101, 6395101), ST_SRID(geom))) AS d'
+        ' FROM %I.%I', k.schema_namn, k.tabell_namn), false, true, '') AS x
+) m
+WHERE  m.antal_dummy > 0
+ORDER BY 1, 2;
+```
+
+Resultatet är en **granskningslista**, inte ett facit: rutan ligger i SWEREF99 12 00
+och kan i teorin innehålla riktig data. En rad med `antal_rader = 1` och
+`antal_dummy = 1` i en tabell som aldrig fyllts är däremot med stor sannolikhet
+en kvarglömd dummy. Ta bort den manuellt när du kontrollerat den.
 
 ### `hex_rolluppgifter` roteras — den bevaras inte
 
