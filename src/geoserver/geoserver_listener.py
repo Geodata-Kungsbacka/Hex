@@ -175,8 +175,14 @@ def load_config():
         "gs_namespace_base": os.environ.get("HEX_GS_NAMESPACE_BASE", ""),
         # Reconnect
         "reconnect_delay": int(os.environ.get("HEX_RECONNECT_DELAY", "5")),
-        # Periodisk avstämning – intervall i sekunder (0 = avaktiverad)
-        "reconcile_interval": int(os.environ.get("HEX_RECONCILE_INTERVAL", "3600")),
+        # Periodisk avstämning – intervall i sekunder (0 = avaktiverad).
+        # Standard 43200 (12 h): avstämningen fångar bara notifieringar som
+        # missats medan lyssnaren varit uppe OCH ansluten, vilket är sällsynt –
+        # startavstämningen vid varje (åter)anslutning täcker nedtidsfallet.
+        # Två körningar per dygn gör att minst en alltid hamnar utanför
+        # kontorstid oavsett när tjänsten senast startades om (intervallet
+        # räknas från tjänstestart, inte från klockslag).
+        "reconcile_interval": int(os.environ.get("HEX_RECONCILE_INTERVAL", "43200")),
         # Uppstädning av föräldralösa workspaces: off | dry-run | on
         "orphan_cleanup": _read_cleanup_mode(),
         # Databaser
@@ -471,6 +477,11 @@ class GeoServerClient:
     MAX_RETRIES = 3
     RETRY_BACKOFF = [2, 5, 10]  # Sekunder mellan försök
 
+    # Tröskel i sekunder för att logga ett anrop som långsamt. Normala
+    # REST-anrop mot GeoServer svarar på bråkdelar av en sekund, så allt
+    # över några sekunder är värt en varning.
+    LANGSAM_ANROP_SEKUNDER = 5
+
     def __init__(self, base_url, user, password, dry_run=False, namespace_uri_base=""):
         self.base_url = base_url.rstrip("/")
         self.rest_url = f"{self.base_url}/rest"
@@ -489,6 +500,42 @@ class GeoServerClient:
         self.session.headers.update({
             "Accept": "application/json",
         })
+        # Tidpunkt (monotont) då föregående anrop på den här sessionen
+        # avslutades. Används enbart för att sätta långsamma anrop i relation
+        # till hur länge sessionen stått oanvänd (se _request_with_retry).
+        # Varje tråd har sin egen klient, så värdet delas aldrig mellan trådar.
+        self._senaste_anrop = None
+
+    def _logga_langsamt_anrop(self, method, url, start):
+        """Varnar om ett GeoServer-anrop tog onormalt lång tid.
+
+        Uppdaterar samtidigt tidsstämpeln för föregående anrop, så att nästa
+        varning kan ange hur länge sessionen stått oanvänd. Anropas både när
+        anropet lyckades och när det gav ett transient fel – ett anrop som
+        hänger sig och sedan misslyckas är minst lika intressant.
+
+        Args:
+            method: HTTP-metod, för loggraden.
+            url:    Anropad URL, för loggraden.
+            start:  time.monotonic() taget precis före anropet.
+        """
+        slut = time.monotonic()
+        varaktighet = slut - start
+        vilotid = self._senaste_anrop
+        self._senaste_anrop = slut
+
+        if varaktighet < self.LANGSAM_ANROP_SEKUNDER:
+            return
+
+        if vilotid is None:
+            paus = "sessionens första anrop"
+        else:
+            paus = "föregående anrop avslutades för %.0f s sedan" % (start - vilotid)
+
+        log.warning(
+            "  Långsamt GeoServer-anrop: %s %s tog %.1f s (%s)",
+            method, url, varaktighet, paus,
+        )
 
     def _request_with_retry(self, method, url, **kwargs):
         """Gör ett HTTP-anrop med retry vid transienta fel.
@@ -496,6 +543,15 @@ class GeoServerClient:
         Transienta fel (timeout, anslutningsfel) får upp till MAX_RETRIES
         nya försök med exponentiell backoff. Lyckade svar och HTTP-felkoder
         (4xx, 5xx) returneras direkt utan retry.
+
+        Anrop som tar längre än LANGSAM_ANROP_SEKUNDER loggas som varning
+        tillsammans med hur länge sessionen stått oanvänd. Tolkning: är det
+        långsamma anropet alltid det första efter en lång paus, medan
+        efterföljande anrop i samma svep går snabbt, ligger kostnaden i att
+        bygga upp anslutningen och inte i anropet. Vanligaste orsaken är att
+        HEX_GS_URL pekar på ett värdnamn vars första adress inte svarar
+        (t.ex. 'localhost' som slår upp ::1 medan GeoServer bara lyssnar på
+        IPv4) – då får varje ny anslutning vänta ut TCP-timeouten först.
 
         Returns:
             requests.Response
@@ -507,10 +563,13 @@ class GeoServerClient:
         last_exc = None
 
         for attempt in range(1 + self.MAX_RETRIES):
+            start = time.monotonic()
             try:
                 resp = self.session.request(method, url, **kwargs)
+                self._logga_langsamt_anrop(method, url, start)
                 return resp
             except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                self._logga_langsamt_anrop(method, url, start)
                 last_exc = e
                 if attempt < self.MAX_RETRIES:
                     delay = self.RETRY_BACKOFF[attempt]

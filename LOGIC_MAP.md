@@ -828,7 +828,7 @@ mot PostgreSQL och väntar på `pg_notify`-meddelanden på **två kanaler**.
 > och läs-workspacet skapas ändå.
 >
 > Utöver notifieringarna kör lyssnaren en **avstämning** vid uppstart och
-> därefter var `HEX_RECONCILE_INTERVAL` sekund (standard 3600, `0` = av). Den
+> därefter var `HEX_RECONCILE_INTERVAL` sekund (standard 43200 = 12 h, `0` = av). Den
 > kör samma `handle_schema_notification` för *alla* scheman i databasen, vilket
 > återskapar saknade workspaces/datastores, korrigerar ACL-regler och skriver om
 > datastorens autentiseringsuppgifter från `hex_rolluppgifter`.

@@ -343,7 +343,7 @@ uppgifterna fungerar direkt för inloggning.
 Det som däremot inte hänger med automatiskt är **GeoServers datastores**, som
 har sitt eget sparade lösenord. Lyssnaren skriver om dem från
 `hex_rolluppgifter` vid varje avstämning, men det sker först vid uppstart eller
-efter `HEX_RECONCILE_INTERVAL` (standard 3600 s). Fram till dess misslyckas
+efter `HEX_RECONCILE_INTERVAL` (standard 43200 s = 12 h). Fram till dess misslyckas
 GeoServers anslutningar för de berörda schemana.
 
 **Åtgärd:** starta om lyssnartjänsten direkt efter en uppgradering i stället för

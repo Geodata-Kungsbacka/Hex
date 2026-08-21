@@ -1050,6 +1050,118 @@ class TestCreateWorkspaceAcl(unittest.TestCase):
                 self.assertTrue(client.create_workspace_acl("skx_kba_fg", anonymous_read=True))
 
 
+class _StyrdKlocka:
+    """Monoton klocka med förutbestämda avläsningar, för tidmätningstesterna.
+
+    Varje anrop plockar nästa värde ur listan. Tar värdena slut returneras det
+    sista om och om igen, så att ett oväntat extra anrop inte spräcker testet
+    med StopIteration utan bara ger varaktigheten noll.
+    """
+
+    def __init__(self, tider):
+        self._tider = list(tider)
+        self._sista = 0.0
+
+    def __call__(self):
+        if self._tider:
+            self._sista = self._tider.pop(0)
+        return self._sista
+
+
+class TestLangsammaGeoServerAnrop(unittest.TestCase):
+    """
+    Instrumentering: onormalt långsamma REST-anrop ska synas i loggen.
+
+    Bakgrund: i drift tog varje avstämnings *första* GeoServer-anrop 18–21
+    sekunder, medan de dussintals anrop som följde i samma svep gick på
+    bråkdelar av en sekund. Utan tidmätning i loggen gick det inte att skilja
+    en långsam GeoServer från en anslutningsuppbyggnad som väntar ut en
+    TCP-timeout innan den faller tillbaka på nästa adress. Varningen anger
+    därför både varaktigheten och hur länge sessionen stått oanvänd.
+    """
+
+    def _make_client(self):
+        return gl.GeoServerClient(
+            base_url="http://geoserver.example.com",
+            user="admin",
+            password="secret",
+        )
+
+    def _anrop(self, client, tider, svar=None, fel=None):
+        """Kör ett anrop med styrd klocka och mockad session."""
+        session_mock = (
+            patch.object(client.session, "request", side_effect=fel) if fel
+            else patch.object(client.session, "request", return_value=svar)
+        )
+        with patch.object(gl.time, "monotonic", _StyrdKlocka(tider)), \
+                patch.object(gl.time, "sleep"), session_mock:
+            return client._request_with_retry("GET", f"{client.rest_url}/workspaces.json")
+
+    def test_snabbt_anrop_ger_ingen_varning(self):
+        """Ett anrop under tröskeln loggar ingenting."""
+        client = self._make_client()
+        svar = MagicMock(status_code=200)
+
+        with patch.object(gl.log, "warning") as mock_warning:
+            self._anrop(client, [100.0, 100.4], svar=svar)
+
+        mock_warning.assert_not_called()
+
+    def test_langsamt_anrop_varnar_med_varaktighet(self):
+        """Ett anrop över tröskeln loggar varaktigheten."""
+        client = self._make_client()
+        svar = MagicMock(status_code=200)
+
+        with self.assertLogs("geoserver_listener", level="WARNING") as cm:
+            self._anrop(client, [100.0, 118.7], svar=svar)
+
+        rad = "\n".join(cm.output)
+        self.assertIn("Långsamt GeoServer-anrop", rad)
+        self.assertIn("18.7 s", rad)
+        self.assertIn("sessionens första anrop", rad)
+
+    def test_varning_anger_hur_lange_sessionen_stod_oanvand(self):
+        """Andra anropet relaterar varaktigheten till pausen sedan det förra.
+
+        Det är den uppgiften som skiljer 'GeoServer är långsam' från
+        'anslutningen hann stängas och måste byggas upp igen'.
+        """
+        client = self._make_client()
+        svar = MagicMock(status_code=200)
+
+        # Ett snabbt anrop som avslutas vid t=100.2 ...
+        self._anrop(client, [100.0, 100.2], svar=svar)
+
+        # ... och ett långsamt en timme senare.
+        with self.assertLogs("geoserver_listener", level="WARNING") as cm:
+            self._anrop(client, [3701.0, 3719.7], svar=svar)
+
+        rad = "\n".join(cm.output)
+        self.assertIn("18.7 s", rad)
+        self.assertIn("3601 s sedan", rad)
+
+    def test_langsamt_anrop_som_misslyckas_varnar_ocksa(self):
+        """Ett anrop som hänger sig och sedan ger anslutningsfel loggas per försök.
+
+        Ett försök som tar tid och *ändå* misslyckas är minst lika intressant
+        som ett långsamt lyckat anrop.
+        """
+        client = self._make_client()
+        tider = []
+        for i in range(1 + client.MAX_RETRIES):
+            tider.extend([i * 30.0, i * 30.0 + 18.7])
+
+        with self.assertLogs("geoserver_listener", level="WARNING") as cm:
+            with self.assertRaises(requests.exceptions.ConnectionError):
+                self._anrop(
+                    client, tider,
+                    fel=requests.exceptions.ConnectionError("nätet nere"),
+                )
+
+        langsamma = [r for r in cm.output if "Långsamt GeoServer-anrop" in r]
+        self.assertEqual(len(langsamma), 1 + client.MAX_RETRIES)
+
+
 class TestAclRollordning(unittest.TestCase):
     """
     REGRESSION: ACL-regler med flera roller skrevs om vid varje avstämning.
@@ -1895,10 +2007,10 @@ class TestLoadConfig(unittest.TestCase):
     }
 
     def test_reconcile_interval_default(self):
-        """HEX_RECONCILE_INTERVAL ej satt → standard 3600."""
+        """HEX_RECONCILE_INTERVAL ej satt → standard 43200 (12 h)."""
         with patch.dict(os.environ, self._MIN_ENV, clear=True):
             config = gl.load_config()
-        self.assertEqual(config["reconcile_interval"], 3600)
+        self.assertEqual(config["reconcile_interval"], 43200)
 
     def test_reconcile_interval_custom(self):
         """HEX_RECONCILE_INTERVAL=300 → 300."""
