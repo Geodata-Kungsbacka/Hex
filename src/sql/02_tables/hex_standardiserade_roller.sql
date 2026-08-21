@@ -12,27 +12,6 @@ CREATE TABLE IF NOT EXISTS public.hex_standardiserade_roller (
     CONSTRAINT hex_standardiserade_roller_rollnamn_key UNIQUE (rollnamn)
 );
 
--- Säkerställ unik begränsning på befintliga installationer.
-DO $$
-BEGIN
-    ALTER TABLE public.hex_standardiserade_roller
-        ADD CONSTRAINT hex_standardiserade_roller_rollnamn_key UNIQUE (rollnamn);
-EXCEPTION
-    WHEN duplicate_table THEN NULL;
-END;
-$$;
-
--- Lägg till arvs_fran-kolonnen från fyrrollsrefaktoreringen på befintliga installationer.
--- CREATE TABLE IF NOT EXISTS ändrar inte befintliga tabeller, så uppgraderingar behöver detta.
-DO $$
-BEGIN
-    ALTER TABLE public.hex_standardiserade_roller
-        ADD COLUMN arvs_fran text DEFAULT NULL;
-EXCEPTION
-    WHEN duplicate_column THEN NULL;
-END;
-$$;
-
 -- Ägaren sätts via hex_systemagare() i stället för ett hårdkodat rollnamn,
 -- så att manuell installation ger samma ägarskap som install_hex.py.
 DO $$

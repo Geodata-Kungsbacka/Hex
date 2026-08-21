@@ -19,8 +19,8 @@
  *   C. hex_dummy_geometrier-specialfall: en föråldrad post som pekar på en
  *      tabell som inte längre finns ska hoppas över, inte ge fel.
  *   D. Reparation av rollstruktur: en roll som saknas helt (Fall a), en
- *      roll som migreras tillbaka från ett föråldrat pre-4-rolls
- *      LOGIN-tillstånd (Fall b), avvikande hex_geoserver_roller-
+ *      r_/w_-roll som felaktigt står som LOGIN och ska tvingas tillbaka
+ *      till NOLOGIN (Fall b), avvikande hex_geoserver_roller-
  *      medlemskap, samt avvikande arvs_fran-arv för ett GeoServer-
  *      tjänstekonto.
  *
@@ -344,9 +344,9 @@ BEGIN
     END IF;
 END $$;
 
--- D2 (Fall b): w_ var en föråldrad pre-4-rolls LOGIN-roll, felaktigt i
--- hex_geoserver_roller -- ska migreras tillbaka till NOLOGIN och tas bort
--- ur hex_geoserver_roller (detta är exakt den bugg commit 95ead68 fixade).
+-- D2 (Fall b): w_ står som LOGIN och ligger felaktigt i hex_geoserver_roller
+-- -- ska tvingas tillbaka till NOLOGIN och tas bort ur hex_geoserver_roller.
+-- Invarianten gäller oavsett hur värdet blev fel (jfr buggen 95ead68 stängde).
 DO $$
 DECLARE
     w_login boolean;
@@ -356,7 +356,7 @@ BEGIN
     SELECT pg_has_role('w_sk1_kba_underhalltest', 'hex_geoserver_roller', 'member') INTO w_i_geoserver_roller;
 
     IF w_login IS DISTINCT FROM true AND NOT w_i_geoserver_roller THEN
-        RAISE NOTICE 'TEST D2 PASSED: w_ migrerad tillbaka till NOLOGIN och borttagen ur hex_geoserver_roller';
+        RAISE NOTICE 'TEST D2 PASSED: w_ tvingad tillbaka till NOLOGIN och borttagen ur hex_geoserver_roller';
     ELSE
         RAISE WARNING 'TEST D2 FAILED: w_login=%, w_i_geoserver_roller=% (förväntade false, false)', w_login, w_i_geoserver_roller;
     END IF;

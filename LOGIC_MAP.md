@@ -891,7 +891,7 @@ flowchart TD
 │    load_config()                                                    │
 │      ├── Miljövariabler eller .env-fil                              │
 │      ├── Stöd för flera databaser: HEX_DB_1_*, HEX_DB_2_* …       │
-│      └── Legacy-format: HEX_PG_*                                   │
+│      └── Enkeldatabas-format: HEX_PG_* (delade standardvärden)     │
 │                                                                     │
 │    run_all_listeners()                                              │
 │      ├── En databas  → körs i huvudtråden                          │

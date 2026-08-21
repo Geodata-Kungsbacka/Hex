@@ -112,6 +112,82 @@ grep -rPn 'COMMENT\s+ON\s+.*[^\x00-\x7F]' src/sql/
 
 ---
 
+## Migreringar: märk dem, testa dem, städa bort dem
+
+En ändring som gör att en **redan installerad databas skiljer sig från vad
+SQL-filerna skapar** kräver migreringshjälp. Typfallet är `hex_`-prefixet: alla
+filer bytte namn, och varje befintlig databas bar kvar objekt under de gamla
+namnen. Andra fall är en ny kolumn, ett kolumnnamnbyte och ett ändrat
+standardvärde som måste backfyllas.
+
+Migreringshjälp är avsedd att vara **tillfällig**. Den lever tills alla
+driftsatta databaser passerat den, och ska sedan bort — annars blir den
+dödvikt som gör återställningsvägen svårare att läsa. Problemet är att hitta
+den igen ett halvår senare. Därför gäller tre regler.
+
+### 1. Märk varje migrering med `HEX-MIGRERING`
+
+Skriv taggen i en kommentar direkt ovanför koden, med datum och vad som ska ha
+hänt innan den får tas bort:
+
+```sql
+-- HEX-MIGRERING 2026-08: anonym_las tillkom efter tabellen. Backfyllningen är
+-- en engångsåtgärd. Tas bort när alla fyra produktionsdatabaserna kört
+-- --upgrade med den här versionen.
+```
+
+```python
+# HEX-MIGRERING 2026-08: läser inställningar under namnen före hex_-prefixet.
+# Tas bort när samtliga databaser installerats om med prefixade namn.
+```
+
+Då blir hela inventeringen ett kommando:
+
+```bash
+git grep -n "HEX-MIGRERING"
+```
+
+Det är hela poängen. Utan taggen måste man leta på ord som råkar användas —
+`legacy`, `ärvd`, `migrer`, `reparera` — och de orden har legitima
+betydelser i det här repot också: `hex_underhall()` *reparerar* triggers på
+varje körning, och roller *ärver* rättigheter via `arvs_fran`. En sökning på
+dem ger både falska träffar och missade fynd. En reserverad tagg ger varken.
+
+### 2. Skriv ett test som bevisar att `--upgrade` klarar övergången
+
+Migreringen ska ha ett test som bygger upp det **gamla** tillståndet, kör
+`install_hex.upgrade()` och kontrollerar att konfiguration och drifttillstånd
+kom över. Testklassen taggas i sin docstring:
+
+```python
+class TestUppgraderingFranNagot(unittest.TestCase):
+    """HEX-MIGRERING 2026-08: ... Tas bort tillsammans med migreringen."""
+```
+
+Utan testet vet man inte om migreringen behövs eller redan är överflödig, och
+då vågar ingen ta bort den. Testet är det som gör borttagningen till ett
+beslut i stället för en gissning.
+
+### 3. Skilj migrering från invariant innan du tar bort något
+
+Allt som ser ut som migrering är det inte. En **invariant** gäller varje
+framtida körning och ska stanna även när alla databaser är uppgraderade:
+
+| Migrering — tas bort | Invariant — behålls |
+| --- | --- |
+| `ADD COLUMN IF NOT EXISTS` för en kolumn som nu står i `CREATE TABLE` | `ON CONFLICT DO NOTHING` som skyddar DBA:ns värden vid ominstallation |
+| Läsning av tabellnamn som inte längre skapas | `hex_agda` på `hex_standardiserade_roller` |
+| Backfyllning som körts en gång | `hex_underhall()`s vakt att `r_`/`w_` är NOLOGIN |
+
+Frågan som skiljer dem: *kan tillståndet uppstå igen efter att alla databaser
+är uppgraderade?* Kan det uppstå genom att en DBA ändrar ett värde för hand
+är det en invariant, oavsett att den också råkade rätta gamla data. Tagga
+därför aldrig en invariant med `HEX-MIGRERING` — och när en vakt bara
+motiveras med sin historia, skriv om motiveringen i stället för att ta bort
+vakten.
+
+---
+
 ## Allmänna kodfakta
 
 - All SQL riktar sig mot PostgreSQL **16 eller senare** — inga MySQL/SQLite-idiom, och inga bakåtkompatibilitetshänsyn till äldre PostgreSQL-versioner. Installern avbryter mot äldre servrar. Testsviten körs mot både 16 och 17.

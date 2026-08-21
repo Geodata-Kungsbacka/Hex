@@ -43,34 +43,6 @@ COMMENT ON TABLE public.hex_standardiserade_kolumner
 COMMENT ON COLUMN public.hex_standardiserade_kolumner.schema_uttryck
     IS 'SQL-uttryck som avgör vilka scheman kolumnen ska appliceras på. Värdet sätts in efter "WHERE p_schema_namn [detta_värde]". Exempel: "= ''sk0_ext_sgu''", "LIKE ''%_ext_%''", "IN (''sk0_ext_sgu'', ''sk1_ext_region'')"';
 
--- Migrering: anvandare_kan_redigera tillkom efter tabellen. Backfyllningen av
--- de fem auditkolumnerna är en ENGÅNGSÅTGÄRD och körs bara samma gång som
--- kolumnen tillkom. INSERT-satsen nedan använder ON CONFLICT DO NOTHING, så
--- default_varde, historik_qa och övriga värden DBA ändrat lämnas i fred vid
--- varje ominstallation (se docs/05_anpassa-standardkolumner.md, som uttryckligen
--- beskriver UPDATE av default_varde som ett stött arbetssätt).
-DO $$
-DECLARE
-    kolumnen_fanns boolean;
-BEGIN
-    SELECT EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema = 'public'
-          AND table_name   = 'hex_standardiserade_kolumner'
-          AND column_name  = 'anvandare_kan_redigera'
-    ) INTO kolumnen_fanns;
-
-    ALTER TABLE IF EXISTS public.hex_standardiserade_kolumner
-        ADD COLUMN IF NOT EXISTS anvandare_kan_redigera boolean DEFAULT true;
-
-    IF NOT kolumnen_fanns THEN
-        UPDATE public.hex_standardiserade_kolumner
-            SET anvandare_kan_redigera = false
-            WHERE kolumnnamn IN
-                ('gid', 'skapad_tidpunkt', 'skapad_av', 'andrad_tidpunkt', 'andrad_av');
-    END IF;
-END;
-$$;
 
 -- Lägg till grundläggande standardkolumner
 -- ÄNDRING: Använder session_user istället för current_user för att fånga faktisk autentiserad användare
