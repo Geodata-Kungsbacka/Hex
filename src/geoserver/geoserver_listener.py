@@ -1696,8 +1696,8 @@ def _fetch_skyddsnivaer_config(db_config):
     """Hämtar hex_standardiserade_skyddsnivaer-konfigurationen från en databas.
 
     Returnerar en frozenset av (prefix, publiceras_geoserver, anonym_las)-tupler,
-    eller None vid anslutningsfel.  Används av run_all_listeners för att varna
-    om databaserna har olika konfigurationer.
+    eller None vid anslutningsfel.  Används av run_all_listeners för att
+    redovisa vilken skyddsnivåkonfiguration varje databas kör med.
     """
     try:
         conn = psycopg2.connect(
@@ -2420,28 +2420,28 @@ def run_all_listeners(config, dry_run=False, stop_event=None):
         if fetched:
             all_pg_schemas |= fetched
 
-    # Varna om databaserna har olika hex_standardiserade_skyddsnivaer-konfigurationer.
-    # Varje tråd använder sin egen databas mönster (via _thread_local), men skilda
-    # konfigurationer kan vara ett tecken på oavsiktlig databaskonfiguration.
+    # Redovisa hex_standardiserade_skyddsnivaer per databas vid start.
+    #
+    # Varje skyddsniva har sin egen databas och sin egen lyssnartråd, och varje
+    # tråd använder sin egen databas konfiguration (via _thread_local). Att
+    # konfigurationerna skiljer sig åt är alltså designat, inte ett fel — det är
+    # hela poängen med uppdelningen. Raden är därför en inventering av vad som
+    # faktiskt gäller per databas, inte en avvikelsekontroll.
     if len(databases) > 1:
         skyddsnivaer_per_db = {
             db["dbname"]: _fetch_skyddsnivaer_config(db) for db in databases
         }
-        loaded = {db: cfg for db, cfg in skyddsnivaer_per_db.items() if cfg is not None}
-        unique_configs = set(loaded.values())
-        if len(unique_configs) > 1:
-            log.warning(
-                "hex_standardiserade_skyddsnivaer skiljer sig åt mellan databaserna! "
-                "Varje lyssnartråd använder sin egen databas konfiguration. "
-                "Kontrollera att publiceras_geoserver och anonym_las är konsekvent "
-                "satta i alla databaser om det inte är avsiktligt."
+        for db_name, cfg in skyddsnivaer_per_db.items():
+            if cfg is None:
+                continue
+            log.info(
+                "Skyddsnivåer i %s: %s",
+                db_name,
+                ", ".join(
+                    f"{prefix}(geoserver={pub}, anonym={anon})"
+                    for prefix, pub, anon in sorted(cfg)
+                ),
             )
-            for db_name, cfg in loaded.items():
-                log.warning(
-                    "  %s: %s",
-                    db_name,
-                    sorted((prefix, pub, anon) for prefix, pub, anon in cfg),
-                )
 
     if len(databases) == 1:
         # En databas - kör direkt utan extra tråd

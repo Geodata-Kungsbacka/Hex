@@ -121,111 +121,6 @@ INSTALL_ORDER = [
 # AVINSTALLATION - omvänd ordning, DROP-satser
 # =============================================================================
 
-# -----------------------------------------------------------------------------
-# ÄRVDA OBJEKT - namn från tiden före hex_-prefixet
-#
-# Databaser som installerades före namnbytet till hex_-prefix bär kvar objekt
-# under sina gamla namn. DROP-satserna nedan nämner bara de nya namnen, så de
-# gamla överlever både avinstallation och uppgradering.
-#
-# Kvarlämnade event-triggers är inte bara skräp - de är aktiva. En gammal
-# hantera_ny_tabell() avfyras på CREATE TABLE under installationen och slår
-# mot public.hex_systemanvandare innan tabellen hunnit skapas, vilket avbryter
-# hela transaktionen med "relationen public.hex_systemanvandare existerar inte".
-# Därför droppas event-triggarna först, separat från övriga ärvda objekt.
-# -----------------------------------------------------------------------------
-
-LEGACY_EVENT_TRIGGERS_SQL = """
-DROP EVENT TRIGGER IF EXISTS notifiera_geoserver_borttagning_trigger;
-DROP EVENT TRIGGER IF EXISTS notifiera_geoserver_trigger;
-DROP EVENT TRIGGER IF EXISTS validera_schemanamn_trigger;
-DROP EVENT TRIGGER IF EXISTS blockera_schema_namnbyte_trigger;
-DROP EVENT TRIGGER IF EXISTS hantera_standardiserade_roller_trigger;
--- Mellansteg under namnbytet: tabellen hade fått hex_-prefix men inte funktionen.
-DROP EVENT TRIGGER IF EXISTS hantera_hex_standardiserade_roller_trigger;
-DROP EVENT TRIGGER IF EXISTS ta_bort_schemaroller_trigger;
-DROP EVENT TRIGGER IF EXISTS hantera_ny_vy_trigger;
-DROP EVENT TRIGGER IF EXISTS hantera_kolumntillagg_trigger;
-DROP EVENT TRIGGER IF EXISTS hantera_ny_tabell_trigger;
-DROP EVENT TRIGGER IF EXISTS hantera_borttagen_tabell_trigger;
-"""
-
-# Övriga ärvda objekt. Droppas bara vid avinstallation/uppgradering - en ren
-# installation rör dem inte, eftersom tabellerna kan innehålla anpassad data
-# som användaren inte bett oss kasta.
-#
-# CASCADE på triggerfunktionerna tar med sig de radtriggers de skapat på
-# användartabeller. Utan det blir gamla och nya triggers kvar sida vid sida.
-#
-# OBS: DROP FUNCTION IF EXISTS med en argumenttyp som inte finns (geom_info,
-# tabellregler, kolumnegenskaper) ger NOTICE och hoppas över - inte fel. Därför
-# är listan säker att köra även mot en databas som aldrig haft de gamla typerna.
-LEGACY_UNINSTALL_SQL = """
--- Triggerfunktioner
-DROP FUNCTION IF EXISTS public.notifiera_geoserver_borttagning();
-DROP FUNCTION IF EXISTS public.notifiera_geoserver();
-DROP FUNCTION IF EXISTS public.hantera_standardiserade_roller();
-DROP FUNCTION IF EXISTS public.hantera_hex_standardiserade_roller();
-DROP FUNCTION IF EXISTS public.ta_bort_schemaroller();
-DROP FUNCTION IF EXISTS public.hantera_ny_vy();
-DROP FUNCTION IF EXISTS public.hantera_kolumntillagg();
-DROP FUNCTION IF EXISTS public.hantera_ny_tabell();
-DROP FUNCTION IF EXISTS public.hantera_borttagen_tabell();
-DROP FUNCTION IF EXISTS public.kontrollera_geometri_trigger() CASCADE;
-
--- Hjälpfunktioner
--- Äldre namn med icke-ASCII 'ä'.
-DROP FUNCTION IF EXISTS public."tillämpa_grupprattigheter"();
-DROP FUNCTION IF EXISTS public.tillampa_grupprattigheter();
-DROP FUNCTION IF EXISTS public.lagg_till_dummy_geometri(text, text, geom_info);
-DROP FUNCTION IF EXISTS public.lagg_till_dummy_geometri(text, text, hex_geom_info);
-DROP FUNCTION IF EXISTS public.ta_bort_dummy_rad() CASCADE;
-DROP FUNCTION IF EXISTS public.tvinga_gid_fran_sekvens() CASCADE;
-DROP FUNCTION IF EXISTS public.underhall_hex();
-DROP FUNCTION IF EXISTS public.reparera_rad_triggers();
-DROP FUNCTION IF EXISTS public.tilldela_rollrattigheter(text, text, text);
-DROP FUNCTION IF EXISTS public.skapa_historik_qa(text, text);
-DROP FUNCTION IF EXISTS public.uppdatera_sekvensnamn(text, text, text);
-DROP FUNCTION IF EXISTS public.byt_ut_tabell(text, text, text);
-
--- Regelfunktioner
-DROP FUNCTION IF EXISTS public.aterskapa_kolumnegenskaper(text, text, kolumnegenskaper);
-DROP FUNCTION IF EXISTS public.aterskapa_kolumnegenskaper(text, text, hex_kolumnegenskaper);
-DROP FUNCTION IF EXISTS public.aterskapa_tabellregler(text, text, tabellregler);
-DROP FUNCTION IF EXISTS public.aterskapa_tabellregler(text, text, hex_tabellregler);
-DROP FUNCTION IF EXISTS public.spara_kolumnegenskaper(text, text);
-DROP FUNCTION IF EXISTS public.spara_tabellregler(text, text);
-
--- Valideringsfunktioner
-DROP FUNCTION IF EXISTS public.forklara_geometrifel(geometry);
-DROP FUNCTION IF EXISTS public.validera_geometri(geometry) CASCADE;
-DROP FUNCTION IF EXISTS public.validera_schemanamn();
-DROP FUNCTION IF EXISTS public.blockera_schema_namnbyte();
-DROP FUNCTION IF EXISTS public.validera_vynamn(text, text);
-DROP FUNCTION IF EXISTS public.validera_tabell(text, text);
-
--- Strukturfunktioner
-DROP FUNCTION IF EXISTS public.hamta_kolumnstandard(text, text, geom_info);
-DROP FUNCTION IF EXISTS public.hamta_kolumnstandard(text, text, hex_geom_info);
-DROP FUNCTION IF EXISTS public.hamta_geometri_definition(text, text);
-
--- Konfigurationsfunktioner
-DROP FUNCTION IF EXISTS public.system_owner();
-
--- Tabeller
-DROP TABLE IF EXISTS public.hex_role_credentials;
-DROP TABLE IF EXISTS public.standardiserade_roller;
-DROP TABLE IF EXISTS public.standardiserade_kolumner;
-DROP TABLE IF EXISTS public.standardiserade_skyddsnivaer;
-DROP TABLE IF EXISTS public.standardiserade_datakategorier;
-
--- Typer (måste tas bort efter funktionerna som använder dem)
-DROP TYPE IF EXISTS public.tabellregler;
-DROP TYPE IF EXISTS public.kolumnegenskaper;
-DROP TYPE IF EXISTS public.kolumnkonfig;
-DROP TYPE IF EXISTS public.geom_info;
-"""
-
 UNINSTALL_SQL = """
 -- Event-triggers (måste tas bort först)
 DROP EVENT TRIGGER IF EXISTS hex_notifiera_gs_borttagning_trigger;
@@ -338,8 +233,9 @@ PRESERVE_CONFIG = {
         # behörighetsgrupp LOGIN hamnar den i hex_geoserver_roller och öppnar
         # pg_hba.conf för den — pg_hba-hålet 95ead68 stängde. Invarianten gäller
         # oavsett hur värdet blev fel: en DBA som satt kan_logga_in = true för
-        # hand får det rättat vid nästa uppgradering, precis som en databas från
-        # tiden före 4-rollsrefaktorn (där kolumnen hette with_login) får det.
+        # hand får det rättat vid nästa uppgradering. Därför äger Hex de här två
+        # kolumnerna på sina egna standardrader och låter inte återställningen
+        # skriva tillbaka dem.
         "hex_agda": ["kan_logga_in", "arvs_fran"],
     },
 }
@@ -385,40 +281,6 @@ PRESERVE_STATE = {
     "hex_avvikande_srid": [
         "schema_namn", "tabell_namn", "srid", "registrerad", "registrerad_av",
     ],
-}
-
-# =============================================================================
-# ÄRVDA TABELL- OCH KOLUMNNAMN — namn från tiden före hex_-prefixet.
-#
-# En databas som installerades före namnbytet bär sina inställningar under de
-# gamla namnen. snapshot_settings() letade bara efter de nya namnen och hittade
-# ingenting, medan LEGACY_UNINSTALL_SQL droppade de gamla tabellerna. En
-# uppgradering från en sådan databas sparade alltså noll rader, installerade om
-# standardvärdena och lämnade inget att återställa: DBA:ns egna ändringar
-# (t.ex. publiceras_geoserver = true för skx) försvann tyst.
-#
-# Kartan används bara som reservväg. Finns den hex_-prefixade tabellen läses
-# den, oavsett om den gamla också ligger kvar.
-#
-# Värdet är (ärvt tabellnamn, {ärvt kolumnnamn: nytt kolumnnamn}). Kolumner som
-# behållit sitt namn utelämnas ur kartan.
-# =============================================================================
-
-LEGACY_TABLE_NAMES = {
-    "hex_standardiserade_skyddsnivaer": ("standardiserade_skyddsnivaer", {}),
-    "hex_standardiserade_datakategorier": (
-        "standardiserade_datakategorier",
-        {"validera_geometri": "hex_validera_geometri"},
-    ),
-    "hex_standardiserade_kolumner": ("standardiserade_kolumner", {}),
-    "hex_standardiserade_roller": (
-        "standardiserade_roller",
-        {"with_login": "kan_logga_in"},
-    ),
-    "hex_rolluppgifter": (
-        "hex_role_credentials",
-        {"rolname": "rollnamn", "password": "losenord", "rolcanlogin": "kan_logga_in"},
-    ),
 }
 
 # =============================================================================
@@ -521,62 +383,29 @@ def kontrollera_forutsattningar(cur) -> list[str]:
 # UPGRADE HELPERS
 # =============================================================================
 
-def _snapshot_kalla(cur, table: str):
-    """Väljer vilken tabell inställningarna för *table* ska läsas ur.
-
-    Returnerar (kalltabell, {nytt kolumnnamn: kolumnnamn i kalltabellen}).
-    Den hex_-prefixade tabellen har företräde. Saknas den letas det ärvda
-    namnet upp i LEGACY_TABLE_NAMES, så att en databas som ännu inte hunnit
-    genom namnbytet ändå får sina inställningar sparade. Hittas ingen tabell
-    returneras (None, {}).
-    """
-    if _table_exists(cur, table):
-        return table, {c: c for c in _table_columns(cur, table)}
-
-    arvt = LEGACY_TABLE_NAMES.get(table)
-    if arvt is None:
-        return None, {}
-
-    arvt_namn, kolumnbyten = arvt
-    if not _table_exists(cur, arvt_namn):
-        return None, {}
-
-    # Kolumnbytena går från gammalt till nytt namn; kartan vi returnerar går åt
-    # andra hållet, eftersom SELECT ska ställas mot kalltabellens egna namn.
-    return arvt_namn, {
-        kolumnbyten.get(c, c): c for c in _table_columns(cur, arvt_namn)
-    }
-
-
 def snapshot_settings(cur) -> dict:
     """Läser alla rader från PRESERVE_*-tabeller innan avinstallation.
 
-    Snapshoten nycklas alltid på det nya (hex_-prefixade) tabell- och
-    kolumnnamnet, även när raderna hämtats ur en ärvd tabell. restore_settings()
-    behöver därför inte känna till de gamla namnen.
+    Tabeller som saknas hoppas över, liksom kolumner som inte finns i den här
+    databasen. restore_settings() lägger tillbaka det som faktiskt lästes.
     """
     snapshot = {}
-    arvda = []
 
     def _las(table, kolumner):
-        """Läser *kolumner* (nya namn) ur rätt källtabell. Returnerar hämtade namn."""
-        kalla, kolumnkarta = _snapshot_kalla(cur, table)
-        if kalla is None:
+        """Läser *kolumner* ur *table*. Returnerar de kolumnnamn som fanns."""
+        if not _table_exists(cur, table):
             return None
-        tillgangliga = [c for c in kolumner if c in kolumnkarta]
+        befintliga = _table_columns(cur, table)
+        tillgangliga = [c for c in kolumner if c in befintliga]
         if not tillgangliga:
             return None
         cur.execute(
             pgsql.SQL("SELECT {} FROM public.{}").format(
-                pgsql.SQL(", ").join(
-                    pgsql.Identifier(kolumnkarta[c]) for c in tillgangliga
-                ),
-                pgsql.Identifier(kalla),
+                pgsql.SQL(", ").join(pgsql.Identifier(c) for c in tillgangliga),
+                pgsql.Identifier(table),
             )
         )
         snapshot[table] = {"rows": cur.fetchall(), "cols": tillgangliga}
-        if kalla != table:
-            arvda.append(f"{kalla} -> {table}")
         return tillgangliga
 
     for table, cfg in PRESERVE_CONFIG.items():
@@ -592,13 +421,6 @@ def snapshot_settings(cur) -> dict:
 
     for table, state_cols in PRESERVE_STATE.items():
         _las(table, state_cols)
-
-    if arvda:
-        skriv_varning(
-            "Inställningar lästes ur tabeller med namn från tiden före hex_-prefixet:\n"
-            + "\n".join(f"  {rad}" for rad in arvda)
-            + "\nDe återställs under de nya namnen."
-        )
 
     return snapshot
 
@@ -834,11 +656,7 @@ def uninstall(db: dict):
 
     try:
         print("Tar bort Hex-objekt...")
-        # Ärvda event-triggers först: en gammal hantera_ny_tabell() som ligger
-        # kvar avfyras annars på nästa CREATE TABLE och stoppar installationen.
-        cur.execute(LEGACY_EVENT_TRIGGERS_SQL)
         cur.execute(UNINSTALL_SQL)
-        cur.execute(LEGACY_UNINSTALL_SQL)
         conn.commit()
         print("Avinstallation klar.")
         print("+++melon melon melon+++")
@@ -905,18 +723,6 @@ def install(db: dict, base_path="."):
         # Serverversion och skrivskydd på public innan något installeras
         print("Kontrollerar databasens förutsättningar...")
         varningar = kontrollera_forutsattningar(cur)
-
-        # Ta bort event-triggers från tiden före hex_-prefixet. De pekar på
-        # funktioner som inte längre uppdateras, men avfyras fortfarande på
-        # CREATE TABLE och avbryter då hela installationstransaktionen.
-        #
-        # Måste ske före CREATE EXTENSION: postgis skapar spatial_ref_sys, och
-        # den tabellen räcker för att en ärvd trigger ska hinna fälla oss.
-        #
-        # Övriga ärvda objekt lämnas orörda här - de kan bära data, och en ren
-        # installation ska inte kasta något. Avinstallationen tar hand om resten.
-        print("Rensar ärvda event-triggers...")
-        cur.execute(LEGACY_EVENT_TRIGGERS_SQL)
 
         # Säkerställ att PostGIS finns
         print("Kontrollerar PostGIS-tillägget...")

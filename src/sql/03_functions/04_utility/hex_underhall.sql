@@ -18,18 +18,14 @@ AS $BODY$
  * Schemaprefix hämtas dynamiskt från hex_standardiserade_skyddsnivaer, så att
  * egna prefix (t.ex. sc1, sk3) fungerar utan kodändringar.
  *
- * Hanterar elva åtgärdstyper:
- *
- *   schemamigrering      Uppgraderar hex_rolluppgifter och hex_standardiserade_roller
- *                        till aktuellt schema idempotent (ADD COLUMN IF NOT EXISTS).
- *                        Körs alltid först.
+ * Hanterar tio åtgärdstyper:
  *
  *   ägarskapsöverföring  Säkerställer att scheman, tabeller, sekvenser och
  *                        funktioner i Hex-hanterade scheman ägs av
  *                        hex_systemagare(). Fångar objekt skapade av
  *                        superusers (t.ex. postgres) innan ägarskapsöverföringen
  *                        lades till i hex_hantera_std_roller och
- *                        hex_hantera_ny_tabell. Körs efter schemamigrering.
+ *                        hex_hantera_ny_tabell. Körs först.
  *
  *   hex_tvinga_gid       BEFORE INSERT på alla Hex-tabeller med en gid
  *                        IDENTITY-kolumn. Förhindrar att klienter (t.ex. QGIS)
@@ -60,13 +56,15 @@ AS $BODY$
  *                          w_{schema}    NOLOGIN behörighetsgrupp (skriv)
  *                          gs_r_{schema} LOGIN GeoServer läs-tjänstekonto
  *                          gs_w_{schema} LOGIN GeoServer skriv-tjänstekonto
- *                        Hanterar migrering från äldre installationer där r_- och w_-roller
- *                        skapades som LOGIN-roller (konverteras till NOLOGIN och
- *                        gs_*-konton skapas). Uppgraderar även befintliga
- *                        hex_systemagare()-grants till WITH ADMIN OPTION om de
- *                        beviljades av en äldre Hex-version utan den flaggan (behövs
- *                        på PG16+ för att ägarrollen ska kunna GRANT:a r_/w_ vidare
- *                        utan superuser). Idempotent.
+ *                        Invarianten är att r_/w_ ska vara NOLOGIN: en r_- eller
+ *                        w_-roll som står som LOGIN konverteras tillbaka och tas
+ *                        ur hex_geoserver_roller, oavsett hur den blev LOGIN.
+ *                        Släpps den igenom hamnar behörighetsgruppen i
+ *                        hex_geoserver_roller och öppnar pg_hba.conf för den.
+ *                        Säkerställer även WITH ADMIN OPTION på
+ *                        hex_systemagare()-granten (behövs på PG16+ för att
+ *                        ägarrollen ska kunna GRANT:a r_/w_ vidare utan
+ *                        superuser). Idempotent.
  *
  *   hex_geoserver_roller Säkerställer att gs_*-roller (kan_logga_in=true i
  *   (rollmedlemskap)     hex_rolluppgifter) är i hex_geoserver_roller.
@@ -108,49 +106,6 @@ DECLARE
     schema_regex       text;
     generated_password text;
 BEGIN
-    -- -------------------------------------------------------------------------
-    -- 0. Schemamigrering
-    --    Uppgraderar tabellscheman från äldre Hex-installationer idempotent.
-    --    Engångsnamnbyten körs först, sedan idempotenta kolumnuppgraderingar.
-    -- -------------------------------------------------------------------------
-
-    -- Byt namn på hex_role_credentials → hex_rolluppgifter och dess kolumner
-    IF EXISTS (
-        SELECT 1 FROM pg_tables
-        WHERE schemaname = 'public' AND tablename = 'hex_role_credentials'
-    ) THEN
-        EXECUTE 'ALTER TABLE public.hex_role_credentials RENAME TO hex_rolluppgifter';
-        EXECUTE 'ALTER TABLE public.hex_rolluppgifter RENAME COLUMN rolname     TO rollnamn';
-        EXECUTE 'ALTER TABLE public.hex_rolluppgifter RENAME COLUMN password    TO losenord';
-        EXECUTE 'ALTER TABLE public.hex_rolluppgifter RENAME COLUMN rolcanlogin TO kan_logga_in';
-        EXECUTE 'ALTER TABLE public.hex_rolluppgifter RENAME COLUMN created_at  TO skapad_tidpunkt';
-        IF EXISTS (
-            SELECT 1 FROM pg_constraint
-            WHERE conname = 'hex_role_credentials_pkey'
-        ) THEN
-            EXECUTE 'ALTER TABLE public.hex_rolluppgifter RENAME CONSTRAINT hex_role_credentials_pkey TO hex_rolluppgifter_pkey';
-        END IF;
-        EXECUTE 'REVOKE ALL ON public.hex_rolluppgifter FROM PUBLIC';
-        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'hex_listener') THEN
-            EXECUTE 'GRANT SELECT ON public.hex_rolluppgifter TO hex_listener';
-        END IF;
-    END IF;
-
-    -- Byt namn på with_login → kan_logga_in i hex_standardiserade_roller
-    IF EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema = 'public'
-          AND table_name   = 'hex_standardiserade_roller'
-          AND column_name  = 'with_login'
-    ) THEN
-        EXECUTE 'ALTER TABLE public.hex_standardiserade_roller RENAME COLUMN with_login TO kan_logga_in';
-    END IF;
-
-    -- Idempotenta kolumnuppgraderingar (no-ops om kolumnerna redan är rätt)
-    EXECUTE 'ALTER TABLE public.hex_rolluppgifter ALTER COLUMN losenord DROP NOT NULL';
-    EXECUTE 'ALTER TABLE public.hex_rolluppgifter ADD COLUMN IF NOT EXISTS kan_logga_in boolean NOT NULL DEFAULT true';
-    EXECUTE 'ALTER TABLE public.hex_standardiserade_roller ADD COLUMN IF NOT EXISTS arvs_fran text DEFAULT NULL';
-
     -- Bygg regex från hex_standardiserade_skyddsnivaer en gång.
     -- Alla schemanamnkontroller i denna funktion använder denna variabel
     -- så att egna prefix fungerar utan kodändringar.
@@ -159,14 +114,14 @@ BEGIN
     FROM   public.hex_standardiserade_skyddsnivaer;
 
     -- -------------------------------------------------------------------------
-    -- 0b. Ägarskapsöverföring
+    -- 0. Ägarskapsöverföring
     --     Säkerställer att alla Hex-hanterade objekt ägs av hex_systemagare().
     --     Fångar scheman och tabeller skapade av superusers innan
     --     hex_hantera_std_roller och hex_hantera_ny_tabell fick inbyggd
     --     ägarskapsöverföring.
     -- -------------------------------------------------------------------------
 
-    -- 0b-i. Scheman
+    -- 0-i. Scheman
     FOR r IN
         SELECT n.nspname AS s
         FROM   pg_namespace n
@@ -183,7 +138,7 @@ BEGIN
         RETURN NEXT;
     END LOOP;
 
-    -- 0b-ii. Tabeller
+    -- 0-ii. Tabeller
     FOR r IN
         SELECT n.nspname AS s, c.relname AS t
         FROM   pg_class     c
@@ -202,7 +157,7 @@ BEGIN
         RETURN NEXT;
     END LOOP;
 
-    -- 0b-iii. Sekvenser
+    -- 0-iii. Sekvenser
     FOR r IN
         SELECT n.nspname AS s, c.relname AS t
         FROM   pg_class     c
@@ -221,7 +176,7 @@ BEGIN
         RETURN NEXT;
     END LOOP;
 
-    -- 0b-iv. Funktioner (t.ex. trg_fn_*_qa som lever i användarscheman)
+    -- 0-iv. Funktioner (t.ex. trg_fn_*_qa som lever i användarscheman)
     FOR r IN
         SELECT n.nspname AS s,
                p.proname AS t,
@@ -242,7 +197,7 @@ BEGIN
         RETURN NEXT;
     END LOOP;
 
-    -- 0b-v. Vyer
+    -- 0-v. Vyer
     FOR r IN
         SELECT n.nspname AS s, c.relname AS t
         FROM   pg_class     c
@@ -549,12 +504,12 @@ BEGIN
     -- -------------------------------------------------------------------------
     -- 5. rollstruktur
     --    Verifierar och reparerar alla fyra roller per schema enligt
-    --    hex_standardiserade_roller. Hanterar både nyinstallationer och migrering
-    --    från äldre konfigurationer (r_*/w_* som LOGIN → NOLOGIN).
+    --    hex_standardiserade_roller. Håller invarianten att r_*/w_* är NOLOGIN
+    --    och gs_r_*/gs_w_* är LOGIN, oavsett hur ett avvikande värde uppstått.
     --
     --    NOLOGIN-roller (kan_logga_in=false, t.ex. r_*, w_*):
     --      a) Saknas helt              → CREATE NOLOGIN, behörigheter, hex_rolluppgifter
-    --      b) Är LOGIN (gammal config) → ALTER NOLOGIN, REVOKE hex_geoserver_roller,
+    --      b) Är LOGIN (ska inte vara) → ALTER NOLOGIN, REVOKE hex_geoserver_roller,
     --                                    uppdatera hex_rolluppgifter
     --      c) Finns som NOLOGIN        → säkerställ hex_rolluppgifter-post
     --
@@ -612,7 +567,10 @@ BEGIN
                 ELSIF EXISTS (
                     SELECT 1 FROM pg_roles WHERE rolname = rollnamn_full AND rolcanlogin
                 ) THEN
-                    -- Fall b: var LOGIN (gammal config) – migrera till NOLOGIN
+                    -- Fall b: står som LOGIN – tvinga tillbaka till NOLOGIN.
+                    -- r_/w_ är behörighetsgrupper och får aldrig kunna logga in;
+                    -- en LOGIN-roll här hamnar i hex_geoserver_roller och öppnar
+                    -- pg_hba.conf för gruppen (buggen 95ead68 stängde).
                     EXECUTE format('ALTER ROLE %I WITH NOLOGIN', rollnamn_full);
                     -- Ta bort från hex_geoserver_roller om den hamnat där
                     IF EXISTS (
@@ -644,7 +602,7 @@ BEGIN
                         EXECUTE format('GRANT %I TO %I WITH ADMIN OPTION', rollnamn_full, hex_systemagare());
                     END IF;
                     PERFORM hex_tilldela_rollrattigheter(r.s, rollnamn_full, rol.rolltyp);
-                    atgard := 'LOGIN→NOLOGIN migrerad';
+                    atgard := 'LOGIN→NOLOGIN rättad';
 
                 ELSE
                     -- Fall c: finns som NOLOGIN – säkerställ hex_rolluppgifter
@@ -773,7 +731,8 @@ BEGIN
     -- 6. hex_geoserver_roller rollmedlemskap
     --    Säkerställer att gs_*-roller (kan_logga_in=true) är i hex_geoserver_roller.
     --    Tar också bort NOLOGIN-roller (kan_logga_in=false) som felaktigt hamnat
-    --    i hex_geoserver_roller – förekommer vid migrering från äldre config.
+    --    i hex_geoserver_roller – de skulle annars öppna pg_hba.conf för en
+    --    behörighetsgrupp.
     -- -------------------------------------------------------------------------
 
     -- 6a. Lägg till saknade LOGIN-roller
@@ -1039,13 +998,8 @@ BEGIN
 END;
 $$;
 
--- Bakåtkompatibelt alias: ta bort gamla funktionen om den finns kvar sedan
--- en tidigare installation (kan ha ett annat returschema och kraschar annars).
-DROP FUNCTION IF EXISTS public.reparera_rad_triggers();
-
 COMMENT ON FUNCTION public.hex_underhall()
     IS 'Reparerar och verifierar hela Hex-strukturen för alla scheman.
-Uppgraderar tabellscheman (hex_rolluppgifter, hex_standardiserade_roller) idempotent.
 Överför ägarskap av scheman, tabeller, sekvenser, funktioner och vyer till hex_systemagare()
   – fångar objekt skapade av superusers innan ägarskapsöverföringen lades till i
   hex_hantera_std_roller/hex_hantera_ny_tabell.
@@ -1054,7 +1008,7 @@ hex_ta_bort_dummy, trg_<tabell>_qa).
 Verifierar och reparerar alla fyra roller per schema:
   r_{schema}/w_{schema}       NOLOGIN behörighetsgrupper – tilldelas AD-användare
   gs_r_{schema}/gs_w_{schema} LOGIN GeoServer-tjänstekonton – i hex_geoserver_roller
-Hanterar migrering från äldre config (r_*/w_* som LOGIN → NOLOGIN, skapar gs_*).
+Tvingar tillbaka r_*/w_* till NOLOGIN om de står som LOGIN och skapar saknade gs_*.
 Uppgraderar hex_systemagare()-medlemskap på r_/w_-roller till WITH ADMIN OPTION
 om det saknas, så att ägarrollen kan GRANT:a dem vidare utan superuser.
 Säkerställer hex_geoserver_roller-medlemskap (enbart gs_*) och tar bort
