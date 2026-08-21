@@ -95,6 +95,32 @@ powershell Get-Content "$env:HEX_LOG_DIR\hex_geoserver_listener.log" -Wait -Tail
 Om `HEX_LOG_DIR` inte är satt som systemmiljövariabel, ersätt med den faktiska
 sökvägen (t.ex. `D:\Hex\Logs\hex_geoserver_listener.log`).
 
+### Långsamma GeoServer-anrop
+
+Tar ett REST-anrop mot GeoServer längre än fem sekunder loggas en varning:
+
+```
+[WARNING]   Långsamt GeoServer-anrop: GET http://localhost:8080/geoserver/rest/workspaces.json
+            tog 18.7 s (föregående anrop avslutades för 3601 s sedan)
+```
+
+Normala anrop svarar på bråkdelar av en sekund. Läs raden så här:
+
+- **Bara det första anropet efter en lång paus är långsamt**, medan resten av
+  samma avstämning går fort. Då ligger kostnaden i att bygga upp anslutningen,
+  inte i anropet. Vanligaste orsaken är att `HEX_GS_URL` pekar på ett
+  värdnamn vars första adress inte svarar — `localhost` slår upp `::1` före
+  `127.0.0.1`, och lyssnar GeoServer bara på IPv4 får varje ny anslutning
+  vänta ut TCP-timeouten (~21 s på Windows) innan den faller tillbaka.
+  Kontrollera med `ping localhost` och `netstat -ano | findstr :8080`, och sätt
+  i så fall `HEX_GS_URL` till `http://127.0.0.1:8080/geoserver`. Byter du
+  adress måste CSRF-vitlistan i GeoServers `web.xml` uppdateras så att den
+  matchar (se `src/geoserver/SETUP.md`, Steg 4) – annars slutar GeoServers
+  webbgränssnitt att acceptera inloggningar.
+- **Alla anrop är långsamma**, oavsett paus. Då ligger tiden hos GeoServer.
+  Titta i GeoServers egen logg; en rolltjänst mot en långsam eller onåbar
+  katalog (LDAP) gör att varje anrop får vänta på autentiseringen.
+
 ---
 
 ## Manuell publicering (om automatiken misslyckats)
@@ -143,13 +169,26 @@ Lyssnaren kör automatiskt en periodisk avstämning mot GeoServer för att repar
 avvikelser — t.ex. om ett workspace eller en datastore försvunnit, eller om ACL-regler
 är felaktiga. Samma logik körs alltid vid tjänstens uppstart.
 
-Intervallet styrs av miljövariabeln `HEX_RECONCILE_INTERVAL` (sekunder, standard `3600`).
+Intervallet styrs av miljövariabeln `HEX_RECONCILE_INTERVAL` (sekunder, standard `43200`).
 Sätt till `0` för att inaktivera periodisk avstämning (uppstartsavstämningen körs ändå):
 
 ```env
-HEX_RECONCILE_INTERVAL=3600   # Kontrollera varje timme (standard)
+HEX_RECONCILE_INTERVAL=43200  # Kontrollera var tolfte timme (standard)
+HEX_RECONCILE_INTERVAL=3600   # Kontrollera varje timme
 HEX_RECONCILE_INTERVAL=0      # Ingen periodisk avstämning
 ```
+
+Standarden är satt lågt med flit. Avstämningen är ett skyddsnät, inte huvudvägen:
+publiceringen sker via `pg_notify` i samma transaktion som `CREATE SCHEMA`, och
+det troliga sättet att missa en notifiering är att lyssnaren varit nere — vilket
+uppstartsavstämningen redan täcker. Kvar blir notifieringar som missats medan
+lyssnaren varit både uppe och ansluten, vilket är sällsynt.
+
+Varje avstämning kostar dessutom något: den kör om hela publiceringen för
+*samtliga* scheman, och varje datastore skrivs om med en PUT som bygger om
+GeoServers anslutningspool för den datastoren. Intervallet räknas från
+tjänstestart och inte från klockslag, så med 12 timmar hamnar minst en av
+dygnets två körningar utanför kontorstid oavsett när tjänsten startades om.
 
 Vid varje avstämning jämförs GeoServers befintliga workspaces mot scheman i PostgreSQL.
 Både läs- och skriv-workspaces skapas om de saknas, och avvikande ACL-regler korrigeras.

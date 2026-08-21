@@ -544,15 +544,15 @@ en workspace eller datastore saknas (t.ex. för att någon manuellt tagit bort d
 skapas de om automatiskt, och autentiseringsuppgifterna uppdateras alltid med
 aktuella värden från `hex_rolluppgifter`.
 
-Standardintervallet är **3600 sekunder (60 minuter)**. Ändra eller avaktivera med:
+Standardintervallet är **43200 sekunder (12 timmar)**. Ändra eller avaktivera med:
 
 ```env
-HEX_RECONCILE_INTERVAL=3600   # sekunder mellan kontroller; 0 = avaktiverat
+HEX_RECONCILE_INTERVAL=43200   # sekunder mellan kontroller; 0 = avaktiverat
 ```
 
 | Variabel | Standard | Beskrivning |
 |---|---|---|
-| `HEX_RECONCILE_INTERVAL` | `3600` | Intervall i sekunder (0 avaktiverar) |
+| `HEX_RECONCILE_INTERVAL` | `43200` | Intervall i sekunder (0 avaktiverar) |
 
 > **OBS:** Periodisk avstämning skapar aldrig om publicerade lager (feature types)
 > – enbart workspaces, datastores, GeoServer-roller och ACL-regler. Lager måste
