@@ -275,20 +275,59 @@ def _parse_multi_database_configs(db_numbers):
     return databases
 
 
+def _tolka_env_varde(ravarde):
+    """Tolkar värdet i en .env-rad enligt samma regler som python-dotenv.
+
+    Reglerna är dotenv:s, inte påhittade – hela poängen med reservläsaren är
+    att en .env ska betyda samma sak oavsett om python-dotenv råkar vara
+    installerat på maskinen:
+
+      värde   # kommentar   ->  "värde"      (# efter blanktecken inleder kommentar)
+      lo#sen                ->  "lo#sen"     (# utan blanktecken före tillhör värdet)
+      #värde                ->  "#värde"     (samma sak i början av värdet)
+      "värde # här"         ->  "värde # här" (citerat värde tas ordagrant)
+      slutar_med_citat"     ->  'slutar_med_citat"' (oparat citattecken behålls)
+
+    Den gamla varianten strippade varken kommentarer eller citattecken parvis.
+    Följden var att raderna SETUP.md och docs/08 visar –
+    HEX_RECONCILE_INTERVAL=43200   # sekunder mellan kontroller – gav värdet
+    "43200   # sekunder mellan kontroller", och int() på det avbröt uppstarten.
+    """
+    varde = ravarde.strip()
+
+    # Citerat värde: allt mellan citattecknen tas ordagrant, allt efter det
+    # avslutande citattecknet ignoreras.
+    if varde[:1] in ('"', "'"):
+        citat = varde[0]
+        slut = varde.find(citat, 1)
+        if slut != -1:
+            return varde[1:slut]
+        # Oavslutat citattecken – behandla raden som ociterad.
+
+    # Ociterat värde: en kommentar inleds av # föregånget av blanktecken.
+    return re.split(r"\s+#", varde, maxsplit=1)[0].rstrip()
+
+
 def _load_env_file_fallback(env_path):
-    """Enkel .env-laddare om python-dotenv inte är tillgängligt."""
+    """Enkel .env-laddare om python-dotenv inte är tillgängligt.
+
+    Sätter bara variabler som inte redan finns i miljön, precis som
+    load_dotenv(override=False).
+    """
     try:
         with open(env_path, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
-                if not line or line.startswith("#"):
+                if not line or line.startswith("#") or "=" not in line:
                     continue
-                if "=" in line:
-                    key, _, value = line.partition("=")
-                    key = key.strip()
-                    value = value.strip().strip('"').strip("'")
-                    if key not in os.environ:
-                        os.environ[key] = value
+                # "export NYCKEL=värde" är giltigt i en .env och hanteras av
+                # python-dotenv. Utan det här blir nyckeln "export NYCKEL".
+                if line.startswith("export "):
+                    line = line[len("export "):].lstrip()
+                key, _, value = line.partition("=")
+                key = key.strip()
+                if key and key not in os.environ:
+                    os.environ[key] = _tolka_env_varde(value)
     except Exception as e:
         log.warning("Kunde inte ladda %s: %s", env_path, e)
 

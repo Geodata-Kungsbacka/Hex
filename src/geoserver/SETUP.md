@@ -257,6 +257,14 @@ pywin32           30x
 requests          2.3x.x
 ```
 
+> **`python-dotenv` är valfritt.** Saknas det läser lyssnaren `.env` med en
+> inbyggd reservläsare i stället, och loggar en varning vid uppstart.
+> Reservläsaren följer samma regler som `python-dotenv` — inline-kommentarer,
+> citerade värden, `#` i lösenord och `export NYCKEL=värde` tolkas likadant, så
+> en `.env` betyder samma sak oavsett vilken läsare som är aktiv
+> (`tests/test_pg_notify_listener.py`, `TestEnvFilReservlasare`, håller de två
+> i takt). `psycopg2`, `requests` och `pywin32` är däremot obligatoriska.
+
 ---
 
 ## Steg 2: Installera SQL-komponenten via Hex

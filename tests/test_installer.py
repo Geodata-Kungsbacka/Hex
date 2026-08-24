@@ -16,10 +16,13 @@ Kör med:
     python3 tests/test_installer.py
 """
 
+import io
 import re
 import sys
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import DEFAULT, patch
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -401,6 +404,119 @@ class TestDokumenteradInstallationsordning(unittest.TestCase):
     def test_hex_systemagare_star_forst(self):
         """Filen installern inte kör måste stå först – allt annat sätter ägarskap mot den."""
         self.assertEqual(self._dokumenterad_ordning()[0], self.UNDANTAG[0])
+
+
+# ---------------------------------------------------------------------------
+# 6. Kommandoraden
+# ---------------------------------------------------------------------------
+class TestKommandorad(unittest.TestCase):
+    """
+    install_hex.main() – flaggor, loopen över databaser, sammanfattning, exitkod.
+
+    All dokumentation säger åt användaren att köra `python install_hex.py`
+    med flaggor, men testerna anropar install()/upgrade()/uninstall() som
+    funktioner. Skalet runt dem — det som avgör vilken åtgärd som körs, att en
+    databas som misslyckas inte stoppar de övriga, och att skriptet avslutar
+    med felkod 1 — var därför otestat trots att det är det dokumenterade
+    gränssnittet.
+    """
+
+    EN_DB = [{"host": "h1", "dbname": "db1", "owner_role": None}]
+    TVA_DB = [
+        {"host": "h1", "dbname": "db1", "owner_role": None},
+        {"host": "h2", "dbname": "db2", "owner_role": None},
+    ]
+
+    def _kor(self, argv, databases, **biverkningar):
+        """Kör main() med install/upgrade/uninstall mockade.
+
+        biverkningar: side_effect per åtgärdsnamn, för att simulera fel.
+        Returnerar (exitkod, utskrift, mockar).
+        """
+        mockar = {}
+        with patch.multiple(
+            install_hex,
+            install=DEFAULT,
+            upgrade=DEFAULT,
+            uninstall=DEFAULT,
+        ) as m:
+            mockar = m
+            for namn, effekt in biverkningar.items():
+                mockar[namn].side_effect = effekt
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                kod = install_hex.main(argv, databases=databases)
+        return kod, buf.getvalue(), mockar
+
+    # -- Val av åtgärd -------------------------------------------------------
+
+    def test_utan_flaggor_installeras(self):
+        kod, _, m = self._kor([], self.EN_DB)
+        self.assertEqual(kod, 0)
+        m["install"].assert_called_once_with(self.EN_DB[0])
+        m["upgrade"].assert_not_called()
+        m["uninstall"].assert_not_called()
+
+    def test_upgrade_flaggan_uppgraderar(self):
+        _, _, m = self._kor(["--upgrade"], self.EN_DB)
+        m["upgrade"].assert_called_once_with(self.EN_DB[0])
+        m["install"].assert_not_called()
+
+    def test_uninstall_flaggan_avinstallerar(self):
+        _, _, m = self._kor(["--uninstall"], self.EN_DB)
+        m["uninstall"].assert_called_once_with(self.EN_DB[0])
+        m["install"].assert_not_called()
+
+    def test_upgrade_och_uninstall_tillsammans_avvisas(self):
+        """
+        Regression: --uninstall prövades först och vann tyst över --upgrade,
+        så kombinationen avinstallerade utan att uppgradera – och utan att
+        säga det. Nu är flaggorna ömsesidigt uteslutande.
+        """
+        with self.assertRaises(SystemExit) as cm, redirect_stdout(io.StringIO()):
+            with patch.object(sys, "stderr", io.StringIO()):
+                install_hex.main(["--upgrade", "--uninstall"], databases=self.EN_DB)
+        self.assertEqual(cm.exception.code, 2)
+
+    # -- Flera databaser -----------------------------------------------------
+
+    def test_alla_databaser_bearbetas(self):
+        _, _, m = self._kor([], self.TVA_DB)
+        self.assertEqual(m["install"].call_count, 2)
+
+    def test_en_misslyckad_databas_stoppar_inte_de_ovriga(self):
+        """docs/09: 'En databas som misslyckas stoppar inte de övriga.'"""
+        fel = [RuntimeError("connect nekad"), None]
+        kod, utskrift, m = self._kor([], self.TVA_DB, install=fel)
+        self.assertEqual(m["install"].call_count, 2)
+        self.assertEqual(kod, 1, "felkod 1 när en databas misslyckades")
+        self.assertIn("connect nekad", utskrift,
+                      "felet måste skrivas ut – annars avslutas installern tyst")
+
+    def test_sammanfattning_redovisar_bada_utfallen(self):
+        _, utskrift, _ = self._kor([], self.TVA_DB, install=[RuntimeError("bom"), None])
+        self.assertIn("Sammanfattning - Installation", utskrift)
+        self.assertIn("OK:       db2@h2", utskrift)
+        self.assertIn("MISSLYCKADES: db1@h1", utskrift)
+        self.assertIn("1/2 databaser lyckades.", utskrift)
+
+    def test_sammanfattningen_namner_atgarden(self):
+        for argv, rubrik in (
+            (["--upgrade"], "Sammanfattning - Uppgradering"),
+            (["--uninstall"], "Sammanfattning - Avinstallation"),
+        ):
+            with self.subTest(argv=argv):
+                _, utskrift, _ = self._kor(argv, self.TVA_DB)
+                self.assertIn(rubrik, utskrift)
+
+    def test_ingen_sammanfattning_for_en_databas(self):
+        """Sammanfattningen är till för att skilja databaser åt – med en är den brus."""
+        _, utskrift, _ = self._kor([], self.EN_DB)
+        self.assertNotIn("Sammanfattning", utskrift)
+
+    def test_exitkod_noll_nar_allt_lyckas(self):
+        kod, _, _ = self._kor([], self.TVA_DB)
+        self.assertEqual(kod, 0)
 
 
 if __name__ == "__main__":

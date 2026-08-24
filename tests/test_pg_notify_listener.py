@@ -24,6 +24,7 @@ Användning:
 import getpass
 import os
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -2071,17 +2072,331 @@ class TestPeriodicReconcileLoop(unittest.TestCase):
         self.assertTrue(periodic_called.is_set(), "_periodic_reconcile_loop startades aldrig")
 
 
+class TestEmailNotifier(unittest.TestCase):
+    """
+    E-postnotifieringarna som README listar under Felhantering.
+
+    De larmar när ingen tittar – vid misslyckad publicering, tappad
+    PostgreSQL-anslutning och återhämtning. Ett fel här syns därför inte som
+    ett fel, utan som uteblivet larm under ett avbrott.
+    """
+
+    SMTP_PA = {
+        "enabled": True,
+        "host": "smtp.example.com",
+        "port": 587,
+        "user": "hex@example.com",
+        "password": "hemligt",
+        "from_addr": "hex@example.com",
+        "to_addr": "drift@example.com",
+    }
+
+    def _notifier(self, **overrides):
+        return gl.EmailNotifier({**self.SMTP_PA, **overrides})
+
+    def _skicka(self, notifier, subject="Ämne", body="Kropp"):
+        """Skickar och returnerar SMTP-mocken."""
+        with patch("smtplib.SMTP") as smtp:
+            notifier.send(subject, body)
+        return smtp
+
+    def test_avstangd_notifier_oppnar_ingen_anslutning(self):
+        smtp = self._skicka(self._notifier(enabled=False))
+        smtp.assert_not_called()
+
+    def test_skickar_till_konfigurerad_server(self):
+        smtp = self._skicka(self._notifier())
+        smtp.assert_called_once_with("smtp.example.com", 587, timeout=30)
+
+    def test_autentiserar_nar_uppgifter_finns(self):
+        smtp = self._skicka(self._notifier())
+        server = smtp.return_value.__enter__.return_value
+        server.starttls.assert_called_once()
+        server.login.assert_called_once_with("hex@example.com", "hemligt")
+        server.send_message.assert_called_once()
+
+    def test_anonym_relay_utan_uppgifter(self):
+        """Utan user/password ska varken STARTTLS eller login köras."""
+        smtp = self._skicka(self._notifier(user="", password=""))
+        server = smtp.return_value.__enter__.return_value
+        server.starttls.assert_not_called()
+        server.login.assert_not_called()
+        server.send_message.assert_called_once()
+
+    def test_meddelandet_har_ratt_huvuden_och_utf8(self):
+        with patch("smtplib.SMTP") as smtp:
+            self._notifier().send("Ämne med å", "Kropp med ä och ö")
+        msg = smtp.return_value.__enter__.return_value.send_message.call_args[0][0]
+        self.assertEqual(msg["From"], "hex@example.com")
+        self.assertEqual(msg["To"], "drift@example.com")
+        self.assertEqual(msg.get_content_charset(), "utf-8")
+        self.assertIn("Kropp med ä och ö", msg.get_payload(decode=True).decode("utf-8"))
+
+    def test_smtp_fel_kastar_inte_vidare(self):
+        """
+        Ett SMTP-fel får aldrig avbryta lyssnaren.
+
+        send() anropas mitt i felhanteringen för en misslyckad publicering. Ett
+        undantag härifrån skulle ersätta det ursprungliga felet med ett
+        e-postfel.
+        """
+        notifier = self._notifier()
+        with patch("smtplib.SMTP", side_effect=OSError("ingen kontakt")):
+            notifier.send("Ämne", "Kropp")  # ska inte kasta
+
+    # -- Spam-spärren --------------------------------------------------------
+
+    def test_samma_amne_undertrycks_inom_cooldown(self):
+        notifier = self._notifier()
+        self._skicka(notifier, subject="Samma")
+        smtp = self._skicka(notifier, subject="Samma")
+        smtp.assert_not_called()
+
+    def test_olika_amnen_undertrycks_inte(self):
+        """Spärren är per ämne – ett annat fel ska inte tystas av det första."""
+        notifier = self._notifier()
+        self._skicka(notifier, subject="Fel A")
+        smtp = self._skicka(notifier, subject="Fel B")
+        smtp.assert_called_once()
+
+    def test_amnet_slapps_igenom_efter_cooldown(self):
+        notifier = self._notifier()
+        self._skicka(notifier, subject="Samma")
+        # Backdatera senaste utskick förbi cooldown i stället för att vänta.
+        notifier._last_sent["Samma"] -= gl.EmailNotifier.COOLDOWN + 1
+        smtp = self._skicka(notifier, subject="Samma")
+        smtp.assert_called_once()
+
+    # -- Bekvämlighetsmetoderna ----------------------------------------------
+
+    def _amne_och_kropp(self, metod, *args):
+        notifier = self._notifier()
+        with patch("smtplib.SMTP") as smtp:
+            getattr(notifier, metod)(*args)
+        msg = smtp.return_value.__enter__.return_value.send_message.call_args[0][0]
+        return msg["Subject"], msg.get_payload(decode=True).decode("utf-8")
+
+    def test_schema_failure_namner_schema_och_atgard(self):
+        amne, kropp = self._amne_och_kropp(
+            "notify_schema_failure", "sk0_kba_test", "geodata", "GeoServer nere"
+        )
+        self.assertIn("sk0_kba_test", amne)
+        self.assertIn("geodata", kropp)
+        self.assertIn("GeoServer nere", kropp)
+        # Kroppen ska innehålla kommandot mottagaren ska köra för att försöka igen.
+        self.assertIn(f"NOTIFY {gl.CHANNEL_SCHEMA_CREATE}, 'sk0_kba_test';", kropp)
+
+    def test_removal_failure_pekar_pa_drop_kanalen(self):
+        _, kropp = self._amne_och_kropp(
+            "notify_schema_removal_failure", "sk0_kba_test", "geodata", "fel"
+        )
+        self.assertIn(f"NOTIFY {gl.CHANNEL_SCHEMA_DROP}, 'sk0_kba_test';", kropp)
+
+    def test_anslutningslarm_och_aterhamtning_har_olika_amnen(self):
+        """
+        Spärren är per ämne. Delade larmen ämne skulle återhämtningen
+        undertryckas av larmet som just skickats.
+        """
+        forlorad, _ = self._amne_och_kropp("notify_pg_connection_lost", "geodata", "fel")
+        ateransluten, _ = self._amne_och_kropp("notify_pg_reconnected", "geodata")
+        self.assertNotEqual(forlorad, ateransluten)
+        self.assertIn("geodata", forlorad)
+        self.assertIn("geodata", ateransluten)
+
+    def test_ovantat_fel_namner_databasen(self):
+        amne, kropp = self._amne_och_kropp("notify_unexpected_error", "geodata", "bom")
+        self.assertIn("geodata", amne)
+        self.assertIn("bom", kropp)
+
+
+class TestDispatchNotificationError(unittest.TestCase):
+    """
+    _dispatch_notification_error väljer felmeddelande och larm per kanal.
+
+    Fyra grenar: skapa/ta bort × transient/oväntat. Vid transienta fel skriver
+    den ut exakt det NOTIFY-kommando operatören ska köra om för hand — väljs
+    fel gren pekar återställningsinstruktionen åt fel håll.
+    """
+
+    def _kor(self, channel, transient):
+        notifier = MagicMock()
+        with self.assertLogs(gl.log, level="ERROR") as loggen:
+            gl._dispatch_notification_error(
+                channel, "geodata", "sk0_kba_test", "bom", notifier, transient=transient
+            )
+        return notifier, "\n".join(loggen.output)
+
+    def test_skapa_transient_larmar_och_visar_notify(self):
+        notifier, logg = self._kor(gl.CHANNEL_SCHEMA_CREATE, True)
+        notifier.notify_schema_failure.assert_called_once_with(
+            "sk0_kba_test", "geodata", "bom"
+        )
+        notifier.notify_schema_removal_failure.assert_not_called()
+        self.assertIn("retry-försök", logg)
+
+    def test_skapa_ovantat_larmar_utan_retry_text(self):
+        notifier, logg = self._kor(gl.CHANNEL_SCHEMA_CREATE, False)
+        notifier.notify_schema_failure.assert_called_once()
+        self.assertNotIn("retry-försök", logg)
+
+    def test_borttagning_transient_pekar_pa_drop_kanalen(self):
+        notifier, logg = self._kor(gl.CHANNEL_SCHEMA_DROP, True)
+        notifier.notify_schema_removal_failure.assert_called_once_with(
+            "sk0_kba_test", "geodata", "bom"
+        )
+        notifier.notify_schema_failure.assert_not_called()
+        self.assertIn(f"NOTIFY {gl.CHANNEL_SCHEMA_DROP}, 'sk0_kba_test';", logg)
+
+    def test_borttagning_ovantat_larmar_om_borttagning(self):
+        notifier, _ = self._kor(gl.CHANNEL_SCHEMA_DROP, False)
+        notifier.notify_schema_removal_failure.assert_called_once()
+
+    def test_utan_notifier_loggas_anda(self):
+        """E-post är valfritt – notifier=None får inte krascha felhanteringen."""
+        with self.assertLogs(gl.log, level="ERROR") as loggen:
+            gl._dispatch_notification_error(
+                gl.CHANNEL_SCHEMA_CREATE, "geodata", "sk0_kba_test", "bom", None
+            )
+        self.assertIn("sk0_kba_test", "\n".join(loggen.output))
+
+
+class TestEnvFilReservlasare(unittest.TestCase):
+    """
+    _load_env_file_fallback läser .env när python-dotenv saknas.
+
+    Den vägen är inte hypotetisk: session-start-hooken installerar bara
+    psycopg2 och requests, så i CI och i webbsessioner är reservläsaren den
+    som körs. En .env måste betyda samma sak oavsett vilken av de två läsarna
+    som råkar vara aktiv – annars beter sig tjänsten olika på två maskiner med
+    identisk konfiguration.
+
+    De förväntade värdena nedan är avlästa ur python-dotenv (dotenv_values),
+    inte hittepå. Ändras reservläsaren ska de fortsätta stämma.
+    """
+
+    # (.env-rad, förväntat värde) – hämtat från python-dotenv.
+    FALL = [
+        # Inline-kommentar. Exakt de här raderna står i SETUP.md och docs/08,
+        # och det var dem den gamla läsaren tog med kommentar och allt.
+        ("HEX_RECONCILE_INTERVAL=43200   # sekunder mellan kontroller", "43200"),
+        ("HEX_ORPHAN_CLEANUP=off       # Endast varning i loggen", "off"),
+        # # utan blanktecken före tillhör värdet – lösenord får innehålla #.
+        ("HEX_GS_PASSWORD=lo#sen", "lo#sen"),
+        ("HEX_GS_PASSWORD=#borjar_med_bradgard", "#borjar_med_bradgard"),
+        # Citerade värden tas ordagrant.
+        ('HEX_GS_PASSWORD="lo # sen"', "lo # sen"),
+        ("HEX_GS_PASSWORD='lo # sen'", "lo # sen"),
+        ('HEX_GS_PASSWORD=""', ""),
+        # Oparat citattecken behålls – att strippa det förvanskar lösenordet.
+        ('HEX_GS_PASSWORD=slutar_med_citat"', 'slutar_med_citat"'),
+        ('HEX_GS_PASSWORD=mitt"i', 'mitt"i'),
+        # Blanktecken runt värdet trimmas, likhetstecken i värdet behålls.
+        ("HEX_GS_USER=  admin  ", "admin"),
+        ("HEX_GS_PASSWORD=a=b=c", "a=b=c"),
+        # "export NYCKEL=värde" är giltigt i en .env.
+        ("export HEX_GS_USER=admin", "admin"),
+    ]
+
+    def _las(self, rader):
+        """Skriver *rader* till en tillfällig .env och läser den. Returnerar miljön."""
+        with tempfile.TemporaryDirectory() as d:
+            fil = Path(d) / ".env"
+            fil.write_text("\n".join(rader) + "\n", encoding="utf-8")
+            with patch.dict(os.environ, {}, clear=True):
+                gl._load_env_file_fallback(fil)
+                return dict(os.environ)
+
+    def test_varden_tolkas_som_python_dotenv(self):
+        for rad, forvantat in self.FALL:
+            with self.subTest(rad=rad):
+                nyckel = rad.split("=", 1)[0].replace("export ", "").strip()
+                self.assertEqual(self._las([rad]).get(nyckel), forvantat)
+
+    def test_kommentarer_och_tomma_rader_hoppas_over(self):
+        miljo = self._las(["# en kommentar", "", "   ", "HEX_GS_USER=admin"])
+        self.assertEqual(miljo, {"HEX_GS_USER": "admin"})
+
+    def test_rad_utan_likhetstecken_ignoreras(self):
+        self.assertEqual(self._las(["skrapmat", "HEX_GS_USER=admin"]),
+                         {"HEX_GS_USER": "admin"})
+
+    def test_befintlig_miljovariabel_vinner(self):
+        """Samma som load_dotenv(override=False) – miljön har företräde."""
+        with tempfile.TemporaryDirectory() as d:
+            fil = Path(d) / ".env"
+            fil.write_text("HEX_GS_USER=fran_fil\n", encoding="utf-8")
+            with patch.dict(os.environ, {"HEX_GS_USER": "fran_miljon"}, clear=True):
+                gl._load_env_file_fallback(fil)
+                self.assertEqual(os.environ["HEX_GS_USER"], "fran_miljon")
+
+    def test_saknad_fil_kastar_inte(self):
+        gl._load_env_file_fallback(Path(tempfile.gettempdir()) / "finns-inte.env")
+
+    def test_dokumenterad_env_startar_lyssnaren(self):
+        """
+        Slutkontroll: raderna dokumentationen visar ska gå att köra på.
+
+        HEX_RECONCILE_INTERVAL går genom int() i load_config utan try, så ett
+        värde med kommentar kvar avbröt uppstarten – tjänsten loggade
+        "invalid literal for int()" och stannade.
+        """
+        rader = [
+            "HEX_GS_USER=hex_publisher",
+            "HEX_GS_PASSWORD=hemligt",
+            "HEX_DB_1_DBNAME=geodata_sk0",
+            "HEX_RECONCILE_INTERVAL=43200   # sekunder mellan kontroller; 0 = avaktiverat",
+            "HEX_ORPHAN_CLEANUP=dry-run   # Loggar vad en uppstädning skulle ta bort",
+        ]
+        with tempfile.TemporaryDirectory() as d:
+            fil = Path(d) / ".env"
+            fil.write_text("\n".join(rader) + "\n", encoding="utf-8")
+            with patch.dict(os.environ, {"HEX_ENV_FILE": str(fil)}, clear=True):
+                config = gl.load_config()
+        self.assertEqual(config["reconcile_interval"], 43200)
+        self.assertEqual(config["orphan_cleanup"], gl.CLEANUP_DRY_RUN)
+
+
 class TestLoadConfig(unittest.TestCase):
     """
     Enhetstester för load_config – verifierar att HEX_RECONCILE_INTERVAL
     läses korrekt med standard och anpassade värden.
     """
 
+    # HEX_ENV_FILE måste peka på en fil som inte finns.
+    #
+    # patch.dict(..., clear=True) tömmer miljön, och utan HEX_ENV_FILE faller
+    # resolve_env_path() tillbaka på src/geoserver/.env. Den filen är
+    # gitignorerad och saknas i CI, men finns på varje maskin där lyssnaren
+    # faktiskt är konfigurerad – och då läste testet den riktiga
+    # driftkonfigurationen. En .env med HEX_RECONCILE_INTERVAL=3600 fällde
+    # test_reconcile_interval_default med "3600 != 43200", utan att något i
+    # koden var fel.
     _MIN_ENV = {
         "HEX_GS_USER": "admin",
         "HEX_GS_PASSWORD": "secret",
         "HEX_DB_1_DBNAME": "geodata",
+        "HEX_ENV_FILE": str(
+            Path(tempfile.gettempdir()) / "hex-env-som-inte-finns.env"
+        ),
     }
+
+    def test_env_filen_i_kodkatalogen_lases_inte(self):
+        """
+        Sviten ska ge samma resultat på en maskin som har en riktig .env.
+
+        Regression: utan HEX_ENV_FILE i _MIN_ENV lästes src/geoserver/.env, och
+        sviten blev beroende av maskinens driftkonfiguration.
+        """
+        env_fil = SRC_PATH / ".env"
+        if env_fil.exists():
+            self.skipTest("kan inte skriva över en befintlig .env")
+        env_fil.write_text("HEX_RECONCILE_INTERVAL=3600\n", encoding="utf-8")
+        try:
+            with patch.dict(os.environ, self._MIN_ENV, clear=True):
+                config = gl.load_config()
+            self.assertEqual(config["reconcile_interval"], 43200)
+        finally:
+            env_fil.unlink()
 
     def test_reconcile_interval_default(self):
         """HEX_RECONCILE_INTERVAL ej satt → standard 43200 (12 h)."""

@@ -96,7 +96,7 @@ test_reserved_words.sql                24      0      0      0   OK
 ...
 test_stress.sql                        28     14      0      0   OK
 ...
-TOTALT                                547     15      0      0
+TOTALT                                590     15      0      0
 ```
 
 Flaggor:
@@ -187,7 +187,8 @@ och betyder inte att ett test misslyckats.
 | `test_client_encoding.py`      | Att lyssnaren alltid sätter UTF-8 som klientkodning             |
 | `test_installer.py`            | `install_hex.py` – ägarskap, installationsordning och dokumentationens SQL-block |
 | `test_installer_livscykel.py`  | Uppgradering, avinstallation, `owner_role=None`, förutsättningar |
-| `test_pg_notify_listener.py`   | `pg_notify`-flödet mot GeoServer (GeoServer mockas)             |
+| `test_pg_notify_listener.py`   | `pg_notify`-flödet mot GeoServer (GeoServer mockas), `.env`-läsning, e-postlarm |
+| `test_geoserver_service.py`    | Windows-tjänsten: import, `HEX_LOG_DIR`, loggfilsuppsättning     |
 
 Python-sviterna kräver inte att Hex är installerat. `test_installer.py`
 behöver ingen databas alls – den testar installerns rena funktioner och
@@ -211,3 +212,14 @@ LISTEN/NOTIFY men mockar GeoServer. Klassen `TestRolluppgifterMotRiktigTabell`
 kör dessutom uppslagen mot en verklig `public.hex_rolluppgifter` — övriga
 tester mockar dem, och då körs aldrig deras SQL. Den klassen hoppas över när
 Hex inte är installerat i måldatabasen.
+
+`TestEnvFilReservlasare` testar `.env`-läsaren som används när `python-dotenv`
+saknas. Den vägen är inte hypotetisk: hooken installerar bara `psycopg2` och
+`requests`, så i CI och i webbsessioner är reservläsaren den som körs.
+
+`test_geoserver_service.py` stoppar in attrapper för pywin32 i `sys.modules` och
+kan därför köras på Linux, trots att `geoserver_service.py` är en
+Windows-tjänst. Den täcker inte tjänstelivscykeln — bara att modulen går att
+importera (den hämtar fem namn ur `geoserver_listener`, och ett namnbyte där
+syns annars först när tjänsten inte startar), att `HEX_LOG_DIR` styr
+loggkatalogen, och att loggfilen kopplas på.

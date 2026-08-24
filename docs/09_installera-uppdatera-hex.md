@@ -83,7 +83,11 @@ python install_hex.py
 ```
 
 Skriptet installerar alla typer, tabeller, funktioner, triggers och event-triggers
-i rätt ordning. En utskrift bekräftar varje steg.
+i rätt ordning. En utskrift bekräftar varje steg. Skriptet avslutas med felkod 1 om
+någon databas misslyckades, annars 0.
+
+`--upgrade` och `--uninstall` kan inte kombineras — anges båda avbryter
+installern med ett argumentfel.
 
 ---
 

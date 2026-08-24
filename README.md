@@ -268,6 +268,10 @@ python install_hex.py --upgrade    # Uppgradera (bevarar inställningar)
 python install_hex.py --uninstall  # Avinstallera
 ```
 
+`--upgrade` och `--uninstall` utesluter varandra — anges båda avbryter
+installern med ett argumentfel i stället för att välja åt dig. Utan flagga
+installeras Hex.
+
 > **OBS vid `--upgrade`:** konfigurationstabellerna bevaras, men lösenorden i
 > `hex_rolluppgifter` **roteras** — GeoServers datastores behöver de nya
 > uppgifterna. Starta om lyssnartjänsten efter uppgraderingen, se
