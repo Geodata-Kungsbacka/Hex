@@ -1059,6 +1059,7 @@ det utlöser i sin tur nya eventutlösare. Tre flaggor förhindrar oändliga ked
 | Funktion | Utlösare av | Händelse |
 |---|---|---|
 | `hex_validera_schemanamn()` | `hex_validera_schemanamn_trigger` | CREATE SCHEMA, DDL_COMMAND_END |
+| `hex_blockera_schema_namnbyte()` | `hex_blockera_schema_namnbyte_trigger` | ALTER SCHEMA, DDL_COMMAND_END |
 | `hex_hantera_std_roller()` | `hex_hantera_std_roller_trigger` | CREATE SCHEMA, DDL_COMMAND_END |
 | `hex_notifiera_gs()` | `hex_notifiera_gs_trigger` | CREATE SCHEMA, DDL_COMMAND_END |
 | `hex_notifiera_gs_borttagning()` | `hex_notifiera_gs_borttagning_trigger` | DROP SCHEMA, SQL_DROP |
@@ -1097,9 +1098,24 @@ det utlöser i sin tur nya eventutlösare. Tre flaggor förhindrar oändliga ked
 | Funktion | Anropas av | Syfte |
 |---|---|---|
 | `hex_byt_ut_tabell(schema, tabell, temp)` | `hex_hantera_ny_tabell` | DROP original + RENAME temp |
-| `hex_uppdatera_sekvensnamn(schema, tabell)` | `hex_hantera_ny_tabell` | Döper om IDENTITY-sekvenser |
+| `hex_uppdatera_sekvensnamn(schema, tabell, temp_suffix)` | `hex_hantera_ny_tabell` | Döper om IDENTITY-sekvenser |
 | `hex_skapa_historik_qa(schema, tabell)` | `hex_hantera_ny_tabell` | Skapar historiktabell + QA-trigger |
 | `hex_tilldela_rollrattigheter(schema, roll, typ)` | `hex_hantera_std_roller` | GRANT USAGE + SELECT (read) eller GRANT ALL (write) på tabeller |
+| `hex_aterskapa_qa_trigger(schema, tabell, historik_tabell)` | `hex_hantera_ny_kolumn` | Kopplar tillbaka QA-triggern mot en befintlig historiktabell |
+| `hex_lagg_till_dummy_geometri(schema, tabell, hex_geom_info)` | `hex_hantera_ny_tabell`, `hex_hantera_ny_kolumn` | Lägger in dummy-geometriraden och registrerar den i `hex_dummy_geometrier` |
+| `hex_ta_bort_dummy_rad()` | Radtrigger `hex_ta_bort_dummy` (AFTER INSERT) | Tar bort dummy-raden vid första riktiga INSERT |
+| `hex_tvinga_gid_fran_sekvens()` | Radtrigger `hex_tvinga_gid` (BEFORE INSERT) | Tvingar `gid` från IDENTITY-sekvensen trots `OVERRIDING SYSTEM VALUE` |
+| `hex_kontrollera_geometri_trigger()` | Radtrigger `hex_kontrollera_geom` (BEFORE INSERT/UPDATE) | Kör `hex_validera_geometri()` och rapporterar via `hex_forklara_geometrifel()` |
+| `hex_forklara_geometrifel(geom)` | `hex_kontrollera_geometri_trigger` | Läsbar förklaring till varför en geometri underkändes |
+| `hex_underhall()` | `install_hex.py`, manuellt | Verifierar och reparerar triggers, roller, behörigheter och ägarskap |
+| `hex_tillampa_grupprattigheter()` | Manuellt efter ändring i `hex_grupprattigheter` | AD-grupproll → medlemskap i Hex-roll (`SECURITY DEFINER`) |
+
+### Konfigurationsfunktioner
+
+| Funktion | Anropas av | Syfte |
+|---|---|---|
+| `hex_schema_regex()` | `hex_hantera_ny_tabell`, `hex_hantera_ny_kolumn` | Returnerar prefixmönstret `^(sk0\|sk1\|sk2\|skx)_`, byggt ur `hex_standardiserade_skyddsnivaer`. Används för att slippa hårdkodade schemaprefix — inte för namnvalideringen, som `hex_validera_schemanamn` bygger själv ur båda konfigurationstabellerna |
+| `hex_systemagare()` | Samtliga SQL-filer som sätter ägarskap | Returnerar ägarrollen. Genereras av installern ur `owner_role` — enda funktionen utan egen fil i `INSTALL_ORDER` |
 
 ### Anpassade typer
 

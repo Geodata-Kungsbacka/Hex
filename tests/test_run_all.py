@@ -75,8 +75,12 @@ def _rakna(utdata: str, monster: str) -> int:
 
 
 class Resultat:
-    def __init__(self, namn):
+    def __init__(self, namn, sort="sql"):
         self.namn = namn
+        # "sql" eller "python". Styr hur utdata filtreras när sviten underkänns:
+        # SQL-sviterna rapporterar per rad (WARNING ... FAILED), unittest i
+        # sammanhängande block under "FAIL:"/"ERROR:".
+        self.sort = sort
         self.passerade = 0
         self.misslyckade = 0
         self.xfail = 0
@@ -154,7 +158,7 @@ def kor_sql_svit(filnamn: str) -> Resultat:
 
 
 def kor_python_svit(filnamn: str) -> Resultat:
-    res = Resultat(filnamn)
+    res = Resultat(filnamn, sort="python")
     proc = subprocess.run(
         [sys.executable, str(TESTS_DIR / filnamn)],
         capture_output=True,
@@ -200,6 +204,42 @@ def kor_python_svit(filnamn: str) -> Resultat:
         )
 
     return res
+
+
+# unittest skriver sina underkända tester som block: en "FAIL:"- eller
+# "ERROR:"-rubrik, en avdelarrad, traceback:en och en tom rad. Blocken ligger
+# samlade sist i utdata, direkt före sammanfattningsraden "Ran N tests".
+UNITTEST_RUBRIK = re.compile(r"^(FAIL|ERROR):\s")
+UNITTEST_SAMMANFATTNING = re.compile(r"^Ran \d+ tests?\b")
+
+
+def _felrader(res: Resultat) -> list:
+    """Returnerar de rader ur en underkänd svits utdata som säger vad som gick fel.
+
+    SQL-sviterna rapporterar per rad och filtreras på WARNING/ERROR. unittest
+    skriver i stället flerradiga block, och ett radvis filter ger då tom
+    utskrift — sviten underkänns utan att säga varför.
+    """
+    rader = res.utdata.splitlines()
+    if res.sort == "sql":
+        return [r for r in rader if WARNING_FAIL.search(r) or "ERROR:" in r]
+
+    forsta = next(
+        (i for i, rad in enumerate(rader) if UNITTEST_RUBRIK.match(rad)), None
+    )
+    if forsta is not None:
+        slut = next(
+            (i for i in range(forsta, len(rader))
+             if UNITTEST_SAMMANFATTNING.match(rader[i])),
+            len(rader),
+        )
+        return rader[forsta:slut]
+
+    # Ingen rubrik hittades: sviten dog innan sammanfattningen skrevs, eller
+    # avslutades med annan felkod. Visa slutet av utdata i stället för inget.
+    return [
+        "(inga FAIL/ERROR-block – sviten avslutades i förtid, sista raderna:)"
+    ] + rader[-20:]
 
 
 def main():
@@ -264,9 +304,8 @@ def main():
         for r in misslyckade:
             print()
             print(f"--- Utdata från {r.namn} (exitkod {r.exitkod}) ---")
-            for rad in r.utdata.splitlines():
-                if WARNING_FAIL.search(rad) or "ERROR:" in rad:
-                    print(f"  {rad}")
+            for rad in _felrader(r):
+                print(f"  {rad}")
 
     if args.verbose:
         for r in resultat:

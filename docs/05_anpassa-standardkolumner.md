@@ -14,8 +14,8 @@ automatiskt när en tabell skapas med `CREATE TABLE`. Standarduppsättningen är
 | `gid` | 1 (först) | `integer GENERATED ALWAYS AS IDENTITY` | Alla | – |
 | `skapad_tidpunkt` | −4 (sist) | `timestamptz DEFAULT now()` | Alla | DEFAULT |
 | `skapad_av` | −3 (sist) | `character varying DEFAULT session_user` | `_kba_` | DEFAULT |
-| `andrad_tidpunkt` | −2 (sist) | `timestamptz` | `_kba_` | Trigger |
-| `andrad_av` | −1 (sist) | `character varying` | `_kba_` | Trigger |
+| `andrad_tidpunkt` | −2 (sist) | `timestamptz DEFAULT now()` | `_kba_` | DEFAULT vid INSERT, trigger vid UPDATE |
+| `andrad_av` | −1 (sist) | `character varying DEFAULT session_user` | `_kba_` | DEFAULT vid INSERT, trigger vid UPDATE |
 
 > Filtreringen ovan följer av `schema_uttryck` på respektive rad, inte av någon
 > hårdkodad regel: med standardkonfigurationen läggs `skapad_av`,
@@ -29,6 +29,13 @@ automatiskt när en tabell skapas med `CREATE TABLE`. Standarduppsättningen är
 > är den faktiskt autentiserade inloggningen och påverkas inte av `SET ROLE`
 > eller av att koden råkar köras i en `SECURITY DEFINER`-funktion, vilket
 > `current_user` gör.
+
+> **`andrad_*` är ifyllda redan vid INSERT.** QA-triggern är
+> `BEFORE UPDATE OR DELETE` och rör aldrig en ny rad, men båda kolumnerna har
+> ett `default_varde` (`NOW()` respektive `session_user`). En rad som aldrig
+> uppdaterats har alltså `andrad_tidpunkt = skapad_tidpunkt` och
+> `andrad_av = skapad_av` — inte `NULL`. Vill du kunna skilja en orörd rad från
+> en uppdaterad, töm `default_varde` på de två raderna.
 
 Negativa positioner placeras sist i tabellen, i stigande ordning, direkt före geometrikolumnen.
 
@@ -117,7 +124,10 @@ WHERE kolumnnamn = 'extern_id';
 - Ändringar gäller **bara nya tabeller** som skapas efter ändringen.
   Befintliga tabeller påverkas inte.
 - Kolumner med `historik_qa = true` uppdateras automatiskt av triggern
-  vid varje `UPDATE` eller `DELETE` – dessa bör inte ha `DEFAULT`-värden
-  som skriver över triggerns arbete.
+  vid varje `UPDATE` eller `DELETE`. Ett `default_varde` på en sådan kolumn
+  konkurrerar inte med triggern — DEFAULT gäller vid `INSERT`, triggern vid
+  `UPDATE`/`DELETE` — men det avgör vad en aldrig uppdaterad rad innehåller.
+  Standarduppsättningens `andrad_tidpunkt` och `andrad_av` har båda ett
+  `default_varde` av just det skälet.
 - Positionen avgör kolumnordningen: lägre positiva värden hamnar
   längre till vänster, och negativa värden placeras i slutet av tabellen.

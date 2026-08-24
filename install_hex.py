@@ -448,7 +448,7 @@ def restore_settings(cur, snapshot: dict):
                      Kolumner listade under hex_agda hoppas över i UPDATEn.
     PRESERVE_USER_DATA: INSERTar alla sparade rader med ON CONFLICT DO NOTHING.
     PRESERVE_STATE: samma sak för drifttillståndet (hex_metadata m.fl.).
-    Strukturell difftolerens: återställer bara kolumner som finns i både snapshot och ny tabell.
+    Strukturell difftolerans: återställer bara kolumner som finns i både snapshot och ny tabell.
     """
     for table, cfg in PRESERVE_CONFIG.items():
         if table not in snapshot:
@@ -846,11 +846,32 @@ COMMENT ON FUNCTION public.hex_systemagare()
 # ENTRYPOINT
 # =============================================================================
 
-if __name__ == "__main__":
+def main(argv=None, databases=None):
+    """Kör den åtgärd argumenten anger mot varje databas i *databases*.
+
+    Bruten ur `if __name__ == "__main__"` för att kommandoraden ska gå att
+    testa. Dokumentationen hänvisar genomgående till `python install_hex.py`
+    med flaggor, så flaggtolkning, loopen över flera databaser,
+    sammanfattningen och avslutskoden är en del av installerns kontrakt —
+    inte bara ett skal runt install().
+
+    Args:
+        argv:      Argumentlista. None betyder sys.argv[1:].
+        databases: Databaser att köra mot. None betyder modulens DATABASES.
+
+    Returnerar avslutskoden: 0 om alla lyckades, annars 1.
+    """
     parser = argparse.ArgumentParser(description="Hex Installation")
-    parser.add_argument("--uninstall", action="store_true", help="Ta bort alla Hex-objekt")
-    parser.add_argument("--upgrade", action="store_true", help="Spara inställningar, avinstallera, installera om och återställ")
-    args = parser.parse_args()
+    # Ömsesidigt uteslutande: tidigare vann --uninstall tyst över --upgrade
+    # (den prövades först), så `--upgrade --uninstall` avinstallerade utan att
+    # säga något om att uppgraderingen aldrig kördes.
+    lage = parser.add_mutually_exclusive_group()
+    lage.add_argument("--uninstall", action="store_true", help="Ta bort alla Hex-objekt")
+    lage.add_argument("--upgrade", action="store_true", help="Spara inställningar, avinstallera, installera om och återställ")
+    args = parser.parse_args(argv)
+
+    if databases is None:
+        databases = DATABASES
 
     if args.uninstall:
         action_name = "Avinstallation"
@@ -865,7 +886,7 @@ if __name__ == "__main__":
     succeeded = []
     failed = []
 
-    for db in DATABASES:
+    for db in databases:
         try:
             action(db)
             succeeded.append(_label(db))
@@ -876,7 +897,7 @@ if __name__ == "__main__":
             print(f"MISSLYCKADES: {_label(db)}: {e}")
             failed.append(_label(db))
 
-    if len(DATABASES) > 1:
+    if len(databases) > 1:
         print()
         print("=" * 60)
         print(f"Sammanfattning - {action_name}")
@@ -885,8 +906,11 @@ if __name__ == "__main__":
             print(f"  OK:       {label}")
         for label in failed:
             print(f"  MISSLYCKADES: {label}")
-        print(f"  {len(succeeded)}/{len(DATABASES)} databaser lyckades.")
+        print(f"  {len(succeeded)}/{len(databases)} databaser lyckades.")
         print("=" * 60)
 
-    if failed:
-        raise SystemExit(1)
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

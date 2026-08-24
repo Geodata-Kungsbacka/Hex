@@ -16,10 +16,13 @@ Kör med:
     python3 tests/test_installer.py
 """
 
+import io
 import re
 import sys
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import DEFAULT, patch
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -293,6 +296,227 @@ class TestStripSqlComments(unittest.TestCase):
 
     def test_behaller_kod(self):
         self.assertIn("SELECT 1", _strip_sql_comments("-- x\nSELECT 1;"))
+
+
+# ---------------------------------------------------------------------------
+# 5. Dokumentationen mot installerns egna listor
+# ---------------------------------------------------------------------------
+def _sql_block(md_fil: str, efter_rubrik: str) -> str:
+    """Plockar ut det första ```sql-blocket efter en rubrik i en markdown-fil."""
+    text = (PROJECT_ROOT / md_fil).read_text(encoding="utf-8")
+    start = text.index(efter_rubrik)
+    traff = re.search(r"```sql\n(.*?)```", text[start:], re.DOTALL)
+    if traff is None:
+        raise AssertionError(f"Hittade inget sql-block efter {efter_rubrik!r} i {md_fil}")
+    return traff.group(1)
+
+
+def _drop_satser(sql: str) -> list:
+    """Returnerar DROP-satserna i sql, normaliserade till en rad var.
+
+    Kommentarer strippas först, och whitespace normaliseras, så att jämförelsen
+    gäller satserna och inte formateringen.
+    """
+    kod = _strip_sql_comments(sql)
+    return [
+        " ".join(sats.split())
+        for sats in re.findall(r"DROP\s+.*?;", kod, re.DOTALL | re.IGNORECASE)
+    ]
+
+
+class TestDokumenteradAvinstallation(unittest.TestCase):
+    """
+    docs/10 dokumenterar samma DROP-block som UNINSTALL_SQL kör.
+
+    Blocket är en handkopia, och en kopia driver isär: en ny tabell eller
+    funktion läggs till i UNINSTALL_SQL men glöms i dokumentationen. Följden är
+    tyst — en DBA som följer dokumentationen tror att Hex är borta, men
+    event-triggern som blev kvar fortsätter blockera DDL. Det här testet är
+    vakten mot det.
+    """
+
+    RUBRIK = "## Metod 2"
+
+    def setUp(self):
+        self.dokumenterade = _drop_satser(_sql_block("docs/10_avinstallera-hex.md", self.RUBRIK))
+        self.faktiska = _drop_satser(install_hex.UNINSTALL_SQL)
+
+    def test_dokumentationen_saknar_inget(self):
+        saknas = [s for s in self.faktiska if s not in self.dokumenterade]
+        self.assertEqual(
+            saknas, [],
+            "DROP-satser i UNINSTALL_SQL som saknas i docs/10: " + repr(saknas),
+        )
+
+    def test_dokumentationen_har_inget_extra(self):
+        extra = [s for s in self.dokumenterade if s not in self.faktiska]
+        self.assertEqual(
+            extra, [],
+            "DROP-satser i docs/10 som inte finns i UNINSTALL_SQL: " + repr(extra),
+        )
+
+    def test_samma_ordning(self):
+        """Ordningen är en beroendeordning – event-triggers före funktioner, typer sist."""
+        self.assertEqual(self.dokumenterade, self.faktiska)
+
+    def test_readme_duplicerar_inte_blocket(self):
+        """
+        README ska hänvisa till docs/10, inte upprepa blocket.
+
+        En andra kopia är precis det som en gång lämnade README:s block bakom
+        med en aktiv event-trigger och tio funktioner kvar i databasen.
+        """
+        readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+        avsnitt = readme[readme.index("### Manuell avinstallation"):]
+        avsnitt = avsnitt[:avsnitt.index("## Licens")]
+        self.assertNotIn(
+            "DROP EVENT TRIGGER", avsnitt,
+            "README upprepar avinstallationsblocket – hänvisa till docs/10 i stället.",
+        )
+
+
+class TestDokumenteradInstallationsordning(unittest.TestCase):
+    """
+    README:s "Detaljerad installationsordning" ska spegla INSTALL_ORDER.
+
+    README säger själv att de två måste ändras likadant. Utan ett test är det
+    en uppmaning, inte en garanti — och en manuell installation som följer en
+    inaktuell ordning faller på en beroende som inte finns än.
+    """
+
+    UNDANTAG = ["src/sql/00_config/hex_systemagare.sql"]
+
+    def _dokumenterad_ordning(self):
+        block = _sql_block("README.md", "### Detaljerad installationsordning")
+        return [
+            rad.strip() for rad in block.splitlines()
+            if rad.strip().endswith(".sql")
+        ]
+
+    def test_samma_filer_i_samma_ordning(self):
+        dokumenterad = self._dokumenterad_ordning()
+        forvantad = self.UNDANTAG + list(install_hex.INSTALL_ORDER)
+        self.assertEqual(
+            dokumenterad, forvantad,
+            "README:s installationsordning stämmer inte med INSTALL_ORDER.",
+        )
+
+    def test_hex_systemagare_star_forst(self):
+        """Filen installern inte kör måste stå först – allt annat sätter ägarskap mot den."""
+        self.assertEqual(self._dokumenterad_ordning()[0], self.UNDANTAG[0])
+
+
+# ---------------------------------------------------------------------------
+# 6. Kommandoraden
+# ---------------------------------------------------------------------------
+class TestKommandorad(unittest.TestCase):
+    """
+    install_hex.main() – flaggor, loopen över databaser, sammanfattning, exitkod.
+
+    All dokumentation säger åt användaren att köra `python install_hex.py`
+    med flaggor, men testerna anropar install()/upgrade()/uninstall() som
+    funktioner. Skalet runt dem — det som avgör vilken åtgärd som körs, att en
+    databas som misslyckas inte stoppar de övriga, och att skriptet avslutar
+    med felkod 1 — var därför otestat trots att det är det dokumenterade
+    gränssnittet.
+    """
+
+    EN_DB = [{"host": "h1", "dbname": "db1", "owner_role": None}]
+    TVA_DB = [
+        {"host": "h1", "dbname": "db1", "owner_role": None},
+        {"host": "h2", "dbname": "db2", "owner_role": None},
+    ]
+
+    def _kor(self, argv, databases, **biverkningar):
+        """Kör main() med install/upgrade/uninstall mockade.
+
+        biverkningar: side_effect per åtgärdsnamn, för att simulera fel.
+        Returnerar (exitkod, utskrift, mockar).
+        """
+        mockar = {}
+        with patch.multiple(
+            install_hex,
+            install=DEFAULT,
+            upgrade=DEFAULT,
+            uninstall=DEFAULT,
+        ) as m:
+            mockar = m
+            for namn, effekt in biverkningar.items():
+                mockar[namn].side_effect = effekt
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                kod = install_hex.main(argv, databases=databases)
+        return kod, buf.getvalue(), mockar
+
+    # -- Val av åtgärd -------------------------------------------------------
+
+    def test_utan_flaggor_installeras(self):
+        kod, _, m = self._kor([], self.EN_DB)
+        self.assertEqual(kod, 0)
+        m["install"].assert_called_once_with(self.EN_DB[0])
+        m["upgrade"].assert_not_called()
+        m["uninstall"].assert_not_called()
+
+    def test_upgrade_flaggan_uppgraderar(self):
+        _, _, m = self._kor(["--upgrade"], self.EN_DB)
+        m["upgrade"].assert_called_once_with(self.EN_DB[0])
+        m["install"].assert_not_called()
+
+    def test_uninstall_flaggan_avinstallerar(self):
+        _, _, m = self._kor(["--uninstall"], self.EN_DB)
+        m["uninstall"].assert_called_once_with(self.EN_DB[0])
+        m["install"].assert_not_called()
+
+    def test_upgrade_och_uninstall_tillsammans_avvisas(self):
+        """
+        Regression: --uninstall prövades först och vann tyst över --upgrade,
+        så kombinationen avinstallerade utan att uppgradera – och utan att
+        säga det. Nu är flaggorna ömsesidigt uteslutande.
+        """
+        with self.assertRaises(SystemExit) as cm, redirect_stdout(io.StringIO()):
+            with patch.object(sys, "stderr", io.StringIO()):
+                install_hex.main(["--upgrade", "--uninstall"], databases=self.EN_DB)
+        self.assertEqual(cm.exception.code, 2)
+
+    # -- Flera databaser -----------------------------------------------------
+
+    def test_alla_databaser_bearbetas(self):
+        _, _, m = self._kor([], self.TVA_DB)
+        self.assertEqual(m["install"].call_count, 2)
+
+    def test_en_misslyckad_databas_stoppar_inte_de_ovriga(self):
+        """docs/09: 'En databas som misslyckas stoppar inte de övriga.'"""
+        fel = [RuntimeError("connect nekad"), None]
+        kod, utskrift, m = self._kor([], self.TVA_DB, install=fel)
+        self.assertEqual(m["install"].call_count, 2)
+        self.assertEqual(kod, 1, "felkod 1 när en databas misslyckades")
+        self.assertIn("connect nekad", utskrift,
+                      "felet måste skrivas ut – annars avslutas installern tyst")
+
+    def test_sammanfattning_redovisar_bada_utfallen(self):
+        _, utskrift, _ = self._kor([], self.TVA_DB, install=[RuntimeError("bom"), None])
+        self.assertIn("Sammanfattning - Installation", utskrift)
+        self.assertIn("OK:       db2@h2", utskrift)
+        self.assertIn("MISSLYCKADES: db1@h1", utskrift)
+        self.assertIn("1/2 databaser lyckades.", utskrift)
+
+    def test_sammanfattningen_namner_atgarden(self):
+        for argv, rubrik in (
+            (["--upgrade"], "Sammanfattning - Uppgradering"),
+            (["--uninstall"], "Sammanfattning - Avinstallation"),
+        ):
+            with self.subTest(argv=argv):
+                _, utskrift, _ = self._kor(argv, self.TVA_DB)
+                self.assertIn(rubrik, utskrift)
+
+    def test_ingen_sammanfattning_for_en_databas(self):
+        """Sammanfattningen är till för att skilja databaser åt – med en är den brus."""
+        _, utskrift, _ = self._kor([], self.EN_DB)
+        self.assertNotIn("Sammanfattning", utskrift)
+
+    def test_exitkod_noll_nar_allt_lyckas(self):
+        kod, _, _ = self._kor([], self.TVA_DB)
+        self.assertEqual(kod, 0)
 
 
 if __name__ == "__main__":

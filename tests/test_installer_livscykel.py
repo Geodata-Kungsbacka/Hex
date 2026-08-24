@@ -17,12 +17,15 @@ Kör med:
     PGHOST=localhost PGUSER=postgres PGPASSWORD=... python3 tests/test_installer_livscykel.py
 """
 
+import contextlib
+import io
 import os
 import select
 import sys
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -803,6 +806,538 @@ class TestForutsattningar(unittest.TestCase):
         with self.assertRaises(RuntimeError) as ctx:
             install_hex.kontrollera_forutsattningar(StubCursor())
         self.assertIn("PostgreSQL 16", str(ctx.exception))
+
+
+@unittest.skipUnless(KAN_KORA, "kräver superuser-anslutning till PostgreSQL")
+class TestUppgraderingFranAldreSchema(unittest.TestCase):
+    """
+    snapshot_settings/restore_settings tål att den gamla databasens schema
+    skiljer sig från det nya.
+
+    Det är hela poängen med "strukturell difftolerans" i restore_settings, och
+    det är förutsättningen för varje framtida HEX-MIGRERING: en databas som
+    uppgraderas från en äldre Hex-version har inte nödvändigtvis samma
+    kolumner och tabeller som SQL-filerna skapar i dag. Fungerar inte
+    toleransen faller uppgraderingen på det första schemaglappet, eller —
+    värre — går igenom och tappar DBA:ns konfiguration tyst.
+
+    Sviten gör tvärtom mot en vanlig uppgraderingstest: den installerar först
+    dagens Hex och *bakar sedan tillbaka* schemat till något äldre, innan
+    upgrade() körs. Fyra glapp samtidigt, alla i olika tabeller:
+
+      1. En kolumn saknas       – anonym_las, som CLAUDE.md använder som
+                                  typexempel på en kolumn som tillkom efter
+                                  tabellen.
+      2. Bara nyckeln finns kvar – båda datakolumnerna borta ur
+                                  hex_standardiserade_datakategorier. Då körs
+                                  ingen UPDATE alls, och restore_settings
+                                  måste fråga efter raden i stället för att
+                                  läsa cur.rowcount (som annars bär resultatet
+                                  från föregående sats).
+      3. En hel tabell saknas    – hex_grupprattigheter, som om den vore
+                                  tillagd i en senare version.
+      4. En död rad i tillståndet – hex_metadata med en OID som inte pekar på
+                                  någon tabell.
+
+    En vakt går inte att fästa så här: `if not _table_exists(...)` i _las är
+    redundant, eftersom _table_columns() ger en tom mängd för en tabell som
+    inte finns och funktionen då returnerar None ändå. Utfallet är identiskt
+    med och utan raden, så inget beteendetest kan skilja dem åt.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        _skapa_tom_databas()
+        install_hex.install(_db_config(), base_path=str(PROJECT_ROOT))
+
+        conn = _koppla()
+        conn.autocommit = True
+        cur = conn.cursor()
+
+        # DBA-ändring i en kolumn som finns kvar även i det gamla schemat.
+        # Den ska överleva trots att grannkolumnen saknas.
+        cur.execute(
+            "UPDATE public.hex_standardiserade_skyddsnivaer"
+            " SET publiceras_geoserver = true WHERE prefix = 'skx'"
+        )
+        # 1. Kolumn saknas.
+        cur.execute(
+            "ALTER TABLE public.hex_standardiserade_skyddsnivaer DROP COLUMN anonym_las"
+        )
+        # 2. Bara nyckelkolumnen kvar – plus en rad DBA lagt till själv.
+        cur.execute(
+            "ALTER TABLE public.hex_standardiserade_datakategorier DROP COLUMN beskrivning"
+        )
+        cur.execute(
+            "ALTER TABLE public.hex_standardiserade_datakategorier"
+            " DROP COLUMN hex_validera_geometri"
+        )
+        cur.execute(
+            "INSERT INTO public.hex_standardiserade_datakategorier (prefix) VALUES ('egn')"
+        )
+        # 3. Hel tabell saknas.
+        cur.execute("DROP TABLE public.hex_grupprattigheter")
+        # Användardata i en tabell som *inte* rörts – ska inte påverkas av att
+        # grannarna har schemaglapp.
+        cur.execute(
+            "INSERT INTO public.hex_systemanvandare (anvandare, beskrivning)"
+            " VALUES ('etl_verktyg', 'Tillagd av DBA')"
+        )
+        # 4. Död rad i drifttillståndet.
+        cur.execute(
+            "INSERT INTO public.hex_metadata"
+            " (parent_oid, parent_schema, parent_table, history_schema,"
+            "  history_table, trigger_funktion)"
+            " VALUES (999999999, 'sk0_ext_borta', 't_p', 'sk0_ext_borta', 't_p_h', 'f')"
+        )
+        conn.close()
+
+        install_hex.upgrade(_db_config(), base_path=str(PROJECT_ROOT))
+
+    @classmethod
+    def tearDownClass(cls):
+        _ta_bort_databas()
+
+    # -- 1. Kolumn som saknades ---------------------------------------------
+
+    def test_saknad_kolumn_far_nya_schemats_standardvarde(self):
+        """anonym_las fanns inte i snapshoten och ska komma från SQL-filen."""
+        rader = dict(_fraga(
+            "SELECT prefix, anonym_las FROM public.hex_standardiserade_skyddsnivaer"
+        ))
+        self.assertTrue(rader["sk0"], "sk0 har anonym_las = true i standardkonfigurationen")
+        self.assertFalse(rader["sk1"])
+
+    def test_dba_andring_i_kvarvarande_kolumn_bevaras(self):
+        """
+        Att en grannkolumn saknades får inte kosta DBA:ns värde.
+
+        Utan difftoleransen skulle hela raden hoppas över, och skx falla
+        tillbaka på publiceras_geoserver = false.
+        """
+        rader = _fraga(
+            "SELECT publiceras_geoserver FROM public.hex_standardiserade_skyddsnivaer"
+            " WHERE prefix = 'skx'"
+        )
+        self.assertEqual(rader, [(True,)])
+
+    # -- 2. Bara nyckelkolumnen kvar ----------------------------------------
+
+    def test_egen_rad_bevaras_nar_bara_nyckeln_fanns(self):
+        """
+        Raden DBA lagt till ska tillbaka, trots att inga datakolumner sparades.
+
+        Det är den väg där ingen UPDATE körs och rowcount inte går att lita
+        på – raden måste sökas upp med en egen SELECT.
+        """
+        rader = _fraga(
+            "SELECT prefix FROM public.hex_standardiserade_datakategorier"
+            " WHERE prefix = 'egn'"
+        )
+        self.assertEqual(rader, [("egn",)])
+
+    def test_standardraderna_far_sina_riktiga_varden(self):
+        """De systemdefinierade raderna ska komma från SQL-filen, inte tomma."""
+        rader = dict(_fraga(
+            "SELECT prefix, hex_validera_geometri"
+            " FROM public.hex_standardiserade_datakategorier"
+        ))
+        self.assertTrue(rader["kba"], "kba validerar geometri i standardkonfigurationen")
+        self.assertFalse(rader["ext"])
+        self.assertFalse(rader["egn"], "DBA-raden får nya schemats standardvärde")
+
+    def test_inga_dubbletter_efter_schemaglapp(self):
+        for tabell, nyckel in (
+            ("hex_standardiserade_skyddsnivaer", "prefix"),
+            ("hex_standardiserade_datakategorier", "prefix"),
+        ):
+            with self.subTest(tabell=tabell):
+                self.assertEqual(
+                    _fraga(f"SELECT {nyckel} FROM public.{tabell}"
+                           f" GROUP BY {nyckel} HAVING count(*) > 1"),
+                    [], f"dubbletter i {tabell}",
+                )
+
+    # -- 3. Tabell som saknades ---------------------------------------------
+
+    def test_saknad_tabell_aterskapas_tom(self):
+        """En tabell som inte fanns att spara ska skapas om, inte fattas."""
+        self.assertEqual(
+            _fraga("SELECT count(*) FROM information_schema.tables"
+                   " WHERE table_schema = 'public' AND table_name = 'hex_grupprattigheter'"),
+            [(1,)],
+        )
+        self.assertEqual(_fraga("SELECT count(*) FROM public.hex_grupprattigheter"), [(0,)])
+
+    # -- 4. Död rad i drifttillståndet ---------------------------------------
+
+    def test_metadatarad_med_dod_oid_slangs(self):
+        """
+        En OID som inte pekar på något får inte läggas tillbaka.
+
+        Raden skulle bli en död post som hex_hantera_borttagen_tabell() aldrig
+        städar bort, eftersom tabellen den beskriver inte finns.
+        """
+        self.assertEqual(
+            _fraga("SELECT parent_oid FROM public.hex_metadata WHERE parent_oid = 999999999"),
+            [],
+        )
+
+    # -- Orörda tabeller och slutresultat -------------------------------------
+
+    def test_anvandardata_i_orord_tabell_bevaras(self):
+        anvandare = [r[0] for r in _fraga(
+            "SELECT anvandare FROM public.hex_systemanvandare ORDER BY anvandare"
+        )]
+        self.assertIn("etl_verktyg", anvandare)
+        self.assertIn("fme", anvandare)
+
+    def test_databasen_ar_fullt_installerad_efterat(self):
+        """Schemaglappen får inte lämna uppgraderingen halvfärdig."""
+        self.assertEqual(
+            _fraga("SELECT count(*) FROM pg_event_trigger WHERE evtname LIKE 'hex%'"),
+            [(10,)],
+        )
+
+
+@unittest.skipUnless(KAN_KORA, "kräver superuser-anslutning till PostgreSQL")
+class TestUppgraderingUtanNaturligNyckel(unittest.TestCase):
+    """
+    Saknas den naturliga nyckeln kastas snapshoten för tabellen.
+
+    Utan nyckeln går de sparade raderna inte att matcha mot de nyskapade, och
+    varje rad skulle läggas till som "användartillagd" – en full uppsättning
+    dubbletter ovanpå standarduppsättningen. Att tappa DBA:ns ändringar är
+    illa; att fylla hex_standardiserade_skyddsnivaer med skräp är värre,
+    eftersom tabellen styr vilka schemanamn som är giltiga.
+
+    Egen klass därför att mutationen (kolumnnamnbyte på nyckeln) gäller samma
+    tabell som klassen ovan redan muterar.
+
+    OBS: skyddet ligger på två ställen – snapshot_settings kastar posten, och
+    restore_settings hoppar över den om nyckeln ändå saknas. Vakterna är
+    redundanta med flit, så testet fäller inte den ena ensam. Det fäller att
+    *båda* försvinner, vilket är den egenskap som betyder något.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        _skapa_tom_databas()
+        install_hex.install(_db_config(), base_path=str(PROJECT_ROOT))
+        conn = _koppla()
+        conn.autocommit = True
+        conn.cursor().execute(
+            "ALTER TABLE public.hex_standardiserade_skyddsnivaer"
+            " RENAME COLUMN prefix TO gammalt_prefix"
+        )
+        conn.close()
+        install_hex.upgrade(_db_config(), base_path=str(PROJECT_ROOT))
+
+    @classmethod
+    def tearDownClass(cls):
+        _ta_bort_databas()
+
+    def test_exakt_standarduppsattningen_finns(self):
+        rader = sorted(r[0] for r in _fraga(
+            "SELECT prefix FROM public.hex_standardiserade_skyddsnivaer"
+        ))
+        self.assertEqual(rader, ["sk0", "sk1", "sk2", "skx"])
+
+    def test_gamla_kolumnnamnet_ar_borta(self):
+        self.assertEqual(
+            _fraga("SELECT count(*) FROM information_schema.columns"
+                   " WHERE table_schema = 'public'"
+                   "   AND table_name = 'hex_standardiserade_skyddsnivaer'"
+                   "   AND column_name = 'gammalt_prefix'"),
+            [(0,)],
+        )
+
+    def test_uppgraderingen_gick_igenom(self):
+        self.assertEqual(
+            _fraga("SELECT count(*) FROM pg_event_trigger WHERE evtname LIKE 'hex%'"),
+            [(10,)],
+        )
+
+
+@unittest.skipUnless(KAN_KORA, "kräver superuser-anslutning till PostgreSQL")
+class TestUppgraderingNarNyaSchematTappatKolumn(unittest.TestCase):
+    """
+    Andra riktningen: snapshoten har en kolumn som nya schemat inte skapar.
+
+    Klasserna ovan tar bort kolumner ur den *gamla* databasen, och då är
+    snapshoten redan en delmängd av det nya schemat – filtret
+    "bara kolumner som finns i båda" gör ingen skillnad. Det biter först när
+    en kolumn står kvar i PRESERVE_CONFIG medan SQL-filen slutat skapa den,
+    vilket är precis vad som gäller mitt i en migrering där en kolumn tagits
+    bort men bevarandelistan ännu inte städats.
+
+    Utan filtret bygger restore_settings en UPDATE mot en kolumn som inte
+    finns, och hela uppgraderingen faller efter att avinstallationen redan
+    kört – databasen står då ominstallerad men utan DBA:ns konfiguration.
+
+    PRESERVE_CONFIG och PRESERVE_USER_DATA patchas för att ställa upp läget;
+    kolumnen finns på riktigt i den gamla databasen.
+    """
+
+    GAMMAL_KOLUMN = "gammal_flagga"
+
+    @classmethod
+    def setUpClass(cls):
+        _skapa_tom_databas()
+        install_hex.install(_db_config(), base_path=str(PROJECT_ROOT))
+
+        conn = _koppla()
+        conn.autocommit = True
+        cur = conn.cursor()
+        # Kolumner som bara den gamla databasen har.
+        cur.execute(
+            f"ALTER TABLE public.hex_standardiserade_skyddsnivaer"
+            f" ADD COLUMN {cls.GAMMAL_KOLUMN} boolean NOT NULL DEFAULT true"
+        )
+        cur.execute(
+            f"ALTER TABLE public.hex_systemanvandare"
+            f" ADD COLUMN {cls.GAMMAL_KOLUMN} text"
+        )
+        # DBA-ändring i en kolumn som finns i båda scheman – den ska överleva.
+        cur.execute(
+            "UPDATE public.hex_standardiserade_skyddsnivaer"
+            " SET beskrivning = 'DBA-text' WHERE prefix = 'sk2'"
+        )
+        cur.execute(
+            "INSERT INTO public.hex_systemanvandare (anvandare, beskrivning)"
+            " VALUES ('etl_verktyg', 'Tillagd av DBA')"
+        )
+        conn.close()
+
+        # Bevarandelistorna nämner kolumnen som om den ännu inte städats bort.
+        config = {
+            tabell: {**cfg, "restore": list(cfg["restore"])}
+            for tabell, cfg in install_hex.PRESERVE_CONFIG.items()
+        }
+        config["hex_standardiserade_skyddsnivaer"]["restore"].append(cls.GAMMAL_KOLUMN)
+        # För en rent användarhanterad tabell finns ingen nyckel att falla
+        # tillbaka på: blir listan tom efter filtreringen måste raden hoppas
+        # över, annars byggs ett INSERT helt utan kolumner.
+        user_data = {**install_hex.PRESERVE_USER_DATA,
+                     "hex_systemanvandare": [cls.GAMMAL_KOLUMN]}
+
+        with patch.object(install_hex, "PRESERVE_CONFIG", config), \
+                patch.object(install_hex, "PRESERVE_USER_DATA", user_data):
+            install_hex.upgrade(_db_config(), base_path=str(PROJECT_ROOT))
+
+    @classmethod
+    def tearDownClass(cls):
+        _ta_bort_databas()
+
+    def test_uppgraderingen_gick_igenom(self):
+        """Utan filtret faller upgrade() efter att avinstallationen redan kört."""
+        self.assertEqual(
+            _fraga("SELECT count(*) FROM pg_event_trigger WHERE evtname LIKE 'hex%'"),
+            [(10,)],
+        )
+
+    def test_kolumnen_som_nya_schemat_saknar_aterskapas_inte(self):
+        """Återställningen ska inte återinföra en kolumn SQL-filen tagit bort."""
+        for tabell in ("hex_standardiserade_skyddsnivaer", "hex_systemanvandare"):
+            with self.subTest(tabell=tabell):
+                self.assertEqual(
+                    _fraga(
+                        "SELECT count(*) FROM information_schema.columns"
+                        " WHERE table_schema = 'public' AND table_name = %s"
+                        "   AND column_name = %s",
+                        (tabell, self.GAMMAL_KOLUMN),
+                    ),
+                    [(0,)],
+                )
+
+    def test_ovriga_kolumner_aterstalls_anda(self):
+        """Den borttagna kolumnen får inte dra med sig resten av raden."""
+        self.assertEqual(
+            _fraga("SELECT beskrivning FROM public.hex_standardiserade_skyddsnivaer"
+                   " WHERE prefix = 'sk2'"),
+            [("DBA-text",)],
+        )
+
+    def test_standarduppsattningen_ar_intakt(self):
+        rader = sorted(r[0] for r in _fraga(
+            "SELECT prefix FROM public.hex_standardiserade_skyddsnivaer"
+        ))
+        self.assertEqual(rader, ["sk0", "sk1", "sk2", "skx"])
+
+    def test_tabell_utan_aterstallbara_kolumner_hoppas_over(self):
+        """
+        Inget att återställa ska bli ingen INSERT – inte ett tomt INSERT.
+
+        hex_systemanvandare hade bara den borttagna kolumnen i bevarandelistan
+        här, så DBA-raden går förlorad. Det är rätt utfall: det fanns inget
+        att lägga tillbaka. Det som testas är att uppgraderingen inte faller.
+        """
+        anvandare = [r[0] for r in _fraga(
+            "SELECT anvandare FROM public.hex_systemanvandare ORDER BY anvandare"
+        )]
+        self.assertEqual(anvandare, ["fme"], "standardraden ska finnas kvar")
+
+
+@unittest.skipUnless(KAN_KORA, "kräver superuser-anslutning till PostgreSQL")
+class TestFelvagar(unittest.TestCase):
+    """
+    Felvägarna i install(), uninstall(), upgrade() och kor_underhall().
+
+    README lovar att installationsskriptet "rullar tillbaka om något
+    misslyckas". Löftet är transaktionellt och gick inte att lita på förrän
+    det testades: samtliga except-grenar var otäckta, så en ändring som råkade
+    committa i förtid hade inte märkts.
+    """
+
+    def setUp(self):
+        _skapa_tom_databas()
+
+    def tearDown(self):
+        _ta_bort_databas()
+
+    def _installera(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            install_hex.install(_db_config(), base_path=str(PROJECT_ROOT))
+
+    def _antal_hex_funktioner(self):
+        return _fraga(
+            "SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace"
+            " WHERE n.nspname = 'public' AND p.proname LIKE 'hex\\_%'"
+        )[0][0]
+
+    def test_saknad_sql_fil_installerar_ingenting(self):
+        """
+        Avbryts installationen ska databasen vara orörd.
+
+        install() hinner skapa tillägg och hex_systemagare() innan loopen över
+        SQL-filerna. Committades något av det innan felet skulle databasen bli
+        halvinstallerad – svårare att reda ut än en som aldrig rörts.
+        """
+        buf = io.StringIO()
+        with self.assertRaises(FileNotFoundError) as ctx:
+            with contextlib.redirect_stdout(buf):
+                install_hex.install(_db_config(), base_path="/finns/inte")
+        self.assertIn("Saknas:", str(ctx.exception))
+        self.assertEqual(self._antal_hex_funktioner(), 0,
+                         "transaktionen ska ha rullats tillbaka")
+        self.assertIn("Transaktionen återställd", buf.getvalue())
+
+    def test_avinstallation_rullar_tillbaka_vid_fel(self):
+        """
+        Ett fel mitt i UNINSTALL_SQL får inte lämna hälften borttaget.
+
+        DROP-satserna körs i beroendeordning; avbryts de halvvägs står
+        databasen med funktioner vars typer är borta. Därför ska hela satsen
+        rullas tillbaka och felet kastas vidare.
+        """
+        self._installera()
+        trasig = "DROP TABLE public.hex_systemanvandare; SELECT 1/0;"
+        buf = io.StringIO()
+        with patch.object(install_hex, "UNINSTALL_SQL", trasig):
+            with self.assertRaises(psycopg2.Error):
+                with contextlib.redirect_stdout(buf):
+                    install_hex.uninstall(_db_config())
+        self.assertEqual(
+            _fraga("SELECT count(*) FROM information_schema.tables"
+                   " WHERE table_schema = 'public' AND table_name = 'hex_systemanvandare'"),
+            [(1,)],
+            "tabellen som hann droppas ska vara tillbaka efter rollback",
+        )
+        self.assertIn("MISSLYCKADES", buf.getvalue())
+
+    def test_underhallsfel_avbryter_inte_installationen(self):
+        """
+        kor_underhall() ska rapportera fel, inte kasta.
+
+        Underhållet körs som ett eget steg efter commit just för att ett fel
+        där inte ska rulla tillbaka en färdig installation. Anslutningen måste
+        dessutom vara användbar efteråt, annars kan install() inte skriva ut
+        sina varningar.
+        """
+        self._installera()
+        conn = _koppla()
+        cur = conn.cursor()
+        cur.execute("DROP FUNCTION public.hex_underhall()")
+        conn.commit()
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                fel = install_hex.kor_underhall(cur, conn)
+            self.assertIsNotNone(fel, "ett underhållsfel ska returneras som text")
+            self.assertIn("Underhåll misslyckades", fel)
+            self.assertIn("hex_underhall()", fel, "texten ska säga vad DBA kan köra manuellt")
+            cur.execute("SELECT 1")
+            self.assertEqual(cur.fetchone(), (1,), "anslutningen ska vara användbar efter rollback")
+        finally:
+            conn.close()
+
+    def test_uppgradering_av_tom_databas_varnar_men_lyckas(self):
+        """
+        docs/09: en tom snapshot är normalt i en tom databas.
+
+        Varningen finns för det andra fallet – en databas som redan kör Hex
+        men vars konfiguration inte hittades. Då är det sista tillfället att
+        säga till innan avinstallationen kastar den.
+        """
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            install_hex.upgrade(_db_config(), base_path=str(PROJECT_ROOT))
+        self.assertIn("Inga inställningar hittades att spara", buf.getvalue())
+        self.assertEqual(
+            _fraga("SELECT count(*) FROM pg_event_trigger WHERE evtname LIKE 'hex%'"),
+            [(10,)],
+            "uppgradering av en tom databas ska ge en installerad databas",
+        )
+
+    def test_underhallsfel_faller_inte_installationen(self):
+        """
+        Underhållet körs efter commit just för att inte kunna fälla install().
+
+        install() committar SQL-filerna först och kör hex_underhall() som ett
+        eget steg. Ett fel där ska bli en varning på slutet, inte ett avbrott:
+        databasen är installerad, och DBA kan köra underhållet för hand.
+        """
+        buf = io.StringIO()
+        with patch.object(install_hex, "kor_underhall",
+                          return_value="Underhåll misslyckades: uppdiktat fel"):
+            with contextlib.redirect_stdout(buf):
+                install_hex.install(_db_config(), base_path=str(PROJECT_ROOT))
+        utskrift = buf.getvalue()
+        self.assertIn("Underhåll misslyckades", utskrift)
+        self.assertIn("varning(ar) kvar att åtgärda", utskrift,
+                      "varningen ska upprepas sist, inte drunkna i loggen")
+        self.assertEqual(
+            _fraga("SELECT count(*) FROM pg_event_trigger WHERE evtname LIKE 'hex%'"),
+            [(10,)],
+            "installationen ska vara klar trots underhållsfelet",
+        )
+
+    def test_underhallsfel_faller_inte_uppgraderingen(self):
+        """Samma sak för upgrade(): underhållet körs om efter återställningen."""
+        self._installera()
+        buf = io.StringIO()
+        with patch.object(install_hex, "kor_underhall",
+                          return_value="Underhåll misslyckades: uppdiktat fel"):
+            with contextlib.redirect_stdout(buf):
+                install_hex.upgrade(_db_config(), base_path=str(PROJECT_ROOT))
+        self.assertIn("Underhåll misslyckades", buf.getvalue())
+        self.assertIn("Uppgradering klar", buf.getvalue())
+
+    def test_fel_i_aterstallningen_rullar_tillbaka_och_kastar_vidare(self):
+        """
+        Misslyckas återställningen ska den inte lämna halva konfigurationen.
+
+        Felet måste dessutom nå anroparen: main() räknar en databas som
+        lyckad om upgrade() returnerar utan undantag, och en tyst
+        återställning hade rapporterats som OK.
+        """
+        self._installera()
+        buf = io.StringIO()
+        with patch.object(install_hex, "restore_settings",
+                          side_effect=RuntimeError("återställningen sprack")):
+            with self.assertRaises(RuntimeError):
+                with contextlib.redirect_stdout(buf):
+                    install_hex.upgrade(_db_config(), base_path=str(PROJECT_ROOT))
+        self.assertIn("MISSLYCKADES vid återställning", buf.getvalue())
 
 
 if __name__ == "__main__":
