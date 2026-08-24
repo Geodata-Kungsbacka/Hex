@@ -448,7 +448,7 @@ def restore_settings(cur, snapshot: dict):
                      Kolumner listade under hex_agda hoppas över i UPDATEn.
     PRESERVE_USER_DATA: INSERTar alla sparade rader med ON CONFLICT DO NOTHING.
     PRESERVE_STATE: samma sak för drifttillståndet (hex_metadata m.fl.).
-    Strukturell difftolerens: återställer bara kolumner som finns i både snapshot och ny tabell.
+    Strukturell difftolerans: återställer bara kolumner som finns i både snapshot och ny tabell.
     """
     for table, cfg in PRESERVE_CONFIG.items():
         if table not in snapshot:

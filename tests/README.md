@@ -96,7 +96,7 @@ test_reserved_words.sql                24      0      0      0   OK
 ...
 test_stress.sql                        28     14      0      0   OK
 ...
-TOTALT                                590     15      0      0
+TOTALT                                614     15      0      0
 ```
 
 Flaggor:
@@ -186,7 +186,7 @@ och betyder inte att ett test misslyckats.
 | `test_grupprattigheter.sql`    | `hex_tillampa_grupprattigheter()` – AD-grupproll → Hex-roll     |
 | `test_client_encoding.py`      | Att lyssnaren alltid sätter UTF-8 som klientkodning             |
 | `test_installer.py`            | `install_hex.py` – ägarskap, installationsordning och dokumentationens SQL-block |
-| `test_installer_livscykel.py`  | Uppgradering, avinstallation, `owner_role=None`, förutsättningar |
+| `test_installer_livscykel.py`  | Uppgradering (även från äldre schema), avinstallation, felvägar, `owner_role=None` |
 | `test_pg_notify_listener.py`   | `pg_notify`-flödet mot GeoServer (GeoServer mockas), `.env`-läsning, e-postlarm |
 | `test_geoserver_service.py`    | Windows-tjänsten: import, `HEX_LOG_DIR`, loggfilsuppsättning     |
 
@@ -206,6 +206,32 @@ event-trigger kvar i en databas där Hex ska vara avinstallerat.
 (`hex_test_livscykel`) och rör aldrig `hex_test`. Den hoppas över automatiskt
 om ingen superuser-anslutning finns. Anslutningen styrs med `PGHOST`,
 `PGUSER`, `PGPASSWORD` och `PGPORT` — `PGDATABASE` används inte.
+
+Tre klasser där testar **uppgradering från ett äldre schema**, alltså att
+`snapshot_settings`/`restore_settings` tål att den gamla databasens tabeller
+inte ser ut som SQL-filerna. De installerar dagens Hex och bakar sedan
+tillbaka schemat innan `upgrade()` körs:
+
+| Klass | Glapp som ställs upp |
+|---|---|
+| `TestUppgraderingFranAldreSchema` | Kolumn saknas, bara nyckeln kvar, hel tabell saknas, död OID i `hex_metadata` |
+| `TestUppgraderingUtanNaturligNyckel` | Nyckelkolumnen heter något annat |
+| `TestUppgraderingNarNyaSchematTappatKolumn` | Snapshoten har en kolumn som nya schemat inte skapar |
+
+Det är maskineriet varje framtida `HEX-MIGRERING` lutar sig mot — se
+[CLAUDE.md](../CLAUDE.md) om att märka, testa och städa bort migreringar.
+
+`TestFelvagar` täcker felvägarna: avbruten installation, trasig
+avinstallation, misslyckat underhåll och misslyckad återställning. README
+lovar att skriptet rullar tillbaka om något går fel, och de grenarna var
+otäckta tills de testades.
+
+> Kvar otäckt i `install_hex.py` (8 rader, 97 %) är avsiktligt: redundanta
+> vakter vars utfall inte går att skilja från en annan gren — t.ex.
+> `if not _table_exists(...)` i `_las`, där `_table_columns()` ändå ger en tom
+> mängd och funktionen returnerar `None` — samt `DATABASES`-defaulten och
+> `raise SystemExit(main())`, som bara nås när skriptet körs mot en verkligt
+> konfigurerad databas.
 
 `test_pg_notify_listener.py` använder en riktig databasanslutning för
 LISTEN/NOTIFY men mockar GeoServer. Klassen `TestRolluppgifterMotRiktigTabell`
