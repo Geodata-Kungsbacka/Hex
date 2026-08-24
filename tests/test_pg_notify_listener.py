@@ -136,6 +136,83 @@ def run_listener_once(listen_conn, timeout=3.0):
 # Tester
 # ===========================================================================
 
+class TestRolluppgifterMotRiktigTabell(unittest.TestCase):
+    """
+    _fetch_role_credentials() mot en riktig public.hex_rolluppgifter.
+
+    Övriga tester mockar de två uppslagsfunktionerna för att slippa bero på
+    databasens innehåll. Följden är att SQL:en i dem — tabellnamnet
+    public.hex_rolluppgifter och kolumnerna rollnamn/losenord — aldrig körs mot
+    en verklig tabell. Byter tabellen eller en kolumn namn fortsätter sviten
+    vara grön, medan lyssnaren i drift slutar hitta tjänstekontonas lösenord
+    och GeoServers datastores tappar anslutningen.
+
+    Sviten hoppas över när Hex inte är installerat i måldatabasen.
+    """
+
+    SCHEMA = "sk0_kba_rolluppg"
+    R_ROLL = f"gs_r_{SCHEMA}"
+    W_ROLL = f"gs_w_{SCHEMA}"
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            cls.conn = make_conn()
+        except Exception as e:
+            raise unittest.SkipTest(f"ingen databasanslutning: {e}")
+        with cls.conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM information_schema.tables"
+                " WHERE table_schema = 'public' AND table_name = 'hex_rolluppgifter'"
+            )
+            if cur.fetchone() is None:
+                cls.conn.close()
+                raise unittest.SkipTest("Hex är inte installerat i måldatabasen")
+            cur.execute(
+                "INSERT INTO public.hex_rolluppgifter (rollnamn, losenord, kan_logga_in)"
+                " VALUES (%s, %s, true), (%s, %s, true)"
+                " ON CONFLICT (rollnamn) DO UPDATE SET losenord = EXCLUDED.losenord",
+                (cls.R_ROLL, "las_hemligt", cls.W_ROLL, "skriv_hemligt"),
+            )
+
+    @classmethod
+    def tearDownClass(cls):
+        if getattr(cls, "conn", None) is None:
+            return
+        with cls.conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM public.hex_rolluppgifter WHERE rollnamn = ANY(%s)",
+                ([cls.R_ROLL, cls.W_ROLL],),
+            )
+        cls.conn.close()
+
+    def test_lasrollens_uppgifter_hittas(self):
+        self.assertEqual(
+            gl._fetch_role_credentials(self.conn, self.SCHEMA),
+            (self.R_ROLL, "las_hemligt"),
+        )
+
+    def test_skrivrollens_uppgifter_hittas(self):
+        self.assertEqual(
+            gl._fetch_write_role_credentials(self.conn, self.SCHEMA),
+            (self.W_ROLL, "skriv_hemligt"),
+        )
+
+    def test_okant_schema_ger_none(self):
+        """En saknad rad ska ge (None, None) – inte ett undantag."""
+        self.assertEqual(
+            gl._fetch_role_credentials(self.conn, "sk0_kba_finns_inte_alls"),
+            (None, None),
+        )
+
+    def test_skrivrollen_far_saknas(self):
+        """Äldre scheman saknar gs_w_-raden; lyssnaren ska tåla det."""
+        self.assertEqual(
+            gl._fetch_write_role_credentials(self.conn, "sk0_kba_finns_inte_alls"),
+            (None, None),
+        )
+
+
 class TestPgNotifyRoundTrip(unittest.TestCase):
     """End-to-end LISTEN/NOTIFY-runda via en riktig PostgreSQL-anslutning."""
 

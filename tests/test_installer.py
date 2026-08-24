@@ -295,5 +295,113 @@ class TestStripSqlComments(unittest.TestCase):
         self.assertIn("SELECT 1", _strip_sql_comments("-- x\nSELECT 1;"))
 
 
+# ---------------------------------------------------------------------------
+# 5. Dokumentationen mot installerns egna listor
+# ---------------------------------------------------------------------------
+def _sql_block(md_fil: str, efter_rubrik: str) -> str:
+    """Plockar ut det första ```sql-blocket efter en rubrik i en markdown-fil."""
+    text = (PROJECT_ROOT / md_fil).read_text(encoding="utf-8")
+    start = text.index(efter_rubrik)
+    traff = re.search(r"```sql\n(.*?)```", text[start:], re.DOTALL)
+    if traff is None:
+        raise AssertionError(f"Hittade inget sql-block efter {efter_rubrik!r} i {md_fil}")
+    return traff.group(1)
+
+
+def _drop_satser(sql: str) -> list:
+    """Returnerar DROP-satserna i sql, normaliserade till en rad var.
+
+    Kommentarer strippas först, och whitespace normaliseras, så att jämförelsen
+    gäller satserna och inte formateringen.
+    """
+    kod = _strip_sql_comments(sql)
+    return [
+        " ".join(sats.split())
+        for sats in re.findall(r"DROP\s+.*?;", kod, re.DOTALL | re.IGNORECASE)
+    ]
+
+
+class TestDokumenteradAvinstallation(unittest.TestCase):
+    """
+    docs/10 dokumenterar samma DROP-block som UNINSTALL_SQL kör.
+
+    Blocket är en handkopia, och en kopia driver isär: en ny tabell eller
+    funktion läggs till i UNINSTALL_SQL men glöms i dokumentationen. Följden är
+    tyst — en DBA som följer dokumentationen tror att Hex är borta, men
+    event-triggern som blev kvar fortsätter blockera DDL. Det här testet är
+    vakten mot det.
+    """
+
+    RUBRIK = "## Metod 2"
+
+    def setUp(self):
+        self.dokumenterade = _drop_satser(_sql_block("docs/10_avinstallera-hex.md", self.RUBRIK))
+        self.faktiska = _drop_satser(install_hex.UNINSTALL_SQL)
+
+    def test_dokumentationen_saknar_inget(self):
+        saknas = [s for s in self.faktiska if s not in self.dokumenterade]
+        self.assertEqual(
+            saknas, [],
+            "DROP-satser i UNINSTALL_SQL som saknas i docs/10: " + repr(saknas),
+        )
+
+    def test_dokumentationen_har_inget_extra(self):
+        extra = [s for s in self.dokumenterade if s not in self.faktiska]
+        self.assertEqual(
+            extra, [],
+            "DROP-satser i docs/10 som inte finns i UNINSTALL_SQL: " + repr(extra),
+        )
+
+    def test_samma_ordning(self):
+        """Ordningen är en beroendeordning – event-triggers före funktioner, typer sist."""
+        self.assertEqual(self.dokumenterade, self.faktiska)
+
+    def test_readme_duplicerar_inte_blocket(self):
+        """
+        README ska hänvisa till docs/10, inte upprepa blocket.
+
+        En andra kopia är precis det som en gång lämnade README:s block bakom
+        med en aktiv event-trigger och tio funktioner kvar i databasen.
+        """
+        readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+        avsnitt = readme[readme.index("### Manuell avinstallation"):]
+        avsnitt = avsnitt[:avsnitt.index("## Licens")]
+        self.assertNotIn(
+            "DROP EVENT TRIGGER", avsnitt,
+            "README upprepar avinstallationsblocket – hänvisa till docs/10 i stället.",
+        )
+
+
+class TestDokumenteradInstallationsordning(unittest.TestCase):
+    """
+    README:s "Detaljerad installationsordning" ska spegla INSTALL_ORDER.
+
+    README säger själv att de två måste ändras likadant. Utan ett test är det
+    en uppmaning, inte en garanti — och en manuell installation som följer en
+    inaktuell ordning faller på en beroende som inte finns än.
+    """
+
+    UNDANTAG = ["src/sql/00_config/hex_systemagare.sql"]
+
+    def _dokumenterad_ordning(self):
+        block = _sql_block("README.md", "### Detaljerad installationsordning")
+        return [
+            rad.strip() for rad in block.splitlines()
+            if rad.strip().endswith(".sql")
+        ]
+
+    def test_samma_filer_i_samma_ordning(self):
+        dokumenterad = self._dokumenterad_ordning()
+        forvantad = self.UNDANTAG + list(install_hex.INSTALL_ORDER)
+        self.assertEqual(
+            dokumenterad, forvantad,
+            "README:s installationsordning stämmer inte med INSTALL_ORDER.",
+        )
+
+    def test_hex_systemagare_star_forst(self):
+        """Filen installern inte kör måste stå först – allt annat sätter ägarskap mot den."""
+        self.assertEqual(self._dokumenterad_ordning()[0], self.UNDANTAG[0])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

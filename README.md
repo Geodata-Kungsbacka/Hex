@@ -137,6 +137,53 @@ Validerar geometrikvalitet för scheman vars datakategori har `hex_validera_geom
 
 **Användning**: Används som CHECK constraint, appliceras automatiskt av `hex_hantera_ny_tabell` på scheman vars datakategori har `hex_validera_geometri = true` (standardkonfiguration: `_kba_`).
 
+### 7. **Dummy-geometrirad i nya geometritabeller**
+
+När Hex skapar en geometritabell lägger `hex_lagg_till_dummy_geometri()` in **en
+rad med en påhittad geometri** och registrerar den i `hex_dummy_geometrier`.
+
+**Varför:** QGIS med *Använd uppskattad tabellmetadata* avstängt kör
+`SELECT DISTINCT geometrytype(geom) FROM tabell LIMIT 1`. En tom tabell svarar
+`NULL`, och QGIS öppnar då en dialogruta där användaren måste ange
+geometrikolumn och SRID för hand. Dummy-raden gör att typen går att läsa direkt.
+
+**Geometrin:** 100 × 100 m kring (160000, 6395000) i EPSG 3007, vald så att den
+klarar `hex_validera_geometri()` — giltig, icke-tom, utan dubblerade punkter och
+utan kurvsegment.
+
+**Livscykel:** en `AFTER INSERT`-trigger (`hex_ta_bort_dummy`) på tabellen tar
+bort dummy-raden när den **första riktiga raden** infogas, och rensar samtidigt
+raden ur `hex_dummy_geometrier`. Har tabellen historik ger den borttagningen en
+`D`-post i historiktabellen — avsiktligt systembrus, identifierbart på `gid` och
+tidpunkt.
+
+**Konsekvenser att känna till:**
+- En nyskapad tabell är inte tom: `SELECT count(*)` ger 1 tills första riktiga
+  raden infogas.
+- Misslyckas dummy-insättningen (t.ex. en `NOT NULL`-kolumn utan
+  standardvärde) loggas det som `NOTICE` och tabellskapandet fortsätter ändå.
+- `hex_underhall()` återkopplar `hex_ta_bort_dummy`-triggern, men bara för
+  tabeller som fortfarande står i `hex_dummy_geometrier`. Töms den tabellen
+  för hand blir dummy-raden kvar för alltid.
+
+### 8. **EPSG 3007 är enda tillåtna koordinatsystem**
+
+`hex_hantera_ny_tabell()` och `hex_hantera_ny_kolumn()` jämför geometrikolumnens
+SRID mot **3007** (SWEREF99 12 00). En tabell med avvikande SRID **blockeras
+inte** — den skapas, med en `WARNING`, och registreras i granskningstabellen
+`hex_avvikande_srid`:
+
+```sql
+SELECT schema_namn, tabell_namn, srid, registrerad, registrerad_av
+FROM hex_avvikande_srid
+ORDER BY registrerad;
+```
+
+En kvarliggande rad betyder att tabellen fortfarande finns i databasen med fel
+koordinatsystem. Data i fel koordinatsystem ska transformeras och skrivas om
+innan det används i produktion. Raden tas bort automatiskt av
+`hex_hantera_borttagen_tabell()` när tabellen droppas.
+
 ## Installation
 
 ### Systemkrav
@@ -473,6 +520,44 @@ skedd räcker det inte med `hex_underhall()` — rollerna skapas bara vid
 
 **Historik_qa-flaggan**: Styr om kolumnen ska uppdateras via trigger (true) eller DEFAULT-värde (false).
 
+**`anvandare_kan_redigera`-flaggan**: `false` betyder att en klient inte får
+skriva ett eget värde i kolumnen. `hex_underhall()` sätter då en
+`BEFORE INSERT`-trigger (`hex_tvinga_anvandarvarden`) som tyst kastar
+klientvärdet och använder `default_varde` i stället — så att t.ex. FME inte kan
+skriva ett påhittat `skapad_av`. Flaggan kräver att `default_varde` är satt.
+Samtliga fem standardkolumner har `false`.
+
+Se [docs/05_anpassa-standardkolumner.md](docs/05_anpassa-standardkolumner.md)
+för samtliga kolumner i tabellen och för standarduppsättningen.
+
+#### Övriga konfigurationstabeller
+
+| Tabell | Styr |
+|---|---|
+| `hex_standardiserade_skyddsnivaer` | Giltiga skyddsnivåprefix, och per prefix `publiceras_geoserver` och `anonym_las` |
+| `hex_standardiserade_datakategorier` | Giltiga datakategoriprefix, och per prefix `hex_validera_geometri` |
+| `hex_standardiserade_roller` | Rollmallar per schema — se [docs/04_hantera-rollmallar.md](docs/04_hantera-rollmallar.md) |
+| `hex_systemanvandare` | Tvåstegsverktyg som FME — se [docs/01_lagg-till-systemanvandare.md](docs/01_lagg-till-systemanvandare.md) |
+| `hex_grupprattigheter` | AD-grupproll → Hex-roll, tillämpas av `hex_tillampa_grupprattigheter()` — se [docs/02_lagg-till-databasanvandare.md](docs/02_lagg-till-databasanvandare.md) |
+
+### Drifttillståndstabeller
+
+De här tabellerna är varken standardvärden eller DBA-konfiguration — de
+beskriver vad Hex redan gjort med databasens tabeller. Innehållet går inte att
+härleda i efterhand, och därför bevaras de över `--upgrade`.
+
+| Tabell | Innehåll | Skrivs av | Rensas av |
+|---|---|---|---|
+| `hex_metadata` | Tabell-OID → historiktabell och QA-triggerfunktion | `hex_skapa_historik_qa()`, `hex_hantera_ny_kolumn()` | `hex_hantera_borttagen_tabell()` |
+| `hex_afvaktande_geometri` | Tabeller mitt i tvåstegsmönstret | `hex_hantera_ny_tabell()` | `hex_hantera_ny_kolumn()`, `hex_hantera_borttagen_tabell()` |
+| `hex_dummy_geometrier` | Tabeller som fortfarande bär en dummy-rad | `hex_lagg_till_dummy_geometri()` | `hex_ta_bort_dummy_rad()` |
+| `hex_avvikande_srid` | Tabeller med SRID ≠ 3007 | `hex_hantera_ny_tabell()`, `hex_hantera_ny_kolumn()` | `hex_hantera_borttagen_tabell()` |
+| `hex_rolluppgifter` | Rollnamn och autogenererat lösenord för LOGIN-tjänstekonton | `hex_hantera_std_roller()`, `hex_underhall()` | `DROP SCHEMA` via `hex_ta_bort_schemaroller()` |
+
+> `hex_rolluppgifter` är den enda av dem som **inte** bevaras över `--upgrade` —
+> lösenorden roteras. Se
+> [docs/09](docs/09_installera-uppdatera-hex.md#hex_rolluppgifter-roteras--den-bevaras-inte).
+
 ### Strukturhanteringsfunktioner
 
 #### `hex_hamta_geometri_definition(schema, tabell)`
@@ -614,6 +699,81 @@ skedd räcker det inte med `hex_underhall()` — rollerna skapas bara vid
 **Returvärde**: true om historik skapades, false om inte behövs.
 
 **Praktisk användning**: Möjliggör fullständig spårbarhet av alla dataändringar.
+
+#### `hex_underhall()`
+**Syfte**: Verifierar och reparerar Hex-strukturen på **befintliga** scheman,
+tabeller och roller. Kör alltid av installern efter installation och efter
+uppgradering, och går att köra manuellt när som helst.
+
+```sql
+SELECT * FROM public.hex_underhall();
+```
+
+**Returvärde**: en rad per åtgärd med `schema_namn`, `tabell_namn`,
+`trigger_namn` och `atgard`. `atgard = 'redan finns'` betyder att inget behövde
+göras.
+
+**Tio åtgärdstyper**, i körordning:
+
+| Åtgärd | Vad som repareras |
+|---|---|
+| ägarskapsöverföring | Scheman, tabeller, sekvenser och funktioner i Hex-scheman ägs av `hex_systemagare()` |
+| `hex_tvinga_gid` | BEFORE INSERT som hindrar klienter från att välja eget `gid` med `OVERRIDING SYSTEM VALUE` |
+| `hex_tvinga_anvandarvarden` | BEFORE INSERT för kolumner med `anvandare_kan_redigera = false` |
+| `hex_kontrollera_geom` | BEFORE INSERT/UPDATE med OGC-validering på tabeller i datakategorier med `hex_validera_geometri = true` |
+| `hex_ta_bort_dummy` | AFTER INSERT som tar bort dummy-raden — återkopplas bara om raden står i `hex_dummy_geometrier` |
+| `trg_<tabell>_qa` | BEFORE UPDATE/DELETE på tabeller med historik |
+| rollstruktur | De fyra rollerna per schema, och invarianten att `r_`/`w_` är NOLOGIN |
+| `hex_geoserver_roller` | Gruppmedlemskap för LOGIN-tjänstekonton (pg_hba.conf-matchning) |
+| schemabehörigheter | GRANT om per roll och schema, samt `arvs_fran` |
+| geoserver-notifiering | `pg_notify` för scheman vars skyddsnivå har `publiceras_geoserver = true` |
+
+**Idempotent**: en andra körning direkt efter den första ska rapportera
+`Inga åtgärder behövdes`.
+
+> `hex_underhall()` skapar **inte** roller för ett schema som aldrig fick dem —
+> `gs_r_`/`gs_w_` skapas bara vid `CREATE SCHEMA`. Se *Vanliga fel vid manuell
+> installation* för det fallet.
+
+#### `hex_tillampa_grupprattigheter()`
+**Syfte**: Tillämpar mappningarna i `hex_grupprattigheter` — ger varje
+AD-grupproll medlemskap i den Hex-roll den är mappad mot.
+
+**`SECURITY DEFINER`** med låst `search_path`, så att en DBA utan
+superuser-rättigheter kan köra den.
+
+**Användning**: körs manuellt efter ändringar i `hex_grupprattigheter`. Se
+[docs/02_lagg-till-databasanvandare.md](docs/02_lagg-till-databasanvandare.md).
+
+#### `hex_tvinga_gid_fran_sekvens()`
+**Syfte**: BEFORE INSERT-triggerfunktion som tvingar `gid` att komma från
+IDENTITY-sekvensen även när klienten skickar `OVERRIDING SYSTEM VALUE` (QGIS
+gör det). Kopplas på av `hex_underhall()` och vid tabellskapande.
+
+#### `hex_lagg_till_dummy_geometri(schema, tabell, geometriinfo)` och `hex_ta_bort_dummy_rad()`
+**Syfte**: Lägger in respektive tar bort dummy-geometriraden. Se
+[Dummy-geometrirad i nya geometritabeller](#7-dummy-geometrirad-i-nya-geometritabeller).
+
+#### `hex_aterskapa_qa_trigger(schema, tabell, historik_tabell)`
+**Syfte**: Kopplar tillbaka QA-triggern på en tabell vars historiktabell redan
+finns — används av `hex_underhall()` och vid `ALTER TABLE ... RENAME TO`, där
+triggern måste följa med det nya namnet.
+
+#### `hex_forklara_geometrifel(geom)`
+**Syfte**: Returnerar en läsbar förklaring till varför en geometri underkändes
+av `hex_validera_geometri()`. Används i felmeddelanden från
+`hex_kontrollera_geometri_trigger()`.
+
+#### `hex_schema_regex()` och `hex_systemagare()`
+**Syfte**: `hex_schema_regex()` returnerar prefixmönstret
+`^(sk0|sk1|sk2|skx)_`, byggt dynamiskt ur `hex_standardiserade_skyddsnivaer`, så
+att funktionslogik slipper hårdkoda skyddsnivåprefix. Det är **inte** mönstret
+som namnvalideringen använder — `hex_validera_schemanamn()` bygger sitt eget
+`^(sk0|sk1|sk2|skx)_(ext|kba|sys)_.+$` ur båda konfigurationstabellerna.
+
+`hex_systemagare()` returnerar ägarrollen och genereras av installern ur
+`owner_role` — det är den enda funktionen som inte har en egen fil i
+`INSTALL_ORDER`.
 
 ### Triggerfunktioner
 
@@ -992,70 +1152,28 @@ Skriptet kör alla DROP-satser i rätt ordning och rullar tillbaka om något mis
 
 ### Manuell avinstallation
 
-Om du föredrar att köra SQL direkt, kör följande block som superanvändare (t.ex. `postgres`). Ordningen är viktig — event triggers måste tas bort innan funktioner, typer sist.
+Vill du köra SQL direkt finns hela `DROP`-blocket i
+[docs/10_avinstallera-hex.md](docs/10_avinstallera-hex.md#metod-2--manuell-sql).
+Det är avsiktligt bara dokumenterat på ett ställe: blocket måste hållas i takt
+med `UNINSTALL_SQL` i `install_hex.py`, och en andra kopia här driver isär.
+`tests/test_installer.py` kontrollerar att docs/10 och `UNINSTALL_SQL` stämmer
+överens.
 
-```sql
--- 1. Ta bort event triggers (måste tas bort innan funktioner)
-DROP EVENT TRIGGER IF EXISTS hex_notifiera_gs_borttagning_trigger;
-DROP EVENT TRIGGER IF EXISTS hex_notifiera_gs_trigger;
-DROP EVENT TRIGGER IF EXISTS hex_validera_schemanamn_trigger;
-DROP EVENT TRIGGER IF EXISTS hex_hantera_std_roller_trigger;
-DROP EVENT TRIGGER IF EXISTS hex_ta_bort_schemaroller_trigger;
-DROP EVENT TRIGGER IF EXISTS hex_hantera_ny_vy_trigger;
-DROP EVENT TRIGGER IF EXISTS hex_hantera_ny_kolumn_trigger;
-DROP EVENT TRIGGER IF EXISTS hex_hantera_ny_tabell_trigger;
-DROP EVENT TRIGGER IF EXISTS hex_hantera_borttagen_tabell_trigger;
+Ordningen i blocket är viktig — event-triggers måste tas bort innan
+funktionerna de anropar, och typerna sist av allt, efter funktionerna som tar
+dem som argument.
 
--- 2. Ta bort triggerfunktioner
-DROP FUNCTION IF EXISTS public.hex_notifiera_gs_borttagning();
-DROP FUNCTION IF EXISTS public.hex_notifiera_gs();
-DROP FUNCTION IF EXISTS public.hex_hantera_std_roller();
-DROP FUNCTION IF EXISTS public.hex_ta_bort_schemaroller();
-DROP FUNCTION IF EXISTS public.hex_hantera_ny_vy();
-DROP FUNCTION IF EXISTS public.hex_hantera_ny_kolumn();
-DROP FUNCTION IF EXISTS public.hex_hantera_ny_tabell();
-DROP FUNCTION IF EXISTS public.hex_hantera_borttagen_tabell();
+> **Rollen `hex_geoserver_roller` tas inte bort.** Den är en klusterroll som
+> delas av alla databaser i klustret som kör Hex, och den är målet för
+> `pg_hba.conf`-posten `+hex_geoserver_roller`. Varken `--uninstall` eller det
+> manuella blocket rör den. Se
+> [docs/10](docs/10_avinstallera-hex.md#rollen-hex_geoserver_roller--ta-inte-bort-den-rutinmässigt).
 
--- 3. Ta bort hjälpfunktioner
-DROP FUNCTION IF EXISTS public.hex_tilldela_rollrattigheter(text, text, text);
-DROP FUNCTION IF EXISTS public.hex_skapa_historik_qa(text, text);
-DROP FUNCTION IF EXISTS public.hex_uppdatera_sekvensnamn(text, text, text);
-DROP FUNCTION IF EXISTS public.hex_byt_ut_tabell(text, text, text);
-
--- 4. Ta bort regelfunktioner
-DROP FUNCTION IF EXISTS public.hex_aterskapa_kolumnegenskaper(text, text, hex_kolumnegenskaper);
-DROP FUNCTION IF EXISTS public.hex_aterskapa_tabellregler(text, text, hex_tabellregler);
-DROP FUNCTION IF EXISTS public.hex_spara_kolumnegenskaper(text, text);
-DROP FUNCTION IF EXISTS public.hex_spara_tabellregler(text, text);
-
--- 5. Ta bort valideringsfunktioner
-DROP FUNCTION IF EXISTS public.hex_validera_geometri(geometry) CASCADE;
-DROP FUNCTION IF EXISTS public.hex_validera_schemanamn();
-DROP FUNCTION IF EXISTS public.hex_validera_vynamn(text, text);
-DROP FUNCTION IF EXISTS public.hex_validera_tabell(text, text);
-
--- 6. Ta bort strukturfunktioner
-DROP FUNCTION IF EXISTS public.hex_hamta_kolumnstandard(text, text, hex_geom_info);
-DROP FUNCTION IF EXISTS public.hex_hamta_geometri_definition(text, text);
-
--- 7. Ta bort konfigurationsfunktion
-DROP FUNCTION IF EXISTS public.hex_systemagare();
-
--- 8. Ta bort konfigurationstabeller
-DROP TABLE IF EXISTS public.hex_afvaktande_geometri;
-DROP TABLE IF EXISTS public.hex_systemanvandare;
-DROP TABLE IF EXISTS public.hex_metadata;
-DROP TABLE IF EXISTS public.hex_standardiserade_roller;
-DROP TABLE IF EXISTS public.hex_standardiserade_kolumner;
-DROP TABLE IF EXISTS public.hex_standardiserade_skyddsnivaer;
-DROP TABLE IF EXISTS public.hex_standardiserade_datakategorier;
-
--- 9. Ta bort anpassade typer (måste tas bort efter funktioner som använder dem)
-DROP TYPE IF EXISTS public.hex_tabellregler;
-DROP TYPE IF EXISTS public.hex_kolumnegenskaper;
-DROP TYPE IF EXISTS public.hex_kolumnkonfig;
-DROP TYPE IF EXISTS public.hex_geom_info;
-```
+> **Schemats roller överlever också avinstallationen.** `r_`, `w_`, `gs_r_` och
+> `gs_w_` per schema tas bara bort av `DROP SCHEMA`, via event-triggern
+> `hex_ta_bort_schemaroller_trigger`. Avinstallerar du Hex medan schemana finns
+> kvar blir rollerna kvar i klustret, och event-triggern som skulle ha städat
+> dem är borta. Droppa schemana först, eller ta bort rollerna för hand efteråt.
 
 ## Licens
 

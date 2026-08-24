@@ -96,7 +96,7 @@ test_reserved_words.sql                24      0      0      0   OK
 ...
 test_stress.sql                        28     14      0      0   OK
 ...
-TOTALT                                458     15      0      0
+TOTALT                                547     15      0      0
 ```
 
 Flaggor:
@@ -185,7 +185,7 @@ och betyder inte att ett test misslyckats.
 | `test_schema_namnbyte.sql`     | Blockering av `ALTER SCHEMA ... RENAME TO`                     |
 | `test_grupprattigheter.sql`    | `hex_tillampa_grupprattigheter()` – AD-grupproll → Hex-roll     |
 | `test_client_encoding.py`      | Att lyssnaren alltid sätter UTF-8 som klientkodning             |
-| `test_installer.py`            | `install_hex.py` – ägarskapsomskrivning och installationsordning |
+| `test_installer.py`            | `install_hex.py` – ägarskap, installationsordning och dokumentationens SQL-block |
 | `test_installer_livscykel.py`  | Uppgradering, avinstallation, `owner_role=None`, förutsättningar |
 | `test_pg_notify_listener.py`   | `pg_notify`-flödet mot GeoServer (GeoServer mockas)             |
 
@@ -193,10 +193,21 @@ Python-sviterna kräver inte att Hex är installerat. `test_installer.py`
 behöver ingen databas alls – den testar installerns rena funktioner och
 konsistensen i `INSTALL_ORDER` mot filerna på disk.
 
+Den kontrollerar också **dokumentationen mot installern**: att `DROP`-blocket i
+`docs/10_avinstallera-hex.md` innehåller exakt samma satser i samma ordning som
+`UNINSTALL_SQL`, att README inte upprepar blocket, och att README:s
+*Detaljerad installationsordning* speglar `INSTALL_ORDER`. De listorna är
+handkopior av installerns egna, och en kopia som driver isär märks inte förrän
+en DBA följer den: ett bortglömt `DROP EVENT TRIGGER` lämnar en aktiv
+event-trigger kvar i en databas där Hex ska vara avinstallerat.
+
 `test_installer_livscykel.py` skapar och droppar en egen engångsdatabas
 (`hex_test_livscykel`) och rör aldrig `hex_test`. Den hoppas över automatiskt
 om ingen superuser-anslutning finns. Anslutningen styrs med `PGHOST`,
 `PGUSER`, `PGPASSWORD` och `PGPORT` — `PGDATABASE` används inte.
 
 `test_pg_notify_listener.py` använder en riktig databasanslutning för
-LISTEN/NOTIFY men mockar GeoServer.
+LISTEN/NOTIFY men mockar GeoServer. Klassen `TestRolluppgifterMotRiktigTabell`
+kör dessutom uppslagen mot en verklig `public.hex_rolluppgifter` — övriga
+tester mockar dem, och då körs aldrig deras SQL. Den klassen hoppas över när
+Hex inte är installerat i måldatabasen.
