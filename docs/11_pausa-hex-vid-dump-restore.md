@@ -189,11 +189,23 @@ mellan lägena:
 
 | Körning | Vad som händer med `hex_paus` |
 | --- | --- |
-| `--install` | Raden ligger kvar (`CREATE TABLE IF NOT EXISTS`) men motsvarar ingenting. Kör `hex_ateruppta()` för att städa bort den. |
-| `--upgrade` | Tabellen droppas och skapas om, så raden är borta. Radtriggers som pausen stängde av på icke-Hex-objekt kan däremot ligga kvar avstängda. |
+| `--install` | Raden ligger kvar (`CREATE TABLE IF NOT EXISTS`). |
+| `--upgrade` | Tabellen droppas och skapas om, men raden återställs — `hex_paus` står i `PRESERVE_STATE`. |
 
-`hex_pausstatus()` flaggar båda lägena. Pågår en återläsning: avbryt
-installationen och kör den efteråt.
+I båda fallen är raden kvar medan event-triggarna är påslagna, och
+`hex_pausstatus()` flaggar just den motsägelsen. Kör `hex_ateruppta()` efteråt:
+den lägger tillbaka radtriggarna från `tidigare_lage` och städar bort raden.
+
+Att raden bevaras över `--upgrade` är avsiktligt. Uppgraderingen återskapar
+bara de radtriggers vars triggerfunktion ligger i `public` — de droppas av
+`DROP FUNCTION ... CASCADE` och skapas om påslagna av `hex_underhall()`. De vars
+funktion ligger i Hex-schemat (`trg_<tabell>_qa`, `hex_tvinga_anvandarvarden`)
+överlever avinstallationen och rörs aldrig: `hex_underhall()` skapar **saknade**
+triggers, men slår inte på **avstängda**. Utan `tidigare_lage` vore de omöjliga
+att hitta, och historik och QA-kolumner skulle sluta uppdateras tyst på de
+tabellerna.
+
+Pågår en återläsning: avbryt installationen och kör den efteråt.
 
 ---
 

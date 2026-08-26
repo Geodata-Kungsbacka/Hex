@@ -568,9 +568,12 @@ härleda i efterhand, och därför bevaras de över `--upgrade`.
 > lösenorden roteras. Se
 > [docs/09](docs/09_installera-uppdatera-hex.md#hex_rolluppgifter-roteras--den-bevaras-inte).
 >
-> `hex_paus` bevaras heller inte, och ska inte göra det. `--upgrade` skapar om
-> event-triggarna, och en nyskapad event-trigger är alltid påslagen — pausen är
-> alltså faktiskt hävd efteråt. En bevarad rad hade påstått motsatsen. Se
+> `hex_paus` bevaras däremot. `--upgrade` skapar om event-triggarna och de är
+> påslagna efteråt, så pausen är faktiskt hävd — men `tidigare_lage` är enda
+> källan till vilka radtriggers pausen stängde av. Utan den blir de omöjliga att
+> reparera, och historiken dör tyst på de tabellerna. `hex_pausstatus()`
+> upptäcker att raden inte längre motsvarar läget, och `hex_ateruppta()` lägger
+> tillbaka radtriggarna och städar bort raden. Se
 > [docs/11](docs/11_pausa-hex-vid-dump-restore.md).
 
 ### Strukturhanteringsfunktioner

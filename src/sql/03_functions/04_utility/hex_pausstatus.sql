@@ -64,15 +64,29 @@ BEGIN
 
     regex := public.hex_schema_regex();
 
-    SELECT count(*)
-    INTO rad_av
-    FROM pg_trigger   tg
-    JOIN pg_class     c ON c.oid = tg.tgrelid
-    JOIN pg_namespace n ON n.oid = c.relnamespace
-    WHERE NOT tg.tgisinternal
-      AND c.relkind IN ('r', 'p')
-      AND n.nspname ~ regex
-      AND tg.tgenabled = 'D';
+    -- NULL-regex matchar ingenting, vilket hade gett rad_av = 0 och sett ut som
+    -- "inga avstängda radtriggers". Skilj på "räknade till noll" och "kunde inte
+    -- räkna" – annars är den lugnande nollan en lögn.
+    IF regex IS NULL THEN
+        rad_av := NULL;
+        -- ::text behövs. Utan den är "text[] || literal" tvetydig och
+        -- PostgreSQL väljer array || array, vilket ger "malformed array literal".
+        -- Övriga tillägg nedan går genom format() och har därför redan typen.
+        avvik  := avvik || ('hex_schema_regex() gav NULL – '
+                            'hex_standardiserade_skyddsnivaer är tom, så radtriggers '
+                            'går inte att räkna. Kolumnen radtriggers_av är därför '
+                            'NULL, inte noll.')::text;
+    ELSE
+        SELECT count(*)
+        INTO rad_av
+        FROM pg_trigger   tg
+        JOIN pg_class     c ON c.oid = tg.tgrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE NOT tg.tgisinternal
+          AND c.relkind IN ('r', 'p', 'f')
+          AND n.nspname ~ regex
+          AND tg.tgenabled = 'D';
+    END IF;
 
     event_triggers_pa := ev_pa;
     event_triggers_av := ev_av;
@@ -107,7 +121,7 @@ BEGIN
                 'ALTER EVENT TRIGGER <namn> ENABLE.', ev_av);
         END IF;
 
-        IF rad_av > 0 THEN
+        IF coalesce(rad_av, 0) > 0 THEN
             avvik := avvik || format(
                 '%s radtrigger(s) på Hex-tabeller är avstängda utan att Hex är '
                 'pausat. Historik och QA-kolumner uppdateras inte för dessa tabeller.',

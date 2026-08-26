@@ -159,13 +159,31 @@ BEGIN
 
         schema_regex := public.hex_schema_regex();
 
+        -- Är hex_standardiserade_skyddsnivaer tom ger hex_schema_regex() NULL,
+        -- och "nspname ~ NULL" matchar ingenting. Utan den här kontrollen skulle
+        -- pausen rapportera enbart sina event-triggers och lämna varenda
+        -- radtrigger påslagen under återläsningen – tyst, och exakt den sortens
+        -- fel pausen finns för att förhindra. Ett fel är rätt utfall: en paus som
+        -- inte pausar är värre än ingen paus alls.
+        IF schema_regex IS NULL THEN
+            RAISE EXCEPTION
+                '[hex_pausa] hex_schema_regex() gav NULL – kan inte hitta Hex-scheman'
+                USING HINT = 'Tabellen hex_standardiserade_skyddsnivaer är tom, så '
+                             'inga schemaprefix går att härleda. Fyll den, eller kör '
+                             'hex_pausa(p_radtriggers => false) om du medvetet bara '
+                             'vill stänga av event-triggarna.';
+        END IF;
+
         FOR r IN
             SELECT n.nspname AS s, c.relname AS t, tg.tgname AS g, tg.tgenabled AS lage
             FROM   pg_trigger   tg
             JOIN   pg_class     c ON c.oid = tg.tgrelid
             JOIN   pg_namespace n ON n.oid = c.relnamespace
             WHERE  NOT tg.tgisinternal
-              AND  c.relkind IN ('r', 'p')
+              -- r = tabell, p = partitionerad tabell, f = främmande tabell.
+              -- Främmande tabeller kan bära triggers och finns i Hex-scheman
+              -- (hex_underhall() sätter ägarskap på dem), så de måste med.
+              AND  c.relkind IN ('r', 'p', 'f')
               AND  n.nspname ~ schema_regex
             -- Partitionerade tabeller först (tgparentid = 0), partitionernas
             -- kopior sedan. ALTER TABLE på en partitionerad förälder slår

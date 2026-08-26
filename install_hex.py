@@ -10,6 +10,7 @@ Användning:
 import argparse
 import psycopg2
 from psycopg2 import sql as pgsql
+from psycopg2.extras import Json
 from pathlib import Path
 
 # =============================================================================
@@ -294,6 +295,22 @@ PRESERVE_STATE = {
     "hex_avvikande_srid": [
         "schema_namn", "tabell_namn", "srid", "registrerad", "registrerad_av",
     ],
+    # hex_paus bevaras därför att tidigare_lage är den enda källan till vilka
+    # radtriggers pausen stängde av och till vilket läge de ska tillbaka.
+    # Kastas raden bort av uppgraderingen blir avstängda triggers omöjliga att
+    # reparera: hex_underhall() skapar saknade triggers men slår inte på
+    # avstängda, och de vars triggerfunktion ligger i Hex-schemat (trg_*_qa,
+    # hex_tvinga_anvandarvarden) överlever avinstallationen och blir därför
+    # aldrig omskapade. Följden vore tyst död historik på de tabellerna.
+    #
+    # Raden påstår inte att pausen fortfarande gäller. Uppgraderingen skapar om
+    # event-triggarna och de är påslagna efteråt — hex_pausstatus() upptäcker
+    # och förklarar just den avvikelsen, och hex_ateruppta() lägger tillbaka
+    # radtriggarna och städar bort raden.
+    "hex_paus": [
+        "enkelrad", "pausad_sedan", "pausad_av", "anledning",
+        "pausad_till", "tidigare_lage",
+    ],
 }
 
 # =============================================================================
@@ -315,6 +332,25 @@ def _table_columns(cur, table: str) -> set:
     cur.execute(
         "SELECT column_name FROM information_schema.columns"
         " WHERE table_schema = 'public' AND table_name = %s",
+        (table,),
+    )
+    return {row[0] for row in cur.fetchall()}
+
+
+def _json_columns(cur, table: str) -> set:
+    """Returnerar kolumnnamnen med typen json eller jsonb i en public-tabell.
+
+    psycopg2 läser jsonb som dict (eller list för en jsonb-array) och kan inte
+    skriva tillbaka värdet utan Json-adaptern — försöket ger "can't adapt type
+    'dict'". Uppslaget går på faktisk kolumntyp i stället för på Python-typen,
+    eftersom en PostgreSQL-array (text[] m.fl.) också läses som list. Att
+    duck-typa på list hade wrappat en sådan kolumn i Json och tyst skrivit in
+    en JSON-sträng i en textarray.
+    """
+    cur.execute(
+        "SELECT column_name FROM information_schema.columns"
+        " WHERE table_schema = 'public' AND table_name = %s"
+        "   AND data_type IN ('json', 'jsonb')",
         (table,),
     )
     return {row[0] for row in cur.fetchall()}
@@ -412,11 +448,11 @@ def kontrollera_forutsattningar(cur) -> list[str]:
             "Installationen skapar om event-triggarna, och nyskapade event-triggers\n"
             "är alltid påslagna. Pausen hävs alltså av den här körningen.\n"
             "Pågår en pg_dump/pg_restore just nu: avbryt och installera efteråt.\n"
-            "Efter --install ligger raden i hex_paus kvar utan att motsvara något —\n"
-            "kör hex_ateruppta() för att städa bort den. Efter --upgrade är raden\n"
-            "borta med tabellen, men radtriggers som pausen stängde av på\n"
-            "icke-Hex-objekt kan ligga kvar avstängda. Båda lägena syns i\n"
-            "SELECT * FROM hex_pausstatus();"
+            "Raden i hex_paus ligger kvar efteråt (den bevaras även över\n"
+            "--upgrade). Kör hex_ateruppta() när körningen är klar: den slår på\n"
+            "radtriggarna igen och städar bort raden. Utan det förblir de\n"
+            "radtriggers vars funktion ligger i Hex-schemat avstängda, och\n"
+            "historiken dör tyst på de tabellerna."
         )
 
     for varning in varningar:
@@ -590,13 +626,19 @@ def restore_settings(cur, snapshot: dict):
             restorable_cols = [c for c in old_cols if c in new_cols]
             if not restorable_cols:
                 continue
+            json_cols = _json_columns(cur, table)
 
             for row in data["rows"]:
                 row_dict = dict(zip(old_cols, row))
                 if not _raden_ar_giltig(cur, table, row_dict):
                     continue
+                # jsonb-kolumner måste genom Json-adaptern på vägen tillbaka.
+                # Gäller hex_paus.tidigare_lage. NULL lämnas som NULL.
                 insert_params = {
-                    c: row_dict[c] for c in restorable_cols if c in row_dict
+                    c: (Json(row_dict[c])
+                        if c in json_cols and row_dict[c] is not None
+                        else row_dict[c])
+                    for c in restorable_cols if c in row_dict
                 }
                 if not insert_params:
                     continue

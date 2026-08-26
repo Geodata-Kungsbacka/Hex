@@ -438,11 +438,245 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 
 -- =============================================================================
+-- GRUPP 5: TOMMA OCH OVANLIGA KONFIGURATIONER
+-- =============================================================================
+
+-- TEST 19: tom hex_standardiserade_skyddsnivaer stoppar pausen i stället för
+-- att tyst hoppa över radtriggarna.
+--
+-- hex_schema_regex() ger NULL när tabellen är tom, och "nspname ~ NULL" matchar
+-- ingenting. Utan kontrollen rapporterar hex_pausa() bara sina event-triggers
+-- och lämnar varenda radtrigger påslagen under återläsningen.
+--
+-- Den inre BEGIN/EXCEPTION-blocket är en subtransaktion: när RAISE i slutet
+-- propagerar rullas DELETE tillbaka och skyddsnivåerna är intakta igen.
+-- PL/pgSQL-variabler är inte transaktionella, så resultatet överlever.
+DO $$ DECLARE
+    resultat  text;
+    ev_kvar   integer;
+BEGIN
+    BEGIN
+        DELETE FROM public.hex_standardiserade_skyddsnivaer;
+
+        BEGIN
+            PERFORM count(*) FROM public.hex_pausa('testsvit 19');
+            resultat := 'pausen gick igenom trots NULL-regex';
+        EXCEPTION WHEN OTHERS THEN
+            IF SQLERRM LIKE '%gav NULL%' THEN
+                resultat := 'OK';
+            ELSE
+                resultat := SQLERRM;
+            END IF;
+        END;
+
+        -- Samma subtransaktion ska ha rullat tillbaka hex_pausa:s
+        -- ALTER EVENT TRIGGER-satser.
+        SELECT count(*) INTO ev_kvar
+        FROM   pg_event_trigger et
+        JOIN   pg_proc          p ON p.oid = et.evtfoid
+        JOIN   pg_namespace     n ON n.oid = p.pronamespace
+        WHERE  n.nspname = 'public'
+          AND  p.proname LIKE 'hex\_%'
+          AND  et.evtenabled = 'D';
+
+        RAISE EXCEPTION 'ROLLBACK_MARKER';
+    EXCEPTION WHEN OTHERS THEN
+        IF SQLERRM <> 'ROLLBACK_MARKER' THEN
+            resultat := coalesce(resultat, SQLERRM);
+        END IF;
+    END;
+
+    IF resultat = 'OK' AND coalesce(ev_kvar, -1) = 0 THEN
+        PERFORM _xfail(19, 'hex_pausa: tom skyddsnivåtabell blockerar pausen',
+            'fel kastat, event-triggers återställda');
+    ELSE
+        PERFORM _fail(19, 'hex_pausa: tom skyddsnivåtabell blockerar pausen',
+            format('resultat=%s avstängda_kvar=%s', resultat, coalesce(ev_kvar::text, 'NULL')));
+    END IF;
+END $$;
+
+-- TEST 20: skyddsnivåerna är oskadda efter test 19
+-- Vakt mot att subtransaktionsmönstret ovan slutar rulla tillbaka.
+DO $$ DECLARE
+    antal integer;
+BEGIN
+    SELECT count(*) INTO antal FROM public.hex_standardiserade_skyddsnivaer;
+
+    IF antal > 0 AND public.hex_schema_regex() IS NOT NULL THEN
+        PERFORM _pass(20, 'testsvit: skyddsnivåerna återställda efter test 19',
+            format('%s prefix', antal));
+    ELSE
+        PERFORM _fail(20, 'testsvit: skyddsnivåerna återställda efter test 19',
+            format('%s rader kvar – sviten har skadat konfigurationen', antal));
+    END IF;
+END $$;
+
+-- TEST 21: hex_pausstatus skiljer "räknade till noll" från "kunde inte räkna"
+DO $$ DECLARE
+    rad_av    integer;
+    avvikelse text;
+    resultat  text;
+BEGIN
+    BEGIN
+        DELETE FROM public.hex_standardiserade_skyddsnivaer;
+        SELECT st.radtriggers_av, st.avvikelse
+        INTO   rad_av, avvikelse
+        FROM   public.hex_pausstatus() st;
+        RAISE EXCEPTION 'ROLLBACK_MARKER';
+    EXCEPTION WHEN OTHERS THEN
+        IF SQLERRM <> 'ROLLBACK_MARKER' THEN
+            resultat := SQLERRM;
+        END IF;
+    END;
+
+    IF resultat IS NOT NULL THEN
+        PERFORM _fail(21, 'hex_pausstatus: NULL-regex ger NULL, inte noll', resultat);
+    ELSIF rad_av IS NULL AND avvikelse LIKE '%gav NULL%' THEN
+        PERFORM _pass(21, 'hex_pausstatus: NULL-regex ger NULL, inte noll');
+    ELSE
+        PERFORM _fail(21, 'hex_pausstatus: NULL-regex ger NULL, inte noll',
+            format('radtriggers_av=%s avvikelse=%s',
+                coalesce(rad_av::text, 'NULL'), coalesce(avvikelse, 'NULL')));
+    END IF;
+END $$;
+
+-- TEST 22: hex_pausa täcker partitionerade tabeller och deras partitioner
+--
+-- Tabellerna skapas UNDER pausen med flit. hex_hantera_ny_tabell() bygger om
+-- en partitionerad tabell till en vanlig ("matning is not partitioned" vid
+-- nästa PARTITION OF), så partitioneringen överlever bara när event-triggarna
+-- är avstängda. Sedan pausas igen för att se att bägge triggarna fångas.
+DO $$ DECLARE
+    antal integer;
+BEGIN
+    PERFORM count(*) FROM public.hex_pausa('testsvit 22 - uppsättning');
+
+    CREATE TABLE sk0_kba_paus.matning (gid int, dag date) PARTITION BY RANGE (dag);
+    CREATE TABLE sk0_kba_paus.matning_2026 PARTITION OF sk0_kba_paus.matning
+        FOR VALUES FROM ('2026-01-01') TO ('2027-01-01');
+    CREATE FUNCTION sk0_kba_paus.part_fn() RETURNS trigger
+        AS $f$ BEGIN RETURN NEW; END $f$ LANGUAGE plpgsql;
+    CREATE TRIGGER part_trg BEFORE INSERT ON sk0_kba_paus.matning
+        FOR EACH ROW EXECUTE FUNCTION sk0_kba_paus.part_fn();
+
+    -- Ur pausen igen. Triggarna skapades efter pausen och står som påslagna.
+    PERFORM count(*) FROM public.hex_ateruppta(false);
+
+    PERFORM count(*) FROM public.hex_pausa('testsvit 22');
+
+    SELECT count(*) INTO antal
+    FROM   pg_trigger   tg
+    JOIN   pg_class     c ON c.oid = tg.tgrelid
+    JOIN   pg_namespace n ON n.oid = c.relnamespace
+    WHERE  NOT tg.tgisinternal
+      AND  c.relname IN ('matning', 'matning_2026')
+      AND  n.nspname = 'sk0_kba_paus'
+      AND  tg.tgenabled = 'D';
+
+    PERFORM count(*) FROM public.hex_ateruppta(false);
+
+    IF antal = 2 THEN
+        PERFORM _pass(22, 'hex_pausa: partitionerad tabell och partition');
+    ELSE
+        PERFORM _fail(22, 'hex_pausa: partitionerad tabell och partition',
+            format('%s av 2 avstängda', antal));
+    END IF;
+EXCEPTION WHEN OTHERS THEN
+    PERFORM _fail(22, 'hex_pausa: partitionerad tabell och partition', SQLERRM);
+END $$;
+
+-- TEST 23: hex_pausa täcker triggers på främmande tabeller (relkind f)
+--
+-- Kräver postgres_fdw. Saknas modulen körs testet inte, och noten säger det –
+-- relkind-filtret är då overifierat i den här miljön, inte trasigt.
+-- CREATE SERVER OPTIONS tar bara literaler, därav EXECUTE format().
+DO $$ DECLARE
+    lage "char";
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_available_extensions WHERE name = 'postgres_fdw') THEN
+        PERFORM _pass(23, 'hex_pausa: främmande tabell (relkind f)',
+            'EJ KÖRT - postgres_fdw saknas i den här miljön');
+        RETURN;
+    END IF;
+
+    CREATE EXTENSION IF NOT EXISTS postgres_fdw;
+    EXECUTE format(
+        'CREATE SERVER hex_paus_testsrv FOREIGN DATA WRAPPER postgres_fdw'
+        ' OPTIONS (host %L, dbname %L)',
+        'localhost', current_database()
+    );
+    CREATE FOREIGN TABLE sk0_kba_paus.extern (a int) SERVER hex_paus_testsrv;
+    CREATE FUNCTION sk0_kba_paus.fdw_fn() RETURNS trigger
+        AS $f$ BEGIN RETURN NEW; END $f$ LANGUAGE plpgsql;
+    CREATE TRIGGER fdw_trg BEFORE INSERT ON sk0_kba_paus.extern
+        FOR EACH ROW EXECUTE FUNCTION sk0_kba_paus.fdw_fn();
+
+    PERFORM count(*) FROM public.hex_pausa('testsvit 23');
+
+    SELECT tg.tgenabled INTO lage
+    FROM   pg_trigger tg
+    WHERE  tg.tgrelid = 'sk0_kba_paus.extern'::regclass
+      AND  NOT tg.tgisinternal;
+
+    PERFORM count(*) FROM public.hex_ateruppta(false);
+
+    IF lage = 'D' THEN
+        PERFORM _pass(23, 'hex_pausa: främmande tabell (relkind f)');
+    ELSE
+        PERFORM _fail(23, 'hex_pausa: främmande tabell (relkind f)',
+            format('läge %s, väntade D', coalesce(lage::text, 'NULL')));
+    END IF;
+EXCEPTION WHEN OTHERS THEN
+    PERFORM _fail(23, 'hex_pausa: främmande tabell (relkind f)', SQLERRM);
+END $$;
+
+-- TEST 24: hex_pausa är atomisk – ett ROLLBACK lämnar ingenting halvpausat
+DO $$ DECLARE
+    i_transaktionen integer;
+    efter_rollback  integer;
+    paus_rader      integer;
+BEGIN
+    BEGIN
+        PERFORM count(*) FROM public.hex_pausa('testsvit 24');
+
+        SELECT count(*) INTO i_transaktionen
+        FROM pg_event_trigger et
+        JOIN pg_proc      p ON p.oid = et.evtfoid
+        JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'public' AND p.proname LIKE 'hex\_%'
+          AND et.evtenabled = 'D';
+
+        RAISE EXCEPTION 'ROLLBACK_MARKER';
+    EXCEPTION WHEN OTHERS THEN
+        NULL;
+    END;
+
+    SELECT count(*) INTO efter_rollback
+    FROM pg_event_trigger et
+    JOIN pg_proc      p ON p.oid = et.evtfoid
+    JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'public' AND p.proname LIKE 'hex\_%'
+      AND et.evtenabled = 'D';
+
+    SELECT count(*) INTO paus_rader FROM public.hex_paus;
+
+    IF i_transaktionen > 0 AND efter_rollback = 0 AND paus_rader = 0 THEN
+        PERFORM _pass(24, 'hex_pausa: atomisk – ROLLBACK återställer allt',
+            format('%s avstängda i transaktionen, 0 efter', i_transaktionen));
+    ELSE
+        PERFORM _fail(24, 'hex_pausa: atomisk – ROLLBACK återställer allt',
+            format('i_transaktionen=%s efter=%s paus_rader=%s',
+                i_transaktionen, efter_rollback, paus_rader));
+    END IF;
+END $$;
+
+-- =============================================================================
 -- TEARDOWN
 -- =============================================================================
 
 DROP SCHEMA IF EXISTS sk0_kba_paus CASCADE;
 DROP SCHEMA IF EXISTS sk0_kba_pausroll CASCADE;
+DROP SERVER IF EXISTS hex_paus_testsrv CASCADE;
 
 DELETE FROM public.hex_metadata WHERE parent_schema IN ('sk0_kba_paus', 'sk0_kba_pausroll');
 
@@ -464,6 +698,31 @@ BEGIN
     IF EXISTS (SELECT 1 FROM public.hex_paus) THEN
         PERFORM count(*) FROM public.hex_ateruppta(false);
         RAISE WARNING 'Testsviten lämnade en paus kvar – återupptagen i teardown';
+    END IF;
+END $$;
+
+-- =============================================================================
+-- FULLSTÄNDIGHETSVAKT
+--
+-- Ett DO-block som kastar ett ohanterat fel skriver ingen rad i _test_results
+-- och försvinner tyst ur resultattabellen. Med ON_ERROR_STOP off går sviten
+-- vidare och rapporterar "alla godkända" fast ett test aldrig kördes. Vakten
+-- jämför mot den förväntade serien i stället.
+-- =============================================================================
+
+DO $$ DECLARE
+    saknade text;
+BEGIN
+    SELECT string_agg(n::text, ', ' ORDER BY n)
+    INTO   saknade
+    FROM   generate_series(1, 24) n
+    WHERE  n NOT IN (SELECT nr FROM _test_results);
+
+    IF saknade IS NULL THEN
+        PERFORM _pass(99, 'testsvit: alla 24 test registrerade ett resultat');
+    ELSE
+        PERFORM _fail(99, 'testsvit: alla 24 test registrerade ett resultat',
+            'saknas: ' || saknade);
     END IF;
 END $$;
 

@@ -1340,5 +1340,158 @@ class TestFelvagar(unittest.TestCase):
         self.assertIn("MISSLYCKADES vid återställning", buf.getvalue())
 
 
+class _PausUppgraderingBas(unittest.TestCase):
+    """
+    Gemensam uppsättning: installera, skapa en Hex-tabell, pausa, uppgradera.
+
+    Uppsättningen ligger i en basklass i stället för i en delad klass med flera
+    testmetoder, eftersom unittest kör metoder i bokstavsordning. Ett test som
+    kör hex_ateruppta() skulle då reparera tillståndet innan de test som ska
+    läsa det hann köra. Två klasser med var sin setUpClass är ordningsoberoende.
+    """
+
+    SCHEMA = "sk0_kba_pausupg"
+
+    @classmethod
+    def setUpClass(cls):
+        _skapa_tom_databas()
+        install_hex.install(_db_config(), base_path=str(PROJECT_ROOT))
+
+        conn = _koppla()
+        conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute(f"CREATE SCHEMA {cls.SCHEMA}")
+        cur.execute(
+            f"CREATE TABLE {cls.SCHEMA}.hus_y"
+            " (namn text, geom geometry(Polygon, 3007))"
+        )
+        cur.execute("SELECT count(*) FROM public.hex_pausa('livscykeltest')")
+        conn.close()
+
+        install_hex.upgrade(_db_config(), base_path=str(PROJECT_ROOT))
+
+        cls.conn = _koppla()
+        cls.conn.autocommit = True
+        cls.cur = cls.conn.cursor()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.conn.close()
+        _ta_bort_databas()
+
+    def _avstangda_radtriggers(self):
+        self.cur.execute(
+            "SELECT tg.tgname FROM pg_trigger tg"
+            " JOIN pg_class c ON c.oid = tg.tgrelid"
+            " JOIN pg_namespace n ON n.oid = c.relnamespace"
+            " WHERE NOT tg.tgisinternal AND n.nspname = %s"
+            "   AND tg.tgenabled = 'D' ORDER BY tg.tgname",
+            (self.SCHEMA,),
+        )
+        return [r[0] for r in self.cur.fetchall()]
+
+
+class TestUppgraderingUnderPaus(_PausUppgraderingBas):
+    """
+    hex_paus måste överleva upgrade(), annars går avstängda radtriggers inte
+    att reparera.
+
+    upgrade() avinstallerar och installerar om. Avinstallationen droppar
+    Hex-funktionerna i public med CASCADE, så de radtriggers vars
+    triggerfunktion ligger där (hex_tvinga_gid, hex_kontrollera_geom,
+    hex_ta_bort_dummy) försvinner och skapas om påslagna av hex_underhall().
+
+    De vars funktion ligger i Hex-schemat överlever däremot avinstallationen:
+    trg_<tabell>_qa och hex_tvinga_anvandarvarden. hex_underhall() skapar
+    saknade triggers men slår inte på avstängda, så de rörs aldrig. Kastas
+    hex_paus bort av uppgraderingen finns ingen kvar som vet att de var
+    avstängda — historik och QA-kolumner slutar uppdateras tyst.
+
+    Därför står hex_paus i PRESERVE_STATE. Raden påstår inte att pausen
+    fortfarande gäller: event-triggarna är påslagna efter uppgraderingen, och
+    hex_pausstatus() rapporterar just den motsägelsen.
+    """
+
+    def test_hex_paus_overlever_uppgraderingen(self):
+        self.cur.execute("SELECT anledning FROM public.hex_paus")
+        rad = self.cur.fetchone()
+        self.assertIsNotNone(rad, "hex_paus-raden kastades bort av upgrade()")
+        self.assertEqual(rad[0], "livscykeltest")
+
+    def test_tidigare_lage_overlever_som_jsonb(self):
+        """psycopg2 läser jsonb som dict och kan inte skriva tillbaka den utan
+        Json-adaptern. Utan den sprack upgrade() med "can't adapt type 'dict'"."""
+        self.cur.execute(
+            "SELECT jsonb_array_length(tidigare_lage -> 'radtriggers'),"
+            "       jsonb_array_length(tidigare_lage -> 'event_triggers')"
+            " FROM public.hex_paus"
+        )
+        radtriggers, event_triggers = self.cur.fetchone()
+        self.assertEqual(radtriggers, 5, "radtriggerlägena kom inte över")
+        self.assertEqual(event_triggers, 10, "event-triggerlägena kom inte över")
+
+    def test_event_triggers_ar_paslagna_efter_uppgradering(self):
+        """Uppgraderingen skapar om dem, och en ny event-trigger är alltid på."""
+        self.cur.execute(
+            "SELECT count(*) FROM pg_event_trigger WHERE evtenabled <> 'D'"
+        )
+        self.assertEqual(self.cur.fetchone()[0], 10)
+
+    def test_pausstatus_flaggar_motsagelsen(self):
+        self.cur.execute("SELECT pausad, avvikelse FROM public.hex_pausstatus()")
+        pausad, avvikelse = self.cur.fetchone()
+        self.assertTrue(pausad)
+        self.assertIsNotNone(avvikelse, "avvikelsen mellan hex_paus och katalogen missades")
+        self.assertIn("påslagna trots att hex_paus säger pausat", avvikelse)
+
+    def test_radtriggers_i_hex_schemat_ar_kvar_avstangda(self):
+        """Utgångsläget som gör bevarandet nödvändigt."""
+        self.assertEqual(
+            self._avstangda_radtriggers(),
+            ["hex_tvinga_anvandarvarden", "trg_hus_y_qa"],
+        )
+
+
+class TestAterupptaEfterUppgraderingUnderPaus(_PausUppgraderingBas):
+    """
+    hex_ateruppta() reparerar det uppgraderingen lämnade efter sig.
+
+    En enda testmetod med flit. Klassen delar databas mellan sina metoder, och
+    hex_ateruppta() ändrar just det tillstånd assertionen läser — två metoder
+    hade blivit beroende av bokstavsordningen mellan sig.
+    """
+
+    def test_ateruppta_reparerar_och_historiken_lever_igen(self):
+        # Utgångsläge: de två triggarna vars funktion ligger i Hex-schemat är
+        # kvar avstängda efter uppgraderingen.
+        self.assertEqual(
+            self._avstangda_radtriggers(),
+            ["hex_tvinga_anvandarvarden", "trg_hus_y_qa"],
+            "utgångsläget stämmer inte – testet mäter inte det det tror",
+        )
+
+        self.cur.execute("SELECT count(*) FROM public.hex_ateruppta()")
+
+        self.assertEqual(self._avstangda_radtriggers(), [])
+        self.cur.execute("SELECT pausad, avvikelse FROM public.hex_pausstatus()")
+        pausad, avvikelse = self.cur.fetchone()
+        self.assertFalse(pausad)
+        self.assertIsNone(avvikelse)
+
+        # Det som faktiskt stod på spel: QA-triggern skriver historik igen.
+        self.cur.execute(
+            f"INSERT INTO {self.SCHEMA}.hus_y (namn, geom)"
+            " VALUES ('hus1', ST_GeomFromText('POLYGON((0 0,0 1,1 1,1 0,0 0))', 3007))"
+        )
+        self.cur.execute(f"UPDATE {self.SCHEMA}.hus_y SET namn = 'hus1_andrad'")
+        self.cur.execute(
+            f"SELECT count(*) FROM {self.SCHEMA}.hus_y_h WHERE h_typ = 'U'"
+        )
+        self.assertEqual(
+            self.cur.fetchone()[0], 1,
+            "historiken skrevs inte – QA-triggern är fortfarande avstängd",
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
