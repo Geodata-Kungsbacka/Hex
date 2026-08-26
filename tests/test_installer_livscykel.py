@@ -1451,6 +1451,28 @@ class TestUppgraderingUnderPaus(_PausUppgraderingBas):
             ["hex_tvinga_anvandarvarden", "trg_hus_y_qa"],
         )
 
+    def test_pausmarkoren_foljer_med_raden(self):
+        """
+        Invarianten är "rad i hex_paus <=> markör satt".
+
+        Avinstallationen nollställer markören med flit – den ska inte lämnas
+        kvar och påstå att en paus finns. Men upgrade() kör samma
+        UNINSTALL_SQL, och där ska pausen överleva. Utan att markören sätts
+        igen kom raden tillbaka utan sin markör, och hex_pausstatus() hade
+        rapporterat en avvikelse för ett läge installatören själv skapat.
+        """
+        self.cur.execute("SELECT public.hex_pausmarkor()")
+        self.assertIsNotNone(
+            self.cur.fetchone()[0],
+            "pausmarkören sattes inte tillbaka av upgrade()",
+        )
+
+        self.cur.execute("SELECT avvikelse FROM public.hex_pausstatus()")
+        self.assertNotIn(
+            "Ingen pausmarkör satt", self.cur.fetchone()[0] or "",
+            "uppgraderingen lämnade ett läge som rapporteras som avvikelse",
+        )
+
 
 class TestAterupptaEfterUppgraderingUnderPaus(_PausUppgraderingBas):
     """
@@ -1491,6 +1513,83 @@ class TestAterupptaEfterUppgraderingUnderPaus(_PausUppgraderingBas):
             self.cur.fetchone()[0], 1,
             "historiken skrevs inte – QA-triggern är fortfarande avstängd",
         )
+
+
+class TestUnderhallsvarningVidPaus(unittest.TestCase):
+    """
+    hex_underhall() ska varna för en pausad databas – utom när hex_ateruppta()
+    är den som kör.
+
+    Varningen finns för att fånga en installatörskörning eller ett manuellt
+    anrop mitt under en pg_restore: underhållet skapar triggar, delar ut
+    rättigheter och notifierar GeoServer mot halvt inlästa tabeller.
+
+    Men hex_ateruppta() kör hex_underhall() med flit medan pausen fortfarande
+    gäller – det är så en återläsning repareras. Utan undantaget skrev alltså
+    varenda korrekt återupptagning ut en uppmaning att avbryta, och en varning
+    som alltid syns slutar betyda något.
+
+    Varningar syns bara på klientsidan, därför ligger testet här och inte i
+    test_pausa.sql: psycopg2 samlar dem i conn.notices.
+    """
+
+    SCHEMA = "sk0_kba_pausvarning"
+
+    @classmethod
+    def setUpClass(cls):
+        _skapa_tom_databas()
+        install_hex.install(_db_config(), base_path=str(PROJECT_ROOT))
+        cls.conn = _koppla()
+        cls.conn.autocommit = True
+        cls.cur = cls.conn.cursor()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.conn.close()
+        _ta_bort_databas()
+
+    def _varningar(self, sql: str) -> list[str]:
+        """Kör sql och returnerar de pausvarningar servern skickade."""
+        del self.conn.notices[:]
+        self.cur.execute(sql)
+        return [n for n in self.conn.notices if "Hex är pausat" in n]
+
+    def test_manuellt_anrop_under_paus_varnar(self):
+        self.cur.execute("SELECT count(*) FROM public.hex_pausa('varningstest')")
+        try:
+            varningar = self._varningar("SELECT count(*) FROM public.hex_underhall()")
+            self.assertEqual(
+                len(varningar), 1,
+                "hex_underhall() varnade inte trots att databasen var pausad",
+            )
+        finally:
+            self.cur.execute("SELECT count(*) FROM public.hex_ateruppta(false)")
+
+    def test_ateruppta_varnar_inte(self):
+        self.cur.execute("SELECT count(*) FROM public.hex_pausa('varningstest')")
+        varningar = self._varningar("SELECT count(*) FROM public.hex_ateruppta()")
+        self.assertEqual(
+            varningar, [],
+            "hex_ateruppta() fick underhållets pausvarning – den korrekta vägen "
+            "ska inte uppmana operatören att avbryta",
+        )
+
+    def test_flaggan_lacker_inte_till_nasta_anrop(self):
+        """
+        Undantaget är transaktionslokalt och nollställs dessutom explicit.
+        Läckte det vore varningen borta även för det farliga anropet.
+        """
+        self.cur.execute("SELECT count(*) FROM public.hex_pausa('varningstest')")
+        try:
+            self.cur.execute("SELECT count(*) FROM public.hex_ateruppta(false)")
+            self.cur.execute("SELECT count(*) FROM public.hex_pausa('varningstest igen')")
+            varningar = self._varningar("SELECT count(*) FROM public.hex_underhall()")
+            self.assertEqual(
+                len(varningar), 1,
+                "varningen uteblev – hex.ateruppta_pagar läckte till nästa anrop",
+            )
+        finally:
+            self.cur.execute("SELECT count(*) FROM public.hex_ateruppta(false)")
 
 
 if __name__ == "__main__":

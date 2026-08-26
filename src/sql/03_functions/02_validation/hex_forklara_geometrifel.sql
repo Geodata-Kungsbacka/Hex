@@ -8,7 +8,8 @@ CREATE OR REPLACE FUNCTION public.hex_forklara_geometrifel(
     IMMUTABLE
     -- Låst search_path, samma skäl som i hex_validera_geometri: funktionen
     -- anropas från geometritriggern och måste hitta PostGIS även när
-    -- anroparen kör med tom search_path (pg_restore).
+    -- anroparen kör med tom search_path (pg_restore). Förutsätter, som den,
+    -- att PostGIS ligger i public – se resonemanget där.
     SET search_path = public, pg_temp
 AS $BODY$
 /******************************************************************************

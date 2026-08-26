@@ -108,22 +108,28 @@ DECLARE
 BEGIN
     -- Varna om Hex är pausat.
     --
-    -- hex_ateruppta() kör den här funktionen med flit medan pausen pågår – det
-    -- är så en återläsning repareras – så det får inte bli ett fel. Men en
-    -- installatörskörning eller ett manuellt anrop mitt under en pg_restore är
-    -- något annat: underhållet skapar triggar, delar ut rättigheter och skickar
+    -- En installatörskörning eller ett manuellt anrop mitt under en pg_restore
+    -- är farligt: underhållet skapar triggar, delar ut rättigheter och skickar
     -- pg_notify till GeoServer-lyssnaren mot halvt inlästa tabeller. Varningen
-    -- är det som gör den skillnaden synlig i loggen.
+    -- är det som gör det synligt i loggen.
+    --
+    -- hex_ateruppta() kör den här funktionen med flit medan pausen fortfarande
+    -- gäller – det är så en återläsning repareras – och sätter då
+    -- hex.ateruppta_pagar. Utan den flaggan varnade även varje korrekt
+    -- återupptagning, med uppmaningen att avbryta. En varning som alltid syns
+    -- slutar betyda något, och då är den värre än ingen varning alls.
     --
     -- to_regclass-vakten finns för uppgraderingar: hex_underhall() kan hinna
     -- köras i en databas där hex_paus ännu inte skapats. Kontrollerna måste
     -- vara nästlade – ett kortslutande AND hade räknats som ett uttryck och
     -- parsats i sin helhet, vilket ger UndefinedTable innan vakten hinner slå.
-    IF to_regclass('public.hex_paus') IS NOT NULL THEN
-        IF EXISTS (SELECT 1 FROM public.hex_paus) THEN
-            RAISE WARNING '[hex_underhall] Hex är pausat (se hex_pausstatus()). '
-                          'Underhållet körs ändå. Är det här inte hex_ateruppta() '
-                          'som kör, avbryt och vänta tills återläsningen är klar.';
+    IF coalesce(current_setting('hex.ateruppta_pagar', true), '') <> 'true' THEN
+        IF to_regclass('public.hex_paus') IS NOT NULL THEN
+            IF EXISTS (SELECT 1 FROM public.hex_paus) THEN
+                RAISE WARNING '[hex_underhall] Hex är pausat (se hex_pausstatus()). '
+                              'Underhållet körs ändå. Är det här inte hex_ateruppta() '
+                              'som kör, avbryt och vänta tills återläsningen är klar.';
+            END IF;
         END IF;
     END IF;
 

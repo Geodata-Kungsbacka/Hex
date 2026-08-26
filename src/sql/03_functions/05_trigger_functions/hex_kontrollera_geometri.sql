@@ -9,6 +9,7 @@ CREATE OR REPLACE FUNCTION public.hex_kontrollera_geometri_trigger()
     VOLATILE NOT LEAKPROOF
     -- Låst search_path. Triggern sitter på varje geometritabell och körs
     -- därmed även under en återläsning, där pg_restore satt search_path = ''.
+    -- Förutsätter PostGIS i public – se hex_validera_geometri.sql.
     SET search_path = public, pg_temp
 AS $BODY$
 

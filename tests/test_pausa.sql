@@ -250,16 +250,43 @@ BEGIN
     END IF;
 END $$;
 
--- TEST 10: hex_ateruppta är idempotent
+-- TEST 10: hex_ateruppta utan paus kör underhållet i stället för att göra
+--          ingenting
+--
+-- Den tidigare versionen returnerade noll rader och gick hem. Det var fel
+-- läge att vara tyst i: bokföringsraden kan ha droppats av just den
+-- pg_restore --clean som pausen skulle skydda, och då är det underhållet –
+-- roller, ägarskap, rättigheter, GeoServer-notiser – som aldrig blir av.
+-- Steget i driftrutinen måste utföra reparationen även när bokföringen är
+-- borta.
 DO $$ DECLARE
-    rader integer;
+    rader     integer;
+    underhall integer;
 BEGIN
     SELECT count(*) INTO rader FROM public.hex_ateruppta();
 
-    IF rader = 0 THEN
-        PERFORM _pass(10, 'hex_ateruppta: idempotent utan paus');
+    SELECT count(*) INTO underhall
+    FROM   public.hex_ateruppta() AS a
+    WHERE  a.typ = 'underhåll';
+
+    IF rader > 0 AND underhall = 1 THEN
+        PERFORM _pass(10, 'hex_ateruppta: kör underhållet även utan paus');
     ELSE
-        PERFORM _fail(10, 'hex_ateruppta: idempotent utan paus',
+        PERFORM _fail(10, 'hex_ateruppta: kör underhållet även utan paus',
+            format('returnerade %s rader, varav %s underhåll', rader, underhall));
+    END IF;
+END $$;
+
+-- TEST 25: p_underhall => false är vägen till den gamla nullåtgärden
+DO $$ DECLARE
+    rader integer;
+BEGIN
+    SELECT count(*) INTO rader FROM public.hex_ateruppta(false);
+
+    IF rader = 0 THEN
+        PERFORM _pass(25, 'hex_ateruppta: p_underhall => false utan paus ger inga rader');
+    ELSE
+        PERFORM _fail(25, 'hex_ateruppta: p_underhall => false utan paus ger inga rader',
             format('returnerade %s rader', rader));
     END IF;
 END $$;
@@ -670,6 +697,186 @@ BEGIN
     END IF;
 END $$;
 
+
+-- =============================================================================
+-- GRUPP 6: PAUSMARKÖREN
+--
+-- hex_paus är en vanlig tabell i public, och pg_restore --clean droppar den.
+-- Efter en sådan återläsning stod Hex igång med tom hex_paus: hex_pausstatus()
+-- rapporterade "inte pausat, inga avvikelser" och hex_ateruppta() svarade
+-- "ingenting att göra". Underhållet – roller, ägarskap, rättigheter,
+-- GeoServer-notiser – blev alltså aldrig av, mitt i den återläsning pausen
+-- fanns för att skydda.
+--
+-- Markören är samma besked lagt i pg_db_role_setting, som hör till
+-- databasobjektet och inte till innehållet. Den överlever därför en
+-- återläsning.
+-- =============================================================================
+
+-- TEST 26: markören sätts av hex_pausa och rensas av hex_ateruppta
+DO $$ DECLARE
+    under_paus text;
+    efterat    text;
+BEGIN
+    PERFORM count(*) FROM public.hex_pausa('markörtest', 8);
+    under_paus := public.hex_pausmarkor();
+
+    PERFORM count(*) FROM public.hex_ateruppta(false);
+    efterat := public.hex_pausmarkor();
+
+    IF under_paus IS NOT NULL AND efterat IS NULL THEN
+        PERFORM _pass(26, 'hex_pausmarkor: sätts av hex_pausa, rensas av hex_ateruppta');
+    ELSE
+        PERFORM _fail(26, 'hex_pausmarkor: sätts av hex_pausa, rensas av hex_ateruppta',
+            format('under paus=%s, efteråt=%s',
+                   coalesce(under_paus, 'NULL'), coalesce(efterat, 'NULL')));
+    END IF;
+END $$;
+
+-- TEST 27: markör utan rad i hex_paus ger en avvikelse
+-- DELETE FROM hex_paus är samma slutläge som pg_restore --clean lämnar: raden
+-- borta, markören kvar. Före markören rapporterades det som friskt.
+DO $$ DECLARE
+    ar_pausad  boolean;
+    har_markor boolean;
+    avvik      text;
+BEGIN
+    -- p_radtriggers => false håller simuleringen till event-triggarna. Att
+    -- radera bokföringen betyder att tidigare_lage är borta för gott, och då
+    -- kan ingenting läggas tillbaka automatiskt – testet får städa själv.
+    PERFORM count(*) FROM public.hex_pausa('simulerad --clean', 8, false);
+    DELETE FROM public.hex_paus;
+
+    SELECT pausad, pausmarkor, avvikelse
+    INTO   ar_pausad, har_markor, avvik
+    FROM   public.hex_pausstatus();
+
+    IF NOT ar_pausad AND har_markor AND avvik LIKE '%hex_paus är tom%' THEN
+        PERFORM _pass(27, 'hex_pausstatus: markör utan rad avslöjar raderad bokföring');
+    ELSE
+        PERFORM _fail(27, 'hex_pausstatus: markör utan rad avslöjar raderad bokföring',
+            format('pausad=%s, markör=%s, avvikelse=%s',
+                   ar_pausad, har_markor, coalesce(avvik, 'NULL')));
+    END IF;
+END $$;
+
+-- TEST 28: hex_ateruppta kör underhållet och städar markören när raden är borta
+-- Fortsätter från läget test 27 lämnade. Det här är hela poängen: steget i
+-- driftrutinen ska utföra reparationen även när bokföringen inte finns kvar.
+DO $$ DECLARE
+    underhall integer;
+    redovisat integer;
+    kvar      text;
+    et        record;
+BEGIN
+    SELECT
+        count(*) FILTER (WHERE a.typ = 'underhåll'),
+        count(*) FILTER (WHERE a.atgard LIKE '%bedöm för hand%')
+    INTO underhall, redovisat
+    FROM public.hex_ateruppta() AS a;
+
+    kvar := public.hex_pausmarkor();
+
+    -- Städning: utan tidigare_lage finns ingen automatisk väg tillbaka. Det är
+    -- själva poängen med testet – funktionen redovisar vad som står avstängt i
+    -- stället för att gissa. Här vet testet vad utgångsläget var.
+    FOR et IN SELECT evtname FROM pg_event_trigger WHERE evtenabled = 'D' LOOP
+        EXECUTE format('ALTER EVENT TRIGGER %I ENABLE', et.evtname);
+    END LOOP;
+
+    IF underhall = 1 AND kvar IS NULL AND redovisat = 10 THEN
+        PERFORM _pass(28, 'hex_ateruppta: reparerar, redovisar och städar markören');
+    ELSE
+        PERFORM _fail(28, 'hex_ateruppta: reparerar, redovisar och städar markören',
+            format('underhållsrader=%s, redovisade avstängda=%s, markör kvar=%s',
+                   underhall, redovisat, coalesce(kvar, 'NULL')));
+    END IF;
+END $$;
+
+-- TEST 29: radtriggers som slagits på bakom pausens rygg upptäcks
+-- Att räkna avstängda radtriggers svarar på fel fråga under en paus: efter en
+-- uppgradering eller ett hex_underhall() mitt i pausen är triggarna omskapade
+-- och påslagna, och den lilla siffran ser lugnande ut utan att betyda något.
+DO $$ DECLARE
+    fore_av integer;
+    pa_igen integer;
+    avvik   text;
+BEGIN
+    -- Utgångsläget måste vara explicit: tidigare test lämnar med flit triggers
+    -- avstängda, och en trigger som redan var avstängd före pausen räknas inte
+    -- som "påslagen bakom ryggen" – den var aldrig pausens att stänga av.
+    ALTER TABLE sk0_kba_paus.stigar_l ENABLE TRIGGER trg_stigar_l_qa;
+
+    PERFORM count(*) FROM public.hex_pausa('bakom ryggen', 8);
+
+    SELECT radtriggers_av INTO fore_av FROM public.hex_pausstatus();
+
+    -- Samma sak som hex_underhall() gör när den skapar om en trigger.
+    ALTER TABLE sk0_kba_paus.stigar_l ENABLE TRIGGER trg_stigar_l_qa;
+
+    SELECT radtriggers_pa_trots_paus, avvikelse
+    INTO   pa_igen, avvik
+    FROM   public.hex_pausstatus();
+
+    PERFORM count(*) FROM public.hex_ateruppta(false);
+
+    IF fore_av > 0 AND pa_igen = 1 AND avvik LIKE '%påslagna igen%' THEN
+        PERFORM _pass(29, 'hex_pausstatus: fångar radtrigger påslagen under paus');
+    ELSE
+        PERFORM _fail(29, 'hex_pausstatus: fångar radtrigger påslagen under paus',
+            format('avstängda före=%s, på igen=%s, avvikelse=%s',
+                   fore_av, coalesce(pa_igen::text, 'NULL'), coalesce(avvik, 'NULL')));
+    END IF;
+END $$;
+
+-- TEST 30: p_max_timmar måste vara större än noll
+-- En gräns i det förflutna gör pausen förfallen från första sekunden, och då
+-- är varningen brus i stället för signal.
+DO $$ DECLARE
+    blev_pausad boolean;
+BEGIN
+    BEGIN
+        PERFORM count(*) FROM public.hex_pausa('ogiltig gräns', 0);
+        SELECT EXISTS (SELECT 1 FROM public.hex_paus) INTO blev_pausad;
+        IF blev_pausad THEN
+            PERFORM count(*) FROM public.hex_ateruppta(false);
+        END IF;
+        PERFORM _fail(30, 'hex_pausa: p_max_timmar <= 0 avvisas', 'inget fel kastades');
+    EXCEPTION WHEN OTHERS THEN
+        IF SQLERRM LIKE '%p_max_timmar%' THEN
+            PERFORM _xfail(30, 'hex_pausa: p_max_timmar <= 0 avvisas', SQLERRM);
+        ELSE
+            PERFORM _fail(30, 'hex_pausa: p_max_timmar <= 0 avvisas', SQLERRM);
+        END IF;
+    END;
+END $$;
+
+-- TEST 31: en avstängd trigger som inte är Hex egen larmar inte
+-- hex_pausstatus() rekommenderas som övervakningsfråga. Larmar den permanent
+-- för något en DBA stängt av med flit slutar den läsas, och då hjälper den
+-- inte när det gäller. radtriggers_av räknar den ändå – det är ett
+-- faktapåstående, inte ett larm.
+DO $$ DECLARE
+    antal_av integer;
+    avvik    text;
+BEGIN
+    CREATE TRIGGER egen_trigger
+        BEFORE INSERT ON sk0_kba_paus.stigar_l
+        FOR EACH ROW EXECUTE FUNCTION public.hex_tvinga_gid_fran_sekvens();
+    ALTER TABLE sk0_kba_paus.stigar_l DISABLE TRIGGER egen_trigger;
+
+    SELECT radtriggers_av, avvikelse INTO antal_av, avvik FROM public.hex_pausstatus();
+
+    DROP TRIGGER egen_trigger ON sk0_kba_paus.stigar_l;
+
+    IF antal_av >= 1 AND avvik IS NULL THEN
+        PERFORM _pass(31, 'hex_pausstatus: främmande avstängd trigger räknas men larmar inte');
+    ELSE
+        PERFORM _fail(31, 'hex_pausstatus: främmande avstängd trigger räknas men larmar inte',
+            format('avstängda=%s, avvikelse=%s', antal_av, coalesce(avvik, 'NULL')));
+    END IF;
+END $$;
+
 -- =============================================================================
 -- TEARDOWN
 -- =============================================================================
@@ -715,13 +922,13 @@ DO $$ DECLARE
 BEGIN
     SELECT string_agg(n::text, ', ' ORDER BY n)
     INTO   saknade
-    FROM   generate_series(1, 24) n
+    FROM   generate_series(1, 31) n
     WHERE  n NOT IN (SELECT nr FROM _test_results);
 
     IF saknade IS NULL THEN
-        PERFORM _pass(99, 'testsvit: alla 24 test registrerade ett resultat');
+        PERFORM _pass(99, 'testsvit: alla 31 test registrerade ett resultat');
     ELSE
-        PERFORM _fail(99, 'testsvit: alla 24 test registrerade ett resultat',
+        PERFORM _fail(99, 'testsvit: alla 31 test registrerade ett resultat',
             'saknas: ' || saknade);
     END IF;
 END $$;

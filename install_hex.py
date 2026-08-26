@@ -98,6 +98,7 @@ INSTALL_ORDER = [
     # anropar den. plpgsql slår upp anropet först vid körning, men
     # ordningen håller beroendet läsbart i listan.
     "src/sql/03_functions/04_utility/hex_triggerlage_sats.sql",
+    "src/sql/03_functions/04_utility/hex_pausmarkor.sql",
     "src/sql/03_functions/04_utility/hex_pausa.sql",
     "src/sql/03_functions/04_utility/hex_ateruppta.sql",
     "src/sql/03_functions/04_utility/hex_pausstatus.sql",
@@ -163,6 +164,7 @@ DROP FUNCTION IF EXISTS public.hex_tvinga_gid_fran_sekvens() CASCADE;
 DROP FUNCTION IF EXISTS public.hex_pausstatus();
 DROP FUNCTION IF EXISTS public.hex_ateruppta(boolean);
 DROP FUNCTION IF EXISTS public.hex_pausa(text, integer, boolean);
+DROP FUNCTION IF EXISTS public.hex_pausmarkor();
 DROP FUNCTION IF EXISTS public.hex_triggerlage_sats(text);
 DROP FUNCTION IF EXISTS public.hex_underhall();
 DROP FUNCTION IF EXISTS public.hex_tilldela_rollrattigheter(text, text, text);
@@ -194,6 +196,16 @@ DROP FUNCTION IF EXISTS public.hex_systemagare();
 -- OBS: hex_geoserver_roller tas INTE bort här. Rollen är kluster-nivå och delas
 -- av alla databaser som kör Hex. Om du avinstallerar Hex från alla databaser och
 -- vill ta bort rollen helt, kör manuellt: DROP ROLE hex_geoserver_roller;
+
+-- Pausmarkören är en databasinställning, inte ett objekt, och överlever därför
+-- DROP TABLE. Lämnas den kvar rapporterar nästa installation en paus som inte
+-- finns. DO-blocket behövs eftersom ALTER DATABASE inte tar ett uttryck som
+-- databasnamn.
+DO $$
+BEGIN
+    EXECUTE format('ALTER DATABASE %I RESET %I', current_database(), 'hex.paus');
+END;
+$$;
 
 -- Tabeller
 DROP TABLE IF EXISTS public.hex_paus;
@@ -356,6 +368,47 @@ def _json_columns(cur, table: str) -> set:
     return {row[0] for row in cur.fetchall()}
 
 
+def _aterstall_pausmarkor(cur):
+    """Sätter pausmarkören igen när uppgraderingen lagt tillbaka hex_paus-raden.
+
+    Markören (ALTER DATABASE ... SET "hex.paus") är en databasinställning och
+    inget objekt, så den överlever DROP TABLE. Just därför nollställer
+    UNINSTALL_SQL den explicit — en avinstallation ska inte lämna kvar ett
+    påstående om en paus som inte finns.
+
+    Men upgrade() kör samma UNINSTALL_SQL, och där ska pausen överleva:
+    hex_paus står i PRESERVE_STATE. Utan det här steget kom raden tillbaka utan
+    sin markör, och hex_pausstatus() hade rapporterat en avvikelse för ett läge
+    installatören själv skapat.
+
+    Invarianten är "rad i hex_paus <=> markör satt". Den här funktionen är det
+    som håller den över en uppgradering.
+    """
+    cur.execute("SELECT to_regclass('public.hex_paus') IS NOT NULL")
+    if not cur.fetchone()[0]:
+        return
+
+    cur.execute("SELECT pausad_sedan FROM public.hex_paus")
+    rad = cur.fetchone()
+    if rad is None:
+        return
+
+    cur.execute(
+        pgsql.SQL("ALTER DATABASE {} SET {} = %s").format(
+            pgsql.Identifier(_current_database(cur)),
+            pgsql.Identifier("hex.paus"),
+        ),
+        (str(rad[0]),),
+    )
+    print("  Pausmarkören satt igen (hex_paus-raden bevarades).")
+
+
+def _current_database(cur) -> str:
+    """Returnerar namnet på databasen anslutningen står i."""
+    cur.execute("SELECT current_database()")
+    return cur.fetchone()[0]
+
+
 def _conn_params(db: dict) -> dict:
     """Returnerar psycopg2-anslutningsparametrar (exkluderar owner_role)."""
     return {k: v for k, v in db.items() if k != "owner_role"}
@@ -390,7 +443,17 @@ def kontrollera_forutsattningar(cur) -> list[str]:
        sin gamla ACL oavsett vilken version de körs på i dag. Versionsgolvet är
        alltså inte det som skyddar mot skuggning — den här kontrollen är det.
        Varnar men avbryter inte — åtgärden är ett medvetet beslut för databasägaren.
-    3. Pausläge. Är Hex pausat (hex_pausa) skulle en installation tyst häva pausen:
+    3. PostGIS-schema. Geometrikedjan (hex_validera_geometri,
+       hex_forklara_geometrifel, hex_kontrollera_geometri_trigger) har
+       SET search_path = public, pg_temp. Låsningen finns för att kedjan nås
+       från CHECK-villkoret validera_geom_<tabell> vid varje INSERT, och
+       pg_dump/pg_restore kör med search_path = '' — utan den hittas inte
+       ST_IsValid, COPY-steget havererar och pg_restore avslutar ändå utan att
+       datat kom fram. Priset är att låsningen förutsätter PostGIS i public.
+       Ligger extensionen någon annanstans hittas ST_*-funktionerna inte alls,
+       och då slutar geometrivalideringen fungera helt. Varnar men avbryter
+       inte — flytten är ett beslut för databasägaren.
+    4. Pausläge. Är Hex pausat (hex_pausa) skulle en installation tyst häva pausen:
        filerna i src/sql/04_triggers/ gör DROP + CREATE EVENT TRIGGER, och en
        nyskapad event-trigger är alltid påslagen. Sker det mitt i en pg_restore
        vaknar hela DDL-hanteringen mot halvt inlästa tabeller. Varnar men avbryter
@@ -427,6 +490,25 @@ def kontrollera_forutsattningar(cur) -> list[str]:
             "ett Hex-objekt skuggas och den skuggande koden köras som postgres.\n"
             "Åtgärda med:  REVOKE CREATE ON SCHEMA public FROM PUBLIC;\n"
             "(Databasen är sannolikt uppgraderad från PostgreSQL 14 eller äldre.)"
+        )
+
+    cur.execute(
+        "SELECT n.nspname FROM pg_extension e"
+        " JOIN pg_namespace n ON n.oid = e.extnamespace"
+        " WHERE e.extname = 'postgis'"
+    )
+    rad = cur.fetchone()
+    if rad is not None and rad[0] != "public":
+        varningar.append(
+            f"PostGIS ligger i schemat '{rad[0]}', inte i 'public'.\n"
+            "Geometrikedjan har SET search_path = public, pg_temp och hittar då\n"
+            "inte ST_IsValid, ST_IsEmpty m.fl. Varje INSERT mot en _kba_-tabell\n"
+            "med geometri kommer att misslyckas.\n"
+            "Åtgärd: lägg PostGIS i public (ALTER EXTENSION postgis SET SCHEMA\n"
+            "public), eller lägg till schemat i search_path-klausulen i\n"
+            "src/sql/03_functions/02_validation/hex_validera_geometri.sql,\n"
+            "hex_forklara_geometrifel.sql och\n"
+            "src/sql/03_functions/05_trigger_functions/hex_kontrollera_geometri.sql."
         )
 
     # Existenskontrollen måste vara en egen fråga. PostgreSQL parsar hela satsen
@@ -700,6 +782,7 @@ def upgrade(db: dict, base_path="."):
     try:
         print("Återställer inställningar...")
         restore_settings(cur, snapshot)
+        _aterstall_pausmarkor(cur)
         conn.commit()
 
         # Underhållet i install() körde mot tomma tillståndstabeller OCH mot

@@ -39,6 +39,9 @@ AS $BODY$
  *      befintliga tabeller – vid full återläsning skapar pg_dump triggarna
  *      efter datat ändå.
  *   3. Skriver en rad i hex_paus med lägena före pausen.
+ *   4. Sätter pausmarkören ALTER DATABASE ... SET "hex.paus". Den ligger
+ *      utanför databasens objektgraf och överlever därför en pg_restore
+ *      --clean, som droppar tabellen hex_paus. Se hex_pausmarkor().
  *
  * VAD FUNKTIONEN INTE GÖR
  *   - CHECK-villkor stängs inte av. Geometrivalideringen
@@ -82,11 +85,23 @@ BEGIN
     -- -------------------------------------------------------------------------
     -- 1. Förutsättningar
     -- -------------------------------------------------------------------------
-    IF NOT (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) THEN
+    -- coalesce: saknas raden helt blir uttrycket NULL, och IF NULL är falskt –
+    -- vakten hade då släppt igenom i stället för att stoppa.
+    IF NOT coalesce((SELECT rolsuper FROM pg_roles WHERE rolname = current_user), false) THEN
         RAISE EXCEPTION
             '[hex_pausa] Kräver superanvändare. Aktuell användare: %', current_user
             USING HINT = 'ALTER EVENT TRIGGER kräver ägarskap, och event-triggers '
                          'kan bara ägas av en superanvändare. Kör som postgres.';
+    END IF;
+
+    -- En gräns i det förflutna gör att hex_pausstatus() flaggar pausen som
+    -- förfallen från första sekunden. Varningen blir då brus i stället för
+    -- signal, och en verkligt glömd paus syns inte längre i mängden.
+    IF p_max_timmar IS NOT NULL AND p_max_timmar <= 0 THEN
+        RAISE EXCEPTION
+            '[hex_pausa] p_max_timmar måste vara större än noll. Fick: %', p_max_timmar
+            USING HINT = 'Utelämna argumentet för standardvärdet 24 timmar, eller '
+                         'skicka NULL för ingen gräns alls.';
     END IF;
 
     SELECT * INTO befintlig_paus FROM public.hex_paus;
@@ -236,6 +251,16 @@ BEGIN
             'event_triggers', ev_lagen,
             'radtriggers',    rad_lagen
         )
+    );
+
+    -- Markören: samma besked lagt utanför databasens objektgraf, så att en
+    -- pg_restore --clean inte kan radera det tillsammans med tabellen. Se
+    -- hex_pausmarkor() för hela resonemanget. ALTER DATABASE ... SET är
+    -- transaktionellt som all annan DDL här: rullas hex_pausa() tillbaka
+    -- försvinner markören med den.
+    EXECUTE format(
+        'ALTER DATABASE %I SET %I = %L',
+        current_database(), 'hex.paus', now()::text
     );
 
     RAISE NOTICE '[hex_pausa] Sammanfattning:';
