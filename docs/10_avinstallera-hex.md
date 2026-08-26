@@ -66,6 +66,10 @@ DROP FUNCTION IF EXISTS public.hex_aterskapa_qa_trigger(text, text, text);
 DROP FUNCTION IF EXISTS public.hex_lagg_till_dummy_geometri(text, text, hex_geom_info);
 DROP FUNCTION IF EXISTS public.hex_ta_bort_dummy_rad() CASCADE;
 DROP FUNCTION IF EXISTS public.hex_tvinga_gid_fran_sekvens() CASCADE;
+DROP FUNCTION IF EXISTS public.hex_pausstatus();
+DROP FUNCTION IF EXISTS public.hex_ateruppta(boolean);
+DROP FUNCTION IF EXISTS public.hex_pausa(text, integer, boolean);
+DROP FUNCTION IF EXISTS public.hex_triggerlage_sats(text);
 DROP FUNCTION IF EXISTS public.hex_underhall();
 DROP FUNCTION IF EXISTS public.hex_tilldela_rollrattigheter(text, text, text);
 DROP FUNCTION IF EXISTS public.hex_skapa_historik_qa(text, text);
@@ -96,6 +100,7 @@ DROP FUNCTION IF EXISTS public.hex_systemagare();
 -- OBS: hex_geoserver_roller tas INTE bort här – se avsnittet nedan.
 
 -- 8. Konfigurationstabeller
+DROP TABLE IF EXISTS public.hex_paus;
 DROP TABLE IF EXISTS public.hex_rolluppgifter;
 DROP TABLE IF EXISTS public.hex_avvikande_srid;
 DROP TABLE IF EXISTS public.hex_dummy_geometrier;

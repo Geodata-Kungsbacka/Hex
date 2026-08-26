@@ -350,6 +350,7 @@ src/sql/02_tables/hex_afvaktande_geometri.sql
 src/sql/02_tables/hex_dummy_geometrier.sql
 src/sql/02_tables/hex_avvikande_srid.sql
 src/sql/02_tables/hex_rolluppgifter.sql
+src/sql/02_tables/hex_paus.sql
 
 -- 3. Skapa funktioner (i beroendeordning)
 -- 3.1 Strukturhantering
@@ -379,6 +380,10 @@ src/sql/03_functions/04_utility/hex_tilldela_rollrattigheter.sql
 src/sql/03_functions/04_utility/hex_tillampa_grupprattigheter.sql
 src/sql/03_functions/04_utility/hex_tvinga_gid_fran_sekvens.sql
 src/sql/03_functions/04_utility/hex_underhall.sql
+src/sql/03_functions/04_utility/hex_triggerlage_sats.sql
+src/sql/03_functions/04_utility/hex_pausa.sql
+src/sql/03_functions/04_utility/hex_ateruppta.sql
+src/sql/03_functions/04_utility/hex_pausstatus.sql
 
 -- 3.5 Triggerfunktioner
 src/sql/03_functions/05_trigger_functions/hex_ta_bort_dummy_rad.sql
@@ -557,10 +562,16 @@ härleda i efterhand, och därför bevaras de över `--upgrade`.
 | `hex_dummy_geometrier` | Tabeller som fortfarande bär en dummy-rad | `hex_lagg_till_dummy_geometri()` | `hex_ta_bort_dummy_rad()` |
 | `hex_avvikande_srid` | Tabeller med SRID ≠ 3007 | `hex_hantera_ny_tabell()`, `hex_hantera_ny_kolumn()` | `hex_hantera_borttagen_tabell()` |
 | `hex_rolluppgifter` | Rollnamn och autogenererat lösenord för LOGIN-tjänstekonton | `hex_hantera_std_roller()`, `hex_underhall()` | `DROP SCHEMA` via `hex_ta_bort_schemaroller()` |
+| `hex_paus` | Pausläget: när, av vem, varför, och lägena som gällde före pausen | `hex_pausa()` | `hex_ateruppta()` |
 
 > `hex_rolluppgifter` är den enda av dem som **inte** bevaras över `--upgrade` —
 > lösenorden roteras. Se
 > [docs/09](docs/09_installera-uppdatera-hex.md#hex_rolluppgifter-roteras--den-bevaras-inte).
+>
+> `hex_paus` bevaras heller inte, och ska inte göra det. `--upgrade` skapar om
+> event-triggarna, och en nyskapad event-trigger är alltid påslagen — pausen är
+> alltså faktiskt hävd efteråt. En bevarad rad hade påstått motsatsen. Se
+> [docs/11](docs/11_pausa-hex-vid-dump-restore.md).
 
 ### Strukturhanteringsfunktioner
 

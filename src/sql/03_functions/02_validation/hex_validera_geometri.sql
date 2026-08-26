@@ -6,6 +6,12 @@ CREATE OR REPLACE FUNCTION public.hex_validera_geometri(
     RETURNS boolean
     LANGUAGE 'plpgsql'
     IMMUTABLE
+    -- Låst search_path. Utan den slås ST_*-anropen nedan upp via
+    -- ANROPARENS search_path, och funktionen når CHECK-villkoret
+    -- validera_geom_<tabell> på varje INSERT. pg_dump/pg_restore kör med
+    -- search_path = '' – då finns inte PostGIS-funktionerna, COPY-steget
+    -- havererar och pg_restore avslutar ändå med kod 0. Se docs/11.
+    SET search_path = public, pg_temp
 AS $BODY$
 /******************************************************************************
  * Validerar geometrins kvalitet för användning i _kba_-scheman.

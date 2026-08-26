@@ -68,6 +68,7 @@ INSTALL_ORDER = [
     "src/sql/02_tables/hex_dummy_geometrier.sql",
     "src/sql/02_tables/hex_avvikande_srid.sql",
     "src/sql/02_tables/hex_rolluppgifter.sql",
+    "src/sql/02_tables/hex_paus.sql",
     # Funktioner - Struktur
     "src/sql/03_functions/01_structure/hex_hamta_geometri_definition.sql",
     "src/sql/03_functions/01_structure/hex_hamta_kolumnstandard.sql",
@@ -92,6 +93,13 @@ INSTALL_ORDER = [
     "src/sql/03_functions/04_utility/hex_tillampa_grupprattigheter.sql",
     "src/sql/03_functions/04_utility/hex_tvinga_gid_fran_sekvens.sql",
     "src/sql/03_functions/04_utility/hex_underhall.sql",
+    # Pausfunktionerna ligger efter hex_underhall eftersom hex_ateruppta()
+    # anropar den. plpgsql slår upp anropet först vid körning, men
+    # ordningen håller beroendet läsbart i listan.
+    "src/sql/03_functions/04_utility/hex_triggerlage_sats.sql",
+    "src/sql/03_functions/04_utility/hex_pausa.sql",
+    "src/sql/03_functions/04_utility/hex_ateruppta.sql",
+    "src/sql/03_functions/04_utility/hex_pausstatus.sql",
     # Funktioner - Triggerfunktioner
     "src/sql/03_functions/05_trigger_functions/hex_ta_bort_dummy_rad.sql",
     "src/sql/03_functions/04_utility/hex_lagg_till_dummy_geometri.sql",
@@ -151,6 +159,10 @@ DROP FUNCTION IF EXISTS public.hex_aterskapa_qa_trigger(text, text, text);
 DROP FUNCTION IF EXISTS public.hex_lagg_till_dummy_geometri(text, text, hex_geom_info);
 DROP FUNCTION IF EXISTS public.hex_ta_bort_dummy_rad() CASCADE;
 DROP FUNCTION IF EXISTS public.hex_tvinga_gid_fran_sekvens() CASCADE;
+DROP FUNCTION IF EXISTS public.hex_pausstatus();
+DROP FUNCTION IF EXISTS public.hex_ateruppta(boolean);
+DROP FUNCTION IF EXISTS public.hex_pausa(text, integer, boolean);
+DROP FUNCTION IF EXISTS public.hex_triggerlage_sats(text);
 DROP FUNCTION IF EXISTS public.hex_underhall();
 DROP FUNCTION IF EXISTS public.hex_tilldela_rollrattigheter(text, text, text);
 DROP FUNCTION IF EXISTS public.hex_skapa_historik_qa(text, text);
@@ -183,6 +195,7 @@ DROP FUNCTION IF EXISTS public.hex_systemagare();
 -- vill ta bort rollen helt, kör manuellt: DROP ROLE hex_geoserver_roller;
 
 -- Tabeller
+DROP TABLE IF EXISTS public.hex_paus;
 DROP TABLE IF EXISTS public.hex_rolluppgifter;
 DROP TABLE IF EXISTS public.hex_avvikande_srid;
 DROP TABLE IF EXISTS public.hex_dummy_geometrier;
@@ -341,6 +354,12 @@ def kontrollera_forutsattningar(cur) -> list[str]:
        sin gamla ACL oavsett vilken version de körs på i dag. Versionsgolvet är
        alltså inte det som skyddar mot skuggning — den här kontrollen är det.
        Varnar men avbryter inte — åtgärden är ett medvetet beslut för databasägaren.
+    3. Pausläge. Är Hex pausat (hex_pausa) skulle en installation tyst häva pausen:
+       filerna i src/sql/04_triggers/ gör DROP + CREATE EVENT TRIGGER, och en
+       nyskapad event-trigger är alltid påslagen. Sker det mitt i en pg_restore
+       vaknar hela DDL-hanteringen mot halvt inlästa tabeller. Varnar men avbryter
+       inte — att installera om under paus kan vara precis det som avses, t.ex. när
+       pausen kommit med i en dump.
 
     Returnerar varningstexterna. De skrivs ut direkt men samlas också in så att
     install() kan upprepa dem sist — annars drunknar de i installationsloggen.
@@ -372,6 +391,32 @@ def kontrollera_forutsattningar(cur) -> list[str]:
             "ett Hex-objekt skuggas och den skuggande koden köras som postgres.\n"
             "Åtgärda med:  REVOKE CREATE ON SCHEMA public FROM PUBLIC;\n"
             "(Databasen är sannolikt uppgraderad från PostgreSQL 14 eller äldre.)"
+        )
+
+    # Existenskontrollen måste vara en egen fråga. PostgreSQL parsar hela satsen
+    # innan den körs, så ett kortslutande "to_regclass(...) IS NOT NULL AND
+    # EXISTS (SELECT ... FROM public.hex_paus)" ger UndefinedTable när tabellen
+    # saknas — vilket är normalfallet vid en förstagångsinstallation.
+    cur.execute("SELECT to_regclass('public.hex_paus') IS NOT NULL")
+    if cur.fetchone()[0]:
+        cur.execute("SELECT pausad_sedan, pausad_av, anledning FROM public.hex_paus")
+        rad = cur.fetchone()
+    else:
+        rad = None
+
+    if rad is not None:
+        sedan, av, anledning = rad
+        varningar.append(
+            f"Hex är pausat sedan {sedan} av {av}\n"
+            f"Anledning: {anledning or '(ingen angiven)'}\n"
+            "Installationen skapar om event-triggarna, och nyskapade event-triggers\n"
+            "är alltid påslagna. Pausen hävs alltså av den här körningen.\n"
+            "Pågår en pg_dump/pg_restore just nu: avbryt och installera efteråt.\n"
+            "Efter --install ligger raden i hex_paus kvar utan att motsvara något —\n"
+            "kör hex_ateruppta() för att städa bort den. Efter --upgrade är raden\n"
+            "borta med tabellen, men radtriggers som pausen stängde av på\n"
+            "icke-Hex-objekt kan ligga kvar avstängda. Båda lägena syns i\n"
+            "SELECT * FROM hex_pausstatus();"
         )
 
     for varning in varningar:

@@ -1109,6 +1109,10 @@ det utlöser i sin tur nya eventutlösare. Tre flaggor förhindrar oändliga ked
 | `hex_forklara_geometrifel(geom)` | `hex_kontrollera_geometri_trigger` | Läsbar förklaring till varför en geometri underkändes |
 | `hex_underhall()` | `install_hex.py`, manuellt | Verifierar och reparerar triggers, roller, behörigheter och ägarskap |
 | `hex_tillampa_grupprattigheter()` | Manuellt efter ändring i `hex_grupprattigheter` | AD-grupproll → medlemskap i Hex-roll (`SECURITY DEFINER`) |
+| `hex_pausa(anledning, max_timmar, radtriggers)` | Manuellt före `pg_dump`/`pg_restore` | Stänger av alla event-triggers och (valfritt) radtriggers på Hex-tabeller. Sparar lägena före pausen i `hex_paus`. Kräver superanvändare |
+| `hex_ateruppta(underhall)` | Manuellt efter `pg_restore` | Lägger tillbaka lägena från `hex_paus`, kör `hex_underhall()` medan event-triggarna fortfarande är avstängda, slår på dem sist. Kräver superanvändare |
+| `hex_pausstatus()` | Manuellt, övervakning | Rapporterar pausläget och avvikelser mellan `hex_paus` och katalogerna |
+| `hex_triggerlage_sats(lage)` | `hex_ateruppta` | Översätter lägeskoderna `O`/`D`/`R`/`A` till `ENABLE`/`DISABLE`/`ENABLE REPLICA`/`ENABLE ALWAYS` |
 
 ### Konfigurationsfunktioner
 

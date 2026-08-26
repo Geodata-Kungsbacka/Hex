@@ -106,6 +106,27 @@ DECLARE
     schema_regex       text;
     generated_password text;
 BEGIN
+    -- Varna om Hex är pausat.
+    --
+    -- hex_ateruppta() kör den här funktionen med flit medan pausen pågår – det
+    -- är så en återläsning repareras – så det får inte bli ett fel. Men en
+    -- installatörskörning eller ett manuellt anrop mitt under en pg_restore är
+    -- något annat: underhållet skapar triggar, delar ut rättigheter och skickar
+    -- pg_notify till GeoServer-lyssnaren mot halvt inlästa tabeller. Varningen
+    -- är det som gör den skillnaden synlig i loggen.
+    --
+    -- to_regclass-vakten finns för uppgraderingar: hex_underhall() kan hinna
+    -- köras i en databas där hex_paus ännu inte skapats. Kontrollerna måste
+    -- vara nästlade – ett kortslutande AND hade räknats som ett uttryck och
+    -- parsats i sin helhet, vilket ger UndefinedTable innan vakten hinner slå.
+    IF to_regclass('public.hex_paus') IS NOT NULL THEN
+        IF EXISTS (SELECT 1 FROM public.hex_paus) THEN
+            RAISE WARNING '[hex_underhall] Hex är pausat (se hex_pausstatus()). '
+                          'Underhållet körs ändå. Är det här inte hex_ateruppta() '
+                          'som kör, avbryt och vänta tills återläsningen är klar.';
+        END IF;
+    END IF;
+
     -- Bygg regex från hex_standardiserade_skyddsnivaer en gång.
     -- Alla schemanamnkontroller i denna funktion använder denna variabel
     -- så att egna prefix fungerar utan kodändringar.

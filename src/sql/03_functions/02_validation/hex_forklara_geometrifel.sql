@@ -6,6 +6,10 @@ CREATE OR REPLACE FUNCTION public.hex_forklara_geometrifel(
     RETURNS text
     LANGUAGE 'plpgsql'
     IMMUTABLE
+    -- Låst search_path, samma skäl som i hex_validera_geometri: funktionen
+    -- anropas från geometritriggern och måste hitta PostGIS även när
+    -- anroparen kör med tom search_path (pg_restore).
+    SET search_path = public, pg_temp
 AS $BODY$
 /******************************************************************************
  * Diagnostiserar geometriproblem och returnerar en läsbar förklaring.
