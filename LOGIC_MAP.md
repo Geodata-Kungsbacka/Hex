@@ -1028,7 +1028,7 @@ flowchart TD
 ```
 HexGeoServerService (win32serviceutil.ServiceFramework)
   Tjänstnamn:    HexGeoServerListener
-  Visningsnamn:  Hex GeoServer Schema Listener
+  Visningsnamn:  HexGeoServerListener
   Loggfiler:     D:\Hex\Logs\hex_geoserver_listener.log
                  (roterar vid midnatt, 14 dagars historik)
   Kommandon:     install / start / stop / restart / update / remove / status

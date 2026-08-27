@@ -70,7 +70,7 @@ py geoserver_service.py restart
 ```
 
 Alternativt via Windows Services (`services.msc`) – tjänsten heter
-**Hex GeoServer Schema Listener**.
+**HexGeoServerListener**, samma namn som `net start`/`sc` använder.
 
 ### Kontrollera status
 

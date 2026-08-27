@@ -254,6 +254,24 @@ py geoserver_service.py start
 py geoserver_service.py status        :: ska visa "Kör"
 ```
 
+<!-- HEX-MIGRERING 2026-08: visningsnamnet ändrades från
+"Hex GeoServer Schema Listener" till "HexGeoServerListener". Tjänster
+registrerade före det bär kvar det gamla namnet i tjänsteregistret. Tas bort när
+samtliga servrar kört `update` en gång. -->
+> **Engångsåtgärd vid uppgradering från en äldre version:** tjänstens
+> visningsnamn hette tidigare *Hex GeoServer Schema Listener* och heter nu
+> `HexGeoServerListener`, samma som tjänstnamnet. Visningsnamnet ligger i
+> Windows tjänsteregister och skrivs inte om av `stop`/`start`. Kör därför en
+> gång, som administratör, medan tjänsten är stoppad:
+>
+> ```cmd
+> py geoserver_service.py update
+> ```
+>
+> Utan det står det gamla namnet kvar i `services.msc`. Tjänstnamnet är
+> oförändrat, så `net start HexGeoServerListener` och `sc query
+> HexGeoServerListener` fungerar oavsett.
+
 ### Verifiera
 
 Läs loggen (`D:\Hex\Logs\hex_geoserver_listener.log`). En lyckad start loggar

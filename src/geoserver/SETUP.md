@@ -814,7 +814,7 @@ Service installed
 
 ### 9b. Konfigurera återställning vid krasch
 
-Öppna `services.msc`, hitta **Hex GeoServer Schema Listener**, högerklicka
+Öppna `services.msc`, hitta **HexGeoServerListener**, högerklicka
 och välj **Properties**:
 
 Starttypen ska vara **Automatic** (sätts under fliken
