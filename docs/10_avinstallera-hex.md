@@ -88,6 +88,7 @@ DROP FUNCTION IF EXISTS public.hex_validera_tabell(text, text);
 
 -- 6. Strukturfunktioner
 DROP FUNCTION IF EXISTS public.hex_hamta_kolumnstandard(text, text, hex_geom_info);
+DROP FUNCTION IF EXISTS public.hex_kolumntyp(text, text, text);
 DROP FUNCTION IF EXISTS public.hex_hamta_geometri_definition(text, text);
 
 -- 7. Konfigurationsfunktioner

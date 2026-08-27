@@ -21,6 +21,9 @@
  *      omstruktureringen – även funktionsbaserade uttryck och uttryck över
  *      geometrikolumnen – och typmodifierare (numeric(10,2), varchar(50))
  *      bevaras på både beräknade och vanliga kolumner
+ *  12. Kolumntyper rekonstrueras med hex_kolumntyp() i hela kedjan:
+ *      arraykolumner fungerar, historiktabellen speglar modertabellens typer
+ *      exakt, och ADD COLUMN synkar rätt typ till historiken
  *
  * FÖRUTSÄTTNINGAR:
  *   - Hex måste vara installerat i måldatabasen (alla funktioner utplacerade)
@@ -1306,6 +1309,167 @@ EXCEPTION
 END $$;
 
 DROP TABLE IF EXISTS sk1_kba_test.gen_historik;
+
+------------------------------------------------------------------------
+-- TEST 12: Kolumntyper rekonstrueras med hex_kolumntyp() överallt
+--
+-- Typen byggdes tidigare upp för hand på tre ställen, med varsin CASE över
+-- information_schema.columns. Ingen av kopiorna täckte arrayer: data_type ger
+-- 'ARRAY', vilket blev syntaxfel, och udt_name ger internnamnet (_text).
+-- Kopian som flyttar standardkolumner i historiktabellen saknade dessutom
+-- numeric-grenen helt. Alla tre använder nu hex_kolumntyp().
+------------------------------------------------------------------------
+\echo ''
+\echo '--- TEST 12: Kolumntyper via hex_kolumntyp() ---'
+
+-- 12a: Arraykolumn fällde tidigare hela CREATE TABLE (via historiktabellen)
+DO $$
+BEGIN
+    CREATE TABLE sk1_kba_test.typ_array (
+        taggar text[],
+        koder  integer[],
+        belopp numeric(10,2),
+        kod    varchar(50)
+    );
+    RAISE NOTICE 'TEST 12a PASSED: Tabell med arraykolumner skapad';
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE WARNING 'TEST 12a FAILED: Arraykolumn avvisad: %', SQLERRM;
+END $$;
+
+-- 12b: Historiktabellen speglar modertabellens typer exakt
+DO $$
+DECLARE
+    avvikande text;
+BEGIN
+    -- LEFT JOIN så att en kolumn som saknas helt i historiktabellen fångas,
+    -- inte bara en som finns men har fel typ.
+    SELECT string_agg(format('%s (moder: %s, historik: %s)',
+                             m.attname, m.typ, COALESCE(h.typ, 'SAKNAS')), ', ')
+    INTO avvikande
+    FROM (
+        SELECT a.attname, format_type(a.atttypid, a.atttypmod) AS typ
+        FROM pg_attribute a
+        WHERE a.attrelid = 'sk1_kba_test.typ_array'::regclass
+        AND a.attnum > 0 AND NOT a.attisdropped
+    ) m
+    LEFT JOIN (
+        SELECT a.attname, format_type(a.atttypid, a.atttypmod) AS typ
+        FROM pg_attribute a
+        WHERE a.attrelid = 'sk1_kba_test.typ_array_h'::regclass
+        AND a.attnum > 0 AND NOT a.attisdropped
+    ) h ON h.attname = m.attname
+    WHERE h.attname IS NULL OR h.typ IS DISTINCT FROM m.typ;
+
+    IF avvikande IS NULL THEN
+        RAISE NOTICE 'TEST 12b PASSED: Historiktabellens typer matchar modertabellen';
+    ELSE
+        RAISE WARNING 'TEST 12b FAILED: Typskillnad mot historiktabellen: %', avvikande;
+    END IF;
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE WARNING 'TEST 12b FAILED: Kunde inte jämföra typerna: %', SQLERRM;
+END $$;
+
+DROP TABLE IF EXISTS sk1_kba_test.typ_array;
+
+-- 12c: ALTER TABLE ADD COLUMN synkar nya kolumner till historiktabellen med
+-- rätt typ (hex_hantera_ny_kolumn – kopia nummer två respektive tre)
+DO $$
+DECLARE
+    avvikande text;
+BEGIN
+    CREATE TABLE sk1_kba_test.typ_alter_y (
+        namn text,
+        geom geometry(Polygon, 3007)
+    );
+
+    ALTER TABLE sk1_kba_test.typ_alter_y ADD COLUMN koder  integer[];
+    ALTER TABLE sk1_kba_test.typ_alter_y ADD COLUMN belopp numeric(10,2);
+    ALTER TABLE sk1_kba_test.typ_alter_y ADD COLUMN kod    varchar(50);
+
+    -- LEFT JOIN, inte JOIN: när ADD COLUMN mot historiktabellen misslyckas
+    -- fångas felet av en WARNING-hanterare i hex_hantera_ny_kolumn och
+    -- kolumnen uteblir tyst. En inre join hade jämfört bara de kolumner som
+    -- redan fanns i båda tabellerna och missat precis det fallet.
+    SELECT string_agg(format('%s (moder: %s, historik: %s)',
+                             m.attname, m.typ, COALESCE(h.typ, 'SAKNAS')), ', ')
+    INTO avvikande
+    FROM (
+        SELECT a.attname, format_type(a.atttypid, a.atttypmod) AS typ
+        FROM pg_attribute a
+        WHERE a.attrelid = 'sk1_kba_test.typ_alter_y'::regclass
+        AND a.attnum > 0 AND NOT a.attisdropped
+    ) m
+    LEFT JOIN (
+        SELECT a.attname, format_type(a.atttypid, a.atttypmod) AS typ
+        FROM pg_attribute a
+        WHERE a.attrelid = 'sk1_kba_test.typ_alter_y_h'::regclass
+        AND a.attnum > 0 AND NOT a.attisdropped
+    ) h ON h.attname = m.attname
+    WHERE h.attname IS NULL OR h.typ IS DISTINCT FROM m.typ;
+
+    IF avvikande IS NULL THEN
+        RAISE NOTICE 'TEST 12c PASSED: ADD COLUMN synkar rätt typer till historiktabellen';
+    ELSE
+        RAISE WARNING 'TEST 12c FAILED: Typskillnad efter ADD COLUMN: %', avvikande;
+    END IF;
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE WARNING 'TEST 12c FAILED: ADD COLUMN gav fel: %', SQLERRM;
+END $$;
+
+-- 12d: QA-triggern kan fortfarande skriva efter synkroniseringen
+DO $$
+DECLARE
+    antal integer;
+BEGIN
+    INSERT INTO sk1_kba_test.typ_alter_y (namn, geom, koder, belopp, kod)
+    VALUES ('rad', ST_GeomFromText('POLYGON((0 0,0 1,1 1,1 0,0 0))', 3007),
+            '{1,2}', 3.25, 'abc');
+    UPDATE sk1_kba_test.typ_alter_y SET belopp = 9.75 WHERE namn = 'rad';
+
+    SELECT COUNT(*) INTO antal
+    FROM sk1_kba_test.typ_alter_y_h
+    WHERE h_typ = 'U' AND belopp = 3.25 AND koder = '{1,2}';
+
+    IF antal = 1 THEN
+        RAISE NOTICE 'TEST 12d PASSED: QA-triggern skriver array och numeric till historiken';
+    ELSE
+        RAISE WARNING 'TEST 12d FAILED: Historiken saknar den uppdaterade raden (% träffar)', antal;
+    END IF;
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE WARNING 'TEST 12d FAILED: QA-triggern gav fel: %', SQLERRM;
+END $$;
+
+DROP TABLE IF EXISTS sk1_kba_test.typ_alter_y;
+
+-- 12e: Geometrins fulla typ (inkl. Z) bevaras i historiktabellen
+DO $$
+DECLARE
+    m_typ text;
+    h_typ_ text;
+BEGIN
+    CREATE TABLE sk1_kba_test.typ_geomz_y (
+        namn text,
+        geom geometry(PolygonZ, 3007)
+    );
+
+    m_typ  := public.hex_kolumntyp('sk1_kba_test', 'typ_geomz_y', 'geom');
+    h_typ_ := public.hex_kolumntyp('sk1_kba_test', 'typ_geomz_y_h', 'geom');
+
+    IF m_typ = 'geometry(PolygonZ,3007)' AND h_typ_ = m_typ THEN
+        RAISE NOTICE 'TEST 12e PASSED: Z-geometri bevarad i både moder- och historiktabell (%)', m_typ;
+    ELSE
+        RAISE WARNING 'TEST 12e FAILED: geom är % i modertabellen och % i historiken', m_typ, h_typ_;
+    END IF;
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE WARNING 'TEST 12e FAILED: Z-geometri gav fel: %', SQLERRM;
+END $$;
+
+DROP TABLE IF EXISTS sk1_kba_test.typ_geomz_y;
 
 ------------------------------------------------------------------------
 -- SLUTLIG STÄDNING

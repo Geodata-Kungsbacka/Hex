@@ -354,6 +354,7 @@ src/sql/02_tables/hex_rolluppgifter.sql
 -- 3. Skapa funktioner (i beroendeordning)
 -- 3.1 Strukturhantering
 src/sql/03_functions/01_structure/hex_hamta_geometri_definition.sql
+src/sql/03_functions/01_structure/hex_kolumntyp.sql
 src/sql/03_functions/01_structure/hex_hamta_kolumnstandard.sql
 
 -- 3.2 Validering
@@ -572,6 +573,17 @@ härleda i efterhand, och därför bevaras de över `--upgrade`.
 **Returvärde**: En `hex_geom_info`-struktur med komplett geometriinformation inklusive typ, SRID och dimensioner.
 
 **Felhantering**: Ger tydliga felmeddelanden om tabellen har flera geometrikolumner eller om kolumnen har fel namn.
+
+#### `hex_kolumntyp(schema, tabell, kolumn)`
+**Syfte**: Returnerar en kolumns datatyp så som den ska skrivas i `CREATE TABLE` eller `ALTER TABLE ... ADD COLUMN`.
+
+**Användning**: Gemensam källa för de tre ställen som återskapar kolumner — `hex_hamta_kolumnstandard` (omstrukturering), `hex_skapa_historik_qa` (historiktabellen) och `hex_hantera_ny_kolumn` (synk av nya kolumner till historiken). Tidigare rekonstruerade var och en typen med en egen `CASE` över `information_schema.columns`, med olika luckor.
+
+**Bevarar**: Typmodifierare (`numeric(10,2)`, `character varying(50)`, `geometry(PolygonZ,3007)`) och arrayers skrivbara form (`text[]`, inte `_text`). Bygger på `format_type()`.
+
+**Omfattning**: Endast datatypen. `DEFAULT`, `NOT NULL`, `IDENTITY` hanteras av `hex_spara_kolumnegenskaper`/`hex_aterskapa_kolumnegenskaper`, och `GENERATED` av `hex_hamta_kolumnstandard` — historiktabeller ska spegla en beräknad kolumn som vanlig kolumn.
+
+**Returvärde**: Typdeklarationen som text, eller `NULL` om kolumnen inte finns.
 
 #### `hex_hamta_kolumnstandard(schema, tabell, geometriinfo)`
 **Syfte**: Bestämmer exakt vilka kolumner en tabell ska ha efter omstrukturering.

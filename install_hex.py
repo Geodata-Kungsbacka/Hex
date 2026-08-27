@@ -70,6 +70,9 @@ INSTALL_ORDER = [
     "src/sql/02_tables/hex_rolluppgifter.sql",
     # Funktioner - Struktur
     "src/sql/03_functions/01_structure/hex_hamta_geometri_definition.sql",
+    # hex_kolumntyp() används av hex_hamta_kolumnstandard, hex_skapa_historik_qa
+    # och hex_hantera_ny_kolumn – måste skapas före dem
+    "src/sql/03_functions/01_structure/hex_kolumntyp.sql",
     "src/sql/03_functions/01_structure/hex_hamta_kolumnstandard.sql",
     # Funktioner - Validering
     "src/sql/03_functions/02_validation/hex_validera_tabell.sql",
@@ -173,6 +176,7 @@ DROP FUNCTION IF EXISTS public.hex_validera_tabell(text, text);
 
 -- Strukturfunktioner
 DROP FUNCTION IF EXISTS public.hex_hamta_kolumnstandard(text, text, hex_geom_info);
+DROP FUNCTION IF EXISTS public.hex_kolumntyp(text, text, text);
 DROP FUNCTION IF EXISTS public.hex_hamta_geometri_definition(text, text);
 
 -- Konfigurationsfunktioner

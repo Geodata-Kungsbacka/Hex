@@ -246,6 +246,10 @@ BEGIN
                     -- typmodifieraren (numeric(10,2) → numeric, varchar(50) →
                     -- varchar) och ger internnamnet för arrayer (text[] → _text).
                     -- Kolumnen byggdes då upp med fel typ i ersättningstabellen.
+                    --
+                    -- Samma regel som public.hex_kolumntyp() tillämpar. Anropet
+                    -- görs inte härifrån: pg_attribute-raden är redan joinad som
+                    -- a, så uppslaget skulle upprepas en gång per kolumn.
                     format_type(a.atttypid, a.atttypmod)
             END as datatyp,
             CASE WHEN a.attgenerated = 's' THEN true 
