@@ -922,23 +922,34 @@ class GeoServerClient:
                 "type": "PostGIS",
                 "enabled": True,
                 "connectionParameters": {
+                    # Poolinställningarna gäller per datastore och lever i
+                    # GeoServers JVM, inte i lyssnaren. min connections = 0
+                    # gör att en oanvänd datastore inte håller kvar någon
+                    # anslutning; evictor-raderna styr hur snabbt den töms.
+                    # Evictor tests per run måste vara minst max connections
+                    # för att en körning ska hinna gå igenom hela poolen.
                     "entry": [
-                        {"@key": "dbtype",               "$": "postgis"},
-                        {"@key": "namespace",            "$": f"{self.namespace_uri_base}/{workspace}"},
-                        {"@key": "host",                 "$": host},
-                        {"@key": "port",                 "$": str(port)},
-                        {"@key": "database",             "$": dbname},
-                        {"@key": "schema",               "$": schema_name},
-                        {"@key": "user",                 "$": pg_user},
-                        {"@key": "passwd",               "$": pg_password},
-                        {"@key": "Expose primary keys",  "$": "true"},
-                        {"@key": "fetch size",           "$": "1000"},
-                        {"@key": "Loose bbox",           "$": "true"},
-                        {"@key": "Estimated extends",    "$": "true"},
-                        {"@key": "encode functions",     "$": "true"},
-                        {"@key": "validate connections", "$": "true"},
-                        {"@key": "max connections",      "$": "10"},
-                        {"@key": "min connections",      "$": "1"},
+                        {"@key": "dbtype",                   "$": "postgis"},
+                        {"@key": "namespace",                "$": f"{self.namespace_uri_base}/{workspace}"},
+                        {"@key": "host",                     "$": host},
+                        {"@key": "port",                     "$": str(port)},
+                        {"@key": "database",                 "$": dbname},
+                        {"@key": "schema",                   "$": schema_name},
+                        {"@key": "user",                     "$": pg_user},
+                        {"@key": "passwd",                   "$": pg_password},
+                        {"@key": "Expose primary keys",      "$": "true"},
+                        {"@key": "fetch size",               "$": "1000"},
+                        {"@key": "Loose bbox",               "$": "true"},
+                        {"@key": "Estimated extends",        "$": "true"},
+                        {"@key": "encode functions",         "$": "true"},
+                        {"@key": "validate connections",     "$": "true"},
+                        {"@key": "max connections",          "$": "8"},
+                        {"@key": "min connections",          "$": "0"},
+                        {"@key": "Connection timeout",       "$": "10"},
+                        {"@key": "Test while idle",          "$": "true"},
+                        {"@key": "Evictor run periodicity",  "$": "60"},
+                        {"@key": "Max connection idle time", "$": "60"},
+                        {"@key": "Evictor tests per run",    "$": "8"},
                     ]
                 },
             }
@@ -1005,23 +1016,34 @@ class GeoServerClient:
                 "type": "PostGIS",
                 "enabled": True,
                 "connectionParameters": {
+                    # Poolinställningarna gäller per datastore och lever i
+                    # GeoServers JVM, inte i lyssnaren. min connections = 0
+                    # gör att en oanvänd datastore inte håller kvar någon
+                    # anslutning; evictor-raderna styr hur snabbt den töms.
+                    # Evictor tests per run måste vara minst max connections
+                    # för att en körning ska hinna gå igenom hela poolen.
                     "entry": [
-                        {"@key": "dbtype",              "$": "postgis"},
-                        {"@key": "namespace",           "$": f"{self.namespace_uri_base}/{workspace}"},
-                        {"@key": "host",                "$": host},
-                        {"@key": "port",                "$": str(port)},
-                        {"@key": "database",            "$": dbname},
-                        {"@key": "schema",              "$": schema_name},
-                        {"@key": "user",                "$": pg_user},
-                        {"@key": "passwd",              "$": pg_password},
-                        {"@key": "Expose primary keys", "$": "true"},
-                        {"@key": "fetch size",          "$": "1000"},
-                        {"@key": "Loose bbox",          "$": "true"},
-                        {"@key": "Estimated extends",   "$": "true"},
-                        {"@key": "encode functions",    "$": "true"},
-                        {"@key": "validate connections","$": "true"},
-                        {"@key": "max connections",     "$": "10"},
-                        {"@key": "min connections",     "$": "1"},
+                        {"@key": "dbtype",                   "$": "postgis"},
+                        {"@key": "namespace",                "$": f"{self.namespace_uri_base}/{workspace}"},
+                        {"@key": "host",                     "$": host},
+                        {"@key": "port",                     "$": str(port)},
+                        {"@key": "database",                 "$": dbname},
+                        {"@key": "schema",                   "$": schema_name},
+                        {"@key": "user",                     "$": pg_user},
+                        {"@key": "passwd",                   "$": pg_password},
+                        {"@key": "Expose primary keys",      "$": "true"},
+                        {"@key": "fetch size",               "$": "1000"},
+                        {"@key": "Loose bbox",               "$": "true"},
+                        {"@key": "Estimated extends",        "$": "true"},
+                        {"@key": "encode functions",         "$": "true"},
+                        {"@key": "validate connections",     "$": "true"},
+                        {"@key": "max connections",          "$": "8"},
+                        {"@key": "min connections",          "$": "0"},
+                        {"@key": "Connection timeout",       "$": "10"},
+                        {"@key": "Test while idle",          "$": "true"},
+                        {"@key": "Evictor run periodicity",  "$": "60"},
+                        {"@key": "Max connection idle time", "$": "60"},
+                        {"@key": "Evictor tests per run",    "$": "8"},
                     ]
                 },
             }
