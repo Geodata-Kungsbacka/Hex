@@ -17,6 +17,10 @@
  *      uppgraderar befintliga tilldelningar som föregår ADMIN OPTION-fixen
  *  10. Specialfall: _h-genväg, felaktiga suffix, namnkollisioner, CTAS,
  *      ADD COLUMN
+ *  11. Beräknade kolumner (GENERATED ALWAYS AS ... STORED) överlever
+ *      omstruktureringen – även funktionsbaserade uttryck och uttryck över
+ *      geometrikolumnen – och typmodifierare (numeric(10,2), varchar(50))
+ *      bevaras på både beräknade och vanliga kolumner
  *
  * FÖRUTSÄTTNINGAR:
  *   - Hex måste vara installerat i måldatabasen (alla funktioner utplacerade)
@@ -1116,6 +1120,192 @@ EXCEPTION
     WHEN OTHERS THEN
         RAISE NOTICE 'TEST 10h PASSED: Flera geometrikolumner avvisade: %', SQLERRM;
 END $$;
+
+------------------------------------------------------------------------
+-- TEST 11: Beräknade kolumner (GENERATED ALWAYS AS ... STORED)
+--
+-- Omstruktureringen byggde tidigare upp kolumnen som
+--   "<typ> GENERATED ALWAYS AS <uttryck> STORED"
+-- utan parenteser runt uttrycket. pg_get_expr sätter bara ut yttre
+-- parenteser för operatoruttryck, så "(a * b)" råkade fungera medan varje
+-- funktionsbaserat uttryck – upper(namn), st_area(geom) – gav syntaxfel och
+-- fällde hela CREATE TABLE. Typen hämtades dessutom ur udt_name, som tappar
+-- typmodifieraren (numeric(10,2) → numeric).
+------------------------------------------------------------------------
+\echo ''
+\echo '--- TEST 11: Beräknade kolumner (GENERATED ALWAYS AS ... STORED) ---'
+
+-- 11a: Funktionsbaserat uttryck (regressionen: gav "syntax error at or near")
+DO $$
+BEGIN
+    CREATE TABLE sk0_ext_test.gen_funktion (
+        namn       text,
+        namn_versal text GENERATED ALWAYS AS (upper(namn)) STORED
+    );
+    RAISE NOTICE 'TEST 11a PASSED: Funktionsbaserat GENERATED-uttryck accepterat';
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE WARNING 'TEST 11a FAILED: Funktionsbaserat GENERATED-uttryck avvisat: %', SQLERRM;
+END $$;
+
+-- 11b: Kolumnen är fortfarande beräknad efter omstruktureringen och räknar rätt
+DO $$
+DECLARE
+    ar_genererad boolean;
+    varde        text;
+BEGIN
+    SELECT a.attgenerated = 's' INTO ar_genererad
+    FROM pg_attribute a
+    WHERE a.attrelid = 'sk0_ext_test.gen_funktion'::regclass
+    AND a.attname = 'namn_versal';
+
+    INSERT INTO sk0_ext_test.gen_funktion (namn) VALUES ('kungsbacka');
+    SELECT namn_versal INTO varde FROM sk0_ext_test.gen_funktion WHERE namn = 'kungsbacka';
+
+    IF ar_genererad AND varde = 'KUNGSBACKA' THEN
+        RAISE NOTICE 'TEST 11b PASSED: Kolumnen är beräknad och ger rätt värde efter omstrukturering';
+    ELSIF NOT ar_genererad THEN
+        RAISE WARNING 'TEST 11b FAILED: GENERATED-markeringen gick förlorad vid omstruktureringen';
+    ELSE
+        RAISE WARNING 'TEST 11b FAILED: Beräknat värde blev "%" (förväntade "KUNGSBACKA")', varde;
+    END IF;
+EXCEPTION
+    WHEN OTHERS THEN
+        -- Utan den här hanteraren avbryts blocket med ett rått ERROR när 11a
+        -- redan fällt tabellen, i stället för att rapportera ett läsbart FAILED.
+        RAISE WARNING 'TEST 11b FAILED: Kunde inte läsa beräknad kolumn: %', SQLERRM;
+END $$;
+
+-- 11c: En beräknad kolumn ska fortfarande vara skrivskyddad
+DO $$
+BEGIN
+    INSERT INTO sk0_ext_test.gen_funktion (namn, namn_versal) VALUES ('x', 'FEL');
+    RAISE WARNING 'TEST 11c FAILED: Direkt skrivning till beräknad kolumn accepterades';
+EXCEPTION
+    WHEN generated_always THEN
+        RAISE NOTICE 'TEST 11c PASSED: Direkt skrivning till beräknad kolumn korrekt avvisad';
+    WHEN OTHERS THEN
+        RAISE WARNING 'TEST 11c FAILED: Avvisad, men av ett oväntat fel: %', SQLERRM;
+END $$;
+
+DROP TABLE IF EXISTS sk0_ext_test.gen_funktion;
+
+-- 11d: Typmodifieraren på en beräknad kolumn bevaras (numeric(10,2) → numeric(10,2))
+DO $$
+DECLARE
+    typ text;
+BEGIN
+    CREATE TABLE sk0_ext_test.gen_typmod (
+        a     numeric,
+        b     numeric,
+        total numeric(10,2) GENERATED ALWAYS AS (a * b) STORED
+    );
+
+    SELECT format_type(a.atttypid, a.atttypmod) INTO typ
+    FROM pg_attribute a
+    WHERE a.attrelid = 'sk0_ext_test.gen_typmod'::regclass
+    AND a.attname = 'total';
+
+    IF typ = 'numeric(10,2)' THEN
+        RAISE NOTICE 'TEST 11d PASSED: Typmodifierare bevarad på beräknad kolumn (%)', typ;
+    ELSE
+        RAISE WARNING 'TEST 11d FAILED: Beräknad kolumn fick typ % (förväntade numeric(10,2))', typ;
+    END IF;
+END $$;
+
+DROP TABLE IF EXISTS sk0_ext_test.gen_typmod;
+
+-- 11e: Typmodifieraren bevaras även på vanliga kolumner (samma udt_name-brist)
+DO $$
+DECLARE
+    typ text;
+BEGIN
+    CREATE TABLE sk0_ext_test.typmod_vanlig (namn varchar(50));
+
+    SELECT format_type(a.atttypid, a.atttypmod) INTO typ
+    FROM pg_attribute a
+    WHERE a.attrelid = 'sk0_ext_test.typmod_vanlig'::regclass
+    AND a.attname = 'namn';
+
+    IF typ = 'character varying(50)' THEN
+        RAISE NOTICE 'TEST 11e PASSED: Typmodifierare bevarad på vanlig kolumn (%)', typ;
+    ELSE
+        RAISE WARNING 'TEST 11e FAILED: Vanlig kolumn fick typ % (förväntade character varying(50))', typ;
+    END IF;
+END $$;
+
+DROP TABLE IF EXISTS sk0_ext_test.typmod_vanlig;
+
+-- 11f: Beräknad kolumn ovanpå geometrikolumnen – det praktiska GIS-fallet.
+-- Geometrin sorteras alltid sist, så uttrycket refererar en kolumn som i den
+-- nya tabellen deklareras EFTER den beräknade kolumnen.
+DO $$
+DECLARE
+    area numeric;
+BEGIN
+    CREATE TABLE sk0_ext_test.gen_area_y (
+        namn   text,
+        area_m2 numeric GENERATED ALWAYS AS (ST_Area(geom)) STORED,
+        geom   geometry(Polygon, 3007)
+    );
+
+    INSERT INTO sk0_ext_test.gen_area_y (namn, geom)
+    VALUES ('kvarter', ST_GeomFromText('POLYGON((0 0,0 10,10 10,10 0,0 0))', 3007));
+
+    SELECT area_m2 INTO area FROM sk0_ext_test.gen_area_y WHERE namn = 'kvarter';
+
+    IF area = 100 THEN
+        RAISE NOTICE 'TEST 11f PASSED: ST_Area-baserad beräknad kolumn fungerar (area = %)', area;
+    ELSE
+        RAISE WARNING 'TEST 11f FAILED: ST_Area gav % (förväntade 100)', area;
+    END IF;
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE WARNING 'TEST 11f FAILED: Beräknad kolumn över geometri gav fel: %', SQLERRM;
+END $$;
+
+DROP TABLE IF EXISTS sk0_ext_test.gen_area_y;
+
+-- 11g: Historiktabellen speglar en beräknad kolumn som VANLIG kolumn.
+-- Vore den beräknad även i historiken skulle QA-triggerns INSERT (som listar
+-- alla kolumner explicit) avvisas med "cannot insert a non-DEFAULT value".
+DO $$
+DECLARE
+    -- attgenerated har typen "char", vars "inte beräknad"-värde är nollbyten
+    -- och alltså inte lika med ''. Jämförelsen måste därför göras i SQL (som i
+    -- 11b) – en char(1)-variabel i plpgsql ger fel svar.
+    h_genererad boolean;
+    h_varde     text;
+BEGIN
+    CREATE TABLE sk1_kba_test.gen_historik (
+        namn        text,
+        namn_versal text GENERATED ALWAYS AS (upper(namn)) STORED
+    );
+
+    INSERT INTO sk1_kba_test.gen_historik (namn) VALUES ('fjaras');
+    UPDATE sk1_kba_test.gen_historik SET namn = 'onsala' WHERE namn = 'fjaras';
+
+    SELECT a.attgenerated = 's' INTO h_genererad
+    FROM pg_attribute a
+    WHERE a.attrelid = 'sk1_kba_test.gen_historik_h'::regclass
+    AND a.attname = 'namn_versal';
+
+    SELECT namn_versal INTO h_varde
+    FROM sk1_kba_test.gen_historik_h WHERE h_typ = 'U';
+
+    IF NOT h_genererad AND h_varde = 'FJARAS' THEN
+        RAISE NOTICE 'TEST 11g PASSED: Historiken lagrar beräknad kolumn som vanlig kolumn (%)', h_varde;
+    ELSIF h_genererad THEN
+        RAISE WARNING 'TEST 11g FAILED: Historikkolumnen är beräknad – QA-triggern kan inte skriva till den';
+    ELSE
+        RAISE WARNING 'TEST 11g FAILED: Historiken lagrade "%" (förväntade FJARAS)', h_varde;
+    END IF;
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE WARNING 'TEST 11g FAILED: Historik med beräknad kolumn gav fel: %', SQLERRM;
+END $$;
+
+DROP TABLE IF EXISTS sk1_kba_test.gen_historik;
 
 ------------------------------------------------------------------------
 -- SLUTLIG STÄDNING

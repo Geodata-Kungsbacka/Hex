@@ -583,6 +583,10 @@ härleda i efterhand, och därför bevaras de över `--upgrade`.
 
 **Intelligent schemafiltrering**: Använder `schema_uttryck` för att avgöra vilka standardkolumner som passar för schemat.
 
+**Datatyper**: Kolumntypen läses med `format_type()`, så typmodifierare följer med till den omstrukturerade tabellen — `numeric(10,2)`, `character varying(50)` och `text[]` behåller sin exakta deklaration.
+
+**Beräknade kolumner**: `GENERATED ALWAYS AS (...) STORED` bevaras, inklusive uttryck som bygger på funktionsanrop (`upper(namn)`, `ST_Area(geom)`). Eftersom geometrikolumnen alltid sorteras sist får uttrycket referera en kolumn som deklareras längre ned i den nya tabellen — PostgreSQL löser upp kolumnreferenserna först när hela `CREATE TABLE` är tolkad. Beräknade kolumner förblir skrivskyddade, och i historiktabellen speglas de som vanliga kolumner så att QA-triggern kan skriva värdet.
+
 **Returvärde**: Array med `hex_kolumnkonfig`-objekt i rätt ordning för den nya tabellstrukturen.
 
 ### Valideringsfunktioner

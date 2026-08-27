@@ -252,7 +252,12 @@ BEGIN
                     RAISE NOTICE '[hex_hantera_ny_tabell]   » Originaltabellen är UNLOGGED - egenskapen bevaras';
                 END IF;
 
-                RAISE NOTICE '[hex_hantera_ny_tabell] SQL för temporär tabell: CREATE %sTABLE %.% (%)',
+                -- %s är en format()-platshållare, inte en RAISE-platshållare:
+                -- RAISE använder bara %, så "CREATE %sTABLE" skrev ut den
+                -- felaktiga satsen "CREATE sTABLE ..." i loggen. Det är just den
+                -- här raden man läser när CREATE TABLE misslyckas, så den måste
+                -- visa exakt den sats som körs.
+                RAISE NOTICE '[hex_hantera_ny_tabell] SQL för temporär tabell: CREATE %TABLE %.% (%)',
                 persistens_nyckelord, schema_namn, temp_tabellnamn, kolumn_sql;
 
                 EXECUTE format(

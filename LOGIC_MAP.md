@@ -412,6 +412,11 @@ hex_hantera_ny_tabell()
   │           │     2. Användarens egna kolumner                      (beteckning)
   │           │     3. Standardkolumner med negativ ordinal_position  (skapad_av, andrad_tidpunkt, andrad_av)
   │           │     4. Geometrikolumnen                               (geom)
+  │           ├── Datatyp per användarkolumn: format_type(atttypid, atttypmod)
+  │           │     Behåller typmodifieraren: numeric(10,2), varchar(50), text[]
+  │           ├── attgenerated = 's' → "<typ> GENERATED ALWAYS AS (<uttryck>) STORED"
+  │           │     Parenteserna sätts alltid ut explicit; pg_get_expr ger dem
+  │           │     bara för operatoruttryck, inte för st_area(geom)/upper(namn)
   │           └── Returnerar: array av hex_kolumnkonfig-struct i slutlig ordning
   │
   ├── [5] BYT UT TABELL
