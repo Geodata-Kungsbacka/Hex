@@ -76,6 +76,10 @@ Definierar vilka kolumner som automatiskt injiceras i alla tabeller.
 | `andrad_tidpunkt` | -2 | NOW() | LIKE '%\_kba\_%' | **true** |
 | `andrad_av` | -1 (sist, före geom) | session_user | LIKE '%\_kba\_%' | **true** |
 
+`gid` får dessutom `PRIMARY KEY` via `hex_sakerstall_gid_primarnyckel()` i steg 7.4
+av `hex_hantera_ny_tabell()` — constrainten ingår inte i kolumndefinitionen ovan
+eftersom `hex_aterskapa_tabellregler()` medvetet hoppar över primärnycklar.
+
 ---
 
 ### `hex_standardiserade_roller`
@@ -412,6 +416,11 @@ hex_hantera_ny_tabell()
   │           │     2. Användarens egna kolumner                      (beteckning)
   │           │     3. Standardkolumner med negativ ordinal_position  (skapad_av, andrad_tidpunkt, andrad_av)
   │           │     4. Geometrikolumnen                               (geom)
+  │           ├── Datatyp per användarkolumn: format_type(atttypid, atttypmod)
+  │           │     Behåller typmodifieraren: numeric(10,2), varchar(50), text[]
+  │           ├── attgenerated = 's' → "<typ> GENERATED ALWAYS AS (<uttryck>) STORED"
+  │           │     Parenteserna sätts alltid ut explicit; pg_get_expr ger dem
+  │           │     bara för operatoruttryck, inte för st_area(geom)/upper(namn)
   │           └── Returnerar: array av hex_kolumnkonfig-struct i slutlig ordning
   │
   ├── [5] BYT UT TABELL
@@ -443,6 +452,25 @@ hex_hantera_ny_tabell()
   │           ├── 2. ADD CONSTRAINT (enkla CHECK-villkor)
   │           ├── 3. SET DEFAULT (hoppar över standardkolumner med historik_qa=true)
   │           └── 4. ADD GENERATED ALWAYS AS IDENTITY
+  │
+  ├── [7.4] SÄKERSTÄLL PRIMÄRNYCKEL PÅ gid
+  │     → hex_sakerstall_gid_primarnyckel(schema, tabell)
+  │           ├── 1. setval(sekvens, max(gid)) om sekvensen ligger efter
+  │           ├── 2. ADD PRIMARY KEY (gid) — eller ADD UNIQUE (gid) om
+  │           │      tabellen redan har en PK på andra kolumner
+  │           └── 3. Hoppar över (utan att röra data) om gid har dubbletter
+  │     Krävs för att QGIS ska hitta gid-sekvensen: QGIS slår bara upp
+  │     nextval() för en IDENTITY-kolumn som är NOT NULL + har unikt index.
+  │     Utan nyckel visas gid som ett tomt obligatoriskt fält i QGIS.
+  │
+  ├── [7.5] SKAPA TRIGGER hex_tvinga_gid
+  │     → BEFORE INSERT … EXECUTE FUNCTION hex_tvinga_gid_fran_sekvens()
+  │     Kastar klientvalt gid (QGIS OVERRIDING SYSTEM VALUE) och sätter
+  │     NEW.gid = nextval(sekvens). Skyddsnät sedan [7.4] finns — med
+  │     nyckeln på plats utelämnar QGIS normalt gid helt ur sin INSERT.
+  │     Klientvärden känns igen på currval() PLUS sekvenspositionen vid
+  │     förra avfyrningen (sessionsvariabel hex.gid_<oid>) — currval
+  │     ensamt missar en klient som upprepar samma gid över flera rader.
   │
   ├── [8] SKAPA GiST-INDEX (hoppas över för afvaktande tabeller)
   │     ├── Gäller alla scheman som har geometrikolumn
@@ -1105,6 +1133,8 @@ det utlöser i sin tur nya eventutlösare. Tre flaggor förhindrar oändliga ked
 | `hex_lagg_till_dummy_geometri(schema, tabell, hex_geom_info)` | `hex_hantera_ny_tabell`, `hex_hantera_ny_kolumn` | Lägger in dummy-geometriraden och registrerar den i `hex_dummy_geometrier` |
 | `hex_ta_bort_dummy_rad()` | Radtrigger `hex_ta_bort_dummy` (AFTER INSERT) | Tar bort dummy-raden vid första riktiga INSERT |
 | `hex_tvinga_gid_fran_sekvens()` | Radtrigger `hex_tvinga_gid` (BEFORE INSERT) | Tvingar `gid` från IDENTITY-sekvensen trots `OVERRIDING SYSTEM VALUE` |
+| `hex_sakerstall_gid_primarnyckel(schema, tabell)` | `hex_hantera_ny_tabell` (steg 7.4), `hex_underhall` | Lägger `PRIMARY KEY (gid)` (eller `UNIQUE (gid)`) och synkar sekvensen mot `max(gid)`. Krävs för att QGIS ska hitta gid-sekvensen |
+| `hex_reparera_gid_dubbletter(schema, tabell, utfor)` | Manuellt, när `hex_underhall` rapporterar `dubbletter: N` | Rapporterar och omnumrerar dubbletter i `gid`. Torrkörning som standard. Märkt `HEX-MIGRERING` |
 | `hex_kontrollera_geometri_trigger()` | Radtrigger `hex_kontrollera_geom` (BEFORE INSERT/UPDATE) | Kör `hex_validera_geometri()` och rapporterar via `hex_forklara_geometrifel()` |
 | `hex_forklara_geometrifel(geom)` | `hex_kontrollera_geometri_trigger` | Läsbar förklaring till varför en geometri underkändes |
 | `hex_underhall()` | `install_hex.py`, manuellt | Verifierar och reparerar triggers, roller, behörigheter och ägarskap |

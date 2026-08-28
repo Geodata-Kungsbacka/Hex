@@ -17,6 +17,13 @@
  *      uppgraderar befintliga tilldelningar som föregår ADMIN OPTION-fixen
  *  10. Specialfall: _h-genväg, felaktiga suffix, namnkollisioner, CTAS,
  *      ADD COLUMN
+ *  11. Beräknade kolumner (GENERATED ALWAYS AS ... STORED) överlever
+ *      omstruktureringen – även funktionsbaserade uttryck och uttryck över
+ *      geometrikolumnen – och typmodifierare (numeric(10,2), varchar(50))
+ *      bevaras på både beräknade och vanliga kolumner
+ *  12. Kolumntyper rekonstrueras med hex_kolumntyp() i hela kedjan:
+ *      arraykolumner fungerar, historiktabellen speglar modertabellens typer
+ *      exakt, och ADD COLUMN synkar rätt typ till historiken
  *
  * FÖRUTSÄTTNINGAR:
  *   - Hex måste vara installerat i måldatabasen (alla funktioner utplacerade)
@@ -1116,6 +1123,353 @@ EXCEPTION
     WHEN OTHERS THEN
         RAISE NOTICE 'TEST 10h PASSED: Flera geometrikolumner avvisade: %', SQLERRM;
 END $$;
+
+------------------------------------------------------------------------
+-- TEST 11: Beräknade kolumner (GENERATED ALWAYS AS ... STORED)
+--
+-- Omstruktureringen byggde tidigare upp kolumnen som
+--   "<typ> GENERATED ALWAYS AS <uttryck> STORED"
+-- utan parenteser runt uttrycket. pg_get_expr sätter bara ut yttre
+-- parenteser för operatoruttryck, så "(a * b)" råkade fungera medan varje
+-- funktionsbaserat uttryck – upper(namn), st_area(geom) – gav syntaxfel och
+-- fällde hela CREATE TABLE. Typen hämtades dessutom ur udt_name, som tappar
+-- typmodifieraren (numeric(10,2) → numeric).
+------------------------------------------------------------------------
+\echo ''
+\echo '--- TEST 11: Beräknade kolumner (GENERATED ALWAYS AS ... STORED) ---'
+
+-- 11a: Funktionsbaserat uttryck (regressionen: gav "syntax error at or near")
+DO $$
+BEGIN
+    CREATE TABLE sk0_ext_test.gen_funktion (
+        namn       text,
+        namn_versal text GENERATED ALWAYS AS (upper(namn)) STORED
+    );
+    RAISE NOTICE 'TEST 11a PASSED: Funktionsbaserat GENERATED-uttryck accepterat';
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE WARNING 'TEST 11a FAILED: Funktionsbaserat GENERATED-uttryck avvisat: %', SQLERRM;
+END $$;
+
+-- 11b: Kolumnen är fortfarande beräknad efter omstruktureringen och räknar rätt
+DO $$
+DECLARE
+    ar_genererad boolean;
+    varde        text;
+BEGIN
+    SELECT a.attgenerated = 's' INTO ar_genererad
+    FROM pg_attribute a
+    WHERE a.attrelid = 'sk0_ext_test.gen_funktion'::regclass
+    AND a.attname = 'namn_versal';
+
+    INSERT INTO sk0_ext_test.gen_funktion (namn) VALUES ('kungsbacka');
+    SELECT namn_versal INTO varde FROM sk0_ext_test.gen_funktion WHERE namn = 'kungsbacka';
+
+    IF ar_genererad AND varde = 'KUNGSBACKA' THEN
+        RAISE NOTICE 'TEST 11b PASSED: Kolumnen är beräknad och ger rätt värde efter omstrukturering';
+    ELSIF NOT ar_genererad THEN
+        RAISE WARNING 'TEST 11b FAILED: GENERATED-markeringen gick förlorad vid omstruktureringen';
+    ELSE
+        RAISE WARNING 'TEST 11b FAILED: Beräknat värde blev "%" (förväntade "KUNGSBACKA")', varde;
+    END IF;
+EXCEPTION
+    WHEN OTHERS THEN
+        -- Utan den här hanteraren avbryts blocket med ett rått ERROR när 11a
+        -- redan fällt tabellen, i stället för att rapportera ett läsbart FAILED.
+        RAISE WARNING 'TEST 11b FAILED: Kunde inte läsa beräknad kolumn: %', SQLERRM;
+END $$;
+
+-- 11c: En beräknad kolumn ska fortfarande vara skrivskyddad
+DO $$
+BEGIN
+    INSERT INTO sk0_ext_test.gen_funktion (namn, namn_versal) VALUES ('x', 'FEL');
+    RAISE WARNING 'TEST 11c FAILED: Direkt skrivning till beräknad kolumn accepterades';
+EXCEPTION
+    WHEN generated_always THEN
+        RAISE NOTICE 'TEST 11c PASSED: Direkt skrivning till beräknad kolumn korrekt avvisad';
+    WHEN OTHERS THEN
+        RAISE WARNING 'TEST 11c FAILED: Avvisad, men av ett oväntat fel: %', SQLERRM;
+END $$;
+
+DROP TABLE IF EXISTS sk0_ext_test.gen_funktion;
+
+-- 11d: Typmodifieraren på en beräknad kolumn bevaras (numeric(10,2) → numeric(10,2))
+DO $$
+DECLARE
+    typ text;
+BEGIN
+    CREATE TABLE sk0_ext_test.gen_typmod (
+        a     numeric,
+        b     numeric,
+        total numeric(10,2) GENERATED ALWAYS AS (a * b) STORED
+    );
+
+    SELECT format_type(a.atttypid, a.atttypmod) INTO typ
+    FROM pg_attribute a
+    WHERE a.attrelid = 'sk0_ext_test.gen_typmod'::regclass
+    AND a.attname = 'total';
+
+    IF typ = 'numeric(10,2)' THEN
+        RAISE NOTICE 'TEST 11d PASSED: Typmodifierare bevarad på beräknad kolumn (%)', typ;
+    ELSE
+        RAISE WARNING 'TEST 11d FAILED: Beräknad kolumn fick typ % (förväntade numeric(10,2))', typ;
+    END IF;
+END $$;
+
+DROP TABLE IF EXISTS sk0_ext_test.gen_typmod;
+
+-- 11e: Typmodifieraren bevaras även på vanliga kolumner (samma udt_name-brist)
+DO $$
+DECLARE
+    typ text;
+BEGIN
+    CREATE TABLE sk0_ext_test.typmod_vanlig (namn varchar(50));
+
+    SELECT format_type(a.atttypid, a.atttypmod) INTO typ
+    FROM pg_attribute a
+    WHERE a.attrelid = 'sk0_ext_test.typmod_vanlig'::regclass
+    AND a.attname = 'namn';
+
+    IF typ = 'character varying(50)' THEN
+        RAISE NOTICE 'TEST 11e PASSED: Typmodifierare bevarad på vanlig kolumn (%)', typ;
+    ELSE
+        RAISE WARNING 'TEST 11e FAILED: Vanlig kolumn fick typ % (förväntade character varying(50))', typ;
+    END IF;
+END $$;
+
+DROP TABLE IF EXISTS sk0_ext_test.typmod_vanlig;
+
+-- 11f: Beräknad kolumn ovanpå geometrikolumnen – det praktiska GIS-fallet.
+-- Geometrin sorteras alltid sist, så uttrycket refererar en kolumn som i den
+-- nya tabellen deklareras EFTER den beräknade kolumnen.
+DO $$
+DECLARE
+    area numeric;
+BEGIN
+    CREATE TABLE sk0_ext_test.gen_area_y (
+        namn   text,
+        area_m2 numeric GENERATED ALWAYS AS (ST_Area(geom)) STORED,
+        geom   geometry(Polygon, 3007)
+    );
+
+    INSERT INTO sk0_ext_test.gen_area_y (namn, geom)
+    VALUES ('kvarter', ST_GeomFromText('POLYGON((0 0,0 10,10 10,10 0,0 0))', 3007));
+
+    SELECT area_m2 INTO area FROM sk0_ext_test.gen_area_y WHERE namn = 'kvarter';
+
+    IF area = 100 THEN
+        RAISE NOTICE 'TEST 11f PASSED: ST_Area-baserad beräknad kolumn fungerar (area = %)', area;
+    ELSE
+        RAISE WARNING 'TEST 11f FAILED: ST_Area gav % (förväntade 100)', area;
+    END IF;
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE WARNING 'TEST 11f FAILED: Beräknad kolumn över geometri gav fel: %', SQLERRM;
+END $$;
+
+DROP TABLE IF EXISTS sk0_ext_test.gen_area_y;
+
+-- 11g: Historiktabellen speglar en beräknad kolumn som VANLIG kolumn.
+-- Vore den beräknad även i historiken skulle QA-triggerns INSERT (som listar
+-- alla kolumner explicit) avvisas med "cannot insert a non-DEFAULT value".
+DO $$
+DECLARE
+    -- attgenerated har typen "char", vars "inte beräknad"-värde är nollbyten
+    -- och alltså inte lika med ''. Jämförelsen måste därför göras i SQL (som i
+    -- 11b) – en char(1)-variabel i plpgsql ger fel svar.
+    h_genererad boolean;
+    h_varde     text;
+BEGIN
+    CREATE TABLE sk1_kba_test.gen_historik (
+        namn        text,
+        namn_versal text GENERATED ALWAYS AS (upper(namn)) STORED
+    );
+
+    INSERT INTO sk1_kba_test.gen_historik (namn) VALUES ('fjaras');
+    UPDATE sk1_kba_test.gen_historik SET namn = 'onsala' WHERE namn = 'fjaras';
+
+    SELECT a.attgenerated = 's' INTO h_genererad
+    FROM pg_attribute a
+    WHERE a.attrelid = 'sk1_kba_test.gen_historik_h'::regclass
+    AND a.attname = 'namn_versal';
+
+    SELECT namn_versal INTO h_varde
+    FROM sk1_kba_test.gen_historik_h WHERE h_typ = 'U';
+
+    IF NOT h_genererad AND h_varde = 'FJARAS' THEN
+        RAISE NOTICE 'TEST 11g PASSED: Historiken lagrar beräknad kolumn som vanlig kolumn (%)', h_varde;
+    ELSIF h_genererad THEN
+        RAISE WARNING 'TEST 11g FAILED: Historikkolumnen är beräknad – QA-triggern kan inte skriva till den';
+    ELSE
+        RAISE WARNING 'TEST 11g FAILED: Historiken lagrade "%" (förväntade FJARAS)', h_varde;
+    END IF;
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE WARNING 'TEST 11g FAILED: Historik med beräknad kolumn gav fel: %', SQLERRM;
+END $$;
+
+DROP TABLE IF EXISTS sk1_kba_test.gen_historik;
+
+------------------------------------------------------------------------
+-- TEST 12: Kolumntyper rekonstrueras med hex_kolumntyp() överallt
+--
+-- Typen byggdes tidigare upp för hand på tre ställen, med varsin CASE över
+-- information_schema.columns. Ingen av kopiorna täckte arrayer: data_type ger
+-- 'ARRAY', vilket blev syntaxfel, och udt_name ger internnamnet (_text).
+-- Kopian som flyttar standardkolumner i historiktabellen saknade dessutom
+-- numeric-grenen helt. Alla tre använder nu hex_kolumntyp().
+------------------------------------------------------------------------
+\echo ''
+\echo '--- TEST 12: Kolumntyper via hex_kolumntyp() ---'
+
+-- 12a: Arraykolumn fällde tidigare hela CREATE TABLE (via historiktabellen)
+DO $$
+BEGIN
+    CREATE TABLE sk1_kba_test.typ_array (
+        taggar text[],
+        koder  integer[],
+        belopp numeric(10,2),
+        kod    varchar(50)
+    );
+    RAISE NOTICE 'TEST 12a PASSED: Tabell med arraykolumner skapad';
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE WARNING 'TEST 12a FAILED: Arraykolumn avvisad: %', SQLERRM;
+END $$;
+
+-- 12b: Historiktabellen speglar modertabellens typer exakt
+DO $$
+DECLARE
+    avvikande text;
+BEGIN
+    -- LEFT JOIN så att en kolumn som saknas helt i historiktabellen fångas,
+    -- inte bara en som finns men har fel typ.
+    SELECT string_agg(format('%s (moder: %s, historik: %s)',
+                             m.attname, m.typ, COALESCE(h.typ, 'SAKNAS')), ', ')
+    INTO avvikande
+    FROM (
+        SELECT a.attname, format_type(a.atttypid, a.atttypmod) AS typ
+        FROM pg_attribute a
+        WHERE a.attrelid = 'sk1_kba_test.typ_array'::regclass
+        AND a.attnum > 0 AND NOT a.attisdropped
+    ) m
+    LEFT JOIN (
+        SELECT a.attname, format_type(a.atttypid, a.atttypmod) AS typ
+        FROM pg_attribute a
+        WHERE a.attrelid = 'sk1_kba_test.typ_array_h'::regclass
+        AND a.attnum > 0 AND NOT a.attisdropped
+    ) h ON h.attname = m.attname
+    WHERE h.attname IS NULL OR h.typ IS DISTINCT FROM m.typ;
+
+    IF avvikande IS NULL THEN
+        RAISE NOTICE 'TEST 12b PASSED: Historiktabellens typer matchar modertabellen';
+    ELSE
+        RAISE WARNING 'TEST 12b FAILED: Typskillnad mot historiktabellen: %', avvikande;
+    END IF;
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE WARNING 'TEST 12b FAILED: Kunde inte jämföra typerna: %', SQLERRM;
+END $$;
+
+DROP TABLE IF EXISTS sk1_kba_test.typ_array;
+
+-- 12c: ALTER TABLE ADD COLUMN synkar nya kolumner till historiktabellen med
+-- rätt typ (hex_hantera_ny_kolumn – kopia nummer två respektive tre)
+DO $$
+DECLARE
+    avvikande text;
+BEGIN
+    CREATE TABLE sk1_kba_test.typ_alter_y (
+        namn text,
+        geom geometry(Polygon, 3007)
+    );
+
+    ALTER TABLE sk1_kba_test.typ_alter_y ADD COLUMN koder  integer[];
+    ALTER TABLE sk1_kba_test.typ_alter_y ADD COLUMN belopp numeric(10,2);
+    ALTER TABLE sk1_kba_test.typ_alter_y ADD COLUMN kod    varchar(50);
+
+    -- LEFT JOIN, inte JOIN: när ADD COLUMN mot historiktabellen misslyckas
+    -- fångas felet av en WARNING-hanterare i hex_hantera_ny_kolumn och
+    -- kolumnen uteblir tyst. En inre join hade jämfört bara de kolumner som
+    -- redan fanns i båda tabellerna och missat precis det fallet.
+    SELECT string_agg(format('%s (moder: %s, historik: %s)',
+                             m.attname, m.typ, COALESCE(h.typ, 'SAKNAS')), ', ')
+    INTO avvikande
+    FROM (
+        SELECT a.attname, format_type(a.atttypid, a.atttypmod) AS typ
+        FROM pg_attribute a
+        WHERE a.attrelid = 'sk1_kba_test.typ_alter_y'::regclass
+        AND a.attnum > 0 AND NOT a.attisdropped
+    ) m
+    LEFT JOIN (
+        SELECT a.attname, format_type(a.atttypid, a.atttypmod) AS typ
+        FROM pg_attribute a
+        WHERE a.attrelid = 'sk1_kba_test.typ_alter_y_h'::regclass
+        AND a.attnum > 0 AND NOT a.attisdropped
+    ) h ON h.attname = m.attname
+    WHERE h.attname IS NULL OR h.typ IS DISTINCT FROM m.typ;
+
+    IF avvikande IS NULL THEN
+        RAISE NOTICE 'TEST 12c PASSED: ADD COLUMN synkar rätt typer till historiktabellen';
+    ELSE
+        RAISE WARNING 'TEST 12c FAILED: Typskillnad efter ADD COLUMN: %', avvikande;
+    END IF;
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE WARNING 'TEST 12c FAILED: ADD COLUMN gav fel: %', SQLERRM;
+END $$;
+
+-- 12d: QA-triggern kan fortfarande skriva efter synkroniseringen
+DO $$
+DECLARE
+    antal integer;
+BEGIN
+    INSERT INTO sk1_kba_test.typ_alter_y (namn, geom, koder, belopp, kod)
+    VALUES ('rad', ST_GeomFromText('POLYGON((0 0,0 1,1 1,1 0,0 0))', 3007),
+            '{1,2}', 3.25, 'abc');
+    UPDATE sk1_kba_test.typ_alter_y SET belopp = 9.75 WHERE namn = 'rad';
+
+    SELECT COUNT(*) INTO antal
+    FROM sk1_kba_test.typ_alter_y_h
+    WHERE h_typ = 'U' AND belopp = 3.25 AND koder = '{1,2}';
+
+    IF antal = 1 THEN
+        RAISE NOTICE 'TEST 12d PASSED: QA-triggern skriver array och numeric till historiken';
+    ELSE
+        RAISE WARNING 'TEST 12d FAILED: Historiken saknar den uppdaterade raden (% träffar)', antal;
+    END IF;
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE WARNING 'TEST 12d FAILED: QA-triggern gav fel: %', SQLERRM;
+END $$;
+
+DROP TABLE IF EXISTS sk1_kba_test.typ_alter_y;
+
+-- 12e: Geometrins fulla typ (inkl. Z) bevaras i historiktabellen
+DO $$
+DECLARE
+    m_typ text;
+    h_typ_ text;
+BEGIN
+    CREATE TABLE sk1_kba_test.typ_geomz_y (
+        namn text,
+        geom geometry(PolygonZ, 3007)
+    );
+
+    m_typ  := public.hex_kolumntyp('sk1_kba_test', 'typ_geomz_y', 'geom');
+    h_typ_ := public.hex_kolumntyp('sk1_kba_test', 'typ_geomz_y_h', 'geom');
+
+    IF m_typ = 'geometry(PolygonZ,3007)' AND h_typ_ = m_typ THEN
+        RAISE NOTICE 'TEST 12e PASSED: Z-geometri bevarad i både moder- och historiktabell (%)', m_typ;
+    ELSE
+        RAISE WARNING 'TEST 12e FAILED: geom är % i modertabellen och % i historiken', m_typ, h_typ_;
+    END IF;
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE WARNING 'TEST 12e FAILED: Z-geometri gav fel: %', SQLERRM;
+END $$;
+
+DROP TABLE IF EXISTS sk1_kba_test.typ_geomz_y;
 
 ------------------------------------------------------------------------
 -- SLUTLIG STÄDNING

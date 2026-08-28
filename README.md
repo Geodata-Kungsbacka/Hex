@@ -354,6 +354,7 @@ src/sql/02_tables/hex_rolluppgifter.sql
 -- 3. Skapa funktioner (i beroendeordning)
 -- 3.1 Strukturhantering
 src/sql/03_functions/01_structure/hex_hamta_geometri_definition.sql
+src/sql/03_functions/01_structure/hex_kolumntyp.sql
 src/sql/03_functions/01_structure/hex_hamta_kolumnstandard.sql
 
 -- 3.2 Validering
@@ -378,6 +379,8 @@ src/sql/03_functions/04_utility/hex_aterskapa_qa_trigger.sql
 src/sql/03_functions/04_utility/hex_tilldela_rollrattigheter.sql
 src/sql/03_functions/04_utility/hex_tillampa_grupprattigheter.sql
 src/sql/03_functions/04_utility/hex_tvinga_gid_fran_sekvens.sql
+src/sql/03_functions/04_utility/hex_sakerstall_gid_primarnyckel.sql
+src/sql/03_functions/04_utility/hex_reparera_gid_dubbletter.sql
 src/sql/03_functions/04_utility/hex_underhall.sql
 
 -- 3.5 Triggerfunktioner
@@ -501,7 +504,7 @@ skedd räcker det inte med `hex_underhall()` — rollerna skapas bara vid
 
 **Användning**: Används för att bygga upp den slutliga tabellstrukturen genom att kombinera standardkolumner med användardefinierade kolumner.
 
-**Exempel**: `(gid, 1, 'integer GENERATED ALWAYS AS IDENTITY')` definierar primärnyckeln.
+**Exempel**: `(gid, 1, 'integer GENERATED ALWAYS AS IDENTITY')` definierar primärnyckeln. Själva `PRIMARY KEY`-constrainten läggs på av `hex_sakerstall_gid_primarnyckel()` efter att tabellen omstrukturerats, eftersom `hex_aterskapa_tabellregler()` medvetet hoppar över inkommande primärnycklar.
 
 #### `hex_tabellregler`
 **Syfte**: Bevarar tabellövergripande regler vid omstrukturering.
@@ -573,6 +576,17 @@ härleda i efterhand, och därför bevaras de över `--upgrade`.
 
 **Felhantering**: Ger tydliga felmeddelanden om tabellen har flera geometrikolumner eller om kolumnen har fel namn.
 
+#### `hex_kolumntyp(schema, tabell, kolumn)`
+**Syfte**: Returnerar en kolumns datatyp så som den ska skrivas i `CREATE TABLE` eller `ALTER TABLE ... ADD COLUMN`.
+
+**Användning**: Gemensam källa för de tre ställen som återskapar kolumner — `hex_hamta_kolumnstandard` (omstrukturering), `hex_skapa_historik_qa` (historiktabellen) och `hex_hantera_ny_kolumn` (synk av nya kolumner till historiken). Tidigare rekonstruerade var och en typen med en egen `CASE` över `information_schema.columns`, med olika luckor.
+
+**Bevarar**: Typmodifierare (`numeric(10,2)`, `character varying(50)`, `geometry(PolygonZ,3007)`) och arrayers skrivbara form (`text[]`, inte `_text`). Bygger på `format_type()`.
+
+**Omfattning**: Endast datatypen. `DEFAULT`, `NOT NULL`, `IDENTITY` hanteras av `hex_spara_kolumnegenskaper`/`hex_aterskapa_kolumnegenskaper`, och `GENERATED` av `hex_hamta_kolumnstandard` — historiktabeller ska spegla en beräknad kolumn som vanlig kolumn.
+
+**Returvärde**: Typdeklarationen som text, eller `NULL` om kolumnen inte finns.
+
 #### `hex_hamta_kolumnstandard(schema, tabell, geometriinfo)`
 **Syfte**: Bestämmer exakt vilka kolumner en tabell ska ha efter omstrukturering.
 
@@ -582,6 +596,10 @@ härleda i efterhand, och därför bevaras de över `--upgrade`.
 3. Geometrikolumn (om sådan finns)
 
 **Intelligent schemafiltrering**: Använder `schema_uttryck` för att avgöra vilka standardkolumner som passar för schemat.
+
+**Datatyper**: Kolumntypen läses med `format_type()`, så typmodifierare följer med till den omstrukturerade tabellen — `numeric(10,2)`, `character varying(50)` och `text[]` behåller sin exakta deklaration.
+
+**Beräknade kolumner**: `GENERATED ALWAYS AS (...) STORED` bevaras, inklusive uttryck som bygger på funktionsanrop (`upper(namn)`, `ST_Area(geom)`). Eftersom geometrikolumnen alltid sorteras sist får uttrycket referera en kolumn som deklareras längre ned i den nya tabellen — PostgreSQL löser upp kolumnreferenserna först när hela `CREATE TABLE` är tolkad. Beräknade kolumner förblir skrivskyddade, och i historiktabellen speglas de som vanliga kolumner så att QA-triggern kan skriva värdet.
 
 **Returvärde**: Array med `hex_kolumnkonfig`-objekt i rätt ordning för den nya tabellstrukturen.
 
@@ -717,13 +735,14 @@ SELECT * FROM public.hex_underhall();
 `trigger_namn` och `atgard`. `atgard = 'redan finns'` betyder att inget behövde
 göras.
 
-**Tio åtgärdstyper**, i körordning:
+**Elva åtgärdstyper**, i körordning:
 
 | Åtgärd | Vad som repareras |
 |---|---|
 | ägarskapsöverföring | Scheman, tabeller, sekvenser och funktioner i Hex-scheman ägs av `hex_systemagare()` |
 | `hex_tvinga_gid` | BEFORE INSERT som hindrar klienter från att välja eget `gid` med `OVERRIDING SYSTEM VALUE` |
 | `hex_tvinga_anvandarvarden` | BEFORE INSERT för kolumner med `anvandare_kan_redigera = false` |
+| `gid_primarnyckel` | `PRIMARY KEY (gid)` på tabeller som saknar unikt index på `gid`, plus framflyttning av sekvensen till `max(gid)` |
 | `hex_kontrollera_geom` | BEFORE INSERT/UPDATE med OGC-validering på tabeller i datakategorier med `hex_validera_geometri = true` |
 | `hex_ta_bort_dummy` | AFTER INSERT som tar bort dummy-raden — återkopplas bara om raden står i `hex_dummy_geometrier` |
 | `trg_<tabell>_qa` | BEFORE UPDATE/DELETE på tabeller med historik |
@@ -750,9 +769,45 @@ superuser-rättigheter kan köra den.
 [docs/02_lagg-till-databasanvandare.md](docs/02_lagg-till-databasanvandare.md).
 
 #### `hex_tvinga_gid_fran_sekvens()`
-**Syfte**: BEFORE INSERT-triggerfunktion som tvingar `gid` att komma från
-IDENTITY-sekvensen även när klienten skickar `OVERRIDING SYSTEM VALUE` (QGIS
-gör det). Kopplas på av `hex_underhall()` och vid tabellskapande.
+**Syfte**: BEFORE INSERT-trigger som gör sekvensen till den enda källan till `gid`. Kopplas på av `hex_underhall()` och vid tabellskapande.
+
+**Problem som löses**: QGIS och andra klienter kan använda `OVERRIDING SYSTEM VALUE` för att skicka med ett eget `gid` trots `GENERATED ALWAYS`. Triggern kastar klientens värde och sätter `NEW.gid = nextval(sekvens)`.
+
+**Hur klientvärden känns igen**: För en vanlig `INSERT` anropar identity-mekanismen `nextval()` strax före triggern, så `currval() = NEW.gid`. Vid `OVERRIDING SYSTEM VALUE` gör den inte det. `currval()` ensamt räcker dock inte – upprepar klienten samma `gid` över flera rader sammanfaller värdet med `currval` från och med rad två. Triggern jämför därför även med sekvenspositionen vid sin förra avfyrning, sparad per tabell i en sessionsvariabel (`hex.gid_<oid>`). Har sekvensen inte rört sig kan identity-mekanismen inte ha kört för raden.
+
+**Vad som inte får hända**: En vanlig `INSERT` måste behålla sitt identity-värde. En trigger som alltid anropar `nextval()` skulle hoppa över vartannat värde. Testerna 43–47 i `tests/test_stress.sql` täcker båda riktningarna.
+
+#### `hex_sakerstall_gid_primarnyckel(schema, tabell)`
+**Syfte**: Säkerställer att `gid` har ett unikt index och att sekvensen ligger före `max(gid)`.
+
+**Problem som löses**: QGIS slår bara upp `nextval()` för en IDENTITY-kolumn som är NOT NULL, har ett unikt index och saknar egen DEFAULT. Utan nyckel får `gid` inget defaultvärde i QGIS och visas som ett tomt obligatoriskt fält – användaren tvingas skriva in ett värde som `hex_tvinga_gid` sedan kastar. Utan unikt index kan dessutom dubbletter skrivas tyst, och QGIS gör sekventiell scanning vid varje redigering eftersom `gid` används som objekt-id.
+
+**Process**:
+1. Flyttar fram sekvensen till `max(gid)` om den ligger efter
+2. Lägger till `PRIMARY KEY (gid)`, eller `UNIQUE (gid)` om tabellen redan har en primärnyckel på andra kolumner
+3. Hoppar över tabeller med dubbletter i `gid` utan att röra data
+
+**Returvärde**: `'skapad'`, `'unik skapad'`, `'redan finns'`, `'saknar gid'`, `'dubbletter: N'` eller `'fel: <meddelande>'`.
+
+**Låsning**: `ADD PRIMARY KEY` tar ACCESS EXCLUSIVE-lås och bygger index. Kostnaden tas en gång per tabell; planera första körningen till ett servicefönster om databasen har stora tabeller.
+
+**Användning**: Anropas av `hex_hantera_ny_tabell()` (steg 7.4) och av `hex_underhall()` för befintliga tabeller.
+
+#### `hex_reparera_gid_dubbletter(schema, tabell, utfor)`
+**Syfte**: Hittar – och på begäran åtgärdar – dubbletter i `gid` på tabeller från äldre Hex-versioner. Märkt `HEX-MIGRERING`: dubbletter kan bara ha uppstått innan det unika indexet fanns, så funktionen tas bort när alla databaser är städade.
+
+**Torrkörning som standard**: Utan `utfor => true` rapporteras bara vad som skulle göras. Omnumrering ändrar data och kan inte ångras.
+
+**Omnumrering**: Raden med lägst `ctid` i varje dubblettgrupp behåller sitt `gid`; övriga får nästa sekvensvärde via `SET gid = DEFAULT`. QA-triggern lämnas påslagen så att ändringen hamnar i historiktabellen.
+
+**Returvärde**: En rad per dubblettgrupp med `gid_varde`, `antal_rader` och `atgard`.
+
+**Användning**:
+```sql
+SELECT * FROM public.hex_reparera_gid_dubbletter('sk1_kba_geo', 'vagar_l');
+SELECT * FROM public.hex_reparera_gid_dubbletter('sk1_kba_geo', 'vagar_l', true);
+SELECT public.hex_sakerstall_gid_primarnyckel('sk1_kba_geo', 'vagar_l');
+```
 
 #### `hex_lagg_till_dummy_geometri(schema, tabell, geometriinfo)` och `hex_ta_bort_dummy_rad()`
 **Syfte**: Lägger in respektive tar bort dummy-geometriraden. Se
@@ -793,6 +848,8 @@ som namnvalideringen använder — `hex_validera_schemanamn()` bygger sitt eget
 5.5. Överför ägarskap på tabell och sekvenser till hex_systemagare()
 6. Återskapar alla regler
 7. Återskapar alla egenskaper
+7.4. Skapar `PRIMARY KEY (gid)` (`hex_sakerstall_gid_primarnyckel`)
+7.5. Skapar triggern `hex_tvinga_gid`
 8. Skapar GiST-index för geometrikolumn
 9. Lägger till geometrivalidering för scheman vars datakategori har `hex_validera_geometri = true` i `hex_standardiserade_datakategorier` (standardkonfiguration: `_kba_`)
 10. Skapar historik/QA om konfigurerat

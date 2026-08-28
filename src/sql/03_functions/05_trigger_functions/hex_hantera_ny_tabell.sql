@@ -18,6 +18,7 @@ AS $BODY$
  * 5. Ersätter originaltabellen med den temporära och döper om sekvenser
  * 6. Återskapar hex_tabellregler (PRIMARY KEY undantas – hanteras av gid)
  * 7. Återskapar hex_kolumnegenskaper
+ * 7.4. Skapar PRIMARY KEY (gid) (krävs för att QGIS ska hitta gid-sekvensen)
  * 7.5. Skapar trigger hex_tvinga_gid (gid sätts alltid av sekvensen, aldrig av klienten)
  * 8. Skapar GiST-index för geometrikolumn (alla scheman)
  * 9. Lägger till geometrivalidering för _kba_-scheman
@@ -252,7 +253,12 @@ BEGIN
                     RAISE NOTICE '[hex_hantera_ny_tabell]   » Originaltabellen är UNLOGGED - egenskapen bevaras';
                 END IF;
 
-                RAISE NOTICE '[hex_hantera_ny_tabell] SQL för temporär tabell: CREATE %sTABLE %.% (%)',
+                -- %s är en format()-platshållare, inte en RAISE-platshållare:
+                -- RAISE använder bara %, så "CREATE %sTABLE" skrev ut den
+                -- felaktiga satsen "CREATE sTABLE ..." i loggen. Det är just den
+                -- här raden man läser när CREATE TABLE misslyckas, så den måste
+                -- visa exakt den sats som körs.
+                RAISE NOTICE '[hex_hantera_ny_tabell] SQL för temporär tabell: CREATE %TABLE %.% (%)',
                 persistens_nyckelord, schema_namn, temp_tabellnamn, kolumn_sql;
 
                 EXECUTE format(
@@ -327,10 +333,25 @@ BEGIN
             RAISE NOTICE 'Steg 7/11: Återskapar hex_kolumnegenskaper';
             PERFORM hex_aterskapa_kolumnegenskaper(schema_namn, tabell_namn, kolumn_egenskaper);
             
+            -- Steg 7.4: Primärnyckel på gid
+            -- Utan unikt index på gid hittar QGIS inte kolumnens
+            -- nextval()-default och visar gid som ett tomt obligatoriskt fält,
+            -- samtidigt som dubbletter kan skrivas tyst. Nyckeln läggs efter
+            -- hex_aterskapa_tabellregler (som medvetet hoppar över inkommande
+            -- PRIMARY KEY) så att den alltid blir Hex egen.
+            op_steg := 'primärnyckel på gid';
+            RAISE NOTICE 'Steg 7.4/11: Säkerställer primärnyckel på gid';
+            RAISE NOTICE '  ✓ gid-nyckel: %',
+                hex_sakerstall_gid_primarnyckel(schema_namn, tabell_namn);
+
             -- Steg 7.5: Tvinga gid att alltid hämtas från sekvensen
             -- Klienter som QGIS använder OVERRIDING SYSTEM VALUE för att skicka
             -- med ett eget gid-värde. Denna trigger kastar klientens värde och
             -- sätter alltid NEW.gid = nextval(sekvens) innan raden skrivs.
+            --
+            -- Med primärnyckeln på plats (steg 7.4) utelämnar QGIS normalt gid
+            -- helt ur sin INSERT. Triggern är därmed ett skyddsnät för klienter
+            -- som ändå skickar ett eget värde, inte längre huvudmekanismen.
             op_steg := 'tvinga gid från sekvens';
             RAISE NOTICE 'Steg 7.5/11: Skapar trigger hex_tvinga_gid';
             EXECUTE format(

@@ -184,6 +184,7 @@ och betyder inte att ett test misslyckats.
 | `test_underhall_hex.sql`       | Ägarskapsreparation och idempotens i underhållet               |
 | `test_schema_namnbyte.sql`     | Blockering av `ALTER SCHEMA ... RENAME TO`                     |
 | `test_grupprattigheter.sql`    | `hex_tillampa_grupprattigheter()` – AD-grupproll → Hex-roll     |
+| `test_gid_primarnyckel.sql`    | `PRIMARY KEY (gid)`: QGIS-villkoren, migrering av äldre tabeller, dubblettreparation |
 | `test_client_encoding.py`      | Att lyssnaren alltid sätter UTF-8 som klientkodning             |
 | `test_installer.py`            | `install_hex.py` – ägarskap, installationsordning och dokumentationens SQL-block |
 | `test_installer_livscykel.py`  | Uppgradering (även från äldre schema), avinstallation, felvägar, `owner_role=None` |
