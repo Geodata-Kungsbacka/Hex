@@ -9,8 +9,15 @@ CREATE OR REPLACE FUNCTION public.hex_validera_geometri(
     -- Låst search_path. Utan den slås ST_*-anropen nedan upp via
     -- ANROPARENS search_path, och funktionen når CHECK-villkoret
     -- validera_geom_<tabell> på varje INSERT. pg_dump/pg_restore kör med
-    -- search_path = '' – då finns inte PostGIS-funktionerna, COPY-steget
-    -- havererar och pg_restore avslutar ändå med kod 0. Se docs/11.
+    -- search_path = '' – då finns inte PostGIS-funktionerna och COPY-steget
+    -- havererar. Se docs/11.
+    --
+    -- FÖRUTSÄTTER POSTGIS I public. Låsningen byter ut anroparens search_path
+    -- mot den här, så ligger extensionen i ett eget schema hittas ST_* inte
+    -- alls och valideringen slutar fungera för alla anropare, inte bara
+    -- pg_restore. install_hex.py varnar vid installation om så är fallet.
+    -- Flyttas PostGIS måste schemat läggas till här, i
+    -- hex_forklara_geometrifel.sql och i hex_kontrollera_geometri.sql.
     SET search_path = public, pg_temp
 AS $BODY$
 /******************************************************************************

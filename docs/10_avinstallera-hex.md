@@ -69,6 +69,7 @@ DROP FUNCTION IF EXISTS public.hex_tvinga_gid_fran_sekvens() CASCADE;
 DROP FUNCTION IF EXISTS public.hex_pausstatus();
 DROP FUNCTION IF EXISTS public.hex_ateruppta(boolean);
 DROP FUNCTION IF EXISTS public.hex_pausa(text, integer, boolean);
+DROP FUNCTION IF EXISTS public.hex_pausmarkor();
 DROP FUNCTION IF EXISTS public.hex_triggerlage_sats(text);
 DROP FUNCTION IF EXISTS public.hex_underhall();
 DROP FUNCTION IF EXISTS public.hex_tilldela_rollrattigheter(text, text, text);
@@ -99,7 +100,16 @@ DROP FUNCTION IF EXISTS public.hex_schema_regex();
 DROP FUNCTION IF EXISTS public.hex_systemagare();
 -- OBS: hex_geoserver_roller tas INTE bort här – se avsnittet nedan.
 
--- 8. Konfigurationstabeller
+-- 8. Pausmarkören är en databasinställning, inte ett objekt, och överlever
+--    därför DROP TABLE. Utan det här steget rapporterar nästa installation
+--    en paus som inte finns.
+DO $$
+BEGIN
+    EXECUTE format('ALTER DATABASE %I RESET %I', current_database(), 'hex.paus');
+END;
+$$;
+
+-- 9. Konfigurationstabeller
 DROP TABLE IF EXISTS public.hex_paus;
 DROP TABLE IF EXISTS public.hex_rolluppgifter;
 DROP TABLE IF EXISTS public.hex_avvikande_srid;
@@ -113,7 +123,7 @@ DROP TABLE IF EXISTS public.hex_standardiserade_kolumner;
 DROP TABLE IF EXISTS public.hex_standardiserade_skyddsnivaer;
 DROP TABLE IF EXISTS public.hex_standardiserade_datakategorier;
 
--- 9. Anpassade datatyper (sist)
+-- 10. Anpassade datatyper (sist)
 DROP TYPE IF EXISTS public.hex_tabellregler;
 DROP TYPE IF EXISTS public.hex_kolumnegenskaper;
 DROP TYPE IF EXISTS public.hex_kolumnkonfig;

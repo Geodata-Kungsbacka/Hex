@@ -381,6 +381,7 @@ src/sql/03_functions/04_utility/hex_tillampa_grupprattigheter.sql
 src/sql/03_functions/04_utility/hex_tvinga_gid_fran_sekvens.sql
 src/sql/03_functions/04_utility/hex_underhall.sql
 src/sql/03_functions/04_utility/hex_triggerlage_sats.sql
+src/sql/03_functions/04_utility/hex_pausmarkor.sql
 src/sql/03_functions/04_utility/hex_pausa.sql
 src/sql/03_functions/04_utility/hex_ateruppta.sql
 src/sql/03_functions/04_utility/hex_pausstatus.sql
@@ -563,6 +564,12 @@ härleda i efterhand, och därför bevaras de över `--upgrade`.
 | `hex_avvikande_srid` | Tabeller med SRID ≠ 3007 | `hex_hantera_ny_tabell()`, `hex_hantera_ny_kolumn()` | `hex_hantera_borttagen_tabell()` |
 | `hex_rolluppgifter` | Rollnamn och autogenererat lösenord för LOGIN-tjänstekonton | `hex_hantera_std_roller()`, `hex_underhall()` | `DROP SCHEMA` via `hex_ta_bort_schemaroller()` |
 | `hex_paus` | Pausläget: när, av vem, varför, och lägena som gällde före pausen | `hex_pausa()` | `hex_ateruppta()` |
+
+> Tabellen har ett par utanför objektgrafen: pausmarkören
+> `ALTER DATABASE ... SET "hex.paus"`. `hex_paus` är en vanlig tabell i
+> `public` och droppas därför av `pg_restore --clean`; markören gör det inte.
+> Finns markören utan rad har en återläsning raderat bokföringen, och det är
+> det `hex_pausstatus()` rapporterar. Läs den med `hex_pausmarkor()`.
 
 > `hex_rolluppgifter` är den enda av dem som **inte** bevaras över `--upgrade` —
 > lösenorden roteras. Se
