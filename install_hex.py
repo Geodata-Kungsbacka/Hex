@@ -94,6 +94,9 @@ INSTALL_ORDER = [
     "src/sql/03_functions/04_utility/hex_tilldela_rollrattigheter.sql",
     "src/sql/03_functions/04_utility/hex_tillampa_grupprattigheter.sql",
     "src/sql/03_functions/04_utility/hex_tvinga_gid_fran_sekvens.sql",
+    "src/sql/03_functions/04_utility/hex_sakerstall_gid_primarnyckel.sql",
+    "src/sql/03_functions/04_utility/hex_reparera_gid_dubbletter.sql",
+    # hex_underhall anropar hex_sakerstall_gid_primarnyckel – måste komma efter den
     "src/sql/03_functions/04_utility/hex_underhall.sql",
     # Funktioner - Triggerfunktioner
     "src/sql/03_functions/05_trigger_functions/hex_ta_bort_dummy_rad.sql",
@@ -155,6 +158,8 @@ DROP FUNCTION IF EXISTS public.hex_lagg_till_dummy_geometri(text, text, hex_geom
 DROP FUNCTION IF EXISTS public.hex_ta_bort_dummy_rad() CASCADE;
 DROP FUNCTION IF EXISTS public.hex_tvinga_gid_fran_sekvens() CASCADE;
 DROP FUNCTION IF EXISTS public.hex_underhall();
+DROP FUNCTION IF EXISTS public.hex_reparera_gid_dubbletter(text, text, boolean);
+DROP FUNCTION IF EXISTS public.hex_sakerstall_gid_primarnyckel(text, text);
 DROP FUNCTION IF EXISTS public.hex_tilldela_rollrattigheter(text, text, text);
 DROP FUNCTION IF EXISTS public.hex_skapa_historik_qa(text, text);
 DROP FUNCTION IF EXISTS public.hex_uppdatera_sekvensnamn(text, text, text);

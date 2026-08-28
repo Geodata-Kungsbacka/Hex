@@ -702,18 +702,24 @@ EXCEPTION WHEN OTHERS THEN
     PERFORM _fail(40, 'Tabell: IDENTITY-sekvens', SQLERRM);
 END $$;
 
--- TEST 41: Triggern hex_tvinga_gid finns och kastar klientangivet gid
+-- TEST 41-48: hex_tvinga_gid ska göra sekvensen till den ENDA källan till gid
+--
 -- Simulerar QGIS beteende: INSERT ... OVERRIDING SYSTEM VALUE VALUES (999, ...)
--- Triggern måste ersätta 999 med nästa sekvensvärde.
-DO $$ DECLARE
-    trigger_finns  boolean;
-    infogat_gid integer;
-BEGIN
-    CREATE TABLE sk1_kba_stress.gid_override_test (
-        naam text
-    );
+--
+-- OM TÄCKNINGEN: testerna infogar medvetet FLERA rader per sats och flera
+-- satser per session. Ett enradstest kan inte se det felläge som betyder något
+-- här – triggern känner igen ett klientvärde på att det skiljer sig från
+-- currval(), och från och med rad två sammanfaller ett upprepat klient-gid med
+-- värdet triggern själv just delade ut. Test 43 är minimalfallet (3 identiska
+-- klient-gid i samma sats); test 45 är samma krock över två satser. Test 46
+-- vaktar motsatt riktning: fixen får inte vara "anropa alltid nextval", för då
+-- skulle varje vanlig INSERT hoppa över vartannat värde.
 
-    -- 41a: triggern skapades av hex_hantera_ny_tabell
+CREATE TABLE sk1_kba_stress.gid_override_test (naam text);
+
+-- TEST 41: triggern skapades av hex_hantera_ny_tabell
+DO $$ DECLARE trigger_finns boolean;
+BEGIN
     SELECT EXISTS (
         SELECT 1
         FROM   pg_trigger      t
@@ -728,33 +734,197 @@ BEGIN
         PERFORM _pass(41, 'GID-åsidosättning: triggern hex_tvinga_gid skapad');
     ELSE
         PERFORM _fail(41, 'GID-åsidosättning: triggern hex_tvinga_gid skapad', 'triggern saknas');
-        DROP TABLE sk1_kba_stress.gid_override_test;
-        RETURN;
     END IF;
+EXCEPTION WHEN OTHERS THEN
+    PERFORM _fail(41, 'GID-åsidosättning: triggern hex_tvinga_gid skapad', SQLERRM);
+END $$;
 
-    -- 41b: klientangivet gid ersätts tyst
+-- TEST 42: en enda rad – klientens gid ersätts tyst
+DO $$ DECLARE infogat_gid integer;
+BEGIN
     INSERT INTO sk1_kba_stress.gid_override_test (gid, naam)
-    OVERRIDING SYSTEM VALUE
-    VALUES (999, 'override-test');
+    OVERRIDING SYSTEM VALUE VALUES (999, 'enrads');
 
     SELECT gid INTO infogat_gid
-    FROM   sk1_kba_stress.gid_override_test
-    WHERE  naam = 'override-test';
+    FROM   sk1_kba_stress.gid_override_test WHERE naam = 'enrads';
 
     IF infogat_gid IS NOT NULL AND infogat_gid <> 999 THEN
-        PERFORM _pass(42, 'GID-åsidosättning: klientens gid 999 ersatt med sekvensvärde');
-    ELSIF infogat_gid = 999 THEN
-        PERFORM _fail(42, 'GID-åsidosättning: klientens gid 999 ersatt med sekvensvärde',
-            'triggern åsidosatte inte – gid 999 sparades');
+        PERFORM _pass(42, 'GID-åsidosättning: en rad, klientens gid 999 ersatt');
     ELSE
-        PERFORM _fail(42, 'GID-åsidosättning: klientens gid 999 ersatt med sekvensvärde',
-            format('oväntat gid=%s', infogat_gid));
+        PERFORM _fail(42, 'GID-åsidosättning: en rad, klientens gid 999 ersatt',
+            format('gid=%s', coalesce(infogat_gid::text, 'NULL')));
     END IF;
-
-    DROP TABLE sk1_kba_stress.gid_override_test;
 EXCEPTION WHEN OTHERS THEN
-    PERFORM _fail(41, 'GID-åsidosättning: hex_tvinga_gid', SQLERRM);
+    PERFORM _fail(42, 'GID-åsidosättning: en rad, klientens gid 999 ersatt', SQLERRM);
 END $$;
+
+-- TEST 43: flerradssats som upprepar SAMMA klient-gid.
+-- Det här är fallet ett enradstest inte når. Klientvärdet måste ÖVERLAPPA det
+-- intervall sekvensen delar ut, annars uppstår krocken aldrig: med ett värde
+-- långt bort (t.ex. 999) skiljer sig varje rad från currval och även en naiv
+-- trigger ser korrekt ut. Med currval + 1 förbrukar rad 1 exakt det värde som
+-- rad 2 och 3 bär med sig.
+DO $$ DECLARE
+    klientvarde bigint;
+    antal       bigint;
+    unika       bigint;
+    kvar        bigint;
+BEGIN
+    klientvarde := currval(pg_get_serial_sequence('sk1_kba_stress.gid_override_test','gid')) + 1;
+
+    EXECUTE format(
+        'INSERT INTO sk1_kba_stress.gid_override_test (gid, naam)
+         OVERRIDING SYSTEM VALUE VALUES (%1$s,%2$L),(%1$s,%3$L),(%1$s,%4$L)',
+        klientvarde, 'multi-a', 'multi-b', 'multi-c');
+
+    SELECT count(*), count(DISTINCT gid), count(*) FILTER (WHERE gid = klientvarde)
+    INTO   antal, unika, kvar
+    FROM   sk1_kba_stress.gid_override_test WHERE naam LIKE 'multi-%';
+
+    -- En rad hamnar legitimt på klientvarde: sekvensen delar ut just det värdet
+    -- till rad 1. Det som inte får hända är att två rader bär det.
+    IF antal = 3 AND unika = 3 AND kvar <= 1 THEN
+        PERFORM _pass(43, 'GID-åsidosättning: 3 rader med identiskt klient-gid får skilda gid');
+    ELSE
+        PERFORM _fail(43, 'GID-åsidosättning: 3 rader med identiskt klient-gid får skilda gid',
+            format('klienten skickade %s x3: rader=%s unika=%s på-klientvärdet=%s',
+                   klientvarde, antal, unika, kvar));
+    END IF;
+EXCEPTION WHEN OTHERS THEN
+    PERFORM _fail(43, 'GID-åsidosättning: 3 rader med identiskt klient-gid får skilda gid', SQLERRM);
+END $$;
+
+-- TEST 44: flerradssats med SKILDA klientvärden långt över sekvensen – det
+-- enkla fallet, där varje rad skiljer sig från currval.
+DO $$ DECLARE kvar bigint; unika bigint;
+BEGIN
+    INSERT INTO sk1_kba_stress.gid_override_test (gid, naam)
+    OVERRIDING SYSTEM VALUE
+    VALUES (5001, 'dist-a'), (5002, 'dist-b'), (5003, 'dist-c');
+
+    SELECT count(*) FILTER (WHERE gid IN (5001, 5002, 5003)), count(DISTINCT gid)
+    INTO   kvar, unika
+    FROM   sk1_kba_stress.gid_override_test WHERE naam LIKE 'dist-%';
+
+    IF kvar = 0 AND unika = 3 THEN
+        PERFORM _pass(44, 'GID-åsidosättning: skilda klient-gid ersätts allihop');
+    ELSE
+        PERFORM _fail(44, 'GID-åsidosättning: skilda klient-gid ersätts allihop',
+            format('överlevande klientvärden=%s unika=%s', kvar, unika));
+    END IF;
+EXCEPTION WHEN OTHERS THEN
+    PERFORM _fail(44, 'GID-åsidosättning: skilda klient-gid ersätts allihop', SQLERRM);
+END $$;
+
+-- TEST 45: egen sats, samma session, klient-gid = currval().
+-- Värdet triggern senast delade ut är precis det värde en naiv
+-- currval()-jämförelse inte kan skilja från ett identity-genererat.
+DO $$ DECLARE
+    seq_namn    text;
+    klientvarde bigint;
+    infogat_gid integer;
+BEGIN
+    seq_namn    := pg_get_serial_sequence('sk1_kba_stress.gid_override_test', 'gid');
+    klientvarde := currval(seq_namn);
+
+    EXECUTE format(
+        'INSERT INTO sk1_kba_stress.gid_override_test (gid, naam)
+         OVERRIDING SYSTEM VALUE VALUES (%s, %L)', klientvarde, 'currval-krock');
+
+    SELECT gid INTO infogat_gid
+    FROM   sk1_kba_stress.gid_override_test WHERE naam = 'currval-krock';
+
+    IF infogat_gid IS NOT NULL AND infogat_gid <> klientvarde THEN
+        PERFORM _pass(45, 'GID-åsidosättning: klient-gid lika med currval ersätts');
+    ELSE
+        PERFORM _fail(45, 'GID-åsidosättning: klient-gid lika med currval ersätts',
+            format('klienten skickade %s, raden lagrades som %s', klientvarde,
+                   coalesce(infogat_gid::text, 'NULL')));
+    END IF;
+EXCEPTION WHEN OTHERS THEN
+    PERFORM _fail(45, 'GID-åsidosättning: klient-gid lika med currval ersätts', SQLERRM);
+END $$;
+
+-- TEST 46: en vanlig flerradig INSERT måste förbli konsekutiv.
+-- Vaktar motsatt felläge: en trigger som villkorslöst anropar nextval() skulle
+-- klara test 42-45 samtidigt som varje vanlig INSERT hoppade över ett värde.
+DO $$ DECLARE antal bigint; spann bigint;
+BEGIN
+    INSERT INTO sk1_kba_stress.gid_override_test (naam)
+    VALUES ('seq-a'), ('seq-b'), ('seq-c'), ('seq-d');
+
+    SELECT count(*), max(gid) - min(gid)
+    INTO   antal, spann
+    FROM   sk1_kba_stress.gid_override_test WHERE naam LIKE 'seq-%';
+
+    IF antal = 4 AND spann = 3 THEN
+        PERFORM _pass(46, 'GID-åsidosättning: vanlig flerradsinsert förblir konsekutiv (inga hopp)');
+    ELSE
+        PERFORM _fail(46, 'GID-åsidosättning: vanlig flerradsinsert förblir konsekutiv (inga hopp)',
+            format('rader=%s gid-spann=%s (förväntat 4 och 3)', antal, spann));
+    END IF;
+EXCEPTION WHEN OTHERS THEN
+    PERFORM _fail(46, 'GID-åsidosättning: vanlig flerradsinsert förblir konsekutiv (inga hopp)', SQLERRM);
+END $$;
+
+-- TEST 47: volym – 50 rader i en sats, allihop med samma klient-gid
+DO $$ DECLARE antal bigint; unika bigint; klientvarde bigint;
+BEGIN
+    -- Samma krav på överlappande värde som i test 43.
+    klientvarde := currval(pg_get_serial_sequence('sk1_kba_stress.gid_override_test','gid')) + 1;
+
+    EXECUTE format(
+        'INSERT INTO sk1_kba_stress.gid_override_test (gid, naam)
+         OVERRIDING SYSTEM VALUE
+         SELECT %s, ''bulk-'' || lpad(g::text, 3, ''0'') FROM generate_series(1, 50) g',
+        klientvarde);
+
+    SELECT count(*), count(DISTINCT gid)
+    INTO   antal, unika
+    FROM   sk1_kba_stress.gid_override_test WHERE naam LIKE 'bulk-%';
+
+    IF antal = 50 AND unika = 50 THEN
+        PERFORM _pass(47, 'GID-åsidosättning: 50-radsbatch med identiskt klient-gid förblir unik');
+    ELSE
+        PERFORM _fail(47, 'GID-åsidosättning: 50-radsbatch med identiskt klient-gid förblir unik',
+            format('rader=%s unika=%s', antal, unika));
+    END IF;
+EXCEPTION WHEN OTHERS THEN
+    PERFORM _fail(47, 'GID-åsidosättning: 50-radsbatch med identiskt klient-gid förblir unik', SQLERRM);
+END $$;
+
+-- TEST 48: den unika nyckeln på gid backar upp triggern.
+-- Även om triggern skulle regrediera måste databasen vägra dubbletter i stället
+-- för att lagra dem tyst – det var just det som gjorde originalbuggen osynlig
+-- i produktion.
+DO $$ DECLARE har_unik boolean; totalt bigint; unika bigint;
+BEGIN
+    SELECT EXISTS (
+        SELECT 1
+        FROM   pg_index     i
+        JOIN   pg_attribute a ON a.attrelid = i.indrelid
+                             AND a.attnum::text = i.indkey::text
+        WHERE  i.indrelid = 'sk1_kba_stress.gid_override_test'::regclass
+          AND  i.indisunique
+          AND  a.attname = 'gid'
+    ) INTO har_unik;
+
+    SELECT count(*), count(DISTINCT gid)
+    INTO   totalt, unika
+    FROM   sk1_kba_stress.gid_override_test;
+
+    IF har_unik AND totalt = unika THEN
+        PERFORM _pass(48, 'GID-åsidosättning: unik nyckel på gid finns och alla gid är distinkta',
+            format('%s rader', totalt));
+    ELSE
+        PERFORM _fail(48, 'GID-åsidosättning: unik nyckel på gid finns och alla gid är distinkta',
+            format('unikt index=%s rader=%s unika=%s', har_unik, totalt, unika));
+    END IF;
+EXCEPTION WHEN OTHERS THEN
+    PERFORM _fail(48, 'GID-åsidosättning: unik nyckel på gid finns och alla gid är distinkta', SQLERRM);
+END $$;
+
+DROP TABLE sk1_kba_stress.gid_override_test;
 
 
 -- =============================================================================
