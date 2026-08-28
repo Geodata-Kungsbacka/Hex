@@ -424,6 +424,15 @@ src/sql/04_triggers/notifiera_geoserver_borttagning_trigger.sql
 
 **Praktisk användning**: Möjliggör fullständig spårbarhet av alla dataändringar.
 
+#### `tvinga_gid_fran_sekvens()`
+**Syfte**: BEFORE INSERT-trigger som gör sekvensen till den enda källan till `gid`.
+
+**Problem som löses**: QGIS och andra klienter kan använda `OVERRIDING SYSTEM VALUE` för att skicka med ett eget `gid` trots `GENERATED ALWAYS`. Triggern kastar klientens värde och sätter `NEW.gid = nextval(sekvens)`.
+
+**Hur klientvärden känns igen**: För en vanlig `INSERT` anropar identity-mekanismen `nextval()` strax före triggern, så `currval() = NEW.gid`. Vid `OVERRIDING SYSTEM VALUE` gör den inte det. `currval()` ensamt räcker dock inte – upprepar klienten samma `gid` över flera rader sammanfaller värdet med `currval` från och med rad två. Triggern jämför därför även med sekvenspositionen vid sin förra avfyrning, sparad per tabell i en sessionsvariabel (`hex.gid_<oid>`). Har sekvensen inte rört sig kan identity-mekanismen inte ha kört för raden.
+
+**Vad som inte får hända**: En vanlig `INSERT` måste behålla sitt identity-värde. En trigger som alltid anropar `nextval()` skulle hoppa över vartannat värde. Testerna 43–47 i `tests/stress_test.sql` täcker båda riktningarna.
+
 #### `sakerstall_gid_primarnyckel(schema, tabell)`
 **Syfte**: Säkerställer att `gid` har ett unikt index och att sekvensen ligger före `max(gid)`.
 

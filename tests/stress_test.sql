@@ -682,18 +682,25 @@ EXCEPTION WHEN OTHERS THEN
     PERFORM _fail(40, 'Table: IDENTITY sequence', SQLERRM);
 END $$;
 
--- TEST 41: hex_tvinga_gid trigger exists and discards client-supplied gid
+-- TEST 41-48: hex_tvinga_gid must make the sequence the ONLY source of gid
+--
 -- Simulates QGIS behaviour: INSERT ... OVERRIDING SYSTEM VALUE VALUES (999, ...)
--- The trigger must replace 999 with the next sequence value.
-DO $$ DECLARE
-    trig_exists  boolean;
-    inserted_gid integer;
-BEGIN
-    CREATE TABLE sk1_kba_stress.gid_override_test (
-        naam text
-    );
+--
+-- NOTE ON COVERAGE: these tests deliberately insert SEVERAL rows per statement
+-- and several statements per session. A single-row test cannot see the failure
+-- mode that matters here – the trigger recognises a client value by comparing
+-- it against currval(), and from the second row onwards a repeated client gid
+-- coincides with the value the trigger itself just handed out. Test 43 is the
+-- minimal case (3 identical client gids in one statement); test 45 is the same
+-- collision across two statements. Test 46 pins the opposite direction: the
+-- fix must not be "always call nextval", which would make ordinary inserts
+-- skip every other value.
 
-    -- 41a: trigger was created by hantera_ny_tabell
+CREATE TABLE sk1_kba_stress.gid_override_test (naam text);
+
+-- TEST 41: trigger was created by hantera_ny_tabell
+DO $$ DECLARE trig_exists boolean;
+BEGIN
     SELECT EXISTS (
         SELECT 1
         FROM   pg_trigger      t
@@ -708,33 +715,197 @@ BEGIN
         PERFORM _pass(41, 'GID override: trigger hex_tvinga_gid created');
     ELSE
         PERFORM _fail(41, 'GID override: trigger hex_tvinga_gid created', 'trigger missing');
-        DROP TABLE sk1_kba_stress.gid_override_test;
-        RETURN;
     END IF;
+EXCEPTION WHEN OTHERS THEN
+    PERFORM _fail(41, 'GID override: trigger hex_tvinga_gid created', SQLERRM);
+END $$;
 
-    -- 41b: client-supplied gid is silently replaced
+-- TEST 42: single row – client-supplied gid is silently replaced
+DO $$ DECLARE inserted_gid integer;
+BEGIN
     INSERT INTO sk1_kba_stress.gid_override_test (gid, naam)
-    OVERRIDING SYSTEM VALUE
-    VALUES (999, 'override-test');
+    OVERRIDING SYSTEM VALUE VALUES (999, 'single');
 
     SELECT gid INTO inserted_gid
-    FROM   sk1_kba_stress.gid_override_test
-    WHERE  naam = 'override-test';
+    FROM   sk1_kba_stress.gid_override_test WHERE naam = 'single';
 
     IF inserted_gid IS NOT NULL AND inserted_gid <> 999 THEN
-        PERFORM _pass(42, 'GID override: client gid 999 replaced by sequence value');
-    ELSIF inserted_gid = 999 THEN
-        PERFORM _fail(42, 'GID override: client gid 999 replaced by sequence value',
-            'trigger did not override – gid 999 was stored');
+        PERFORM _pass(42, 'GID override: single row, client gid 999 replaced');
     ELSE
-        PERFORM _fail(42, 'GID override: client gid 999 replaced by sequence value',
-            format('unexpected gid=%s', inserted_gid));
+        PERFORM _fail(42, 'GID override: single row, client gid 999 replaced',
+            format('gid=%s', coalesce(inserted_gid::text, 'NULL')));
     END IF;
-
-    DROP TABLE sk1_kba_stress.gid_override_test;
 EXCEPTION WHEN OTHERS THEN
-    PERFORM _fail(41, 'GID override: hex_tvinga_gid', SQLERRM);
+    PERFORM _fail(42, 'GID override: single row, client gid 999 replaced', SQLERRM);
 END $$;
+
+-- TEST 43: multi-row statement repeating the SAME client gid.
+-- This is the case a single-row test cannot reach. The client value must
+-- OVERLAP the range the sequence is handing out, otherwise the collision
+-- never happens: with a far-away value such as 999 every row simply differs
+-- from currval and even a naive trigger looks correct. Using currval + 1
+-- makes row 1 consume exactly the value rows 2 and 3 are carrying.
+DO $$ DECLARE
+    klientvarde bigint;
+    antal       bigint;
+    unika       bigint;
+    kvar        bigint;
+BEGIN
+    klientvarde := currval(pg_get_serial_sequence('sk1_kba_stress.gid_override_test','gid')) + 1;
+
+    EXECUTE format(
+        'INSERT INTO sk1_kba_stress.gid_override_test (gid, naam)
+         OVERRIDING SYSTEM VALUE VALUES (%1$s,%2$L),(%1$s,%3$L),(%1$s,%4$L)',
+        klientvarde, 'multi-a', 'multi-b', 'multi-c');
+
+    SELECT count(*), count(DISTINCT gid), count(*) FILTER (WHERE gid = klientvarde)
+    INTO   antal, unika, kvar
+    FROM   sk1_kba_stress.gid_override_test WHERE naam LIKE 'multi-%';
+
+    -- One row legitimately ends up on klientvarde: the sequence hands that
+    -- value out to row 1. What must not happen is two rows carrying it.
+    IF antal = 3 AND unika = 3 AND kvar <= 1 THEN
+        PERFORM _pass(43, 'GID override: 3 rows with identical client gid all get distinct gids');
+    ELSE
+        PERFORM _fail(43, 'GID override: 3 rows with identical client gid all get distinct gids',
+            format('client sent %s x3: rows=%s distinct=%s on-client-value=%s',
+                   klientvarde, antal, unika, kvar));
+    END IF;
+EXCEPTION WHEN OTHERS THEN
+    PERFORM _fail(43, 'GID override: 3 rows with identical client gid all get distinct gids', SQLERRM);
+END $$;
+
+-- TEST 44: multi-row statement with DISTINCT client gids far above the
+-- sequence – the easy case, where every row differs from currval.
+DO $$ DECLARE kvar bigint; unika bigint;
+BEGIN
+    INSERT INTO sk1_kba_stress.gid_override_test (gid, naam)
+    OVERRIDING SYSTEM VALUE
+    VALUES (5001, 'dist-a'), (5002, 'dist-b'), (5003, 'dist-c');
+
+    SELECT count(*) FILTER (WHERE gid IN (5001, 5002, 5003)), count(DISTINCT gid)
+    INTO   kvar, unika
+    FROM   sk1_kba_stress.gid_override_test WHERE naam LIKE 'dist-%';
+
+    IF kvar = 0 AND unika = 3 THEN
+        PERFORM _pass(44, 'GID override: distinct client gids all replaced');
+    ELSE
+        PERFORM _fail(44, 'GID override: distinct client gids all replaced',
+            format('surviving client values=%s distinct=%s', kvar, unika));
+    END IF;
+EXCEPTION WHEN OTHERS THEN
+    PERFORM _fail(44, 'GID override: distinct client gids all replaced', SQLERRM);
+END $$;
+
+-- TEST 45: separate statement, same session, client gid = currval().
+-- The value the trigger last handed out is exactly the value a naive
+-- currval() comparison cannot tell apart from an identity-generated one.
+DO $$ DECLARE
+    seq_namn text;
+    klientvarde bigint;
+    inserted_gid integer;
+BEGIN
+    seq_namn := pg_get_serial_sequence('sk1_kba_stress.gid_override_test', 'gid');
+    klientvarde := currval(seq_namn);
+
+    EXECUTE format(
+        'INSERT INTO sk1_kba_stress.gid_override_test (gid, naam)
+         OVERRIDING SYSTEM VALUE VALUES (%s, %L)', klientvarde, 'currval-clash');
+
+    SELECT gid INTO inserted_gid
+    FROM   sk1_kba_stress.gid_override_test WHERE naam = 'currval-clash';
+
+    IF inserted_gid IS NOT NULL AND inserted_gid <> klientvarde THEN
+        PERFORM _pass(45, 'GID override: client gid equal to currval is replaced');
+    ELSE
+        PERFORM _fail(45, 'GID override: client gid equal to currval is replaced',
+            format('client sent %s, row stored %s', klientvarde,
+                   coalesce(inserted_gid::text, 'NULL')));
+    END IF;
+EXCEPTION WHEN OTHERS THEN
+    PERFORM _fail(45, 'GID override: client gid equal to currval is replaced', SQLERRM);
+END $$;
+
+-- TEST 46: an ordinary multi-row INSERT must stay consecutive.
+-- Guards the opposite failure: a trigger that unconditionally calls nextval()
+-- would satisfy tests 42-45 while making every ordinary insert skip a value.
+DO $$ DECLARE antal bigint; spann bigint;
+BEGIN
+    INSERT INTO sk1_kba_stress.gid_override_test (naam)
+    VALUES ('seq-a'), ('seq-b'), ('seq-c'), ('seq-d');
+
+    SELECT count(*), max(gid) - min(gid)
+    INTO   antal, spann
+    FROM   sk1_kba_stress.gid_override_test WHERE naam LIKE 'seq-%';
+
+    IF antal = 4 AND spann = 3 THEN
+        PERFORM _pass(46, 'GID override: plain multi-row insert stays consecutive (no skipping)');
+    ELSE
+        PERFORM _fail(46, 'GID override: plain multi-row insert stays consecutive (no skipping)',
+            format('rows=%s gid span=%s (expected 4 and 3)', antal, spann));
+    END IF;
+EXCEPTION WHEN OTHERS THEN
+    PERFORM _fail(46, 'GID override: plain multi-row insert stays consecutive (no skipping)', SQLERRM);
+END $$;
+
+-- TEST 47: volume – 50 rows in one statement, all carrying the same client gid
+DO $$ DECLARE antal bigint; unika bigint; klientvarde bigint;
+BEGIN
+    -- Same overlapping-value requirement as test 43.
+    klientvarde := currval(pg_get_serial_sequence('sk1_kba_stress.gid_override_test','gid')) + 1;
+
+    EXECUTE format(
+        'INSERT INTO sk1_kba_stress.gid_override_test (gid, naam)
+         OVERRIDING SYSTEM VALUE
+         SELECT %s, ''bulk-'' || lpad(g::text, 3, ''0'') FROM generate_series(1, 50) g',
+        klientvarde);
+
+    SELECT count(*), count(DISTINCT gid)
+    INTO   antal, unika
+    FROM   sk1_kba_stress.gid_override_test WHERE naam LIKE 'bulk-%';
+
+    IF antal = 50 AND unika = 50 THEN
+        PERFORM _pass(47, 'GID override: 50-row batch with identical client gid stays unique');
+    ELSE
+        PERFORM _fail(47, 'GID override: 50-row batch with identical client gid stays unique',
+            format('rows=%s distinct=%s', antal, unika));
+    END IF;
+EXCEPTION WHEN OTHERS THEN
+    PERFORM _fail(47, 'GID override: 50-row batch with identical client gid stays unique', SQLERRM);
+END $$;
+
+-- TEST 48: the unique key on gid backs the trigger up.
+-- Even if the trigger were to regress, the database must refuse duplicates
+-- rather than store them silently – that is what made the original bug
+-- invisible in production.
+DO $$ DECLARE har_unik boolean; totalt bigint; unika bigint;
+BEGIN
+    SELECT EXISTS (
+        SELECT 1
+        FROM   pg_index     i
+        JOIN   pg_attribute a ON a.attrelid = i.indrelid
+                             AND a.attnum::text = i.indkey::text
+        WHERE  i.indrelid = 'sk1_kba_stress.gid_override_test'::regclass
+          AND  i.indisunique
+          AND  a.attname = 'gid'
+    ) INTO har_unik;
+
+    SELECT count(*), count(DISTINCT gid)
+    INTO   totalt, unika
+    FROM   sk1_kba_stress.gid_override_test;
+
+    IF har_unik AND totalt = unika THEN
+        PERFORM _pass(48, 'GID override: unique key on gid present and all gids distinct',
+            format('%s rows', totalt));
+    ELSE
+        PERFORM _fail(48, 'GID override: unique key on gid present and all gids distinct',
+            format('unique index=%s rows=%s distinct=%s', har_unik, totalt, unika));
+    END IF;
+EXCEPTION WHEN OTHERS THEN
+    PERFORM _fail(48, 'GID override: unique key on gid present and all gids distinct', SQLERRM);
+END $$;
+
+DROP TABLE sk1_kba_stress.gid_override_test;
 
 
 -- =============================================================================

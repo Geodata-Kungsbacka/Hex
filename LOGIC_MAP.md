@@ -432,6 +432,9 @@ hantera_ny_tabell()
   │     Kastar klientvalt gid (QGIS OVERRIDING SYSTEM VALUE) och sätter
   │     NEW.gid = nextval(sekvens). Skyddsnät sedan [7.4] finns — med
   │     nyckeln på plats utelämnar QGIS normalt gid helt ur sin INSERT.
+  │     Klientvärden känns igen på currval() PLUS sekvenspositionen vid
+  │     förra avfyrningen (sessionsvariabel hex.gid_<oid>) — currval
+  │     ensamt missar en klient som upprepar samma gid över flera rader.
   │
   ├── [8] SKAPA GiST-INDEX (hoppas över för afvaktande tabeller)
   │     ├── Gäller alla scheman som har geometrikolumn
