@@ -259,7 +259,7 @@ src/sql/04_triggers/notifiera_geoserver_borttagning_trigger.sql
 
 **Användning**: Används för att bygga upp den slutliga tabellstrukturen genom att kombinera standardkolumner med användardefinierade kolumner.
 
-**Exempel**: `(gid, 1, 'integer GENERATED ALWAYS AS IDENTITY')` definierar primärnyckeln.
+**Exempel**: `(gid, 1, 'integer GENERATED ALWAYS AS IDENTITY')` definierar primärnyckeln. Själva `PRIMARY KEY`-constrainten läggs på av `sakerstall_gid_primarnyckel()` efter att tabellen omstrukturerats, eftersom `aterskapa_tabellregler()` medvetet hoppar över inkommande primärnycklar.
 
 #### `tabellregler`
 **Syfte**: Bevarar tabellövergripande regler vid omstrukturering.
@@ -424,6 +424,38 @@ src/sql/04_triggers/notifiera_geoserver_borttagning_trigger.sql
 
 **Praktisk användning**: Möjliggör fullständig spårbarhet av alla dataändringar.
 
+#### `sakerstall_gid_primarnyckel(schema, tabell)`
+**Syfte**: Säkerställer att `gid` har ett unikt index och att sekvensen ligger före `max(gid)`.
+
+**Problem som löses**: QGIS slår bara upp `nextval()` för en IDENTITY-kolumn som är NOT NULL, har ett unikt index och saknar egen DEFAULT. Utan nyckel får `gid` inget defaultvärde i QGIS och visas som ett tomt obligatoriskt fält – användaren tvingas skriva in ett värde som `hex_tvinga_gid` sedan kastar. Utan unikt index kan dessutom dubbletter skrivas tyst, och QGIS gör sekventiell scanning vid varje redigering eftersom `gid` används som objekt-id.
+
+**Process**:
+1. Flyttar fram sekvensen till `max(gid)` om den ligger efter
+2. Lägger till `PRIMARY KEY (gid)`, eller `UNIQUE (gid)` om tabellen redan har en primärnyckel på andra kolumner
+3. Hoppar över tabeller med dubbletter i `gid` utan att röra data
+
+**Returvärde**: `'skapad'`, `'unik skapad'`, `'redan finns'`, `'saknar gid'`, `'dubbletter: N'` eller `'fel: <meddelande>'`.
+
+**Låsning**: `ADD PRIMARY KEY` tar ACCESS EXCLUSIVE-lås och bygger index. Kostnaden tas en gång per tabell; planera första körningen till ett servicefönster om databasen har stora tabeller.
+
+**Användning**: Anropas av `hantera_ny_tabell()` (steg 7.4) och av `underhall_hex()` för befintliga tabeller.
+
+#### `reparera_gid_dubbletter(schema, tabell, utfor)`
+**Syfte**: Hittar – och på begäran åtgärdar – dubbletter i `gid` på tabeller från äldre Hex-versioner.
+
+**Torrkörning som standard**: Utan `utfor => true` rapporteras bara vad som skulle göras. Omnumrering ändrar data och kan inte ångras.
+
+**Omnumrering**: Raden med lägst `ctid` i varje dubblettgrupp behåller sitt `gid`; övriga får nästa sekvensvärde via `SET gid = DEFAULT`. QA-triggern lämnas påslagen så att ändringen hamnar i historiktabellen.
+
+**Returvärde**: En rad per dubblettgrupp med `gid_varde`, `antal_rader` och `atgard`.
+
+**Användning**:
+```sql
+SELECT * FROM public.reparera_gid_dubbletter('sk1_kba_geo', 'vagar_l');
+SELECT * FROM public.reparera_gid_dubbletter('sk1_kba_geo', 'vagar_l', true);
+SELECT public.sakerstall_gid_primarnyckel('sk1_kba_geo', 'vagar_l');
+```
+
 ### Triggerfunktioner
 
 #### `hantera_ny_tabell()`
@@ -437,6 +469,8 @@ src/sql/04_triggers/notifiera_geoserver_borttagning_trigger.sql
 5. Byter ut tabellerna
 6. Återskapar alla regler
 7. Återskapar alla egenskaper
+7.4. Skapar `PRIMARY KEY (gid)` (`sakerstall_gid_primarnyckel`)
+7.5. Skapar triggern `hex_tvinga_gid`
 8. Skapar GiST-index för geometrikolumn
 9. Lägger till geometrivalidering för _kba_-scheman
 10. Skapar historik/QA om konfigurerat

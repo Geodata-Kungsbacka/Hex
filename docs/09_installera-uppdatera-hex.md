@@ -98,6 +98,57 @@ Följande tabeller bevaras automatiskt vid `--upgrade`:
 
 ---
 
+## Migrering: primärnyckel på `gid`
+
+Hex-tabeller skapade före den här versionen saknar `PRIMARY KEY (gid)`. Utan
+unikt index hittar QGIS inte gid-sekvensen och kräver att användaren fyller i
+`gid` manuellt vid varje nytt objekt – se
+[11_redigera-i-qgis.md](11_redigera-i-qgis.md).
+
+Installationen kör `underhall_hex()` automatiskt, som lägger på nyckeln på alla
+befintliga tabeller. Inga data ändras.
+
+> **Planera in ett servicefönster.** `ALTER TABLE ... ADD PRIMARY KEY` tar
+> ACCESS EXCLUSIVE-lås och bygger index. På stora tabeller blockerar det både
+> läsning och skrivning under bygget. Kostnaden tas bara en gång per tabell.
+
+### Tabeller med dubbletter i `gid`
+
+Äldre data kan innehålla dubbletter (samma `gid` på flera rader). Sådana
+tabeller hoppas över och rapporteras i installationsloggen:
+
+```
+✓ sk1_kba_geo.vagar_l → gid_primarnyckel (dubbletter: 3)
+```
+
+Kör då manuellt, en tabell i taget:
+
+```sql
+-- 1. Se vad som skulle ändras (torrkörning – ändrar inget)
+SELECT * FROM public.reparera_gid_dubbletter('sk1_kba_geo', 'vagar_l');
+
+-- 2. Numrera om dubbletterna (ändrar data och kan inte ångras)
+SELECT * FROM public.reparera_gid_dubbletter('sk1_kba_geo', 'vagar_l', true);
+
+-- 3. Lägg på nyckeln
+SELECT public.sakerstall_gid_primarnyckel('sk1_kba_geo', 'vagar_l');
+```
+
+Raden med lägst `ctid` i varje dubblettgrupp behåller sitt `gid`; övriga får
+nästa sekvensvärde. Omnumreringen loggas i historiktabellen. Kontrollera först
+om något externt (GeoServer-lager, WFS-anrop, kopplade tabeller) refererar till
+de `gid` som byts.
+
+Lista alla tabeller som fortfarande saknar nyckel:
+
+```sql
+SELECT * FROM public.underhall_hex()
+WHERE  trigger_namn = 'gid_primarnyckel'
+  AND  atgard <> 'redan finns';
+```
+
+---
+
 ## Manuell installation (alternativ)
 
 Om du föredrar att köra SQL direkt, se installationsordningen i `README.md`

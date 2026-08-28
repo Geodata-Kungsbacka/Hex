@@ -90,6 +90,9 @@ INSTALL_ORDER = [
     "src/sql/03_functions/04_utility/tilldela_rollrattigheter.sql",
     "src/sql/03_functions/04_utility/tillampa_grupprattigheter.sql",
     "src/sql/03_functions/04_utility/tvinga_gid_fran_sekvens.sql",
+    "src/sql/03_functions/04_utility/sakerstall_gid_primarnyckel.sql",
+    "src/sql/03_functions/04_utility/reparera_gid_dubbletter.sql",
+    # underhall_hex anropar sakerstall_gid_primarnyckel – måste komma efter den
     "src/sql/03_functions/04_utility/underhall_hex.sql",
     # Funktioner - Triggerfunktioner
     "src/sql/03_functions/05_trigger_functions/ta_bort_dummy_rad.sql",
@@ -150,6 +153,8 @@ DROP FUNCTION IF EXISTS public.lagg_till_dummy_geometri(text, text, geom_info);
 DROP FUNCTION IF EXISTS public.ta_bort_dummy_rad() CASCADE;
 DROP FUNCTION IF EXISTS public.tvinga_gid_fran_sekvens() CASCADE;
 DROP FUNCTION IF EXISTS public.underhall_hex();
+DROP FUNCTION IF EXISTS public.reparera_gid_dubbletter(text, text, boolean);
+DROP FUNCTION IF EXISTS public.sakerstall_gid_primarnyckel(text, text);
 DROP FUNCTION IF EXISTS public.reparera_rad_triggers();
 DROP FUNCTION IF EXISTS public.tilldela_rollrattigheter(text, text, text);
 DROP FUNCTION IF EXISTS public.skapa_historik_qa(text, text);

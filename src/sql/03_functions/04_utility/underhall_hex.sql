@@ -18,7 +18,7 @@ AS $BODY$
  * Schemaprefix hämtas dynamiskt från standardiserade_skyddsnivaer, så att
  * egna prefix (t.ex. sc1, sk3) fungerar utan kodändringar.
  *
- * Hanterar nio åtgärdstyper:
+ * Hanterar tio åtgärdstyper:
  *
  *   schemamigrering      Uppgraderar hex_role_credentials och standardiserade_roller
  *                        till aktuellt schema idempotent (ADD COLUMN IF NOT EXISTS).
@@ -27,6 +27,12 @@ AS $BODY$
  *   hex_tvinga_gid       BEFORE INSERT på alla Hex-tabeller med en gid
  *                        IDENTITY-kolumn. Förhindrar att klienter (t.ex. QGIS)
  *                        väljer eget gid via OVERRIDING SYSTEM VALUE.
+ *
+ *   gid_primarnyckel     PRIMARY KEY (gid) på alla Hex-tabeller med en gid
+ *                        IDENTITY-kolumn, plus framflyttning av sekvensen till
+ *                        max(gid). Tabeller som redan innehåller dubbletter
+ *                        rapporteras som 'dubbletter: N' och lämnas orörda –
+ *                        kör public.reparera_gid_dubbletter() på dem.
  *
  *   hex_kontrollera_geom BEFORE INSERT OR UPDATE på geometritabeller vars
  *                        datakategori har validera_geometri = true.
@@ -67,7 +73,11 @@ AS $BODY$
  *
  * Funktionen är idempotent – befintliga triggers och rättigheter rörs inte
  * i onödan. Returnerar en rad per undersökt åtgärd med resultatet
- * 'skapad'/'beviljad'/'uppdaterade' eller 'redan finns'.
+ * 'skapad'/'beviljad'/'uppdaterade' eller 'redan finns'. Åtgärden
+ * gid_primarnyckel kan därutöver returnera 'unik skapad', 'dubbletter: N'
+ * eller 'fel: <meddelande>'.
+ *
+ * Ingen åtgärd ändrar användardata.
  ******************************************************************************/
 DECLARE
     r                  record;
@@ -142,6 +152,41 @@ BEGIN
         ELSE
             atgard := 'redan finns';
         END IF;
+
+        RETURN NEXT;
+    END LOOP;
+
+    -- -------------------------------------------------------------------------
+    -- 1b. gid_primarnyckel
+    --     Samma urval av tabeller som avsnitt 1. Äldre Hex-installationer
+    --     skapade gid utan unikt index, vilket gör att QGIS inte hittar
+    --     kolumnens nextval()-default: gid dyker då upp som ett tomt
+    --     obligatoriskt fält i attributformuläret samtidigt som dubbletter
+    --     kan skrivas tyst. Se sakerstall_gid_primarnyckel() för detaljer.
+    --
+    --     Funktionen rör aldrig data. Tabeller som redan har dubbletter
+    --     hoppas över med atgard = 'dubbletter: N'.
+    -- -------------------------------------------------------------------------
+    FOR r IN
+        SELECT n.nspname AS s, c.relname AS t
+        FROM   pg_class     c
+        JOIN   pg_namespace n ON n.oid = c.relnamespace
+        WHERE  c.relkind = 'r'
+          AND  n.nspname ~ schema_regex
+          AND  EXISTS (
+                   SELECT 1
+                   FROM   pg_attribute a
+                   WHERE  a.attrelid    = c.oid
+                     AND  a.attname     = 'gid'
+                     AND  a.attidentity != ''
+                     AND  NOT a.attisdropped
+               )
+        ORDER BY n.nspname, c.relname
+    LOOP
+        schema_namn  := r.s;
+        tabell_namn  := r.t;
+        trigger_namn := 'gid_primarnyckel';
+        atgard       := public.sakerstall_gid_primarnyckel(r.s, r.t);
 
         RETURN NEXT;
     END LOOP;

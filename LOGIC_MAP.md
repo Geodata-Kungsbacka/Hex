@@ -71,6 +71,11 @@ Definierar vilka kolumner som automatiskt injiceras i alla tabeller.
 | Kolumn | Position | Default | schema_uttryck | historik_qa |
 |---|---|---|---|---|
 | `gid` | 1 (först) | GENERATED ALWAYS AS IDENTITY | IS NOT NULL (alla) | false |
+
+`gid` får dessutom `PRIMARY KEY` via `sakerstall_gid_primarnyckel()` i steg 7.4
+av `hantera_ny_tabell()` — constrainten ingår inte i kolumndefinitionen ovan
+eftersom `aterskapa_tabellregler()` medvetet hoppar över primärnycklar.
+
 | `skapad_tidpunkt` | -4 (näst sist) | NOW() | IS NOT NULL (alla) | false |
 | `skapad_av` | -3 | session_user | LIKE '%\_kba\_%' | false |
 | `andrad_tidpunkt` | -2 | NOW() | LIKE '%\_kba\_%' | **true** |
@@ -411,6 +416,22 @@ hantera_ny_tabell()
   │           ├── 2. ADD CONSTRAINT (enkla CHECK-villkor)
   │           ├── 3. SET DEFAULT (hoppar över standardkolumner med historik_qa=true)
   │           └── 4. ADD GENERATED ALWAYS AS IDENTITY
+  │
+  ├── [7.4] SÄKERSTÄLL PRIMÄRNYCKEL PÅ gid
+  │     → sakerstall_gid_primarnyckel(schema, tabell)
+  │           ├── 1. setval(sekvens, max(gid)) om sekvensen ligger efter
+  │           ├── 2. ADD PRIMARY KEY (gid) — eller ADD UNIQUE (gid) om
+  │           │      tabellen redan har en PK på andra kolumner
+  │           └── 3. Hoppar över (utan att röra data) om gid har dubbletter
+  │     Krävs för att QGIS ska hitta gid-sekvensen: QGIS slår bara upp
+  │     nextval() för en IDENTITY-kolumn som är NOT NULL + har unikt index.
+  │     Utan nyckel visas gid som ett tomt obligatoriskt fält i QGIS.
+  │
+  ├── [7.5] SKAPA TRIGGER hex_tvinga_gid
+  │     → BEFORE INSERT … EXECUTE FUNCTION tvinga_gid_fran_sekvens()
+  │     Kastar klientvalt gid (QGIS OVERRIDING SYSTEM VALUE) och sätter
+  │     NEW.gid = nextval(sekvens). Skyddsnät sedan [7.4] finns — med
+  │     nyckeln på plats utelämnar QGIS normalt gid helt ur sin INSERT.
   │
   ├── [8] SKAPA GiST-INDEX (hoppas över för afvaktande tabeller)
   │     ├── Gäller alla scheman som har geometrikolumn
