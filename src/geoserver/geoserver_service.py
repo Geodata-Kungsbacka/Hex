@@ -114,7 +114,7 @@ class HexGeoServerService(win32serviceutil.ServiceFramework):
     """Windows-tjänst som kör GeoServer Schema Listener."""
 
     _svc_name_ = "HexGeoServerListener"
-    _svc_display_name_ = "Hex GeoServer Schema Listener"
+    _svc_display_name_ = "HexGeoServerListener"
     _svc_description_ = (
         "Lyssnar på PostgreSQL-notifieringar och skapar automatiskt "
         "workspace och datastore i GeoServer för nya sk0/sk1-scheman."
@@ -144,7 +144,7 @@ class HexGeoServerService(win32serviceutil.ServiceFramework):
             setup_file_logging()
 
             log.info("=" * 60)
-            log.info("Hex GeoServer Schema Listener - Windows Service")
+            log.info("HexGeoServerListener - Windows Service")
             log.info("Loggfil: %s", LOG_FILE)
             log.info("=" * 60)
 

@@ -102,27 +102,27 @@ BEGIN
     op_steg := 'hämta kolumndefinitioner';
     RAISE NOTICE '[hex_skapa_historik_qa] Steg 3: Analyserar originaltabellens struktur';
     
-    SELECT 
+    SELECT
         string_agg(
             format('%I %s%s',
                 c.column_name,
-                -- Datatyp med specialhantering för geometri
-                CASE 
-                    WHEN c.data_type = 'USER-DEFINED' AND c.udt_name = 'geometry' AND har_geometri THEN
-                        -- Använd hjälpfunktionen för korrekt geometridefinition
-                        geometriinfo.definition
-                    WHEN c.data_type = 'USER-DEFINED' THEN 
-                        c.udt_name
-                    WHEN c.data_type = 'character varying' THEN 
-                        'character varying' || 
-                        CASE WHEN c.character_maximum_length IS NOT NULL 
-                             THEN '(' || c.character_maximum_length || ')'
-                             ELSE ''
-                        END
-                    WHEN c.data_type = 'numeric' AND c.numeric_precision IS NOT NULL THEN 
-                        'numeric(' || c.numeric_precision || ',' || c.numeric_scale || ')'
-                    ELSE c.data_type
-                END,
+                -- Datatypen hämtas med hex_kolumntyp() (format_type), som återger
+                -- kolumnens deklaration exakt. Den handskrivna CASE-satsen som
+                -- stod här täckte varchar, numeric och USER-DEFINED men föll på
+                -- arrayer: information_schema ger data_type = 'ARRAY', vilket
+                -- gjorde CREATE TABLE för historiktabellen till ett syntaxfel och
+                -- fällde hela CREATE TABLE för modertabellen.
+                --
+                -- Geometri behöver ingen egen gren längre. format_type ger
+                -- geometry(PolygonZ,3007) direkt ur kolumnens typmodifierare –
+                -- samma sträng som hex_hamta_geometri_definition bygger ihop,
+                -- och korrekt även för en geometrikolumn helt utan typmodifierare
+                -- (där geometry_columns skulle ha rapporterat SRID 0).
+                --
+                -- Beräknade kolumner speglas medvetet som VANLIGA kolumner:
+                -- QA-triggern listar alla kolumner explicit i sin INSERT, och en
+                -- beräknad kolumn i historiktabellen skulle avvisa den skrivningen.
+                public.hex_kolumntyp(p_schema_namn, p_tabell_namn, c.column_name),
                 -- COLLATE om det finns
                 CASE 
                     WHEN c.collation_name IS NOT NULL 

@@ -72,6 +72,8 @@ DROP FUNCTION IF EXISTS public.hex_pausa(text, integer, boolean);
 DROP FUNCTION IF EXISTS public.hex_pausmarkor();
 DROP FUNCTION IF EXISTS public.hex_triggerlage_sats(text);
 DROP FUNCTION IF EXISTS public.hex_underhall();
+DROP FUNCTION IF EXISTS public.hex_reparera_gid_dubbletter(text, text, boolean);
+DROP FUNCTION IF EXISTS public.hex_sakerstall_gid_primarnyckel(text, text);
 DROP FUNCTION IF EXISTS public.hex_tilldela_rollrattigheter(text, text, text);
 DROP FUNCTION IF EXISTS public.hex_skapa_historik_qa(text, text);
 DROP FUNCTION IF EXISTS public.hex_uppdatera_sekvensnamn(text, text, text);
@@ -93,6 +95,7 @@ DROP FUNCTION IF EXISTS public.hex_validera_tabell(text, text);
 
 -- 6. Strukturfunktioner
 DROP FUNCTION IF EXISTS public.hex_hamta_kolumnstandard(text, text, hex_geom_info);
+DROP FUNCTION IF EXISTS public.hex_kolumntyp(text, text, text);
 DROP FUNCTION IF EXISTS public.hex_hamta_geometri_definition(text, text);
 
 -- 7. Konfigurationsfunktioner

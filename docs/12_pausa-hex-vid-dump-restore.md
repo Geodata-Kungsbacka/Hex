@@ -1,4 +1,4 @@
-# 11. Pausa Hex vid pg_dump och pg_restore
+# 12. Pausa Hex vid pg_dump och pg_restore
 
 Hex reagerar på DDL. En återläsning **är** DDL – tusentals satser i rad. Går de
 satserna genom Hex tio event-triggers blir resultatet inte bara långsamt utan

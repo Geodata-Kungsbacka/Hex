@@ -933,23 +933,18 @@ BEGIN
                         RAISE NOTICE '[hex_hantera_ny_kolumn] Lägger till % saknade kolumner i historiktabell:',
                             array_length(saknade_i_historik, 1);
                         
-                        FOR kolumn_info IN 
-                            SELECT 
+                        -- Typen hämtas med hex_kolumntyp() (format_type) i stället
+                        -- för en handskriven CASE. Den gamla varianten tappade
+                        -- typmodifieraren för allt utom varchar och numeric, och
+                        -- gav 'ARRAY' för arraykolumner – kolumnen kunde då inte
+                        -- läggas till i historiktabellen alls.
+                        FOR kolumn_info IN
+                            SELECT
                                 m.column_name,
-                                CASE 
-                                    WHEN m.data_type = 'USER-DEFINED' THEN m.udt_name
-                                    WHEN m.data_type = 'character varying' THEN 
-                                        'character varying' || 
-                                        CASE WHEN m.character_maximum_length IS NOT NULL 
-                                             THEN '(' || m.character_maximum_length || ')'
-                                             ELSE ''
-                                        END
-                                    WHEN m.data_type = 'numeric' AND m.numeric_precision IS NOT NULL THEN 
-                                        'numeric(' || m.numeric_precision || ',' || COALESCE(m.numeric_scale, 0) || ')'
-                                    ELSE m.data_type
-                                END as full_data_type
+                                public.hex_kolumntyp(schema_namn, tabell_namn, m.column_name)
+                                    AS full_data_type
                             FROM information_schema.columns m
-                            WHERE m.table_schema = schema_namn 
+                            WHERE m.table_schema = schema_namn
                             AND m.table_name = tabell_namn
                             AND m.column_name = ANY(saknade_i_historik)
                             ORDER BY m.ordinal_position
@@ -998,24 +993,16 @@ BEGIN
                                 )
                                 ORDER BY sk.ordinal_position
                             LOOP
-                                -- Hämta kolumntyp från historiktabellen
-                                SELECT 
-                                    CASE 
-                                        WHEN c.data_type = 'USER-DEFINED' THEN c.udt_name
-                                        WHEN c.data_type = 'character varying' THEN 
-                                            'character varying' || 
-                                            CASE WHEN c.character_maximum_length IS NOT NULL 
-                                                 THEN '(' || c.character_maximum_length || ')'
-                                                 ELSE ''
-                                            END
-                                        ELSE c.data_type
-                                    END
-                                INTO h_kolumn_typ
-                                FROM information_schema.columns c
-                                WHERE c.table_schema = schema_namn
-                                AND c.table_name = historik_tabell_namn
-                                AND c.column_name = h_kolumn.kolumnnamn;
-                                
+                                -- Hämta kolumntyp från historiktabellen.
+                                -- Kolumnen flyttas nedan med tekniken
+                                -- ADD COLUMN → UPDATE → DROP → RENAME, så den
+                                -- återskapas ur den här strängen. Den handskrivna
+                                -- CASE-satsen som stod här saknade till och med
+                                -- numeric-grenen, vilket gjorde att en flyttad
+                                -- numeric(10,2)-kolumn tyst blev numeric.
+                                h_kolumn_typ := public.hex_kolumntyp(
+                                    schema_namn, historik_tabell_namn, h_kolumn.kolumnnamn);
+
                                 -- Flytta kolumnen med temp-kolumn-teknik
                                 EXECUTE format(
                                     'ALTER TABLE %I.%I ADD COLUMN %I_temp0001 %s',

@@ -1592,5 +1592,139 @@ class TestUnderhallsvarningVidPaus(unittest.TestCase):
             self.cur.execute("SELECT count(*) FROM public.hex_ateruppta(false)")
 
 
+@unittest.skipUnless(KAN_KORA, "kräver superuser-anslutning till PostgreSQL")
+class TestUppgraderingGidPrimarnyckel(unittest.TestCase):
+    """
+    HEX-MIGRERING 2026-08: PRIMARY KEY (gid) tillkom efter att tabellerna
+    skapats. Sviten bygger upp det gamla tillståndet — Hex-tabeller vars gid
+    saknar unikt index, två av dem med dubbletter — kör upgrade() och
+    kontrollerar att hex_underhall() lägger på nyckeln utan att röra data.
+    Tas bort tillsammans med migreringen.
+    """
+
+    #: Tabeller som byggs upp i det gamla tillståndet. 'dubbel' kontrolleras
+    #: orörd; 'dubbel_rep' är den enda som repareras, så testordningen spelar
+    #: ingen roll.
+    TABELLER = ("ren", "dubbel", "dubbel_rep")
+
+    @classmethod
+    def setUpClass(cls):
+        _skapa_tom_databas()
+        install_hex.install(_db_config(), base_path=str(PROJECT_ROOT))
+
+        conn = _koppla()
+        conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute("CREATE SCHEMA sk1_kba_gidmig")
+        for tabell in cls.TABELLER:
+            cur.execute(f"CREATE TABLE sk1_kba_gidmig.{tabell} (namn text)")
+
+        # Återskapa läget före migreringen: ta bort nyckeln som steg 7.4 lade
+        # på, och stäng av triggern så att klientvärden skrivs rakt igenom.
+        for tabell in cls.TABELLER:
+            cur.execute(
+                f"ALTER TABLE sk1_kba_gidmig.{tabell}"
+                f" DROP CONSTRAINT {tabell}_pkey"
+            )
+            cur.execute(
+                f"ALTER TABLE sk1_kba_gidmig.{tabell}"
+                f" DISABLE TRIGGER hex_tvinga_gid"
+            )
+
+        cur.execute(
+            "INSERT INTO sk1_kba_gidmig.ren (gid, namn) OVERRIDING SYSTEM VALUE"
+            " VALUES (1, 'a'), (2, 'b'), (5000, 'långt-fram')"
+        )
+        # Precis den tysta dubblett som avsaknaden av unikt index tillät.
+        for tabell in ("dubbel", "dubbel_rep"):
+            cur.execute(
+                f"INSERT INTO sk1_kba_gidmig.{tabell} (gid, namn)"
+                f" OVERRIDING SYSTEM VALUE VALUES (1, 'x'), (1, 'y'), (2, 'z')"
+            )
+        conn.close()
+
+        install_hex.upgrade(_db_config(), base_path=str(PROJECT_ROOT))
+
+    @classmethod
+    def tearDownClass(cls):
+        _ta_bort_databas()
+
+    @staticmethod
+    def _kor(sql):
+        """Kör en sats i autocommit — _fraga() rullar tillbaka vid stängning."""
+        conn = _koppla()
+        conn.autocommit = True
+        try:
+            cur = conn.cursor()
+            cur.execute(sql)
+            return cur.fetchall() if cur.description else []
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _unikt_index_pa_gid(tabell):
+        rader = _fraga(
+            "SELECT EXISTS ("
+            "  SELECT 1 FROM pg_index i"
+            "  JOIN pg_attribute a ON a.attrelid = i.indrelid"
+            "                     AND a.attnum::text = i.indkey::text"
+            "  WHERE i.indrelid = %s::regclass AND i.indisunique"
+            "    AND a.attname = 'gid')",
+            (f"sk1_kba_gidmig.{tabell}",),
+        )
+        return rader[0][0]
+
+    def test_tabell_utan_dubbletter_far_nyckeln(self):
+        """Uppgraderingen ska lägga tillbaka det unika indexet på gid."""
+        self.assertTrue(self._unikt_index_pa_gid("ren"))
+
+    def test_sekvensen_flyttades_forbi_hogsta_gid(self):
+        """
+        Data inläst med OVERRIDING SYSTEM VALUE kan ligga ovanför sekvensen.
+        Flyttas den inte fram före nyckeln faller nästa INSERT på dubblett.
+        """
+        rader = self._kor(
+            "INSERT INTO sk1_kba_gidmig.ren (namn) VALUES ('efter') RETURNING gid"
+        )
+        self.assertGreater(rader[0][0], 5000)
+
+    def test_tabell_med_dubbletter_lamnas_orord(self):
+        """Dubbletter ska rapporteras, inte tystas — och data ska stå kvar."""
+        self.assertFalse(self._unikt_index_pa_gid("dubbel"))
+        self.assertEqual(
+            _fraga("SELECT count(*) FROM sk1_kba_gidmig.dubbel"), [(3,)]
+        )
+
+    def test_underhall_rapporterar_dubbletterna(self):
+        """hex_underhall() ska namnge tabellen som behöver handpåläggning."""
+        rader = _fraga(
+            "SELECT atgard FROM public.hex_underhall()"
+            " WHERE trigger_namn = 'gid_primarnyckel'"
+            "   AND schema_namn = 'sk1_kba_gidmig' AND tabell_namn = 'dubbel'"
+        )
+        self.assertEqual(rader, [("dubbletter: 1",)])
+
+    def test_reparation_foljd_av_nyckel(self):
+        """hex_reparera_gid_dubbletter() ska göra tabellen nyckelbar."""
+        self._kor(
+            "SELECT * FROM public.hex_reparera_gid_dubbletter("
+            "'sk1_kba_gidmig', 'dubbel_rep', true)"
+        )
+        self.assertEqual(
+            self._kor(
+                "SELECT public.hex_sakerstall_gid_primarnyckel("
+                "'sk1_kba_gidmig', 'dubbel_rep')"
+            ),
+            [("skapad",)],
+        )
+        self.assertEqual(
+            _fraga(
+                "SELECT count(*), count(DISTINCT gid)"
+                " FROM sk1_kba_gidmig.dubbel_rep"
+            ),
+            [(3, 3)],
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

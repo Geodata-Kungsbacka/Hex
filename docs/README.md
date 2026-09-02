@@ -14,7 +14,8 @@ Kortfattade guider för vanliga administratörsuppgifter i Hex.
 | 8 | Hantera GeoServer-lyssnaren | [08_geoserver-lyssnaren.md](08_geoserver-lyssnaren.md) |
 | 9 | Installera eller uppdatera Hex | [09_installera-uppdatera-hex.md](09_installera-uppdatera-hex.md) |
 | 10 | Avinstallera Hex | [10_avinstallera-hex.md](10_avinstallera-hex.md) |
-| 11 | Pausa Hex vid pg_dump och pg_restore | [11_pausa-hex-vid-dump-restore.md](11_pausa-hex-vid-dump-restore.md) |
+| 11 | Redigera Hex-lager i QGIS | [11_redigera-i-qgis.md](11_redigera-i-qgis.md) |
+| 12 | Pausa Hex vid pg_dump och pg_restore | [12_pausa-hex-vid-dump-restore.md](12_pausa-hex-vid-dump-restore.md) |
 
 ## Bakgrund
 

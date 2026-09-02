@@ -10,7 +10,7 @@ CREATE OR REPLACE FUNCTION public.hex_validera_geometri(
     -- ANROPARENS search_path, och funktionen når CHECK-villkoret
     -- validera_geom_<tabell> på varje INSERT. pg_dump/pg_restore kör med
     -- search_path = '' – då finns inte PostGIS-funktionerna och COPY-steget
-    -- havererar. Se docs/11.
+    -- havererar. Se docs/12.
     --
     -- FÖRUTSÄTTER POSTGIS I public. Låsningen byter ut anroparens search_path
     -- mot den här, så ligger extensionen i ett eget schema hittas ST_* inte

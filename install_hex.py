@@ -72,6 +72,9 @@ INSTALL_ORDER = [
     "src/sql/02_tables/hex_paus.sql",
     # Funktioner - Struktur
     "src/sql/03_functions/01_structure/hex_hamta_geometri_definition.sql",
+    # hex_kolumntyp() används av hex_hamta_kolumnstandard, hex_skapa_historik_qa
+    # och hex_hantera_ny_kolumn – måste skapas före dem
+    "src/sql/03_functions/01_structure/hex_kolumntyp.sql",
     "src/sql/03_functions/01_structure/hex_hamta_kolumnstandard.sql",
     # Funktioner - Validering
     "src/sql/03_functions/02_validation/hex_validera_tabell.sql",
@@ -93,6 +96,9 @@ INSTALL_ORDER = [
     "src/sql/03_functions/04_utility/hex_tilldela_rollrattigheter.sql",
     "src/sql/03_functions/04_utility/hex_tillampa_grupprattigheter.sql",
     "src/sql/03_functions/04_utility/hex_tvinga_gid_fran_sekvens.sql",
+    "src/sql/03_functions/04_utility/hex_sakerstall_gid_primarnyckel.sql",
+    "src/sql/03_functions/04_utility/hex_reparera_gid_dubbletter.sql",
+    # hex_underhall anropar hex_sakerstall_gid_primarnyckel – måste komma efter den
     "src/sql/03_functions/04_utility/hex_underhall.sql",
     # Pausfunktionerna ligger efter hex_underhall eftersom hex_ateruppta()
     # anropar den. plpgsql slår upp anropet först vid körning, men
@@ -167,6 +173,8 @@ DROP FUNCTION IF EXISTS public.hex_pausa(text, integer, boolean);
 DROP FUNCTION IF EXISTS public.hex_pausmarkor();
 DROP FUNCTION IF EXISTS public.hex_triggerlage_sats(text);
 DROP FUNCTION IF EXISTS public.hex_underhall();
+DROP FUNCTION IF EXISTS public.hex_reparera_gid_dubbletter(text, text, boolean);
+DROP FUNCTION IF EXISTS public.hex_sakerstall_gid_primarnyckel(text, text);
 DROP FUNCTION IF EXISTS public.hex_tilldela_rollrattigheter(text, text, text);
 DROP FUNCTION IF EXISTS public.hex_skapa_historik_qa(text, text);
 DROP FUNCTION IF EXISTS public.hex_uppdatera_sekvensnamn(text, text, text);
@@ -188,6 +196,7 @@ DROP FUNCTION IF EXISTS public.hex_validera_tabell(text, text);
 
 -- Strukturfunktioner
 DROP FUNCTION IF EXISTS public.hex_hamta_kolumnstandard(text, text, hex_geom_info);
+DROP FUNCTION IF EXISTS public.hex_kolumntyp(text, text, text);
 DROP FUNCTION IF EXISTS public.hex_hamta_geometri_definition(text, text);
 
 -- Konfigurationsfunktioner

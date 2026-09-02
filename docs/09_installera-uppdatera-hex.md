@@ -254,6 +254,24 @@ py geoserver_service.py start
 py geoserver_service.py status        :: ska visa "Kör"
 ```
 
+<!-- HEX-MIGRERING 2026-08: visningsnamnet ändrades från
+"Hex GeoServer Schema Listener" till "HexGeoServerListener". Tjänster
+registrerade före det bär kvar det gamla namnet i tjänsteregistret. Tas bort när
+samtliga servrar kört `update` en gång. -->
+> **Engångsåtgärd vid uppgradering från en äldre version:** tjänstens
+> visningsnamn hette tidigare *Hex GeoServer Schema Listener* och heter nu
+> `HexGeoServerListener`, samma som tjänstnamnet. Visningsnamnet ligger i
+> Windows tjänsteregister och skrivs inte om av `stop`/`start`. Kör därför en
+> gång, som administratör, medan tjänsten är stoppad:
+>
+> ```cmd
+> py geoserver_service.py update
+> ```
+>
+> Utan det står det gamla namnet kvar i `services.msc`. Tjänstnamnet är
+> oförändrat, så `net start HexGeoServerListener` och `sc query
+> HexGeoServerListener` fungerar oavsett.
+
 ### Verifiera
 
 Läs loggen (`D:\Hex\Logs\hex_geoserver_listener.log`). En lyckad start loggar
@@ -304,6 +322,62 @@ py geoserver_service.py update
    (`resmon` → CPU → Associerade handtag → sök på filnamnet).
 4. Använd inte `taskkill /F` på en tjänst som går att stoppa normalt. En avbruten
    lyssnare lämnar sina PostgreSQL-anslutningar öppna tills servern städar upp dem.
+
+---
+
+<!-- HEX-MIGRERING 2026-08: PRIMARY KEY (gid) tillkom efter att tabellerna
+skapats. hex_underhall() lägger på nyckeln på befintliga tabeller, och
+hex_reparera_gid_dubbletter() städar data som hann bli dubblerad innan nyckeln
+fanns. Tas bort när samtliga fyra produktionsdatabaser kört --upgrade med den
+här versionen och hex_underhall() rapporterar noll 'dubbletter: N'. -->
+## Migrering: primärnyckel på `gid`
+
+Hex-tabeller skapade före den här versionen saknar `PRIMARY KEY (gid)`. Utan
+unikt index hittar QGIS inte gid-sekvensen och kräver att användaren fyller i
+`gid` manuellt vid varje nytt objekt – se
+[11_redigera-i-qgis.md](11_redigera-i-qgis.md).
+
+Installationen kör `hex_underhall()` automatiskt, som lägger på nyckeln på alla
+befintliga tabeller. Inga data ändras.
+
+> **Planera in ett servicefönster.** `ALTER TABLE ... ADD PRIMARY KEY` tar
+> ACCESS EXCLUSIVE-lås och bygger index. På stora tabeller blockerar det både
+> läsning och skrivning under bygget. Kostnaden tas bara en gång per tabell.
+
+### Tabeller med dubbletter i `gid`
+
+Äldre data kan innehålla dubbletter (samma `gid` på flera rader). Sådana
+tabeller hoppas över och rapporteras i installationsloggen:
+
+```
+✓ sk1_kba_geo.vagar_l → gid_primarnyckel (dubbletter: 3)
+```
+
+Kör då manuellt, en tabell i taget:
+
+```sql
+-- 1. Se vad som skulle ändras (torrkörning – ändrar inget)
+SELECT * FROM public.hex_reparera_gid_dubbletter('sk1_kba_geo', 'vagar_l');
+
+-- 2. Numrera om dubbletterna (ändrar data och kan inte ångras)
+SELECT * FROM public.hex_reparera_gid_dubbletter('sk1_kba_geo', 'vagar_l', true);
+
+-- 3. Lägg på nyckeln
+SELECT public.hex_sakerstall_gid_primarnyckel('sk1_kba_geo', 'vagar_l');
+```
+
+Raden med lägst `ctid` i varje dubblettgrupp behåller sitt `gid`; övriga får
+nästa sekvensvärde. Omnumreringen loggas i historiktabellen. Kontrollera först
+om något externt (GeoServer-lager, WFS-anrop, kopplade tabeller) refererar till
+de `gid` som byts.
+
+Lista alla tabeller som fortfarande saknar nyckel:
+
+```sql
+SELECT * FROM public.hex_underhall()
+WHERE  trigger_namn = 'gid_primarnyckel'
+  AND  atgard <> 'redan finns';
+```
 
 ---
 

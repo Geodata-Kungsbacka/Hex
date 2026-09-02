@@ -223,16 +223,34 @@ BEGIN
         SELECT 
             c.column_name,
             c.ordinal_position,
-            CASE 
+            CASE
                 WHEN a.attgenerated = 's' THEN
                     -- GENERATED ALWAYS AS ... STORED kolumner
-                    format('%s GENERATED ALWAYS AS %s STORED',
-                        c.udt_name,
+                    --
+                    -- Parenteserna runt uttrycket är OBLIGATORISKA i grammatiken
+                    -- (GENERATED ALWAYS AS ( uttryck ) STORED). pg_get_expr sätter
+                    -- bara ut yttre parenteser för operatoruttryck – "(a * b)" får
+                    -- dem, men "st_area(geom)" och "upper(namn)" får dem inte.
+                    -- Utan de explicita parenteserna nedan blir CREATE TABLE ett
+                    -- syntaxfel för varje beräknad kolumn som bygger på ett
+                    -- funktionsanrop. Dubbla parenteser är ofarliga – PostgreSQL
+                    -- normaliserar "((a * b))" tillbaka till "(a * b)".
+                    format('%s GENERATED ALWAYS AS (%s) STORED',
+                        format_type(a.atttypid, a.atttypmod),
                         pg_get_expr(d.adbin, d.adrelid)
                     )
                 ELSE
                     -- Vanliga kolumner
-                    c.udt_name::text
+                    --
+                    -- format_type() i stället för udt_name: udt_name tappar
+                    -- typmodifieraren (numeric(10,2) → numeric, varchar(50) →
+                    -- varchar) och ger internnamnet för arrayer (text[] → _text).
+                    -- Kolumnen byggdes då upp med fel typ i ersättningstabellen.
+                    --
+                    -- Samma regel som public.hex_kolumntyp() tillämpar. Anropet
+                    -- görs inte härifrån: pg_attribute-raden är redan joinad som
+                    -- a, så uppslaget skulle upprepas en gång per kolumn.
+                    format_type(a.atttypid, a.atttypmod)
             END as datatyp,
             CASE WHEN a.attgenerated = 's' THEN true 
                  ELSE false END as is_generated,
