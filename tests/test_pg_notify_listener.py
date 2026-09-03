@@ -3116,6 +3116,59 @@ class TestRestWireKontrakt(unittest.TestCase):
                        "validate connections", "max connections", "min connections"):
             self.assertIn(nyckel, entries, f"saknad parameter: {nyckel}")
 
+    def test_poolvarden_ar_identiska_i_bada_payloaderna(self):
+        """
+        Befintliga datastores går via PUT i _update_pg_datastore, nya via POST
+        i create_pg_datastore. Ändras poolvärdena bara på ena stället får
+        beståndet två olika konfigurationer beroende på när schemat skapades,
+        vilket inte syns förrän en avstämning skriver om datastorerna.
+
+        Max connection idle time är medvetet 300 och inte 60: en ny anslutning
+        kostar ~33 ms serverarbete mot PostgreSQL på Windows, och med 60 s blev
+        den kostnaden normalfallet för lager som ses mer sällan än en gång i
+        minuten.
+        """
+        forvantat = {
+            "validate connections": "true",
+            "max connections": "10",
+            "min connections": "0",
+            "Connection timeout": "10",
+            "Test while idle": "true",
+            "Evictor run periodicity": "60",
+            "Max connection idle time": "300",
+            "Evictor tests per run": "10",
+        }
+
+        def poolvarden(payload):
+            entries = {e["@key"]: e["$"] for e in
+                       payload["dataStore"]["connectionParameters"]["entry"]}
+            return {k: v for k, v in entries.items() if k in forvantat}
+
+        client = self._make_client()
+        with patch.object(client, "_get_datastore_user", return_value=None):
+            with self._patcha_session(client, status=201) as req:
+                client.create_pg_datastore(
+                    "sk0_kba_test", "sk0_kba_test", "db.example.se", 5432,
+                    "geodata_sk0", "sk0_kba_test", "gs_r_sk0_kba_test", "hemligt",
+                )
+        post_varden = poolvarden(req.call_args[1]["json"])
+
+        with self._patcha_session(client, status=200) as req:
+            client._update_pg_datastore(
+                "sk0_kba_test", "sk0_kba_test", "db.example.se", 5432,
+                "geodata_sk0", "sk0_kba_test", "gs_r_sk0_kba_test", "hemligt",
+            )
+        put_varden = poolvarden(req.call_args[1]["json"])
+
+        self.assertEqual(post_varden, forvantat)
+        self.assertEqual(put_varden, forvantat)
+
+        # Evictor tests per run måste täcka hela poolen på en körning.
+        self.assertGreaterEqual(
+            int(forvantat["Evictor tests per run"]),
+            int(forvantat["max connections"]),
+        )
+
     def test_workspace_borttagning_anvander_recurse(self):
         client = self._make_client()
         with self._patcha_session(client, status=200) as req:

@@ -928,6 +928,26 @@ class GeoServerClient:
                     # anslutning; evictor-raderna styr hur snabbt den töms.
                     # Evictor tests per run måste vara minst max connections
                     # för att en körning ska hinna gå igenom hela poolen.
+                    #
+                    # Max connection idle time är 300 s, inte 60. Att öppna en
+                    # ny anslutning mättes till ~33 ms serverarbete mot
+                    # PostgreSQL på Windows (backend-start ~27 ms plus SCRAM
+                    # ~6 ms), med enstaka utfall på flera hundra ms. Med 60 s
+                    # blev den kostnaden normalfallet för varje lager som ses
+                    # mer sällan än en gång i minuten. 300 s är GeoTools
+                    # standard och håller poolen varm genom vanliga pauser i
+                    # kartbläddring; golvet på 0 är kvar, så en datastore som
+                    # står helt oanvänd släpper ändå alla sina anslutningar.
+                    # Evictor run periodicity ligger kvar på 60 s så att
+                    # gallringen sker inom 300-360 s i stället för 300-600 s.
+                    #
+                    # max connections är 10, inte 8. Det var golvet som fick
+                    # beståndet att äta max_connections oberoende av last, och
+                    # det är borta med min connections = 0. Taket styr bara hur
+                    # många samtidiga frågor en enskild datastore klarar, så
+                    # att sänka det köper nästan ingenting mot max_connections
+                    # men gör att en kakelskur lättare slår i Connection
+                    # timeout.
                     "entry": [
                         {"@key": "dbtype",                   "$": "postgis"},
                         {"@key": "namespace",                "$": f"{self.namespace_uri_base}/{workspace}"},
@@ -943,13 +963,13 @@ class GeoServerClient:
                         {"@key": "Estimated extends",        "$": "true"},
                         {"@key": "encode functions",         "$": "true"},
                         {"@key": "validate connections",     "$": "true"},
-                        {"@key": "max connections",          "$": "8"},
+                        {"@key": "max connections",          "$": "10"},
                         {"@key": "min connections",          "$": "0"},
                         {"@key": "Connection timeout",       "$": "10"},
                         {"@key": "Test while idle",          "$": "true"},
                         {"@key": "Evictor run periodicity",  "$": "60"},
-                        {"@key": "Max connection idle time", "$": "60"},
-                        {"@key": "Evictor tests per run",    "$": "8"},
+                        {"@key": "Max connection idle time", "$": "300"},
+                        {"@key": "Evictor tests per run",    "$": "10"},
                     ]
                 },
             }
@@ -1022,6 +1042,26 @@ class GeoServerClient:
                     # anslutning; evictor-raderna styr hur snabbt den töms.
                     # Evictor tests per run måste vara minst max connections
                     # för att en körning ska hinna gå igenom hela poolen.
+                    #
+                    # Max connection idle time är 300 s, inte 60. Att öppna en
+                    # ny anslutning mättes till ~33 ms serverarbete mot
+                    # PostgreSQL på Windows (backend-start ~27 ms plus SCRAM
+                    # ~6 ms), med enstaka utfall på flera hundra ms. Med 60 s
+                    # blev den kostnaden normalfallet för varje lager som ses
+                    # mer sällan än en gång i minuten. 300 s är GeoTools
+                    # standard och håller poolen varm genom vanliga pauser i
+                    # kartbläddring; golvet på 0 är kvar, så en datastore som
+                    # står helt oanvänd släpper ändå alla sina anslutningar.
+                    # Evictor run periodicity ligger kvar på 60 s så att
+                    # gallringen sker inom 300-360 s i stället för 300-600 s.
+                    #
+                    # max connections är 10, inte 8. Det var golvet som fick
+                    # beståndet att äta max_connections oberoende av last, och
+                    # det är borta med min connections = 0. Taket styr bara hur
+                    # många samtidiga frågor en enskild datastore klarar, så
+                    # att sänka det köper nästan ingenting mot max_connections
+                    # men gör att en kakelskur lättare slår i Connection
+                    # timeout.
                     "entry": [
                         {"@key": "dbtype",                   "$": "postgis"},
                         {"@key": "namespace",                "$": f"{self.namespace_uri_base}/{workspace}"},
@@ -1037,13 +1077,13 @@ class GeoServerClient:
                         {"@key": "Estimated extends",        "$": "true"},
                         {"@key": "encode functions",         "$": "true"},
                         {"@key": "validate connections",     "$": "true"},
-                        {"@key": "max connections",          "$": "8"},
+                        {"@key": "max connections",          "$": "10"},
                         {"@key": "min connections",          "$": "0"},
                         {"@key": "Connection timeout",       "$": "10"},
                         {"@key": "Test while idle",          "$": "true"},
                         {"@key": "Evictor run periodicity",  "$": "60"},
-                        {"@key": "Max connection idle time", "$": "60"},
-                        {"@key": "Evictor tests per run",    "$": "8"},
+                        {"@key": "Max connection idle time", "$": "300"},
+                        {"@key": "Evictor tests per run",    "$": "10"},
                     ]
                 },
             }
