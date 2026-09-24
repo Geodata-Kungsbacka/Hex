@@ -103,8 +103,7 @@ ORDER BY evtname;
 SELECT tablename
 FROM pg_tables
 WHERE schemaname = 'public'
-  AND (tablename LIKE '%hex%'
-   OR tablename LIKE 'standardiserade%')
+  AND tablename LIKE 'hex\_%'
 ORDER BY tablename;
 ```
 
@@ -146,6 +145,35 @@ att härleda ur databasen i efterhand, till skillnad från triggers och funktion
 > **OBS:** `--upgrade` bevarar konfigurationsdata men tar bort och återskapar
 > alla Hex-funktioner, triggers och typer. Kör gärna en manuell säkerhetskopia
 > av databasen innan uppgradering i produktionsmiljö.
+
+### Uppgradering från 1.0.0
+
+Från och med 2.0.0 saknar installern stöd för namnen före `hex_`-prefixet
+(`standardiserade_kolumner`, `hantera_ny_tabell_trigger` osv.). Kör därför
+**inte** `--upgrade` från 2.0.0 direkt mot en databas som har `v.1.0.0`
+installerad. Avinstallationen går igenom, men installationen faller sedan på
+1.0.0:s kvarlämnade event-triggers. Då står databasen kvar utan Hex-tabeller
+och med gamla triggers som refererar till dem, och de sparade inställningarna
+är förlorade.
+
+Så här ser du om databasen har 1.0.0:
+
+```sql
+SELECT evtname FROM pg_event_trigger WHERE evtname NOT LIKE 'hex\_%';
+```
+
+Ger frågan rader, uppgradera i två steg. Ta säkerhetskopia först:
+
+```bash
+git checkout 4cc52a8^             # Sista versionen med prefixmigreringen
+python install_hex.py --upgrade
+git checkout v2.0.0
+python install_hex.py --upgrade
+```
+
+`git checkout` vägrar byta version medan `install_hex.py` har ifyllda
+`DATABASES`. Återställ filen med `git checkout -- install_hex.py` före varje
+byte, och fyll i `DATABASES` på nytt efteråt.
 
 ### Ominstallation utan `--upgrade`
 
@@ -332,7 +360,7 @@ fanns. Tas bort när samtliga fyra produktionsdatabaser kört --upgrade med den
 här versionen och hex_underhall() rapporterar noll 'dubbletter: N'. -->
 ## Migrering: primärnyckel på `gid`
 
-Hex-tabeller skapade före den här versionen saknar `PRIMARY KEY (gid)`. Utan
+Hex-tabeller skapade före version 2.0.0 saknar `PRIMARY KEY (gid)`. Utan
 unikt index hittar QGIS inte gid-sekvensen och kräver att användaren fyller i
 `gid` manuellt vid varje nytt objekt – se
 [11_redigera-i-qgis.md](11_redigera-i-qgis.md).
@@ -371,12 +399,14 @@ nästa sekvensvärde. Omnumreringen loggas i historiktabellen. Kontrollera förs
 om något externt (GeoServer-lager, WFS-anrop, kopplade tabeller) refererar till
 de `gid` som byts.
 
-Lista alla tabeller som fortfarande saknar nyckel:
+Lista alla tabeller som fortfarande saknar nyckel. `hex_underhall()` försöker
+lägga på nyckeln under samma anrop, så kvar blir bara de tabeller den inte
+kunde åtgärda:
 
 ```sql
 SELECT * FROM public.hex_underhall()
 WHERE  trigger_namn = 'gid_primarnyckel'
-  AND  atgard <> 'redan finns';
+  AND  (atgard LIKE 'dubbletter:%' OR atgard LIKE 'fel:%');
 ```
 
 ---

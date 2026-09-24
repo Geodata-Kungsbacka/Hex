@@ -178,7 +178,7 @@ HEX_RECONCILE_INTERVAL=3600   # Kontrollera varje timme
 HEX_RECONCILE_INTERVAL=0      # Ingen periodisk avstämning
 ```
 
-Standarden är satt lågt med flit. Avstämningen är ett skyddsnät, inte huvudvägen:
+Intervallet är långt med flit. Avstämningen är ett skyddsnät, inte huvudvägen:
 publiceringen sker via `pg_notify` i samma transaktion som `CREATE SCHEMA`, och
 det troliga sättet att missa en notifiering är att lyssnaren varit nere — vilket
 uppstartsavstämningen redan täcker. Kvar blir notifieringar som missats medan
