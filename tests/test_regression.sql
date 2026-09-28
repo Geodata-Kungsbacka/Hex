@@ -1472,6 +1472,80 @@ END $$;
 DROP TABLE IF EXISTS sk1_kba_test.typ_geomz_y;
 
 ------------------------------------------------------------------------
+-- TEST 13: DROP COLUMN bygger om QA-triggern
+--
+-- hex_hantera_ny_kolumn() avbröt på allt som inte var ADD COLUMN, så
+-- trg_fn_<tabell>_qa behöll OLD.<borttagen kolumn> i sin INSERT och nästa
+-- UPDATE/DELETE kraschade med 'record "old" has no field ...'.
+------------------------------------------------------------------------
+\echo ''
+\echo '--- TEST 13: DROP COLUMN och QA-triggern ---'
+
+CREATE TABLE sk1_kba_test.drop_kol_y (
+    namn text,
+    fid  bigint,
+    geom geometry(Polygon, 3007)
+);
+INSERT INTO sk1_kba_test.drop_kol_y (namn, fid, geom)
+VALUES ('a', 1, 'SRID=3007;POLYGON((0 0,0 10,10 10,10 0,0 0))');
+
+ALTER TABLE sk1_kba_test.drop_kol_y DROP COLUMN fid;
+
+-- 13a: UPDATE och DELETE fungerar, och den borttagna kolumnen ligger kvar i historiken
+DO $$
+DECLARE
+    antal integer;
+BEGIN
+    UPDATE sk1_kba_test.drop_kol_y SET namn = 'b';
+    DELETE FROM sk1_kba_test.drop_kol_y;
+
+    SELECT count(*) INTO antal
+    FROM sk1_kba_test.drop_kol_y_h
+    WHERE h_typ IN ('U', 'D') AND namn IN ('a', 'b');
+
+    IF antal = 2 AND EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'sk1_kba_test'
+          AND table_name = 'drop_kol_y_h'
+          AND column_name = 'fid'
+    ) THEN
+        RAISE NOTICE 'TEST 13a PASSED: QA-triggern skriver efter DROP COLUMN, fid kvar i historiken';
+    ELSE
+        RAISE WARNING 'TEST 13a FAILED: % historikrader (förväntade 2) eller fid saknas i historiken', antal;
+    END IF;
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE WARNING 'TEST 13a FAILED: UPDATE/DELETE efter DROP COLUMN gav fel: %', SQLERRM;
+END $$;
+
+-- 13b: Saknar historiktabellen en kolumn som modertabellen har (här geom)
+-- läggs den till innan triggern byggs om – annars pekar den ombyggda
+-- triggern på en kolumn som historiktabellen inte har.
+INSERT INTO sk1_kba_test.drop_kol_y (namn, geom)
+VALUES ('c', 'SRID=3007;POLYGON((0 0,0 10,10 10,10 0,0 0))');
+ALTER TABLE sk1_kba_test.drop_kol_y_h DROP COLUMN geom;
+ALTER TABLE sk1_kba_test.drop_kol_y DROP COLUMN namn;
+
+DO $$
+BEGIN
+    DELETE FROM sk1_kba_test.drop_kol_y;
+
+    IF EXISTS (
+        SELECT 1 FROM sk1_kba_test.drop_kol_y_h
+        WHERE h_typ = 'D' AND geom IS NOT NULL
+    ) THEN
+        RAISE NOTICE 'TEST 13b PASSED: geom återskapad i historiken och DELETE loggad med geometri';
+    ELSE
+        RAISE WARNING 'TEST 13b FAILED: DELETE loggades utan geometri';
+    END IF;
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE WARNING 'TEST 13b FAILED: DELETE efter DROP COLUMN gav fel: %', SQLERRM;
+END $$;
+
+DROP TABLE IF EXISTS sk1_kba_test.drop_kol_y;
+
+------------------------------------------------------------------------
 -- SLUTLIG STÄDNING
 ------------------------------------------------------------------------
 \echo ''

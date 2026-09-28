@@ -11,8 +11,8 @@ AS $BODY$
  *
  * SYFTE:
  * Triggerfunktionens kropp innehåller en explicit kolumnlista för INSERT mot
- * historiktabellen. Ändras modertabellens kolumner - genom ADD COLUMN eller
- * RENAME COLUMN - blir listan inaktuell och triggern kraschar vid nästa
+ * historiktabellen. Ändras modertabellens kolumner - genom ADD COLUMN,
+ * RENAME COLUMN eller DROP COLUMN - blir listan inaktuell och triggern kraschar vid nästa
  * UPDATE/DELETE. Denna funktion bygger om funktionskroppen från modertabellens
  * nuvarande struktur.
  *
@@ -22,6 +22,7 @@ AS $BODY$
  * ANVÄNDS AV:
  * - hex_hantera_ny_kolumn() efter ADD COLUMN-synk mot historiktabellen
  * - hex_hantera_ny_kolumn() efter RENAME COLUMN-synk mot historiktabellen
+ * - hex_hantera_ny_kolumn() efter DROP COLUMN
  *
  * PARAMETRAR:
  * - p_schema_namn:     Schemat som modertabellen ligger i
@@ -145,6 +146,6 @@ $$;
 
 COMMENT ON FUNCTION public.hex_aterskapa_qa_trigger(text, text, text)
     IS 'Återskapar QA-triggerfunktionen trg_fn_<tabell>_qa med modertabellens aktuella
-kolumnlista. Anropas efter ADD COLUMN och RENAME COLUMN så att den genererade
+kolumnlista. Anropas efter ADD COLUMN, RENAME COLUMN och DROP COLUMN så att den genererade
 INSERT-satsen mot historiktabellen fortsätter matcha tabellstrukturen. Kolumnnamn
 citeras så att reserverade ord fungerar.';
