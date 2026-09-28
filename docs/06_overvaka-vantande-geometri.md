@@ -14,7 +14,9 @@ Hex registrerar dessa tabeller i `hex_afvaktande_geometri` och väntar på att
 När geometrikolumnen väl läggs till:
 1. Raden tas bort från `hex_afvaktande_geometri`
 2. GiST-index skapas
-3. Geometrivalidering aktiveras (för `_kba_`-scheman)
+3. Geometrivalidering aktiveras – för scheman vars datakategori har
+   `hex_validera_geometri = true` i `hex_standardiserade_datakategorier`
+   (standardkonfiguration: `_kba_`)
 
 En rad som **ligger kvar länge** indikerar att verktyget **aldrig slutförde sitt andra steg**.
 

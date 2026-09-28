@@ -12,14 +12,14 @@ Detta system automatiserar databasstrukturering i PostgreSQL med PostGIS-stöd. 
 
 ### 1. **Automatisk tabellstrukturering**
 När du skapar en tabell med `CREATE TABLE` omstruktureras den automatiskt med:
-- Standardkolumner som `gid` (primärnyckel), `skapad_tidpunkt`, `skapad_av`, `andrad_tidpunkt`, `andrad_av`
+- Standardkolumner enligt konfigurationstabellen `hex_standardiserade_kolumner` — i standardkonfigurationen `gid` (primärnyckel), `skapad_tidpunkt`, `skapad_av`, `andrad_tidpunkt` och `andrad_av`
 - Korrekt kolumnordning (standardkolumner först/sist, geometri alltid sist)
-- Bevarande av alla ursprungliga tabellregler och begränsningar
+- Bevarande av alla ursprungliga hex_tabellregler och begränsningar
 
 ### 2. **Namngivningsvalidering**
 
 #### Schemanamn
-Schemanamn måste följa mönstret `<skyddsnivå>_<datakategori>_<namn>` där giltiga värden hämtas dynamiskt från konfigurationstabellerna `standardiserade_skyddsnivaer` och `standardiserade_datakategorier`.
+Schemanamn måste följa mönstret `<skyddsnivå>_<datakategori>_<namn>` där giltiga värden hämtas dynamiskt från konfigurationstabellerna `hex_standardiserade_skyddsnivaer` och `hex_standardiserade_datakategorier`.
 
 Standardkonfiguration:
 - `sk0`, `sk1`, `sk2`, `skx` = Säkerhetsnivå (0=öppen, 1=kommun, 2=begränsad, x=oklassificerad)
@@ -27,7 +27,7 @@ Standardkonfiguration:
 - `kba` = Interna kommunala datakällor
 - `sys` = Systemdata
 
-Lägg till rader i `standardiserade_skyddsnivaer` eller `standardiserade_datakategorier` för att utöka tillåtna kombinationer utan att ändra kod.
+Lägg till rader i `hex_standardiserade_skyddsnivaer` eller `hex_standardiserade_datakategorier` för att utöka tillåtna kombinationer utan att ändra kod.
 
 Exempel på giltiga schemanamn (standardkonfiguration):
 - `sk0_ext_sgu`
@@ -35,7 +35,9 @@ Exempel på giltiga schemanamn (standardkonfiguration):
 - `sk2_sys_admin`
 - `skx_kba_testprojekt`
 
-**`ALTER SCHEMA ... RENAME TO` är blockerat.** Schemanamnet är identitetsnyckeln för GeoServer-workspace, databasroller (`r_`/`w_`), `hex_role_credentials` och `hex_metadata`. Ett namnbyte river sönder alla dessa kopplingar. Rätt tillvägagångssätt är `DROP SCHEMA CASCADE` (Hex städar upp) följt av `CREATE SCHEMA` med det nya namnet.
+**`ALTER TABLE ... SET SCHEMA` är blockerat** för tabeller i eller till ett Hex-schema. Historiktabellen och triggerfunktionerna följer inte med, så QA-triggern slutar fungera och en senare `DROP SCHEMA ... CASCADE` på det gamla schemat tar tyst med sig triggern. Skapa tabellen i målschemat och flytta datan med `INSERT ... SELECT`.
+
+**`ALTER SCHEMA ... RENAME TO` är blockerat.** Schemanamnet är identitetsnyckeln för GeoServer-workspace, databasroller (`r_`/`w_`), `hex_rolluppgifter` och `hex_metadata`. Ett namnbyte river sönder alla dessa kopplingar. Rätt tillvägagångssätt är `DROP SCHEMA CASCADE` (Hex städar upp) följt av `CREATE SCHEMA` med det nya namnet.
 
 #### Tabellnamn
 Systemet kräver specifika suffix baserat på geometrityp:
@@ -46,29 +48,56 @@ Systemet kräver specifika suffix baserat på geometrityp:
 - Tabeller utan geometri får inte använda dessa suffix
 
 ### 3. **Automatisk rollhantering**
-För varje nytt schema skapas automatiskt fyra roller:
+Vilka roller som skapas för ett nytt schema styrs av rollmallarna i `hex_standardiserade_roller`. I standardkonfigurationen finns fyra mallar, som alla matchar samtliga scheman (`schema_uttryck = 'IS NOT NULL'`):
 - `r_schemanamn` — NOLOGIN behörighetsgrupp med läsrättigheter (tilldelas AD-användare och AD-grupper)
 - `w_schemanamn` — NOLOGIN behörighetsgrupp med skrivrättigheter (tilldelas AD-användare och AD-grupper)
 - `gs_r_schemanamn` — LOGIN GeoServer-läs-tjänstekonto, ärver rättigheter från `r_`
 - `gs_w_schemanamn` — LOGIN GeoServer-skriv-tjänstekonto, ärver rättigheter från `w_`
 
-`gs_r_` och `gs_w_` får autogenererade lösenord sparade i `hex_role_credentials` och ingår i `hex_geoserver_roller` för pg_hba.conf-matchning. `r_` och `w_` är NOLOGIN och ingår aldrig i `hex_geoserver_roller`.
+Lägg till, ändra eller ta bort rader i `hex_standardiserade_roller` för att styra uppsättningen — se [docs/04_hantera-rollmallar.md](docs/04_hantera-rollmallar.md).
+
+`gs_r_` och `gs_w_` får autogenererade lösenord sparade i `hex_rolluppgifter` och ingår i `hex_geoserver_roller` för pg_hba.conf-matchning. `r_` och `w_` är NOLOGIN och ingår aldrig i `hex_geoserver_roller`.
 
 ### 4. **Automatisk GeoServer-publicering och rensning**
 Lyssnaren hanterar två livscykelhändelser automatiskt via `pg_notify`:
 
-**Vid CREATE SCHEMA** (kanal `geoserver_schema`) — för sk0- och sk1-scheman:
-- Skapar en workspace i GeoServer med samma namn som schemat
-- Hämtar autentiseringsuppgifter för GeoServer-tjänstekontot (`gs_r_{schema}`) från tabellen `hex_role_credentials`
-- Skapar en direkt PostGIS-datastore i den workspace med dessa uppgifter
+**Vid CREATE SCHEMA** (kanal `geoserver_schema`) — skapar **två** workspaces per schema:
 
-`gs_r_{schema}` skapas automatiskt av `hantera_standardiserade_roller()` vid CREATE SCHEMA med ett autogenererat lösenord sparat i `hex_role_credentials`. Ingen JNDI-konfiguration i Tomcat krävs.
+| Workspace | Datastore-konto | Rättigheter | Ändamål |
+|---|---|---|---|
+| `{schema}` | `gs_r_{schema}` | SELECT | WMS/WFS-läsning |
+| `{schema}_w` | `gs_w_{schema}` | ALL | WFS-T (redigering via GeoServer) |
 
-**Vid DROP SCHEMA** (kanal `geoserver_schema_drop`) — för sk0- och sk1-scheman:
-- Tar bort workspace från GeoServer med `recurse=true`, vilket raderar datastores och publicerade lager automatiskt
+För varje workspace hämtas tjänstekontots uppgifter ur `hex_rolluppgifter` och en
+direkt PostGIS-datastore skapas med dem. Därefter skapas GeoServer-roller
+(`r_{schema}`, `w_{schema}`) och ACL-regler för båda workspaces.
+
+`gs_r_{schema}` och `gs_w_{schema}` skapas automatiskt av `hex_hantera_std_roller()`
+vid CREATE SCHEMA med autogenererade lösenord sparade i `hex_rolluppgifter`. Ingen
+JNDI-konfiguration i Tomcat krävs.
+
+**Vid DROP SCHEMA** (kanal `geoserver_schema_drop`):
+- Tar bort ACL-reglerna för båda workspaces
+- Tar bort både `{schema}` och `{schema}_w` med `recurse=true`, vilket raderar datastores och publicerade lager automatiskt
+- Tar bort GeoServer-rollerna `r_{schema}` och `w_{schema}`
 - Förhindrar att GeoServer gör upprepade anrop mot ett schema som inte längre existerar
 
-sk2-scheman exkluderas — de kräver manuell konfiguration.
+Vilka scheman som publiceras styrs av kolumnen `publiceras_geoserver` i
+`hex_standardiserade_skyddsnivaer` — som standard `sk0` och `sk1`. `sk2` och `skx`
+publiceras inte och kräver manuell konfiguration. Kolumnen `anonym_las` styr om
+läs-workspacet får `ROLE_ANONYMOUS` i sin ACL-regel (standard `true` för `sk0`).
+Se `docs/08_geoserver-lyssnaren.md`.
+
+**Avstämning:** lyssnaren stämmer av GeoServer mot databasen vid uppstart och
+därefter periodiskt (`HEX_RECONCILE_INTERVAL`, standard 43200 s = 12 h). Saknade workspaces
+och datastores återskapas, avvikande ACL-regler korrigeras, och datastorens
+autentiseringsuppgifter skrivs om från `hex_rolluppgifter`.
+
+Avstämningen rapporterar också workspaces vars PostgreSQL-schema saknas i
+samtliga övervakade databaser. Standard är att bara varna; `HEX_ORPHAN_CLEANUP`
+(`off` | `dry-run` | `on`) kan låta lyssnaren städa bort dem — men bara när
+workspacen bevisligen är skapad av Hex, aldrig en manuell rasterpublicering vars
+namn råkar matcha schemamönstret. Se `docs/08_geoserver-lyssnaren.md`.
 
 **Felhantering:**
 - Automatisk retry med backoff vid timeout eller anslutningsfel mot GeoServer (upp till 4 försök)
@@ -87,20 +116,20 @@ Vissa ETL-verktyg (FME, GDAL m.fl.) skapar tabeller i två separata DDL-steg:
 
 Systemet hanterar detta via tabellen `hex_systemanvandare`. När en session matchar en registrerad systemanvändare (`session_user`, `current_user` eller `application_name`):
 
-- `hantera_ny_tabell` tillåter att tabellen skapas utan geometrikolumn, trots att tabellnamnet har geometrisuffix
+- `hex_hantera_ny_tabell` tillåter att tabellen skapas utan geometrikolumn, trots att tabellnamnet har geometrisuffix
 - Tabellen registreras i `hex_afvaktande_geometri` som "väntande"
 - Geometrispecifik efterbehandling (GiST-index, geometrivalidering) skjuts upp
-- När `ALTER TABLE ADD COLUMN geom` senare körs slutför `hantera_kolumntillagg` den uppskjutna hanteringen: verifierar att suffixet stämmer med geometritypen, skapar GiST-index och tar bort raden från `hex_afvaktande_geometri`
+- När `ALTER TABLE ADD COLUMN geom` senare körs slutför `hex_hantera_ny_kolumn` den uppskjutna hanteringen: verifierar att suffixet stämmer med geometritypen, skapar GiST-index och tar bort raden från `hex_afvaktande_geometri`
 
 **Konfiguration**: Lägg till verktygets databasanvändare i `hex_systemanvandare`. FME (`fme`) är förregistrerat som standard.
 
 ### 6. **Historik och kvalitetssäkring**
 För scheman konfigurerade med QA-kolumner skapas:
 - Historiktabeller (`tabellnamn_h`) som loggar alla ändringar
-- Triggers som automatiskt uppdaterar `andrad_tidpunkt` och `andrad_av`
+- Triggers som automatiskt uppdaterar de standardkolumner som har `historik_qa = true` i `hex_standardiserade_kolumner` (standardkonfiguration: `andrad_tidpunkt` och `andrad_av`)
 
-#### `validera_geometri(geom)`
-Validerar geometrikvalitet för _kba_-scheman (manuellt redigerade data).
+#### `hex_validera_geometri(geom)`
+Validerar geometrikvalitet för scheman vars datakategori har `hex_validera_geometri = true` i `hex_standardiserade_datakategorier` (standardkonfiguration: `_kba_`, manuellt redigerade data).
 
 **Kontroller**:
 - ST_IsValid - geometrin följer OGC-specifikationen
@@ -108,122 +137,344 @@ Validerar geometrikvalitet för _kba_-scheman (manuellt redigerade data).
 - Inga exakta konsekutiva duplicerade punkter (ST_RemoveRepeatedPoints, nolltolerans)
 - NOT ST_HasArc - geometrin innehåller inga kurvsegment
 
-**Användning**: Används som CHECK constraint, appliceras automatiskt av `hantera_ny_tabell` för _kba_-scheman.
+**Användning**: Används som CHECK constraint, appliceras automatiskt av `hex_hantera_ny_tabell` på scheman vars datakategori har `hex_validera_geometri = true` (standardkonfiguration: `_kba_`).
+
+### 7. **Dummy-geometrirad i nya geometritabeller**
+
+När Hex skapar en geometritabell lägger `hex_lagg_till_dummy_geometri()` in **en
+rad med en påhittad geometri** och registrerar den i `hex_dummy_geometrier`.
+
+**Varför:** QGIS med *Använd uppskattad tabellmetadata* avstängt kör
+`SELECT DISTINCT geometrytype(geom) FROM tabell LIMIT 1`. En tom tabell svarar
+`NULL`, och QGIS öppnar då en dialogruta där användaren måste ange
+geometrikolumn och SRID för hand. Dummy-raden gör att typen går att läsa direkt.
+
+**Geometrin:** 100 × 100 m kring (160000, 6395000) i EPSG 3007, vald så att den
+klarar `hex_validera_geometri()` — giltig, icke-tom, utan dubblerade punkter och
+utan kurvsegment.
+
+**Livscykel:** en `AFTER INSERT`-trigger (`hex_ta_bort_dummy`) på tabellen tar
+bort dummy-raden när den **första riktiga raden** infogas, och rensar samtidigt
+raden ur `hex_dummy_geometrier`. Har tabellen historik ger den borttagningen en
+`D`-post i historiktabellen — avsiktligt systembrus, identifierbart på `gid` och
+tidpunkt.
+
+**Konsekvenser att känna till:**
+- En nyskapad tabell är inte tom: `SELECT count(*)` ger 1 tills första riktiga
+  raden infogas.
+- Misslyckas dummy-insättningen (t.ex. en `NOT NULL`-kolumn utan
+  standardvärde) loggas det som `NOTICE` och tabellskapandet fortsätter ändå.
+- `hex_underhall()` återkopplar `hex_ta_bort_dummy`-triggern, men bara för
+  tabeller som fortfarande står i `hex_dummy_geometrier`. Töms den tabellen
+  för hand blir dummy-raden kvar för alltid.
+
+### 8. **EPSG 3007 är enda tillåtna koordinatsystem**
+
+`hex_hantera_ny_tabell()` och `hex_hantera_ny_kolumn()` jämför geometrikolumnens
+SRID mot **3007** (SWEREF99 12 00). En tabell med avvikande SRID **blockeras
+inte** — den skapas, med en `WARNING`, och registreras i granskningstabellen
+`hex_avvikande_srid`:
+
+```sql
+SELECT schema_namn, tabell_namn, srid, registrerad, registrerad_av
+FROM hex_avvikande_srid
+ORDER BY registrerad;
+```
+
+En kvarliggande rad betyder att tabellen fortfarande finns i databasen med fel
+koordinatsystem. Data i fel koordinatsystem ska transformeras och skrivas om
+innan det används i produktion. Raden tas bort automatiskt av
+`hex_hantera_borttagen_tabell()` när tabellen droppas.
 
 ## Installation
 
+### Systemkrav
+
+- **Målplattform: Windows Server.** Hex körs i produktion på Windows Server 2022,
+  och kommandona i dokumentationen är skrivna för Windows (`python`, `py`).
+- **PostgreSQL 16 eller senare.** Installern kontrollerar serverversionen och
+  avbryter mot äldre versioner.
+- **PostGIS installerat på servern** — paketet `postgresql-<version>-postgis-3`
+  eller motsvarande för plattformen. Installern kör `CREATE EXTENSION IF NOT
+  EXISTS postgis`, vilket bara fungerar om PostGIS redan finns på maskinen där
+  PostgreSQL körs. Saknas paketet avbryter installationen med
+  `ERROR: extension "postgis" is not available`.
+- **pgcrypto** — ingår i `postgresql-contrib` och skapas automatiskt av
+  installern.
+- **Python 3** och `psycopg2` (`pip install psycopg2-binary`) för den
+  automatiska installationen.
+- **Ägarrollen** (`owner_role`) — skapas automatiskt av installern om den
+  saknas, se [Automatisk installation](#automatisk-installation-rekommenderat).
+
+> **Linux?** Databasdelen är plattformsoberoende — `install_hex.py`, all SQL och
+> hela testsviten körs lika bra på Linux. Enda skillnaden är kommandonamnet: byt
+> `python` mot `python3`, eftersom Debian/Ubuntu inte installerar något
+> `python`-kommando som standard.
+>
+> Undantaget är `src/geoserver/geoserver_service.py` — en Windows-tjänst byggd på
+> pywin32 som inte går att köra på Linux. Lyssnaren i sig
+> (`geoserver_listener.py`) har inga Windows-beroenden och har en egen `main()`,
+> men att köra den under en Linux-processövervakare är inte en testad uppsättning.
+
+Installern kontrollerar också att `PUBLIC` saknar `CREATE` på schemat `public`
+och varnar annars. Det har varit standard sedan PostgreSQL 15, men en databas
+som uppgraderats från version 14 eller äldre behåller sin gamla ACL oavsett
+vilken version den körs på i dag — versionsgolvet skyddar alltså inte mot det,
+utan installerns kontroll gör det. Hex:s `SECURITY DEFINER`-funktioner slår upp
+objekt i `public`, så rättigheten bör återkallas:
+
+```sql
+REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+```
+
 ### Automatisk installation (rekommenderat)
 
-```bash
-# Redigera install_hex.py och ange:
-# - DB_CONFIG (host, port, dbname, user, password)
-# - OWNER_ROLE (rollen som ska äga Hex-objekt och hantera roller)
+Redigera listan `DATABASES` i `install_hex.py`. Varje post är ett dict med
+psycopg2-anslutningsparametrar plus `owner_role` — rollen som ska äga
+Hex-objekt och hantera roller. Sätt `owner_role` till `None` för att låta den
+anslutande användaren äga objekten. Anslutningen måste köras som `postgres`
+(eller annan superuser) eftersom event-triggers kräver det.
 
+```python
+DATABASES = [
+    {
+        "host": "localhost",       # Använd "127.0.0.1" på Windows Server
+        "port": 5432,
+        "dbname": "geodata",       # Databas att installera Hex i
+        "user": "postgres",
+        "password": "losenord_har",
+        "owner_role": "gis_admin", # Ägarroll för Hex-objekt, skapas om den saknas
+    },
+]
+```
+
+Finns inte ägarrollen i klustret skapar installern den som `NOLOGIN` utan
+lösenord och rapporterar det som en varning på slutet. Rollen behöver aldrig
+logga in — den äger Hex:s objekt och får `ADMIN OPTION` på schemats `r_`- och
+`w_`-roller, vilket fungerar för en `NOLOGIN`-roll. Ska rollen kunna logga in
+lägger du själv till det:
+
+```sql
+ALTER ROLE gis_admin LOGIN PASSWORD '...';
+```
+
+> **OBS:** Ett felstavat `owner_role` skapar en ny roll i stället för att
+> återanvända den avsedda. Kontrollera varningen på slutet av installationen.
+
+Lägg till fler poster i listan för att installera i flera databaser i samma
+körning — installern loopar över alla och skriver ut en sammanfattning.
+
+```bash
 python install_hex.py              # Installera
 python install_hex.py --upgrade    # Uppgradera (bevarar inställningar)
 python install_hex.py --uninstall  # Avinstallera
 ```
 
+`--upgrade` och `--uninstall` utesluter varandra — anges båda avbryter
+installern med ett argumentfel i stället för att välja åt dig. Utan flagga
+installeras Hex.
+
+> **OBS vid `--upgrade`:** konfigurationstabellerna bevaras, men lösenorden i
+> `hex_rolluppgifter` **roteras** — GeoServers datastores behöver de nya
+> uppgifterna. Starta om lyssnartjänsten efter uppgraderingen, se
+> [docs/09](docs/09_installera-uppdatera-hex.md#hex_rolluppgifter-roteras--den-bevaras-inte).
+
 ### Manuell installation
 
-```sql
--- 0. FÖRST: Redigera system_owner.sql och ändra 'gis_admin' till din ägarroll
---    Kör sedan filen:
-src/sql/00_config/system_owner.sql
+Skapa först tilläggen som Hex kräver (installern gör detta automatiskt):
 
--- 1. Alla filer i /01_types/
--- 2. Alla filer i /02_tables/
--- 3. Alla filer i /03_functions/ (i underkatalogers nummerordning)
--- 4. Alla filer i /04_triggers/
+```sql
+CREATE EXTENSION IF NOT EXISTS postgis;
+CREATE EXTENSION IF NOT EXISTS pgcrypto;  -- gen_random_bytes() för lösenordsgenerering
 ```
+
+Kör sedan filerna i ordningen nedan. Ordningen är en beroendeordning — hoppa
+inte över filer och byt inte plats på dem.
+
+> **OBS:** `hex_systemagare.sql` måste köras först och måste redigeras innan
+> den körs (ändra `'gis_admin'` till din ägarroll). Detta är den enda filen
+> installern inte kör — den genererar funktionen dynamiskt från `owner_role`.
+>
+> Det är också den enda filen du behöver redigera. Övriga filer hårdkodar
+> aldrig ett rollnamn, utan sätter ägarskapet mot `hex_systemagare()`:
+>
+> ```sql
+> DO $$
+> BEGIN
+>     EXECUTE format(
+>         'ALTER TABLE public.hex_metadata OWNER TO %I',
+>         public.hex_systemagare()
+>     );
+> END;
+> $$;
+> ```
+>
+> Manuell installation ger därför exakt samma ägarskap som `install_hex.py`.
+>
+> Undantagen ägs av `postgres` och sätts statiskt i SQL:en:
+> - **Alla event-triggers** — de skapas av en superuser och behåller
+>   `postgres`-ägande även när `owner_role` är satt.
+> - **`hex_systemagare()`** samt de tre `SECURITY DEFINER`-triggerfunktionerna
+>   `hex_hantera_ny_tabell()`, `hex_hantera_std_roller()` och
+>   `hex_ta_bort_schemaroller()`.
+>
+> Övriga sju triggerfunktioner (`hex_hantera_ny_kolumn`, `hex_hantera_ny_vy`,
+> `hex_hantera_borttagen_tabell`, `hex_validera_schemanamn`,
+> `hex_blockera_schema_namnbyte`, `hex_notifiera_gs`,
+> `hex_notifiera_gs_borttagning`) ägs av ägarrollen som allt annat. De är inte
+> `SECURITY DEFINER` och behöver därför inget `postgres`-ägande — en
+> event-triggerfunktion körs ändå med den anropande användarens rättigheter.
 
 ### Detaljerad installationsordning
 
 ```sql
 -- 0. Konfiguration (MÅSTE köras först, redigera filen innan!)
-src/sql/00_config/system_owner.sql
+src/sql/00_config/hex_systemagare.sql
+src/sql/00_config/hex_geoserver_roller.sql
 
 -- 1. Skapa anpassade datatyper
-src/sql/01_types/geom_info.sql
-src/sql/01_types/kolumnegenskaper.sql
-src/sql/01_types/kolumnkonfig.sql
-src/sql/01_types/tabellregler.sql
+src/sql/01_types/hex_geom_info.sql
+src/sql/01_types/hex_kolumnkonfig.sql
+src/sql/01_types/hex_kolumnegenskaper.sql
+src/sql/01_types/hex_tabellregler.sql
 
 -- 2. Skapa konfigurationstabeller
-src/sql/02_tables/standardiserade_skyddsnivaer.sql
-src/sql/02_tables/standardiserade_datakategorier.sql
-src/sql/02_tables/standardiserade_kolumner.sql
-src/sql/02_tables/standardiserade_roller.sql
+src/sql/02_tables/hex_standardiserade_skyddsnivaer.sql
+-- hex_schema_regex() läser hex_standardiserade_skyddsnivaer – måste köras efter tabellen
+src/sql/00_config/hex_schema_regex.sql
+src/sql/02_tables/hex_standardiserade_datakategorier.sql
+src/sql/02_tables/hex_standardiserade_kolumner.sql
+src/sql/02_tables/hex_standardiserade_roller.sql
 src/sql/02_tables/hex_metadata.sql
 src/sql/02_tables/hex_systemanvandare.sql
+src/sql/02_tables/hex_grupprattigheter.sql
 src/sql/02_tables/hex_afvaktande_geometri.sql
+src/sql/02_tables/hex_dummy_geometrier.sql
+src/sql/02_tables/hex_avvikande_srid.sql
+src/sql/02_tables/hex_rolluppgifter.sql
 
 -- 3. Skapa funktioner (i beroendeordning)
 -- 3.1 Strukturhantering
-src/sql/03_functions/01_structure/hamta_geometri_definition.sql
-src/sql/03_functions/01_structure/hamta_kolumnstandard.sql
+src/sql/03_functions/01_structure/hex_hamta_geometri_definition.sql
+src/sql/03_functions/01_structure/hex_kolumntyp.sql
+src/sql/03_functions/01_structure/hex_hamta_kolumnstandard.sql
 
 -- 3.2 Validering
-src/sql/03_functions/02_validation/validera_geometri.sql
-src/sql/03_functions/02_validation/forklara_geometrifel.sql
-src/sql/03_functions/02_validation/validera_tabell.sql
-src/sql/03_functions/02_validation/validera_vynamn.sql
-src/sql/03_functions/02_validation/validera_schemanamn.sql
-src/sql/03_functions/02_validation/blockera_schema_namnbyte.sql
+src/sql/03_functions/02_validation/hex_validera_tabell.sql
+src/sql/03_functions/02_validation/hex_validera_vynamn.sql
+src/sql/03_functions/02_validation/hex_validera_schemanamn.sql
+src/sql/03_functions/02_validation/hex_blockera_schema_namnbyte.sql
+src/sql/03_functions/02_validation/hex_validera_geometri.sql
+src/sql/03_functions/02_validation/hex_forklara_geometrifel.sql
 
 -- 3.3 Regelhantering
-src/sql/03_functions/03_rules/spara_tabellregler.sql
-src/sql/03_functions/03_rules/spara_kolumnegenskaper.sql
-src/sql/03_functions/03_rules/aterskapa_tabellregler.sql
-src/sql/03_functions/03_rules/aterskapa_kolumnegenskaper.sql
+src/sql/03_functions/03_rules/hex_spara_tabellregler.sql
+src/sql/03_functions/03_rules/hex_spara_kolumnegenskaper.sql
+src/sql/03_functions/03_rules/hex_aterskapa_tabellregler.sql
+src/sql/03_functions/03_rules/hex_aterskapa_kolumnegenskaper.sql
 
 -- 3.4 Hjälpfunktioner
-src/sql/03_functions/04_utility/byt_ut_tabell.sql
-src/sql/03_functions/04_utility/uppdatera_sekvensnamn.sql
-src/sql/03_functions/04_utility/skapa_historik_qa.sql
-src/sql/03_functions/04_utility/tilldela_rollrattigheter.sql
+src/sql/03_functions/04_utility/hex_byt_ut_tabell.sql
+src/sql/03_functions/04_utility/hex_uppdatera_sekvensnamn.sql
+src/sql/03_functions/04_utility/hex_registrera_metadata.sql
+src/sql/03_functions/04_utility/hex_uppdatera_metadata_namn.sql
+src/sql/03_functions/04_utility/hex_rensa_metadata.sql
+src/sql/03_functions/04_utility/hex_skapa_historik_qa.sql
+src/sql/03_functions/04_utility/hex_aterskapa_qa_trigger.sql
+src/sql/03_functions/04_utility/hex_synka_historik.sql
+src/sql/03_functions/04_utility/hex_tilldela_rollrattigheter.sql
+src/sql/03_functions/04_utility/hex_tillampa_grupprattigheter.sql
+src/sql/03_functions/04_utility/hex_tvinga_gid_fran_sekvens.sql
+src/sql/03_functions/04_utility/hex_sakerstall_gid_primarnyckel.sql
+src/sql/03_functions/04_utility/hex_reparera_gid_dubbletter.sql
+src/sql/03_functions/04_utility/hex_underhall.sql
 
 -- 3.5 Triggerfunktioner
-src/sql/03_functions/05_trigger_functions/kontrollera_geometri.sql
-src/sql/03_functions/05_trigger_functions/hantera_ny_tabell.sql
-src/sql/03_functions/05_trigger_functions/hantera_kolumntillagg.sql
-src/sql/03_functions/05_trigger_functions/hantera_ny_vy.sql
-src/sql/03_functions/05_trigger_functions/ta_bort_schemaroller.sql
-src/sql/03_functions/05_trigger_functions/hantera_standardiserade_roller.sql
-src/sql/03_functions/05_trigger_functions/hantera_borttagen_tabell.sql
-src/sql/03_functions/05_trigger_functions/notifiera_geoserver.sql
-src/sql/03_functions/05_trigger_functions/notifiera_geoserver_borttagning.sql
+src/sql/03_functions/05_trigger_functions/hex_ta_bort_dummy_rad.sql
+src/sql/03_functions/04_utility/hex_lagg_till_dummy_geometri.sql
+src/sql/03_functions/05_trigger_functions/hex_kontrollera_geometri.sql
+src/sql/03_functions/05_trigger_functions/hex_hantera_ny_tabell.sql
+src/sql/03_functions/05_trigger_functions/hex_hantera_ny_kolumn.sql
+src/sql/03_functions/05_trigger_functions/hex_hantera_ny_vy.sql
+src/sql/03_functions/05_trigger_functions/hex_ta_bort_schemaroller.sql
+src/sql/03_functions/05_trigger_functions/hex_hantera_std_roller.sql
+src/sql/03_functions/05_trigger_functions/hex_hantera_borttagen_tabell.sql
+src/sql/03_functions/05_trigger_functions/hex_notifiera_gs.sql
+src/sql/03_functions/05_trigger_functions/hex_notifiera_gs_borttagning.sql
 
 -- 4. Skapa databastriggers
-src/sql/04_triggers/hantera_ny_tabell_trigger.sql
-src/sql/04_triggers/hantera_kolumntillagg_trigger.sql
-src/sql/04_triggers/hantera_ny_vy_trigger.sql
-src/sql/04_triggers/ta_bort_schemaroller_trigger.sql
-src/sql/04_triggers/hantera_standardiserade_roller_trigger.sql
-src/sql/04_triggers/hantera_borttagen_tabell_trigger.sql
-src/sql/04_triggers/validera_schemanamn_trigger.sql
-src/sql/04_triggers/blockera_schema_namnbyte_trigger.sql
-src/sql/04_triggers/notifiera_geoserver_trigger.sql
-src/sql/04_triggers/notifiera_geoserver_borttagning_trigger.sql
+src/sql/04_triggers/hex_hantera_ny_tabell_trigger.sql
+src/sql/04_triggers/hex_hantera_ny_kolumn_trigger.sql
+src/sql/04_triggers/hex_hantera_ny_vy_trigger.sql
+src/sql/04_triggers/hex_ta_bort_schemaroller_trigger.sql
+src/sql/04_triggers/hex_hantera_std_roller_trigger.sql
+src/sql/04_triggers/hex_hantera_borttagen_tabell_trigger.sql
+src/sql/04_triggers/hex_validera_schemanamn_trigger.sql
+src/sql/04_triggers/hex_blockera_schema_namnbyte_trigger.sql
+src/sql/04_triggers/hex_notifiera_gs_trigger.sql
+src/sql/04_triggers/hex_notifiera_gs_borttagning_trigger.sql
 ```
+
+> Ordningen ovan speglar `INSTALL_ORDER` i `install_hex.py` (plus
+> `hex_systemagare.sql`, som installern genererar själv). Ändras den ena
+> måste den andra ändras likadant.
+
+### Vanliga fel vid manuell installation
+
+Installern gör flera saker automatiskt som du måste göra själv vid manuell
+installation: skapa tilläggen, skapa ägarrollen och köra filerna i rätt
+ordning. Nedan är felen det ger, med den faktiska texten PostgreSQL skriver.
+
+**`ERROR: function public.hex_systemagare() does not exist`**
+Kommer på `hex_geom_info.sql`, den andra filen i ordningen — den första
+(`hex_geoserver_roller.sql`) skapar bara en roll och rör inget ägarskap.
+`hex_systemagare.sql` kördes inte först, och alla filer därefter sätter sitt
+ägarskap mot den funktionen.
+*Åtgärd:* kör `src/sql/00_config/hex_systemagare.sql` (redigerad) före allt annat.
+
+**`ERROR: role "<ägarroll>" does not exist`**
+Med `CONTEXT: SQL statement "ALTER TYPE public.hex_geom_info OWNER TO ..."` —
+alltså samma fil som ovan, den första som sätter ägarskap. Rollen som
+`hex_systemagare()` returnerar finns inte i klustret. Installern skapar den
+automatiskt, manuell installation gör det inte.
+*Åtgärd:* `CREATE ROLE <ägarroll> NOLOGIN;` — rollen behöver aldrig logga in.
+
+**`ERROR: type geometry does not exist`**
+PostGIS saknas. Felet dyker upp först vid `hex_validera_geometri.sql`, långt
+in i ordningen — tidigare filer går igenom utan tillägget.
+*Åtgärd:* `CREATE EXTENSION postgis;` och kör om från den filen.
+
+**`ERROR: permission denied to create event trigger "..."`**
+Anslutningen är inte superuser. Event-triggers kräver det.
+*Åtgärd:* anslut som `postgres`.
+
+**Inga `gs_r_`/`gs_w_`-roller skapas — men installationen såg ut att lyckas**
+`pgcrypto` saknas. `hex_hantera_std_roller()` behöver `gen_random_bytes()` för
+att generera lösenorden. Det här är det enda felet som inte avbryter något:
+installationen går igenom, `CREATE SCHEMA` fungerar och `r_`/`w_` skapas som
+vanligt — bara GeoServer-tjänstekontona uteblir, med en `WARNING` som är lätt
+att missa.
+*Åtgärd:* `CREATE EXTENSION pgcrypto;` innan installationen. Är skadan redan
+skedd räcker det inte med `hex_underhall()` — rollerna skapas bara vid
+`CREATE SCHEMA`, så berörda scheman måste tas bort och skapas om.
 
 ## Detaljerad funktionsbeskrivning
 
 ### Datatyper (Custom Types)
 
-#### `geom_info`
+#### `hex_geom_info`
 **Syfte**: Lagrar strukturerad information om en geometrikolumn.
 
 **Användning**: Används internt av valideringsfunktioner för att analysera och validera geometrikolumner. Innehåller fält som geometrityp, SRID, dimensioner och en komplett geometridefinition.
 
 **Exempel**: När systemet hittar en geometrikolumn analyseras den och informationen sparas i denna typ för vidare bearbetning.
 
-#### `kolumnegenskaper`
+#### `hex_kolumnegenskaper`
 **Syfte**: Bevarar kolumnspecifika egenskaper vid tabellomstrukturering.
 
 **Användning**: När en tabell ska omstruktureras sparas först alla DEFAULT-värden, NOT NULL-begränsningar, CHECK-begränsningar och IDENTITY-definitioner i denna typ så de kan återskapas efteråt.
 
-**Praktisk nytta**: Säkerställer att inga kolumnegenskaper förloras när tabeller omstruktureras automatiskt.
+**Praktisk nytta**: Säkerställer att inga hex_kolumnegenskaper förloras när tabeller omstruktureras automatiskt.
 
 #### `hex_metadata`
 **Syfte**: Kopplar varje Hex-hanterad föräldertabell till dess historiktabell och QA-triggerfunktion via OID.
@@ -231,16 +482,28 @@ src/sql/04_triggers/notifiera_geoserver_borttagning_trigger.sql
 **Varför OID?** OID:er är stabila vid `ALTER TABLE RENAME TO`, till skillnad från namnkonventionsuppslag (`tabell_h`) som slutar fungera direkt vid omdöpning. `hex_metadata` är därför den auktoritativa källan för rensning och namnpropagering.
 
 **Livscykel**:
-- *Registreras* av `skapa_historik_qa()` när en historiktabell skapas
-- *Uppdateras* av `hantera_kolumntillagg()` vid `ALTER TABLE RENAME TO` (historiktabell och parent_table uppdateras)
-- *Raderas* av `hantera_borttagen_tabell()` vid `DROP TABLE`
+- *Registreras* av `hex_skapa_historik_qa()` när en historiktabell skapas
+- *Uppdateras* av `hex_hantera_ny_kolumn()` vid `ALTER TABLE RENAME TO` (historiktabell och parent_table uppdateras)
+
+**Rättigheter**: Alla kan läsa, men bara ägaren kan skriva direkt. Event-triggrarna
+körs som den användare som gör DDL:en och skriver därför via tre `SECURITY
+DEFINER`-funktioner: `hex_registrera_metadata(schema, tabell)`,
+`hex_uppdatera_metadata_namn(oid)` och `hex_rensa_metadata()`. De tar inte emot
+några värden som hamnar i tabellen. OID, namn och historiktabell läses ur
+systemkatalogen, `created_by` är alltid `session_user`, och rensningen tar bara
+rader vars tabell inte längre finns. EXECUTE är därför öppet för alla.
+- *Raderas* av `hex_hantera_borttagen_tabell()` vid `DROP TABLE` och `DROP SCHEMA ... CASCADE`
+
+`created_by` är inloggningsrollen (`session_user`) som skapade tabellen. Den
+ändras inte om historiken skapas om, och är `NULL` för poster registrerade
+innan kolumnen fanns.
 
 **Praktisk nytta**: En kvarliggande rad vars föräldertabell inte längre finns indikerar ett ofullständigt DROP — granska och rensa manuellt vid behov.
 
 #### `hex_systemanvandare`
 **Syfte**: Register över kända systemanvändare och verktyg som skapar tabeller i två steg (t.ex. FME).
 
-**Användning**: När `session_user`, `current_user` eller `application_name` matchar en post här tillåter `hantera_ny_tabell` att en tabell med geometrisuffix skapas utan geometrikolumn. Tabellen registreras istället i `hex_afvaktande_geometri` och geometrispecifik efterbehandling (GiST-index, valideringsbegränsning) slutförs av `hantera_kolumntillagg` när geometrikolumnen läggs till via `ALTER TABLE`.
+**Användning**: När `session_user`, `current_user` eller `application_name` matchar en post här tillåter `hex_hantera_ny_tabell` att en tabell med geometrisuffix skapas utan geometrikolumn. Tabellen registreras istället i `hex_afvaktande_geometri` och geometrispecifik efterbehandling (GiST-index, valideringsbegränsning) slutförs av `hex_hantera_ny_kolumn` när geometrikolumnen läggs till via `ALTER TABLE`.
 
 **Underhålls av**: DBA/systemadministratör. Innehåller som standard en rad för `fme`.
 
@@ -248,20 +511,20 @@ src/sql/04_triggers/notifiera_geoserver_borttagning_trigger.sql
 **Syfte**: Tillfällig registreringstabell för tabeller skapade av en systemanvändare med geometrisuffix men utan geometrikolumn.
 
 **Livscykel**:
-- *Registreras* av `hantera_ny_tabell()` när en systemanvändare skapar en tabell med geometrisuffix men utan `geom`-kolumn
-- *Raderas* av `hantera_kolumntillagg()` när geometrikolumnen väl har lagts till och GiST-index skapats
-- *Raderas* av `hantera_borttagen_tabell()` om tabellen droppas innan geometrin hinner läggas till
+- *Registreras* av `hex_hantera_ny_tabell()` när en systemanvändare skapar en tabell med geometrisuffix men utan `geom`-kolumn
+- *Raderas* av `hex_hantera_ny_kolumn()` när geometrikolumnen väl har lagts till och GiST-index skapats
+- *Raderas* av `hex_hantera_borttagen_tabell()` om tabellen droppas innan geometrin hinner läggas till
 
 **Praktisk nytta**: En kvarliggande rad längre tid indikerar att verktyget (t.ex. FME) aldrig slutförde sitt andra steg — tabellen bör då granskas och eventuellt droppas manuellt.
 
-#### `kolumnkonfig`
+#### `hex_kolumnkonfig`
 **Syfte**: Definierar en kolumns struktur med namn, position och datatyp.
 
 **Användning**: Används för att bygga upp den slutliga tabellstrukturen genom att kombinera standardkolumner med användardefinierade kolumner.
 
-**Exempel**: `(gid, 1, 'integer GENERATED ALWAYS AS IDENTITY')` definierar primärnyckeln.
+**Exempel**: `(gid, 1, 'integer GENERATED ALWAYS AS IDENTITY')` definierar primärnyckeln. Själva `PRIMARY KEY`-constrainten läggs på av `hex_sakerstall_gid_primarnyckel()` efter att tabellen omstrukturerats, eftersom `hex_aterskapa_tabellregler()` medvetet hoppar över inkommande primärnycklar.
 
-#### `tabellregler`
+#### `hex_tabellregler`
 **Syfte**: Bevarar tabellövergripande regler vid omstrukturering.
 
 **Användning**: Sparar index, främmande nycklar och constraints innan en tabell omstruktureras, så de kan återskapas exakt som de var.
@@ -270,7 +533,7 @@ src/sql/04_triggers/notifiera_geoserver_borttagning_trigger.sql
 
 ### Konfigurationstabell
 
-#### `standardiserade_kolumner`
+#### `hex_standardiserade_kolumner`
 **Syfte**: Central konfiguration för vilka standardkolumner som ska läggas till tabeller.
 
 **Användning**: Administratörer kan här definiera vilka kolumner som automatiskt ska läggas till nya tabeller, deras position (först/sist), datatyp och standardvärden.
@@ -282,35 +545,88 @@ src/sql/04_triggers/notifiera_geoserver_borttagning_trigger.sql
 
 **Historik_qa-flaggan**: Styr om kolumnen ska uppdateras via trigger (true) eller DEFAULT-värde (false).
 
+**`anvandare_kan_redigera`-flaggan**: `false` betyder att en klient inte får
+skriva ett eget värde i kolumnen. `hex_underhall()` sätter då en
+`BEFORE INSERT`-trigger (`hex_tvinga_anvandarvarden`) som tyst kastar
+klientvärdet och använder `default_varde` i stället — så att t.ex. FME inte kan
+skriva ett påhittat `skapad_av`. Flaggan kräver att `default_varde` är satt.
+Samtliga fem standardkolumner har `false`.
+
+Se [docs/05_anpassa-standardkolumner.md](docs/05_anpassa-standardkolumner.md)
+för samtliga kolumner i tabellen och för standarduppsättningen.
+
+#### Övriga konfigurationstabeller
+
+| Tabell | Styr |
+|---|---|
+| `hex_standardiserade_skyddsnivaer` | Giltiga skyddsnivåprefix, och per prefix `publiceras_geoserver` och `anonym_las` |
+| `hex_standardiserade_datakategorier` | Giltiga datakategoriprefix, och per prefix `hex_validera_geometri` |
+| `hex_standardiserade_roller` | Rollmallar per schema — se [docs/04_hantera-rollmallar.md](docs/04_hantera-rollmallar.md) |
+| `hex_systemanvandare` | Tvåstegsverktyg som FME — se [docs/01_lagg-till-systemanvandare.md](docs/01_lagg-till-systemanvandare.md) |
+| `hex_grupprattigheter` | AD-grupproll → Hex-roll, tillämpas av `hex_tillampa_grupprattigheter()` — se [docs/02_lagg-till-databasanvandare.md](docs/02_lagg-till-databasanvandare.md) |
+
+### Drifttillståndstabeller
+
+De här tabellerna är varken standardvärden eller DBA-konfiguration — de
+beskriver vad Hex redan gjort med databasens tabeller. Innehållet går inte att
+härleda i efterhand, och därför bevaras de över `--upgrade`.
+
+| Tabell | Innehåll | Skrivs av | Rensas av |
+|---|---|---|---|
+| `hex_metadata` | Tabell-OID → historiktabell och QA-triggerfunktion | `hex_skapa_historik_qa()`, `hex_hantera_ny_kolumn()` | `hex_hantera_borttagen_tabell()` |
+| `hex_afvaktande_geometri` | Tabeller mitt i tvåstegsmönstret | `hex_hantera_ny_tabell()` | `hex_hantera_ny_kolumn()`, `hex_hantera_borttagen_tabell()` |
+| `hex_dummy_geometrier` | Tabeller som fortfarande bär en dummy-rad | `hex_lagg_till_dummy_geometri()` | `hex_ta_bort_dummy_rad()` |
+| `hex_avvikande_srid` | Tabeller med SRID ≠ 3007 | `hex_hantera_ny_tabell()`, `hex_hantera_ny_kolumn()` | `hex_hantera_borttagen_tabell()` |
+| `hex_rolluppgifter` | Rollnamn och autogenererat lösenord för LOGIN-tjänstekonton | `hex_hantera_std_roller()`, `hex_underhall()` | `DROP SCHEMA` via `hex_ta_bort_schemaroller()` |
+
+> `hex_rolluppgifter` är den enda av dem som **inte** bevaras över `--upgrade` —
+> lösenorden roteras. Se
+> [docs/09](docs/09_installera-uppdatera-hex.md#hex_rolluppgifter-roteras--den-bevaras-inte).
+
 ### Strukturhanteringsfunktioner
 
-#### `hamta_geometri_definition(schema, tabell)`
+#### `hex_hamta_geometri_definition(schema, tabell)`
 **Syfte**: Analyserar en tabells geometrikolumn och returnerar fullständig information.
 
 **Användning**: Anropas automatiskt när systemet behöver förstå vilken typ av geometri en tabell innehåller. Validerar att det finns exakt en geometrikolumn som heter 'geom'.
 
-**Returvärde**: En `geom_info`-struktur med komplett geometriinformation inklusive typ, SRID och dimensioner.
+**Returvärde**: En `hex_geom_info`-struktur med komplett geometriinformation inklusive typ, SRID och dimensioner.
 
 **Felhantering**: Ger tydliga felmeddelanden om tabellen har flera geometrikolumner eller om kolumnen har fel namn.
 
-#### `hamta_kolumnstandard(schema, tabell, geometriinfo)`
+#### `hex_kolumntyp(schema, tabell, kolumn)`
+**Syfte**: Returnerar en kolumns datatyp så som den ska skrivas i `CREATE TABLE` eller `ALTER TABLE ... ADD COLUMN`.
+
+**Användning**: Gemensam källa för de tre ställen som återskapar kolumner — `hex_hamta_kolumnstandard` (omstrukturering), `hex_skapa_historik_qa` (historiktabellen) och `hex_hantera_ny_kolumn` (synk av nya kolumner till historiken). Tidigare rekonstruerade var och en typen med en egen `CASE` över `information_schema.columns`, med olika luckor.
+
+**Bevarar**: Typmodifierare (`numeric(10,2)`, `character varying(50)`, `geometry(PolygonZ,3007)`) och arrayers skrivbara form (`text[]`, inte `_text`). Bygger på `format_type()`.
+
+**Omfattning**: Endast datatypen. `DEFAULT`, `NOT NULL`, `IDENTITY` hanteras av `hex_spara_kolumnegenskaper`/`hex_aterskapa_kolumnegenskaper`, och `GENERATED` av `hex_hamta_kolumnstandard` — historiktabeller ska spegla en beräknad kolumn som vanlig kolumn.
+
+**Returvärde**: Typdeklarationen som text, eller `NULL` om kolumnen inte finns.
+
+#### `hex_hamta_kolumnstandard(schema, tabell, geometriinfo)`
 **Syfte**: Bestämmer exakt vilka kolumner en tabell ska ha efter omstrukturering.
 
 **Användning**: Kombinerar tre källor:
-1. Standardkolumner från `standardiserade_kolumner` (filtrerade per schema)
+1. Standardkolumner från `hex_standardiserade_kolumner` (filtrerade per schema)
 2. Användarens ursprungliga kolumner från CREATE TABLE
 3. Geometrikolumn (om sådan finns)
 
 **Intelligent schemafiltrering**: Använder `schema_uttryck` för att avgöra vilka standardkolumner som passar för schemat.
 
-**Returvärde**: Array med `kolumnkonfig`-objekt i rätt ordning för den nya tabellstrukturen.
+**Datatyper**: Kolumntypen läses med `format_type()`, så typmodifierare följer med till den omstrukturerade tabellen — `numeric(10,2)`, `character varying(50)` och `text[]` behåller sin exakta deklaration.
+
+**Beräknade kolumner**: `GENERATED ALWAYS AS (...) STORED` bevaras, inklusive uttryck som bygger på funktionsanrop (`upper(namn)`, `ST_Area(geom)`). Eftersom geometrikolumnen alltid sorteras sist får uttrycket referera en kolumn som deklareras längre ned i den nya tabellen — PostgreSQL löser upp kolumnreferenserna först när hela `CREATE TABLE` är tolkad. Beräknade kolumner förblir skrivskyddade, och i historiktabellen speglas de som vanliga kolumner så att QA-triggern kan skriva värdet.
+
+**Returvärde**: Array med `hex_kolumnkonfig`-objekt i rätt ordning för den nya tabellstrukturen.
 
 ### Valideringsfunktioner
 
-#### `validera_schemanamn()`
+#### `hex_validera_schemanamn()`
 **Syfte**: Säkerställer att schemanamn följer Hex namngivningskonvention.
 
-**Mönster**: byggs dynamiskt från `standardiserade_skyddsnivaer` och `standardiserade_datakategorier` (standardkonfiguration: `^(sk0|sk1|sk2|skx)_(ext|kba|sys)_.+$`)
+**Mönster**: byggs dynamiskt från `hex_standardiserade_skyddsnivaer` och `hex_standardiserade_datakategorier` (standardkonfiguration: `^(sk0|sk1|sk2|skx)_(ext|kba|sys)_.+$`)
 
 **Validering omfattar**:
 - Kontroll av säkerhetsnivå (sk0, sk1, sk2, skx i standardkonfiguration)
@@ -321,7 +637,7 @@ src/sql/04_triggers/notifiera_geoserver_borttagning_trigger.sql
 
 **Trigger**: Körs vid CREATE SCHEMA - blockerar skapande av scheman med ogiltiga namn.
 
-#### `validera_tabell(schema, tabell)`
+#### `hex_validera_tabell(schema, tabell)`
 **Syfte**: Säkerställer att tabeller följer namngivningsstandarden.
 
 **Validering omfattar**:
@@ -333,7 +649,7 @@ src/sql/04_triggers/notifiera_geoserver_borttagning_trigger.sql
 
 **Praktisk nytta**: Förhindrar förvirrande tabellnamn och säkerställer konsekvent namngivning i hela databasen.
 
-#### `validera_vynamn(schema, vy)`
+#### `hex_validera_vynamn(schema, vy)`
 **Syfte**: Validerar att vyer följer namngivningsstandarden.
 
 **Krav på vynamn**:
@@ -345,7 +661,7 @@ src/sql/04_triggers/notifiera_geoserver_borttagning_trigger.sql
 
 ### Regelhanteringsfunktioner
 
-#### `spara_tabellregler(schema, tabell)`
+#### `hex_spara_tabellregler(schema, tabell)`
 **Syfte**: Bevarar alla tabellövergripande regler innan omstrukturering.
 
 **Sparar**:
@@ -353,11 +669,11 @@ src/sql/04_triggers/notifiera_geoserver_borttagning_trigger.sql
 - Främmande nycklar
 - Constraints (PRIMARY KEY, UNIQUE, multi-kolumn CHECK)
 
-**Returvärde**: `tabellregler`-objekt med alla regler.
+**Returvärde**: `hex_tabellregler`-objekt med alla regler.
 
 **Användning**: Anropas automatiskt innan en tabell omstruktureras för att inte förlora viktiga databaskopplingar.
 
-#### `spara_kolumnegenskaper(schema, tabell)`
+#### `hex_spara_kolumnegenskaper(schema, tabell)`
 **Syfte**: Bevarar kolumnspecifika egenskaper innan omstrukturering.
 
 **Sparar**:
@@ -366,12 +682,12 @@ src/sql/04_triggers/notifiera_geoserver_borttagning_trigger.sql
 - Kolumnspecifika CHECK-begränsningar
 - IDENTITY-definitioner
 
-**Returvärde**: `kolumnegenskaper`-objekt med alla egenskaper.
+**Returvärde**: `hex_kolumnegenskaper`-objekt med alla egenskaper.
 
-**Separation från tabellregler**: Håller tydlig skillnad mellan tabellövergripande regler och kolumnspecifika egenskaper.
+**Separation från hex_tabellregler**: Håller tydlig skillnad mellan tabellövergripande regler och kolumnspecifika egenskaper.
 
-#### `aterskapa_tabellregler(schema, tabell, regler)`
-**Syfte**: Återställer alla tabellregler efter omstrukturering.
+#### `hex_aterskapa_tabellregler(schema, tabell, regler)`
+**Syfte**: Återställer alla hex_tabellregler efter omstrukturering.
 
 **Återskapar i ordning**:
 1. Index (behövs ofta av constraints)
@@ -380,8 +696,8 @@ src/sql/04_triggers/notifiera_geoserver_borttagning_trigger.sql
 
 **Felhantering**: Detaljerad loggning av varje SQL-sats för enkel felsökning.
 
-#### `aterskapa_kolumnegenskaper(schema, tabell, egenskaper)`
-**Syfte**: Återställer kolumnegenskaper efter omstrukturering.
+#### `hex_aterskapa_kolumnegenskaper(schema, tabell, egenskaper)`
+**Syfte**: Återställer hex_kolumnegenskaper efter omstrukturering.
 
 **Återskapar**:
 1. NOT NULL-begränsningar
@@ -393,7 +709,7 @@ src/sql/04_triggers/notifiera_geoserver_borttagning_trigger.sql
 
 ### Hjälpfunktioner
 
-#### `byt_ut_tabell(schema, tabell, temp_tabell)`
+#### `hex_byt_ut_tabell(schema, tabell, temp_tabell)`
 **Syfte**: Atomisk tabellersättning utan dataförlust.
 
 **Process**:
@@ -402,7 +718,7 @@ src/sql/04_triggers/notifiera_geoserver_borttagning_trigger.sql
 
 **Användning**: Kritisk del av omstruktureringsprocessen för att byta ut gamla tabeller mot nya.
 
-#### `uppdatera_sekvensnamn(schema, tabell, temp_suffix)`
+#### `hex_uppdatera_sekvensnamn(schema, tabell, temp_suffix)`
 **Syfte**: Korrigerar IDENTITY-sekvensnamn efter tabellbyte.
 
 **Problem som löses**: När IDENTITY-kolumner skapas i temporära tabeller får sekvenserna temporära namn som måste korrigeras.
@@ -411,7 +727,7 @@ src/sql/04_triggers/notifiera_geoserver_borttagning_trigger.sql
 
 **Returvärde**: Antal omdöpta sekvenser.
 
-#### `skapa_historik_qa(schema, tabell)`
+#### `hex_skapa_historik_qa(schema, tabell)`
 **Syfte**: Skapar komplett historikhantering för kvalitetssäkring.
 
 **Skapar**:
@@ -424,28 +740,167 @@ src/sql/04_triggers/notifiera_geoserver_borttagning_trigger.sql
 
 **Praktisk användning**: Möjliggör fullständig spårbarhet av alla dataändringar.
 
+#### `hex_underhall()`
+**Syfte**: Verifierar och reparerar Hex-strukturen på **befintliga** scheman,
+tabeller och roller. Kör alltid av installern efter installation och efter
+uppgradering, och går att köra manuellt när som helst.
+
+```sql
+SELECT * FROM public.hex_underhall();
+```
+
+**Returvärde**: en rad per åtgärd med `schema_namn`, `tabell_namn`,
+`trigger_namn` och `atgard`. `atgard = 'redan finns'` betyder att inget behövde
+göras.
+
+**Elva åtgärdstyper**, i körordning:
+
+| Åtgärd | Vad som repareras |
+|---|---|
+| ägarskapsöverföring | Scheman, tabeller, sekvenser och funktioner i Hex-scheman ägs av `hex_systemagare()` |
+| `hex_tvinga_gid` | BEFORE INSERT som hindrar klienter från att välja eget `gid` med `OVERRIDING SYSTEM VALUE` |
+| `hex_tvinga_anvandarvarden` | BEFORE INSERT för kolumner med `anvandare_kan_redigera = false` |
+| `gid_primarnyckel` | `PRIMARY KEY (gid)` på tabeller som saknar unikt index på `gid`, plus framflyttning av sekvensen till `max(gid)` |
+| `hex_kontrollera_geom` | BEFORE INSERT/UPDATE med OGC-validering på tabeller i datakategorier med `hex_validera_geometri = true` |
+| `hex_ta_bort_dummy` | AFTER INSERT som tar bort dummy-raden — återkopplas bara om raden står i `hex_dummy_geometrier` |
+| `trg_<tabell>_qa` | BEFORE UPDATE/DELETE på tabeller med historik |
+| rollstruktur | De fyra rollerna per schema, och invarianten att `r_`/`w_` är NOLOGIN |
+| `hex_geoserver_roller` | Gruppmedlemskap för LOGIN-tjänstekonton (pg_hba.conf-matchning) |
+| schemabehörigheter | GRANT om per roll och schema, samt `arvs_fran` |
+| geoserver-notifiering | `pg_notify` för scheman vars skyddsnivå har `publiceras_geoserver = true` |
+
+**Idempotent**: en andra körning direkt efter den första ska rapportera
+`Inga åtgärder behövdes`.
+
+> `hex_underhall()` skapar **inte** roller för ett schema som aldrig fick dem —
+> `gs_r_`/`gs_w_` skapas bara vid `CREATE SCHEMA`. Se *Vanliga fel vid manuell
+> installation* för det fallet.
+
+#### `hex_tillampa_grupprattigheter()`
+**Syfte**: Tillämpar mappningarna i `hex_grupprattigheter` — ger varje
+AD-grupproll medlemskap i den Hex-roll den är mappad mot.
+
+**`SECURITY DEFINER`** med låst `search_path`, så att en DBA utan
+superuser-rättigheter kan köra den.
+
+**Användning**: körs manuellt efter ändringar i `hex_grupprattigheter`. Se
+[docs/02_lagg-till-databasanvandare.md](docs/02_lagg-till-databasanvandare.md).
+
+#### `hex_tvinga_gid_fran_sekvens()`
+**Syfte**: BEFORE INSERT-trigger som gör sekvensen till den enda källan till `gid`. Kopplas på av `hex_underhall()` och vid tabellskapande.
+
+**Problem som löses**: QGIS och andra klienter kan använda `OVERRIDING SYSTEM VALUE` för att skicka med ett eget `gid` trots `GENERATED ALWAYS`. Triggern kastar klientens värde och sätter `NEW.gid = nextval(sekvens)`.
+
+**Hur klientvärden känns igen**: För en vanlig `INSERT` anropar identity-mekanismen `nextval()` strax före triggern, så `currval() = NEW.gid`. Vid `OVERRIDING SYSTEM VALUE` gör den inte det. `currval()` ensamt räcker dock inte – upprepar klienten samma `gid` över flera rader sammanfaller värdet med `currval` från och med rad två. Triggern jämför därför även med sekvenspositionen vid sin förra avfyrning, sparad per tabell i en sessionsvariabel (`hex.gid_<oid>`). Har sekvensen inte rört sig kan identity-mekanismen inte ha kört för raden.
+
+**Vad som inte får hända**: En vanlig `INSERT` måste behålla sitt identity-värde. En trigger som alltid anropar `nextval()` skulle hoppa över vartannat värde. Testerna 43–47 i `tests/test_stress.sql` täcker båda riktningarna.
+
+#### `hex_sakerstall_gid_primarnyckel(schema, tabell)`
+**Syfte**: Säkerställer att `gid` har ett unikt index och att sekvensen ligger före `max(gid)`.
+
+**Problem som löses**: QGIS slår bara upp `nextval()` för en IDENTITY-kolumn som är NOT NULL, har ett unikt index och saknar egen DEFAULT. Utan nyckel får `gid` inget defaultvärde i QGIS och visas som ett tomt obligatoriskt fält – användaren tvingas skriva in ett värde som `hex_tvinga_gid` sedan kastar. Utan unikt index kan dessutom dubbletter skrivas tyst, och QGIS gör sekventiell scanning vid varje redigering eftersom `gid` används som objekt-id.
+
+**Process**:
+1. Flyttar fram sekvensen till `max(gid)` om den ligger efter
+2. Lägger till `PRIMARY KEY (gid)`, eller `UNIQUE (gid)` om tabellen redan har en primärnyckel på andra kolumner
+3. Hoppar över tabeller med dubbletter i `gid` utan att röra data
+
+**Returvärde**: `'skapad'`, `'unik skapad'`, `'redan finns'`, `'saknar gid'`, `'dubbletter: N'` eller `'fel: <meddelande>'`.
+
+**Låsning**: `ADD PRIMARY KEY` tar ACCESS EXCLUSIVE-lås och bygger index. Kostnaden tas en gång per tabell; planera första körningen till ett servicefönster om databasen har stora tabeller.
+
+**Användning**: Anropas av `hex_hantera_ny_tabell()` (steg 7.4) och av `hex_underhall()` för befintliga tabeller.
+
+#### `hex_reparera_gid_dubbletter(schema, tabell, utfor)`
+**Syfte**: Hittar – och på begäran åtgärdar – dubbletter i `gid` på tabeller från äldre Hex-versioner. Märkt `HEX-MIGRERING`: dubbletter kan bara ha uppstått innan det unika indexet fanns, så funktionen tas bort när alla databaser är städade.
+
+**Torrkörning som standard**: Utan `utfor => true` rapporteras bara vad som skulle göras. Omnumrering ändrar data och kan inte ångras.
+
+**Omnumrering**: Raden med lägst `ctid` i varje dubblettgrupp behåller sitt `gid`; övriga får nästa sekvensvärde via `SET gid = DEFAULT`. QA-triggern lämnas påslagen så att ändringen hamnar i historiktabellen.
+
+**Returvärde**: En rad per dubblettgrupp med `gid_varde`, `antal_rader` och `atgard`.
+
+**Användning**:
+```sql
+SELECT * FROM public.hex_reparera_gid_dubbletter('sk1_kba_geo', 'vagar_l');
+SELECT * FROM public.hex_reparera_gid_dubbletter('sk1_kba_geo', 'vagar_l', true);
+SELECT public.hex_sakerstall_gid_primarnyckel('sk1_kba_geo', 'vagar_l');
+```
+
+#### `hex_lagg_till_dummy_geometri(schema, tabell, geometriinfo)` och `hex_ta_bort_dummy_rad()`
+**Syfte**: Lägger in respektive tar bort dummy-geometriraden. Se
+[Dummy-geometrirad i nya geometritabeller](#7-dummy-geometrirad-i-nya-geometritabeller).
+
+#### `hex_aterskapa_qa_trigger(schema, tabell, historik_tabell)`
+**Syfte**: Bygger om QA-triggerfunktionen med modertabellens aktuella
+kolumnlista. Bygger om den funktion triggern faktiskt anropar, så att den
+fortfarande träffar rätt efter `ALTER TABLE ... RENAME TO`. Anropas via
+`hex_synka_historik()`.
+
+#### `hex_synka_historik(schema, tabell)`
+**Syfte**: Håller historiktabellen i takt med modertabellen. Invarianten är att
+historiken innehåller allt modertabellen innehåller och allt den har innehållit:
+
+- Kolumner som saknas i `_h` läggs till.
+- Kolumner som tagits bort ur modertabellen ligger kvar i `_h` med sina värden.
+  Läggs kolumnen tillbaka återanvänds den.
+- Vid typkonflikt (`ALTER COLUMN TYPE`, eller en kolumn som läggs tillbaka med
+  annan typ) konverteras historikkolumnen bara om varje värde överlever
+  konverteringen oförändrat. Annars döps den gamla kolumnen om till
+  `<kolumn>_arkiv_<ÅÅÅÅMMDD>` och en ny läggs till.
+- QA-triggern byggs om.
+
+Körs av `hex_hantera_ny_kolumn()` efter varje `ALTER TABLE` – även `RENAME TO`
+och ändringar direkt i `_h` – och av `hex_underhall()` för alla tabeller med
+historik. Kan QA-triggern inte byggas om avbryts hela `ALTER TABLE`, eftersom
+en trigger som inte speglar tabellen tappar historik tyst. Returnerar antal ändringar,
+`NULL` om tabellen saknar historik.
+
+```sql
+SELECT public.hex_synka_historik('sk1_kba_geo', 'vagar_l');
+```
+
+#### `hex_forklara_geometrifel(geom)`
+**Syfte**: Returnerar en läsbar förklaring till varför en geometri underkändes
+av `hex_validera_geometri()`. Används i felmeddelanden från
+`hex_kontrollera_geometri_trigger()`.
+
+#### `hex_schema_regex()` och `hex_systemagare()`
+**Syfte**: `hex_schema_regex()` returnerar prefixmönstret
+`^(sk0|sk1|sk2|skx)_`, byggt dynamiskt ur `hex_standardiserade_skyddsnivaer`, så
+att funktionslogik slipper hårdkoda skyddsnivåprefix. Det är **inte** mönstret
+som namnvalideringen använder — `hex_validera_schemanamn()` bygger sitt eget
+`^(sk0|sk1|sk2|skx)_(ext|kba|sys)_.+$` ur båda konfigurationstabellerna.
+
+`hex_systemagare()` returnerar ägarrollen och genereras av installern ur
+`owner_role` — det är den enda funktionen som inte har en egen fil i
+`INSTALL_ORDER`.
+
 ### Triggerfunktioner
 
-#### `hantera_ny_tabell()`
+#### `hex_hantera_ny_tabell()`
 **Syfte**: Huvudfunktion som omstrukturerar nyskapade tabeller.
 
-**Process (10 steg)**:
+**Process (11 steg)**:
 1. Validerar tabellnamn och geometri
 2. Sparar befintliga regler och egenskaper
 3. Bestämmer ny kolumnstruktur
 4. Skapar temporär tabell med ny struktur
 5. Byter ut tabellerna
+5.5. Överför ägarskap på tabell och sekvenser till hex_systemagare()
 6. Återskapar alla regler
 7. Återskapar alla egenskaper
+7.4. Skapar `PRIMARY KEY (gid)` (`hex_sakerstall_gid_primarnyckel`)
+7.5. Skapar triggern `hex_tvinga_gid`
 8. Skapar GiST-index för geometrikolumn
-9. Lägger till geometrivalidering för _kba_-scheman
+9. Lägger till geometrivalidering för scheman vars datakategori har `hex_validera_geometri = true` i `hex_standardiserade_datakategorier` (standardkonfiguration: `_kba_`)
 10. Skapar historik/QA om konfigurerat
 
 **Trigger**: Körs automatiskt vid CREATE TABLE.
 
 **Undantag**: Hoppar över public-schema och historiktabeller.
 
-#### `hantera_kolumntillagg()`
+#### `hex_hantera_ny_kolumn()`
 **Syfte**: Omorganiserar kolumner när nya läggs till.
 
 **Problem som löses**: När ALTER TABLE ADD COLUMN körs hamnar nya kolumner sist, vilket bryter standardstrukturen.
@@ -458,7 +913,7 @@ src/sql/04_triggers/notifiera_geoserver_borttagning_trigger.sql
 
 **Rekursionsskydd**: Använder flagga för att undvika oändliga loopar.
 
-#### `hantera_ny_vy()`
+#### `hex_hantera_ny_vy()`
 **Syfte**: Validerar att nyskapade vyer följer namnstandarden.
 
 **Validering**: Kontrollerar prefix (v_) och suffix baserat på geometriinnehåll.
@@ -467,36 +922,36 @@ src/sql/04_triggers/notifiera_geoserver_borttagning_trigger.sql
 
 **Felmeddelanden**: Ger tydliga instruktioner om korrekt namngivning.
 
-#### `validera_schemanamn()`
+#### `hex_validera_schemanamn()`
 **Syfte**: Validerar att nya scheman följer namngivningskonventionen.
 
-**Validering**: Kontrollerar att schemanamn matchar ett mönster byggt dynamiskt från `standardiserade_skyddsnivaer` och `standardiserade_datakategorier`.
+**Validering**: Kontrollerar att schemanamn matchar ett mönster byggt dynamiskt från `hex_standardiserade_skyddsnivaer` och `hex_standardiserade_datakategorier`.
 
 **Trigger**: Körs vid CREATE SCHEMA - blockerar ogiltiga schemanamn.
 
 **Undantag**: Systemscheman (public, information_schema, pg_*) valideras inte.
 
-#### `hantera_standardiserade_roller()`
-**Syfte**: Skapar roller automatiskt när nya scheman skapas, baserat på konfiguration i tabellen `standardiserade_roller`.
+#### `hex_hantera_std_roller()`
+**Syfte**: Skapar roller automatiskt när nya scheman skapas, baserat på konfiguration i tabellen `hex_standardiserade_roller`.
 
 **Funktionalitet**:
-- Läser rollkonfiguration från `standardiserade_roller`-tabellen
+- Läser rollkonfiguration från `hex_standardiserade_roller`-tabellen
 - Evaluerar `schema_uttryck` för att avgöra vilka roller som ska skapas
-- Skapar både NOLOGIN-grupproller och LOGIN-roller för specifika applikationer
-- Stöder globala roller (sk0_global) och schemaspecifika roller
+- Skapar NOLOGIN-grupproller (`r_`/`w_`) och LOGIN-tjänstekonton för GeoServer (`gs_r_`/`gs_w_`), per schema
+- Ingen roll är längre global över flera scheman; åtkomst till flera scheman på en gång hanteras via `hex_grupprattigheter`
 
-**Trigger**: Körs vid CREATE SCHEMA via `hantera_standardiserade_roller_trigger`.
+**Trigger**: Körs vid CREATE SCHEMA via `hex_hantera_std_roller_trigger`.
 
-#### `ta_bort_schemaroller()`
+#### `hex_ta_bort_schemaroller()`
 **Syfte**: Städar upp oanvända roller när scheman tas bort.
 
-**Process**: Identifierar borttagna scheman och tar bort roller konfigurerade i `standardiserade_roller` där `ta_bort_med_schema = true`. Hanterar både grupproller och LOGIN-roller.
+**Process**: Identifierar borttagna scheman och tar bort roller konfigurerade i `hex_standardiserade_roller` där `ta_bort_med_schema = true`. Hanterar både grupproller och LOGIN-roller.
 
 **Trigger**: Körs vid DROP SCHEMA.
 
 **Nytta**: Håller databasen ren från oanvända säkerhetsobjekt.
 
-#### `hantera_borttagen_tabell()`
+#### `hex_hantera_borttagen_tabell()`
 **Syfte**: Städar upp när bastabeller tas bort.
 
 **Process**: Identifierar borttagna tabeller och tar bort:
@@ -504,32 +959,32 @@ src/sql/04_triggers/notifiera_geoserver_borttagning_trigger.sql
 - Raden i `hex_afvaktande_geometri` (om tabellen droppades innan geometrin hann läggas till)
 - Raden i `hex_metadata` (om tabellen var registrerad där)
 
-**Trigger**: Körs vid DROP TABLE (SQL_DROP-event).
+**Trigger**: Körs vid DROP TABLE och DROP SCHEMA (SQL_DROP-event). Vid `DROP SCHEMA ... CASCADE` rensas dessutom alla rader för schemat i `hex_metadata`, `hex_afvaktande_geometri`, `hex_avvikande_srid` och `hex_dummy_geometrier`.
 
 **Nytta**: Förhindrar att övergivna historiktabeller, funktioner och afvaktande-rader ackumuleras i databasen.
 
-#### `notifiera_geoserver()`
+#### `hex_notifiera_gs()`
 **Syfte**: Skickar `pg_notify` till GeoServer-lyssnaren när nya scheman med `publiceras_geoserver = true` skapas (standardkonfiguration: sk0 och sk1).
 
 **Funktionalitet**:
-- Filtrerar scheman vars skyddsnivå har `publiceras_geoserver = true` i `standardiserade_skyddsnivaer`
+- Filtrerar scheman vars skyddsnivå har `publiceras_geoserver = true` i `hex_standardiserade_skyddsnivaer`
 - Skickar schemanamnet som payload på kanalen `geoserver_schema`
 - Fel i notifieringen blockerar **inte** schemaskapandet
 
-**Trigger**: Körs vid CREATE SCHEMA via `notifiera_geoserver_trigger`.
+**Trigger**: Körs vid CREATE SCHEMA via `hex_notifiera_gs_trigger`.
 
 **Mottagare**: Python-lyssnaren (`geoserver_listener.py`) som skapar workspace och PostGIS-datastore i GeoServer.
 
-#### `notifiera_geoserver_borttagning()`
+#### `hex_notifiera_gs_borttagning()`
 **Syfte**: Skickar `pg_notify` till GeoServer-lyssnaren när scheman med `publiceras_geoserver = true` tas bort, så att motsvarande workspace rensas ut från GeoServer.
 
 **Funktionalitet**:
 - Identifierar borttagna scheman via `pg_event_trigger_dropped_objects()`
-- Filtrerar mot `standardiserade_skyddsnivaer` via namnprefixet (schemat är redan borttaget och kan inte frågas direkt)
+- Filtrerar mot `hex_standardiserade_skyddsnivaer` via namnprefixet (schemat är redan borttaget och kan inte frågas direkt)
 - Skickar schemanamnet som payload på kanalen `geoserver_schema_drop`
 - Fel i notifieringen blockerar **inte** borttagningen av schemat
 
-**Trigger**: Körs vid DROP SCHEMA via `notifiera_geoserver_borttagning_trigger`.
+**Trigger**: Körs vid DROP SCHEMA via `hex_notifiera_gs_borttagning_trigger`.
 
 **Mottagare**: Python-lyssnaren (`geoserver_listener.py`) som tar bort workspace och tillhörande datastores och lager i GeoServer via `DELETE /rest/workspaces/{namn}?recurse=true`.
 
@@ -545,8 +1000,8 @@ CREATE SCHEMA sk2_sys_admin;    -- Begränsad systemdata
 
 -- Felaktig namngivning - blockeras av validering
 CREATE SCHEMA min_data;         -- FEL: Följer inte mönstret
-CREATE SCHEMA sk3_ext_test;     -- FEL: sk3 finns inte i standardiserade_skyddsnivaer
-CREATE SCHEMA sk0_foo_bar;      -- FEL: "foo" finns inte i standardiserade_datakategorier
+CREATE SCHEMA sk3_ext_test;     -- FEL: sk3 finns inte i hex_standardiserade_skyddsnivaer
+CREATE SCHEMA sk0_foo_bar;      -- FEL: "foo" finns inte i hex_standardiserade_datakategorier
 ```
 
 ### Grundläggande tabellskapande
@@ -559,7 +1014,8 @@ CREATE TABLE sk1_kba_bygg.vattenledningar_l (
     geom geometry(LineString, 3007)
 );
 
--- Resultatet blir automatiskt:
+-- Resultatet blir automatiskt (med standardkonfigurationen i
+-- hex_standardiserade_kolumner, och eftersom schemat är ett _kba_-schema):
 -- gid (primärnyckel)
 -- diameter
 -- material  
@@ -569,6 +1025,12 @@ CREATE TABLE sk1_kba_bygg.vattenledningar_l (
 -- andrad_av
 -- geom (flyttad sist)
 ```
+
+Vilka standardkolumner som läggs till styrs av `schema_uttryck` per rad i
+`hex_standardiserade_kolumner`. I standardkonfigurationen får alla scheman `gid`
+och `skapad_tidpunkt`, medan `skapad_av`, `andrad_tidpunkt` och `andrad_av` bara
+läggs till i `_kba_`-scheman. Samma tabell i t.ex. `sk0_ext_sgu` hade alltså
+bara fått `gid` och `skapad_tidpunkt`.
 
 ### Lägga till kolumner
 
@@ -601,7 +1063,7 @@ FROM sk1_kba_bygg.vattenledningar_l;
 
 ```sql
 -- Lägg till en ny standardkolumn för externa datakällor
-INSERT INTO standardiserade_kolumner(
+INSERT INTO hex_standardiserade_kolumner(
     kolumnnamn, 
     ordinal_position, 
     datatyp, 
@@ -618,7 +1080,7 @@ INSERT INTO standardiserade_kolumner(
 );
 
 -- Lägg till kolumn som uppdateras via trigger
-INSERT INTO standardiserade_kolumner(
+INSERT INTO hex_standardiserade_kolumner(
     kolumnnamn, 
     ordinal_position, 
     datatyp,
@@ -664,35 +1126,36 @@ schema_uttryck = 'LIKE ''sk%'' AND NOT LIKE ''%_sys_%'''
 
 ### Anpassa roller per schema
 
-Vilka roller som skapas när ett schema skapas styrs av tabellen `standardiserade_roller`:
+Vilka roller som skapas när ett schema skapas styrs av tabellen `hex_standardiserade_roller`:
 
 ```sql
 -- Visa aktuell rollkonfiguration
-SELECT rollnamn, rolltyp, schema_uttryck, with_login, arvs_fran, ta_bort_med_schema
-FROM standardiserade_roller
+SELECT rollnamn, rolltyp, schema_uttryck, kan_logga_in, arvs_fran, ta_bort_med_schema
+FROM hex_standardiserade_roller
 ORDER BY gid;
 
--- Lägg till ett extra GeoServer-skrivkonto för sk2-scheman
-INSERT INTO standardiserade_roller (
+-- Lägg till ett dedikerat läs-tjänstekonto för ett internt verktyg,
+-- men bara för sk2-scheman (som inte publiceras till GeoServer).
+INSERT INTO hex_standardiserade_roller (
     rollnamn,
     rolltyp,
     schema_uttryck,
-    with_login,
+    kan_logga_in,
     arvs_fran,
     ta_bort_med_schema
 ) VALUES (
-    'gs_w_{schema}',        -- {schema} ersätts med det faktiska schemanamnet
-    'write',
+    'app_r_{schema}',       -- {schema} ersätts med det faktiska schemanamnet
+    'read',
     'LIKE ''sk2_%''',       -- Matchar alla sk2-scheman
     true,                   -- LOGIN-tjänstekonto med autogenererat lösenord
-    'w_{schema}',           -- Ärver behörigheter från NOLOGIN-gruppen w_{schema}
+    'r_{schema}',           -- Ärver behörigheter från NOLOGIN-gruppen r_{schema}
     true                    -- Tas bort när schemat droppas
 );
 ```
 
 Fördefinierade roller (installeras med Hex):
 
-| Roll | Typ | Matchar | with_login | Ärver från | Raderas med schema |
+| Roll | Typ | Matchar | kan_logga_in | Ärver från | Raderas med schema |
 |---|---|---|---|---|---|
 | `r_{schema}` | read | IS NOT NULL (alla) | Nej (NOLOGIN) | — | Ja |
 | `w_{schema}` | write | IS NOT NULL (alla) | Nej (NOLOGIN) | — | Ja |
@@ -722,7 +1185,7 @@ CREATE TABLE sk0_ext_test.test_tabell_p (
 ### Vanliga problem och lösningar
 
 **Problem**: Schema kan inte skapas  
-**Lösning**: Kontrollera att schemanamnet följer namnkonventionen — se giltiga prefix och kategorier i `standardiserade_skyddsnivaer` och `standardiserade_datakategorier` (t.ex. `sk0_kba_bygg`, `skx_ext_test`)
+**Lösning**: Kontrollera att schemanamnet följer namnkonventionen — se giltiga prefix och kategorier i `hex_standardiserade_skyddsnivaer` och `hex_standardiserade_datakategorier` (t.ex. `sk0_kba_bygg`, `skx_ext_test`)
 
 **Problem**: Tabell skapas inte med standardkolumner  
 **Lösning**: Kontrollera att alla triggers är aktiverade och att schemat inte är 'public'
@@ -734,7 +1197,7 @@ CREATE TABLE sk0_ext_test.test_tabell_p (
 **Lösning**: Kontrollera loggmeddelanden för detaljerad felinformation
 
 **Problem**: Historiktabell skapas inte  
-**Lösning**: Verifiera att minst en kolumn har `historik_qa = true` i `standardiserade_kolumner`
+**Lösning**: Verifiera att minst en kolumn har `historik_qa = true` i `hex_standardiserade_kolumner`
 
 ### Kontrollera systemstatus
 
@@ -744,18 +1207,38 @@ SELECT evtname, evtevent, evtenabled
 FROM pg_event_trigger 
 ORDER BY evtname;
 
--- Kontrollera standardkolumner för ett schema
-SELECT * FROM standardiserade_kolumner
-WHERE 'sk1_kba_bygg' LIKE schema_uttryck
+-- Lista alla konfigurerade standardkolumner
+SELECT kolumnnamn, ordinal_position, datatyp, schema_uttryck, historik_qa
+FROM hex_standardiserade_kolumner
 ORDER BY ordinal_position;
 
--- Verifiera att funktioner finns
-SELECT proname
-FROM pg_proc
-WHERE proname LIKE 'hantera_%'
-   OR proname LIKE 'validera_%'
-   OR proname LIKE 'notifiera_%'
-ORDER BY proname;
+-- Kontrollera vilka av dem ett visst schema faktiskt får.
+-- OBS: schema_uttryck är ett SQL-predikat ('IS NOT NULL', 'LIKE ''%_kba_%''')
+-- och inte ett LIKE-mönster – det måste evalueras dynamiskt.
+DO $$
+DECLARE
+    mal_schema text := 'sk1_kba_bygg';
+    r record;
+    traffar boolean;
+BEGIN
+    FOR r IN SELECT kolumnnamn, ordinal_position, datatyp, schema_uttryck
+             FROM hex_standardiserade_kolumner ORDER BY ordinal_position
+    LOOP
+        EXECUTE format('SELECT %L %s', mal_schema, r.schema_uttryck) INTO traffar;
+        IF traffar THEN
+            RAISE NOTICE '% (pos %, %)', r.kolumnnamn, r.ordinal_position, r.datatyp;
+        END IF;
+    END LOOP;
+END;
+$$;
+
+-- Verifiera att funktionerna finns (samtliga har hex_-prefix)
+SELECT p.proname
+FROM pg_proc p
+JOIN pg_namespace n ON n.oid = p.pronamespace
+WHERE n.nspname = 'public'
+  AND p.proname LIKE 'hex\_%'
+ORDER BY p.proname;
 ```
 
 ## Avinstallation
@@ -772,70 +1255,28 @@ Skriptet kör alla DROP-satser i rätt ordning och rullar tillbaka om något mis
 
 ### Manuell avinstallation
 
-Om du föredrar att köra SQL direkt, kör följande block som superanvändare (t.ex. `postgres`). Ordningen är viktig — event triggers måste tas bort innan funktioner, typer sist.
+Vill du köra SQL direkt finns hela `DROP`-blocket i
+[docs/10_avinstallera-hex.md](docs/10_avinstallera-hex.md#metod-2--manuell-sql).
+Det är avsiktligt bara dokumenterat på ett ställe: blocket måste hållas i takt
+med `UNINSTALL_SQL` i `install_hex.py`, och en andra kopia här driver isär.
+`tests/test_installer.py` kontrollerar att docs/10 och `UNINSTALL_SQL` stämmer
+överens.
 
-```sql
--- 1. Ta bort event triggers (måste tas bort innan funktioner)
-DROP EVENT TRIGGER IF EXISTS notifiera_geoserver_borttagning_trigger;
-DROP EVENT TRIGGER IF EXISTS notifiera_geoserver_trigger;
-DROP EVENT TRIGGER IF EXISTS validera_schemanamn_trigger;
-DROP EVENT TRIGGER IF EXISTS hantera_standardiserade_roller_trigger;
-DROP EVENT TRIGGER IF EXISTS ta_bort_schemaroller_trigger;
-DROP EVENT TRIGGER IF EXISTS hantera_ny_vy_trigger;
-DROP EVENT TRIGGER IF EXISTS hantera_kolumntillagg_trigger;
-DROP EVENT TRIGGER IF EXISTS hantera_ny_tabell_trigger;
-DROP EVENT TRIGGER IF EXISTS hantera_borttagen_tabell_trigger;
+Ordningen i blocket är viktig — event-triggers måste tas bort innan
+funktionerna de anropar, och typerna sist av allt, efter funktionerna som tar
+dem som argument.
 
--- 2. Ta bort triggerfunktioner
-DROP FUNCTION IF EXISTS public.notifiera_geoserver_borttagning();
-DROP FUNCTION IF EXISTS public.notifiera_geoserver();
-DROP FUNCTION IF EXISTS public.hantera_standardiserade_roller();
-DROP FUNCTION IF EXISTS public.ta_bort_schemaroller();
-DROP FUNCTION IF EXISTS public.hantera_ny_vy();
-DROP FUNCTION IF EXISTS public.hantera_kolumntillagg();
-DROP FUNCTION IF EXISTS public.hantera_ny_tabell();
-DROP FUNCTION IF EXISTS public.hantera_borttagen_tabell();
+> **Rollen `hex_geoserver_roller` tas inte bort.** Den är en klusterroll som
+> delas av alla databaser i klustret som kör Hex, och den är målet för
+> `pg_hba.conf`-posten `+hex_geoserver_roller`. Varken `--uninstall` eller det
+> manuella blocket rör den. Se
+> [docs/10](docs/10_avinstallera-hex.md#rollen-hex_geoserver_roller--ta-inte-bort-den-rutinmässigt).
 
--- 3. Ta bort hjälpfunktioner
-DROP FUNCTION IF EXISTS public.tilldela_rollrattigheter(text, text, text);
-DROP FUNCTION IF EXISTS public.skapa_historik_qa(text, text);
-DROP FUNCTION IF EXISTS public.uppdatera_sekvensnamn(text, text, text);
-DROP FUNCTION IF EXISTS public.byt_ut_tabell(text, text, text);
-
--- 4. Ta bort regelfunktioner
-DROP FUNCTION IF EXISTS public.aterskapa_kolumnegenskaper(text, text, kolumnegenskaper);
-DROP FUNCTION IF EXISTS public.aterskapa_tabellregler(text, text, tabellregler);
-DROP FUNCTION IF EXISTS public.spara_kolumnegenskaper(text, text);
-DROP FUNCTION IF EXISTS public.spara_tabellregler(text, text);
-
--- 5. Ta bort valideringsfunktioner
-DROP FUNCTION IF EXISTS public.validera_geometri(geometry) CASCADE;
-DROP FUNCTION IF EXISTS public.validera_schemanamn();
-DROP FUNCTION IF EXISTS public.validera_vynamn(text, text);
-DROP FUNCTION IF EXISTS public.validera_tabell(text, text);
-
--- 6. Ta bort strukturfunktioner
-DROP FUNCTION IF EXISTS public.hamta_kolumnstandard(text, text, geom_info);
-DROP FUNCTION IF EXISTS public.hamta_geometri_definition(text, text);
-
--- 7. Ta bort konfigurationsfunktion
-DROP FUNCTION IF EXISTS public.system_owner();
-
--- 8. Ta bort konfigurationstabeller
-DROP TABLE IF EXISTS public.hex_afvaktande_geometri;
-DROP TABLE IF EXISTS public.hex_systemanvandare;
-DROP TABLE IF EXISTS public.hex_metadata;
-DROP TABLE IF EXISTS public.standardiserade_roller;
-DROP TABLE IF EXISTS public.standardiserade_kolumner;
-DROP TABLE IF EXISTS public.standardiserade_skyddsnivaer;
-DROP TABLE IF EXISTS public.standardiserade_datakategorier;
-
--- 9. Ta bort anpassade typer (måste tas bort efter funktioner som använder dem)
-DROP TYPE IF EXISTS public.tabellregler;
-DROP TYPE IF EXISTS public.kolumnegenskaper;
-DROP TYPE IF EXISTS public.kolumnkonfig;
-DROP TYPE IF EXISTS public.geom_info;
-```
+> **Schemats roller överlever också avinstallationen.** `r_`, `w_`, `gs_r_` och
+> `gs_w_` per schema tas bara bort av `DROP SCHEMA`, via event-triggern
+> `hex_ta_bort_schemaroller_trigger`. Avinstallerar du Hex medan schemana finns
+> kvar blir rollerna kvar i klustret, och event-triggern som skulle ha städat
+> dem är borta. Droppa schemana först, eller ta bort rollerna för hand efteråt.
 
 ## Licens
 

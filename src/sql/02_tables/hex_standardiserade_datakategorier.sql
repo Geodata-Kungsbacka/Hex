@@ -1,0 +1,48 @@
+-- Table: public.hex_standardiserade_datakategorier
+
+CREATE TABLE IF NOT EXISTS public.hex_standardiserade_datakategorier (
+    gid integer NOT NULL GENERATED ALWAYS AS IDENTITY,
+    prefix text NOT NULL,
+    beskrivning text,
+    hex_validera_geometri boolean NOT NULL DEFAULT false,
+
+    CONSTRAINT hex_standardiserade_datakategorier_pkey PRIMARY KEY (gid),
+    CONSTRAINT hex_standardiserade_datakategorier_prefix_key UNIQUE (prefix),
+    CONSTRAINT valid_datakategori_prefix CHECK (prefix ~ '^[a-z][a-z0-9]*$')
+);
+
+-- Ägaren sätts via hex_systemagare() i stället för ett hårdkodat rollnamn,
+-- så att manuell installation ger samma ägarskap som install_hex.py.
+DO $$
+BEGIN
+    EXECUTE format(
+        'ALTER TABLE public.hex_standardiserade_datakategorier OWNER TO %I',
+        public.hex_systemagare()
+    );
+END;
+$$;
+
+COMMENT ON TABLE public.hex_standardiserade_datakategorier
+    IS 'Definierar giltiga datakategoriprefix (ext, kba, sys, ...) och deras innebörd.
+Tabellen används av hex_validera_schemanamn() för att bygga det tillåtna namnmönstret dynamiskt.
+Observera att hex_standardiserade_kolumner.schema_uttryck refererar till kategorier med LIKE-uttryck
+(t.ex. LIKE ''%_kba_%'') – uppdatera dessa rader vid behov när en ny kategori läggs till.
+Lägg till en ny rad här för att registrera en ny datakategori.';
+
+COMMENT ON COLUMN public.hex_standardiserade_datakategorier.prefix
+    IS 'Kortprefixet som ingår i schemanamnet, t.ex. "ext", "kba", "sys". Måste matcha ^[a-z][a-z0-9]*$.';
+
+COMMENT ON COLUMN public.hex_standardiserade_datakategorier.hex_validera_geometri
+    IS 'Sant om tabeller i scheman med denna datakategori ska få geometrivalidering (CHECK-constraint + trigger).
+Påverkar hex_hantera_ny_tabell(), hex_hantera_ny_kolumn() och hex_underhall().';
+
+INSERT INTO public.hex_standardiserade_datakategorier
+    (prefix, beskrivning, hex_validera_geometri)
+VALUES
+    ('ext', 'Externa datakällor (t.ex. FME-inläsning, regionala register)', false),
+    ('kba', 'Interna kommunala datakällor (manuell redigering, ärendedata)', true),
+    ('sys', 'Systemdata och administration',                                 false)
+ON CONFLICT (prefix) DO NOTHING;
+
+-- Trigger functions run as SECURITY INVOKER, so the calling user needs SELECT on this table.
+GRANT SELECT ON public.hex_standardiserade_datakategorier TO PUBLIC;

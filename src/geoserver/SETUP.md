@@ -5,6 +5,40 @@ GeoServer workspace/store-skaparen på Windows Server 2022.
 
 ---
 
+## Stödda GeoServer-versioner
+
+Lyssnaren är verifierad mot **GeoServer 2.27, 2.28 och 3.0** och använder samma
+kodväg för alla tre. Vid uppstart loggas den anslutna versionen, och en varning
+skrivs om den ligger utanför det intervallet — lyssnaren fortsätter ändå.
+
+**Om du uppgraderar till GeoServer 3.x**, notera att det är GeoServer-servern
+som ställer krav, inte lyssnaren:
+
+| Krav | GeoServer 2.28 | GeoServer 3.0 |
+| --- | --- | --- |
+| Java | 17 eller 21 | 17 eller 21 |
+| Servletmotor (WAR-distribution) | Tomcat 10.1 | **Tomcat 11.0** (Jakarta EE Servlet 6.1) |
+| Fristående distribution | Jetty 10 | Jetty 12.1 |
+
+Övrigt att känna till vid uppgradering till 3.x:
+
+- **H2-datastoren är borttagen.** Berör inte Hex — lyssnaren skapar enbart
+  PostGIS-datastores — men kontrollera om något lager publicerats manuellt mot H2.
+- **WCS 1.0/1.1, WorldImage och ArcGRID är numera tillägg** och måste installeras
+  separat om de används.
+- **Keycloak- och OAuth2-tilläggen är avvecklade** och ersätts av ett gemensamt
+  OIDC-tillägg. Om GeoServer-inloggningen går via något av dem: se till att
+  kontot i `HEX_GS_USER` är ett lokalt konto i GeoServers egen användartjänst,
+  så att lyssnaren kan logga in oavsett hur den federerade inloggningen migreras.
+- **Loggplatsen** konfigureras inte längre i webbgränssnittet eller via REST,
+  utan med `GEOSERVER_LOG_LOCATION`. Berör inte lyssnarens egen loggfil
+  (`HEX_LOG_DIR`), bara GeoServers.
+
+Datakatalogen (`data_dir`) behöver inte konverteras vid uppgraderingen, men
+uppgraderingen är inte reversibel — ta en säkerhetskopia först.
+
+---
+
 ## Översikt
 
 Lyssnaren hanterar två riktningar automatiskt via var sin pg_notify-kanal.
@@ -16,22 +50,22 @@ CREATE SCHEMA sk0_kba_test
         |
         v
 [PostgreSQL Event Trigger 1]
-hantera_standardiserade_roller()
+hex_hantera_std_roller()
         |
         +--> CREATE ROLE r_sk0_kba_test NOLOGIN
-        |    (läsbehörighetsgrupp - tilldelas AD-användare)
+        |    (läsbehörighetsgrupp – tilldelas AD-användare)
         +--> CREATE ROLE w_sk0_kba_test NOLOGIN
-        |    (skrivbehörighetsgrupp - tilldelas AD-användare)
+        |    (skrivbehörighetsgrupp – tilldelas AD-användare)
         +--> CREATE ROLE gs_r_sk0_kba_test WITH LOGIN PASSWORD '<autogenererat>'
-        |    (GeoServer läs-tjänstekonto - direkt PostgreSQL-anslutning)
+        |    (GeoServer läs-tjänstekonto, ärver r_sk0_kba_test – SELECT)
         +--> CREATE ROLE gs_w_sk0_kba_test WITH LOGIN PASSWORD '<autogenererat>'
-        |    (GeoServer skriv-tjänstekonto)
-        +--> INSERT INTO hex_role_credentials (rolname, password)
+        |    (GeoServer skriv-tjänstekonto, ärver w_sk0_kba_test – ALL, möjliggör WFS-T)
+        +--> INSERT INTO hex_rolluppgifter (rollnamn, losenord)
              (lösenorden sparas i databasen för lyssnaren att hämta)
         |
         v
 [PostgreSQL Event Trigger 2]
-notifiera_geoserver()
+hex_notifiera_gs()
         |
         v
 pg_notify('geoserver_schema', 'sk0_kba_test')
@@ -40,28 +74,39 @@ pg_notify('geoserver_schema', 'sk0_kba_test')
 [Python Listener - Windows Service]
 geoserver_listener.py
         |
-        +--> SELECT password FROM hex_role_credentials WHERE rolname = 'gs_r_sk0_kba_test'
+        +--> SELECT losenord FROM hex_rolluppgifter WHERE rollnamn = 'gs_r_sk0_kba_test'
+        +--> SELECT losenord FROM hex_rolluppgifter WHERE rollnamn = 'gs_w_sk0_kba_test'
         |
         v
 GeoServer REST API:
-  1. POST /rest/workspaces
-         --> workspace "sk0_kba_test"
-  2. PUT  /rest/namespaces/sk0_kba_test
-         --> namespace URI satt
-  3. POST /rest/workspaces/sk0_kba_test/datastores
-         --> PostGIS-datastore "sk0_kba_test"
-             (direktanslutning med gs_r_sk0_kba_test-uppgifter)
-  4. POST /rest/security/roles/role/gs_r_sk0_kba_test
-  4. POST /rest/security/roles/role/gs_w_sk0_kba_test
-         --> GeoServer-roller skapas (speglar PostgreSQL-tjänstekontona)
-  5. POST /rest/security/acl/layers
-         --> sk0_kba_test.*.r = gs_r_sk0_kba_test
-             sk0_kba_test.*.w = gs_w_sk0_kba_test
-             (ger rollerna tillgång till workspace)
+  Steg 1. POST /rest/workspaces
+              --> läs-workspace "sk0_kba_test"
+          PUT  /rest/namespaces/sk0_kba_test
+              --> namespace URI satt
+  Steg 2. POST /rest/workspaces/sk0_kba_test/datastores
+              --> PostGIS-datastore "sk0_kba_test"
+                  (direktanslutning med gs_r_sk0_kba_test – SELECT)
+  Steg 3. POST /rest/workspaces
+              --> skriv-workspace "sk0_kba_test_w"
+          PUT  /rest/namespaces/sk0_kba_test_w
+              --> namespace URI satt
+  Steg 4. POST /rest/workspaces/sk0_kba_test_w/datastores
+              --> PostGIS-datastore "sk0_kba_test_w"
+                  (direktanslutning med gs_w_sk0_kba_test – ALL, möjliggör WFS-T)
+  Steg 5. POST /rest/security/roles/role/r_sk0_kba_test
+          POST /rest/security/roles/role/w_sk0_kba_test
+              --> GeoServer-roller skapas (speglar PostgreSQL-behörighetsgrupperna)
+  Steg 6. POST /rest/security/acl/layers
+              --> sk0_kba_test.*.r = r_sk0_kba_test
+                  (läsrollen, och ROLE_ANONYMOUS för sk0/anonym_las=true)
+  Steg 7. POST /rest/security/acl/layers
+              --> sk0_kba_test_w.*.r = w_sk0_kba_test
+                  sk0_kba_test_w.*.w = w_sk0_kba_test
+                  (skrivrollen styr åtkomst till WFS-T-workspacet)
 ```
 
 > Rolltrigger och notifieringstrigger körs i ordning som en del av samma CREATE
-> SCHEMA-transaktion. Lösenordet är alltid inskrivet i `hex_role_credentials`
+> SCHEMA-transaktion. Lösenordet är alltid inskrivet i `hex_rolluppgifter`
 > innan pg_notify når lyssnaren.
 
 **Borttagning** — när du kör `DROP SCHEMA sk0_kba_test CASCADE`:
@@ -71,7 +116,7 @@ DROP SCHEMA sk0_kba_test CASCADE
         |
         v
 [PostgreSQL Event Trigger]
-notifiera_geoserver_borttagning()
+hex_notifiera_gs_borttagning()
         |
         v
 pg_notify('geoserver_schema_drop', 'sk0_kba_test')
@@ -82,14 +127,18 @@ geoserver_listener.py
         |
         v
 GeoServer REST API:
-  1. DELETE /rest/security/acl/layers/sk0_kba_test.*.r
-     DELETE /rest/security/acl/layers/sk0_kba_test.*.w
-         --> ACL-regler tas bort
-  2. DELETE /rest/workspaces/sk0_kba_test?recurse=true
-         --> workspace + datastores + publicerade lager tas bort
-  3. DELETE /rest/security/roles/role/gs_r_sk0_kba_test
-     DELETE /rest/security/roles/role/gs_w_sk0_kba_test
-         --> GeoServer-roller tas bort
+  Steg 1. DELETE /rest/security/acl/layers/sk0_kba_test.*.r
+              --> ACL-regler för läs-workspace tas bort
+  Steg 2. DELETE /rest/security/acl/layers/sk0_kba_test_w.*.r
+          DELETE /rest/security/acl/layers/sk0_kba_test_w.*.w
+              --> ACL-regler för skriv-workspace tas bort
+  Steg 3. DELETE /rest/workspaces/sk0_kba_test?recurse=true
+              --> läs-workspace + datastores + publicerade lager tas bort
+  Steg 4. DELETE /rest/workspaces/sk0_kba_test_w?recurse=true
+              --> skriv-workspace + datastores + publicerade lager tas bort
+  Steg 5. DELETE /rest/security/roles/role/r_sk0_kba_test
+          DELETE /rest/security/roles/role/w_sk0_kba_test
+              --> GeoServer-roller tas bort
 ```
 
 Det säkerställer att GeoServer inte gör upprepade anrop mot ett schema
@@ -208,6 +257,14 @@ pywin32           30x
 requests          2.3x.x
 ```
 
+> **`python-dotenv` är valfritt.** Saknas det läser lyssnaren `.env` med en
+> inbyggd reservläsare i stället, och loggar en varning vid uppstart.
+> Reservläsaren följer samma regler som `python-dotenv` — inline-kommentarer,
+> citerade värden, `#` i lösenord och `export NYCKEL=värde` tolkas likadant, så
+> en `.env` betyder samma sak oavsett vilken läsare som är aktiv
+> (`tests/test_pg_notify_listener.py`, `TestEnvFilReservlasare`, håller de två
+> i takt). `psycopg2`, `requests` och `pywin32` är däremot obligatoriska.
+
 ---
 
 ## Steg 2: Installera SQL-komponenten via Hex
@@ -217,13 +274,13 @@ automatiskt som en del av installationsordningen. De relevanta filerna är:
 
 | Fil | Syfte |
 |---|---|
-| `src/sql/02_tables/hex_role_credentials.sql` | Tabell där lösenord för LOGIN-roller sparas |
-| `src/sql/03_functions/05_trigger_functions/hantera_standardiserade_roller.sql` | Skapar r_/w_-behörighetsgrupper och gs_r_/gs_w_-tjänstekonton med autogenererade lösenord vid CREATE SCHEMA |
-| `src/sql/04_triggers/hantera_standardiserade_roller_trigger.sql` | Registrerar ovanstående trigger |
-| `src/sql/03_functions/05_trigger_functions/notifiera_geoserver.sql` | Skickar pg_notify vid CREATE SCHEMA |
-| `src/sql/04_triggers/notifiera_geoserver_trigger.sql` | Registrerar ovanstående trigger |
-| `src/sql/03_functions/05_trigger_functions/notifiera_geoserver_borttagning.sql` | Skickar pg_notify vid DROP SCHEMA |
-| `src/sql/04_triggers/notifiera_geoserver_borttagning_trigger.sql` | Registrerar ovanstående trigger |
+| `src/sql/02_tables/hex_rolluppgifter.sql` | Tabell där lösenord för LOGIN-roller sparas |
+| `src/sql/03_functions/05_trigger_functions/hex_hantera_std_roller.sql` | Skapar r_/w_-behörighetsgrupper och gs_r_/gs_w_-tjänstekonton med autogenererade lösenord vid CREATE SCHEMA |
+| `src/sql/04_triggers/hex_hantera_std_roller_trigger.sql` | Registrerar ovanstående trigger |
+| `src/sql/03_functions/05_trigger_functions/hex_notifiera_gs.sql` | Skickar pg_notify vid CREATE SCHEMA |
+| `src/sql/04_triggers/hex_notifiera_gs_trigger.sql` | Registrerar ovanstående trigger |
+| `src/sql/03_functions/05_trigger_functions/hex_notifiera_gs_borttagning.sql` | Skickar pg_notify vid DROP SCHEMA |
+| `src/sql/04_triggers/hex_notifiera_gs_borttagning_trigger.sql` | Registrerar ovanstående trigger |
 
 > **VIKTIGT:** Samtliga triggers måste installeras i **varje** databas som
 > ska övervakas. Kör `install_hex.py` en gång per databas, med rätt
@@ -233,10 +290,10 @@ Om du redan har Hex installerat och bara vill lägga till dessa triggers manuell
 
 ```sql
 -- Kör som postgres-användaren i VARJE databas som ska övervakas
--- 1. notifiera_geoserver.sql         (CREATE SCHEMA-funktion)
--- 2. notifiera_geoserver_trigger.sql (CREATE SCHEMA-trigger)
--- 3. notifiera_geoserver_borttagning.sql         (DROP SCHEMA-funktion)
--- 4. notifiera_geoserver_borttagning_trigger.sql (DROP SCHEMA-trigger)
+-- 1. hex_notifiera_gs.sql         (CREATE SCHEMA-funktion)
+-- 2. hex_notifiera_gs_trigger.sql (CREATE SCHEMA-trigger)
+-- 3. hex_notifiera_gs_borttagning.sql         (DROP SCHEMA-funktion)
+-- 4. hex_notifiera_gs_borttagning_trigger.sql (DROP SCHEMA-trigger)
 ```
 
 **Verifiera att triggerna finns:**
@@ -244,15 +301,15 @@ Om du redan har Hex installerat och bara vill lägga till dessa triggers manuell
 SELECT evtname, evtevent, evttags
 FROM pg_event_trigger
 WHERE evtname IN (
-    'hantera_standardiserade_roller_trigger',
-    'notifiera_geoserver_trigger',
-    'notifiera_geoserver_borttagning_trigger'
+    'hex_hantera_std_roller_trigger',
+    'hex_notifiera_gs_trigger',
+    'hex_notifiera_gs_borttagning_trigger'
 );
 ```
 
-Du bör se tre rader. `hantera_standardiserade_roller_trigger` körs alltid
-**före** `notifiera_geoserver_trigger` så att lösenordet redan finns i
-`hex_role_credentials` när lyssnaren svarar på notifieringen.
+Du bör se tre rader. `hex_hantera_std_roller_trigger` körs alltid
+**före** `hex_notifiera_gs_trigger` så att lösenordet redan finns i
+`hex_rolluppgifter` när lyssnaren svarar på notifieringen.
 
 ---
 
@@ -282,17 +339,17 @@ GRANT CONNECT ON DATABASE geodata_sk1 TO hex_listener;
 ```
 
 `LISTEN` på en kanal är tillgängligt för alla roller som kan ansluta till
-databasen. Lyssnaren behöver dessutom kunna läsa `hex_role_credentials` för
+databasen. Lyssnaren behöver dessutom kunna läsa `hex_rolluppgifter` för
 att hämta lösenordet till GeoServer-datastorens direktanslutning. Ge
 rättigheten i **varje databas** som ska övervakas:
 
 ```sql
 -- Kör i varje databas (t.ex. \c geodata_sk0 i psql)
-GRANT SELECT ON public.hex_role_credentials TO hex_listener;
+GRANT SELECT ON public.hex_rolluppgifter TO hex_listener;
 ```
 
 > **OBS:** Om du kör Hex-installern (`install_hex.py`) sätts denna rättighet
-> automatiskt av `hex_role_credentials.sql` och behöver inte läggas till manuellt.
+> automatiskt av `hex_rolluppgifter.sql` och behöver inte läggas till manuellt.
 
 ### pg_hba.conf — tillåt anslutningar
 
@@ -301,7 +358,7 @@ PostgreSQL tillåter inte nätverksanslutningar förrän det finns en matchande 
 
 **1. `hex_listener`** — Python-lyssnaren som prenumererar på `pg_notify`.
 
-**2. `gs_r_<schema>`- och `gs_w_<schema>`-roller** — skapas automatiskt av `hantera_standardiserade_roller()`
+**2. `gs_r_<schema>`- och `gs_w_<schema>`-roller** — skapas automatiskt av `hex_hantera_std_roller()`
 vid varje `CREATE SCHEMA`. GeoServer använder dessa LOGIN-tjänstekonton för direktanslutning till
 varje PostGIS-datastore. (`r_*` och `w_*` är NOLOGIN-behörighetsgrupper för AD-användare och
 används inte av GeoServer direkt.)
@@ -383,38 +440,38 @@ standardkontot `admin`:
 
 ---
 
-## Steg 4: Tillåt localhost i GeoServer CSRF-filter
+## Steg 4: CSRF-filtret — behövs normalt inte för lyssnaren
 
-GeoServer blockerar POST/PUT/DELETE-anrop från ursprung den inte känner igen.
-Eftersom lyssnaren anropar GeoServer REST API från `localhost` måste vi
-vitlista det i GeoServers `web.xml`.
+> **Kort svar:** hoppa över det här steget. GeoServers CSRF-filter skyddar
+> webbgränssnittet (Wicket), inte REST-API:et. Lyssnaren anropar bara REST.
 
-**Hitta filen:**
-```
-<GeoServer-katalog>\webapps\geoserver\WEB-INF\web.xml
-```
+Steget fanns tidigare med som obligatoriskt. Verifierat mot GeoServer 2.28.0
+och 3.0.0 med standardkonfiguration — helt utan `GEOSERVER_CSRF_WHITELIST` —
+lyckas samtliga skrivande REST-anrop (`POST`/`PUT`/`DELETE`), även när
+`Host`-headern pekar på en helt främmande domän:
 
-**Lägg till `localhost` i CSRF-vitlistan:**
+| Anrop | GeoServer 2.28.0 | GeoServer 3.0.0 |
+| --- | --- | --- |
+| `POST /rest/workspaces` | 201 | 201 |
+| `DELETE /rest/workspaces/...?recurse=true` | 200 | 200 |
+
+**Om du redan har `localhost` i vitlistan gör den ingen skada** — låt den ligga
+kvar. Ta bara bort den om du städar konfigurationen, och testa lyssnaren
+efteråt (steg 6).
+
+**Vitlistan behövs däremot fortfarande** om *du själv* når GeoServers
+webbgränssnitt via en proxy och får `403 Origin does not correspond to request`.
+Det är ett separat problem från lyssnaren. Parametern finns kvar i GeoServer 3:
 
 ```xml
 <context-param>
     <param-name>GEOSERVER_CSRF_WHITELIST</param-name>
-    <param-value>[din-geoserver-doman], localhost</param-value>
+    <param-value>[din-geoserver-doman]</param-value>
 </context-param>
 ```
 
-> **OBS:** Om parametern redan finns, lägg bara till `, localhost` i
-> befintligt `<param-value>`. Starta om GeoServer efteråt.
->
-> **OBS – koppling till `HEX_GS_URL`:** CSRF-filtret matchar på `Host`-headerns
-> värde i anropet. Om du konfigurerar `HEX_GS_URL` med en literal IP-adress i
-> stället för `localhost` (t.ex. `http://127.0.0.1:8080/geoserver`, vilket
-> rekommenderas — se Steg 3), måste vitlistan matcha den adressen:
-> ```xml
-> <param-value>[din-geoserver-doman], 127.0.0.1</param-value>
-> ```
-> Vitlistar du `localhost` men lyssnaren anropar via `127.0.0.1` (eller vice
-> versa) blockerar CSRF-filtret anropen. Håll `HEX_GS_URL` och vitlistan i sync.
+Den kan också sättas som systemegenskap (`-DGEOSERVER_CSRF_WHITELIST=...`)
+eller miljövariabel.
 
 ---
 
@@ -427,6 +484,16 @@ cd D:\Hex\src\geoserver
 copy .env.example .env
 notepad .env
 ```
+
+> **Produktion:** lägg `.env` utanför kodkatalogen och peka ut den med den
+> systemvida miljövariabeln `HEX_ENV_FILE`. Då kan installationsmappen bytas ut
+> vid uppgradering utan att konfigurationen följer med — och utan att en öppen
+> `.env` låser mappen. Se
+> [09_installera-uppdatera-hex.md](../../docs/09_installera-uppdatera-hex.md#uppdatera-lyssnartjänsten-på-geoserver-servern).
+>
+> ```cmd
+> setx /M HEX_ENV_FILE "D:\Hex\config\.env"
+> ```
 
 Fyll i dina värden i `.env`:
 
@@ -454,8 +521,8 @@ HEX_DB_2_DBNAME=geodata_sk1
 > **OBS – `localhost` kontra literal IP-adress:** På Windows Server rekommenderas
 > att ersätta `localhost` med `127.0.0.1` (IPv4) för både `HEX_PG_HOST` och
 > `HEX_GS_URL`. Se Steg 3 för förklaring av varför `localhost` kan orsaka
-> anslutningsfel, och Steg 4 för hur CSRF-vitlistan i GeoServer måste uppdateras
-> om du ändrar `HEX_GS_URL`.
+> anslutningsfel. (CSRF-vitlistan behöver inte hållas i synk med `HEX_GS_URL` —
+> filtret gäller inte REST-API:et, se Steg 4.)
 
 Varje `HEX_DB_N_`-grupp måste ha ett `DBNAME`. HOST/PORT/USER/PASSWORD kan anges
 per databas om de skiljer sig från standardvärdena ovan (t.ex. `HEX_DB_2_HOST=annan-server`).
@@ -474,8 +541,8 @@ per databas om de skiljer sig från standardvärdena ovan (t.ex. `HEX_DB_2_HOST=
 >   `127.0.0.1` från lyssnaren gör att GeoServer försöker ansluta till sig själv.
 
 > **Datastore-autentisering:** Lyssnaren hämtar autentiseringsuppgifter för
-> GeoServer-datastores direkt från tabellen `hex_role_credentials` i varje
-> databas. Lösenorden genereras automatiskt av `hantera_standardiserade_roller()`
+> GeoServer-datastores direkt från tabellen `hex_rolluppgifter` i varje
+> databas. Lösenorden genereras automatiskt av `hex_hantera_std_roller()`
 > vid CREATE SCHEMA och kräver ingen manuell konfiguration.
 
 #### Periodisk avstämning (valfritt)
@@ -483,21 +550,51 @@ per databas om de skiljer sig från standardvärdena ovan (t.ex. `HEX_DB_2_HOST=
 Lyssnaren kör automatiskt en periodisk kontroll av GeoServer mot PostgreSQL. Om
 en workspace eller datastore saknas (t.ex. för att någon manuellt tagit bort dem)
 skapas de om automatiskt, och autentiseringsuppgifterna uppdateras alltid med
-aktuella värden från `hex_role_credentials`.
+aktuella värden från `hex_rolluppgifter`.
 
-Standardintervallet är **3600 sekunder (60 minuter)**. Ändra eller avaktivera med:
+Standardintervallet är **43200 sekunder (12 timmar)**. Ändra eller avaktivera med:
 
 ```env
-HEX_RECONCILE_INTERVAL=3600   # sekunder mellan kontroller; 0 = avaktiverat
+HEX_RECONCILE_INTERVAL=43200   # sekunder mellan kontroller; 0 = avaktiverat
 ```
 
 | Variabel | Standard | Beskrivning |
 |---|---|---|
-| `HEX_RECONCILE_INTERVAL` | `3600` | Intervall i sekunder (0 avaktiverar) |
+| `HEX_RECONCILE_INTERVAL` | `43200` | Intervall i sekunder (0 avaktiverar) |
 
 > **OBS:** Periodisk avstämning skapar aldrig om publicerade lager (feature types)
 > – enbart workspaces, datastores, GeoServer-roller och ACL-regler. Lager måste
 > republiseras manuellt via GeoServer UI eller REST API.
+
+#### Kvarlämnade workspaces (valfritt)
+
+Avstämningen upptäcker även workspaces i GeoServer vars PostgreSQL-schema saknas
+i samtliga övervakade databaser — t.ex. efter en ominstallation av databasen.
+Standard är att bara logga en varning.
+
+```env
+HEX_ORPHAN_CLEANUP=off       # Endast varning i loggen (standard)
+HEX_ORPHAN_CLEANUP=dry-run   # Loggar vad en uppstädning skulle ta bort
+HEX_ORPHAN_CLEANUP=on        # Tar bort workspacen
+```
+
+| Variabel | Standard | Beskrivning |
+|---|---|---|
+| `HEX_ORPHAN_CLEANUP` | `off` | `off`, `dry-run` eller `on` |
+
+Med `on` tas en workspace bort endast om den bevisligen är skapad av Hex: inga
+raster-, WMS- eller WMTS-lagringar, och samtliga datastores är PostGIS mot en
+övervakad databas och exponerar exakt det saknade schemat. En manuell
+rasterpublicering vars namn råkar matcha schemamönstret rörs aldrig. Kör
+`dry-run` först och läs loggen. Fullständig beskrivning finns i
+[08_geoserver-lyssnaren.md](../../docs/08_geoserver-lyssnaren.md#kvarlämnade-workspaces-i-geoserver).
+
+#### Övriga inställningar (valfritt)
+
+| Variabel | Standard | Beskrivning |
+|---|---|---|
+| `HEX_GS_NAMESPACE_BASE` | värdet på `HEX_GS_URL` | Bas för workspacens namespace-URI, som blir `{bas}/{schema}`. Sätt t.ex. `https://gis.min-org.se` för en URI som inte följer serverns adress. |
+| `HEX_RECONNECT_DELAY` | `5` | Sekunder mellan återanslutningsförsöken när PostgreSQL-anslutningen tappats. |
 
 #### E-postnotifieringar (valfritt)
 
@@ -584,12 +681,12 @@ Förväntad utskrift:
 2026-02-13 10:00:00 [INFO] GeoServer Schema Listener
 2026-02-13 10:00:00 [INFO] ============================================================
 2026-02-13 10:00:00 [INFO] GeoServer:  http://localhost:8080/geoserver
-2026-02-13 10:00:00 [INFO] Anslutning: direkt PostGIS (autentiseringsuppgifter från hex_role_credentials)
+2026-02-13 10:00:00 [INFO] Anslutning: direkt PostGIS (autentiseringsuppgifter från hex_rolluppgifter)
 2026-02-13 10:00:00 [INFO] Databaser:  2 st
 2026-02-13 10:00:00 [INFO]   [geodata_sk0] hex_listener@localhost:5432/geodata_sk0
 2026-02-13 10:00:00 [INFO]   [geodata_sk1] hex_listener@localhost:5432/geodata_sk1
 2026-02-13 10:00:00 [INFO] ============================================================
-2026-02-13 10:00:00 [INFO] Ansluten till GeoServer 2.26.x på http://localhost:8080/geoserver
+2026-02-13 10:00:00 [INFO] Ansluten till GeoServer 2.28.0 på http://localhost:8080/geoserver
 2026-02-13 10:00:00 [INFO] Anslutningstest lyckat
 ```
 
@@ -623,18 +720,24 @@ CREATE SCHEMA sk0_kba_test;
 **Förväntad utskrift i Terminal 1 (skapande):**
 ```
 [INFO] [geodata_sk0] Mottog notifiering för schema: sk0_kba_test
-[INFO] [geodata_sk0]   Hittade autentiseringsuppgifter för roll: r_sk0_kba_test
-[INFO] [geodata_sk0]   Steg 1: Skapar workspace 'sk0_kba_test'...
+[INFO] [geodata_sk0]   Steg 1: Skapar läs-workspace 'sk0_kba_test'...
 [INFO]   [DRY-RUN] Skulle skapa workspace: sk0_kba_test
-[INFO] [geodata_sk0]   Steg 2: Skapar PostGIS-datastore 'sk0_kba_test'...
-[INFO]   [DRY-RUN] Skulle skapa PG-datastore: sk0_kba_test
-[INFO] [geodata_sk0]   Steg 3: Skapar GeoServer-roller för 'sk0_kba_test'...
+[INFO] [geodata_sk0]   Steg 2: Skapar läs-datastore 'sk0_kba_test'...
+[INFO]   [DRY-RUN] Skulle skapa PG-datastore: sk0_kba_test (användare: gs_r_sk0_kba_test)
+[INFO] [geodata_sk0]   Steg 3: Skapar skriv-workspace 'sk0_kba_test_w'...
+[INFO]   [DRY-RUN] Skulle skapa workspace: sk0_kba_test_w
+[INFO] [geodata_sk0]   Steg 4: Skapar skriv-datastore 'sk0_kba_test_w'...
+[INFO]   [DRY-RUN] Skulle skapa PG-datastore: sk0_kba_test_w (användare: gs_w_sk0_kba_test)
+[INFO] [geodata_sk0]   Steg 5: Skapar GeoServer-roller för 'sk0_kba_test'...
 [INFO]   [DRY-RUN] Skulle skapa GeoServer-roll: r_sk0_kba_test
 [INFO]   [DRY-RUN] Skulle skapa GeoServer-roll: w_sk0_kba_test
-[INFO] [geodata_sk0]   Steg 4: Skapar ACL-regler för 'sk0_kba_test'...
-[INFO]   [DRY-RUN] Skulle skapa ACL-regler för workspace 'sk0_kba_test':
+[INFO] [geodata_sk0]   Steg 6: Skapar ACL-regler för läs-workspace 'sk0_kba_test'...
+[INFO]   [DRY-RUN] Skulle skapa ACL-regler för läs-workspace 'sk0_kba_test':
 [INFO]   [DRY-RUN]   sk0_kba_test.*.r = r_sk0_kba_test
-[INFO]   [DRY-RUN]   sk0_kba_test.*.w = w_sk0_kba_test
+[INFO] [geodata_sk0]   Steg 7: Skapar ACL-regler för skriv-workspace 'sk0_kba_test_w'...
+[INFO]   [DRY-RUN] Skulle skapa ACL-regler för skriv-workspace 'sk0_kba_test_w':
+[INFO]   [DRY-RUN]   sk0_kba_test_w.*.r = w_sk0_kba_test
+[INFO]   [DRY-RUN]   sk0_kba_test_w.*.w = w_sk0_kba_test
 [INFO] [geodata_sk0]   Schema 'sk0_kba_test' publicerat till GeoServer
 ```
 
@@ -646,13 +749,19 @@ DROP SCHEMA sk0_kba_test CASCADE;
 **Förväntad utskrift i Terminal 1 (borttagning):**
 ```
 [INFO] [geodata_sk0] Mottog borttagningsnotifiering för schema: sk0_kba_test
-[INFO] [geodata_sk0]   Steg 1: Tar bort ACL-regler för 'sk0_kba_test'...
+[INFO] [geodata_sk0]   Steg 1: Tar bort ACL-regler för läs-workspace 'sk0_kba_test'...
 [INFO]   [DRY-RUN] Skulle ta bort ACL-regler för workspace 'sk0_kba_test':
 [INFO]   [DRY-RUN]   sk0_kba_test.*.r
 [INFO]   [DRY-RUN]   sk0_kba_test.*.w
-[INFO] [geodata_sk0]   Steg 2: Tar bort workspace 'sk0_kba_test' från GeoServer...
+[INFO] [geodata_sk0]   Steg 2: Tar bort ACL-regler för skriv-workspace 'sk0_kba_test_w'...
+[INFO]   [DRY-RUN] Skulle ta bort ACL-regler för workspace 'sk0_kba_test_w':
+[INFO]   [DRY-RUN]   sk0_kba_test_w.*.r
+[INFO]   [DRY-RUN]   sk0_kba_test_w.*.w
+[INFO] [geodata_sk0]   Steg 3: Tar bort läs-workspace 'sk0_kba_test' från GeoServer...
 [INFO]   [DRY-RUN] Skulle ta bort workspace (inkl. datastores/lager): sk0_kba_test
-[INFO] [geodata_sk0]   Steg 3: Tar bort GeoServer-roller för 'sk0_kba_test'...
+[INFO] [geodata_sk0]   Steg 4: Tar bort skriv-workspace 'sk0_kba_test_w' från GeoServer...
+[INFO]   [DRY-RUN] Skulle ta bort workspace (inkl. datastores/lager): sk0_kba_test_w
+[INFO] [geodata_sk0]   Steg 5: Tar bort GeoServer-roller för 'sk0_kba_test'...
 [INFO]   [DRY-RUN] Skulle ta bort GeoServer-roll: r_sk0_kba_test
 [INFO]   [DRY-RUN] Skulle ta bort GeoServer-roll: w_sk0_kba_test
 [INFO] [geodata_sk0]   Schema 'sk0_kba_test' avpublicerat från GeoServer
@@ -672,18 +781,22 @@ py geoserver_listener.py
 
 Skapa schemat och verifiera i GeoServer:
 1. Gå till http://localhost:8080/geoserver/web/
-2. Klicka på **Workspaces** — du bör se `sk0_kba_test` i listan
-3. Klicka på den, sedan **Stores** — du bör se en PostGIS-datastore med samma namn
-4. Gå till **Security > Users/Groups/Roles** — du bör se rollerna `gs_r_sk0_kba_test` och `gs_w_sk0_kba_test`
-5. Gå till **Security > Data** — du bör se reglerna `sk0_kba_test.*.r = gs_r_sk0_kba_test` och `sk0_kba_test.*.w = gs_w_sk0_kba_test`
+2. Klicka på **Workspaces** — du bör se **både** `sk0_kba_test` (läs) och `sk0_kba_test_w` (skriv) i listan
+3. Klicka på `sk0_kba_test`, sedan **Stores** — du bör se en PostGIS-datastore med rollen `gs_r_sk0_kba_test`
+4. Klicka på `sk0_kba_test_w`, sedan **Stores** — du bör se en PostGIS-datastore med rollen `gs_w_sk0_kba_test`
+5. Gå till **Security > Users/Groups/Roles** — du bör se rollerna `r_sk0_kba_test` och `w_sk0_kba_test`
+6. Gå till **Security > Data** — du bör se:
+   - `sk0_kba_test.*.r = r_sk0_kba_test` (och ev. `ROLE_ANONYMOUS` för sk0)
+   - `sk0_kba_test_w.*.r = w_sk0_kba_test`
+   - `sk0_kba_test_w.*.w = w_sk0_kba_test`
 
 Testa sedan borttagning:
 ```sql
 DROP SCHEMA sk0_kba_test CASCADE;
 ```
 
-Kontrollera i GeoServer att workspace, roller och ACL-regler för `sk0_kba_test` är borta.
-Loggen ska visa att alla tre steg lyckades.
+Kontrollera i GeoServer att **båda** workspaces (`sk0_kba_test` och `sk0_kba_test_w`), roller och
+ACL-regler är borta. Loggen ska visa att alla fem steg lyckades.
 
 ---
 
@@ -708,7 +821,7 @@ Service installed
 
 ### 9b. Konfigurera återställning vid krasch
 
-Öppna `services.msc`, hitta **Hex GeoServer Schema Listener**, högerklicka
+Öppna `services.msc`, hitta **HexGeoServerListener**, högerklicka
 och välj **Properties**:
 
 Starttypen ska vara **Automatic** (sätts under fliken
@@ -735,12 +848,12 @@ py geoserver_service.py status
 
 Kontrollera loggfilen:
 ```cmd
-type D:\ProgramData\Hex\geoserver_listener.log
+type D:\Hex\Logs\hex_geoserver_listener.log
 ```
 
 Eller följ loggen i realtid:
 ```cmd
-powershell Get-Content D:\ProgramData\Hex\geoserver_listener.log -Wait -Tail 20
+powershell Get-Content D:\Hex\Logs\hex_geoserver_listener.log -Wait -Tail 20
 ```
 
 ---
@@ -757,14 +870,18 @@ CREATE SCHEMA sk1_kba_parkering;
 
 Kontrollera loggen:
 ```cmd
-type D:\ProgramData\Hex\geoserver_listener.log
+type D:\Hex\Logs\hex_geoserver_listener.log
 ```
 
 Kontrollera GeoServer:
-- Workspace `sk1_kba_parkering` bör finnas under **Workspaces**
-- Datastore `sk1_kba_parkering` med direktanslutning via rollen `r_sk1_kba_parkering` under **Stores**
-- Rollerna `gs_r_sk1_kba_parkering` och `gs_w_sk1_kba_parkering` under **Security > Users/Groups/Roles**
-- ACL-reglerna `sk1_kba_parkering.*.r` och `sk1_kba_parkering.*.w` under **Security > Data**
+- Båda workspaces bör finnas under **Workspaces**:
+  - `sk1_kba_parkering` (läs) med datastore ansluten via `gs_r_sk1_kba_parkering`
+  - `sk1_kba_parkering_w` (skriv/WFS-T) med datastore ansluten via `gs_w_sk1_kba_parkering`
+- Rollerna `r_sk1_kba_parkering` och `w_sk1_kba_parkering` under **Security > Users/Groups/Roles**
+- Under **Security > Data**:
+  - `sk1_kba_parkering.*.r = r_sk1_kba_parkering`
+  - `sk1_kba_parkering_w.*.r = w_sk1_kba_parkering`
+  - `sk1_kba_parkering_w.*.w = w_sk1_kba_parkering`
 
 ---
 
@@ -776,12 +893,22 @@ Kontrollera GeoServer:
 | `python geoserver_service.py stop` | Stoppa |
 | `python geoserver_service.py restart` | Starta om (t.ex. efter konfigändring) |
 | `python geoserver_service.py status` | Visa status |
+| `python geoserver_service.py update` | Skriv om registreringen (ny sökväg eller Python-tolk) |
 | `python geoserver_service.py remove` | Avinstallera tjänsten |
 | `net start HexGeoServerListener` | Starta (alternativ) |
 | `net stop HexGeoServerListener` | Stoppa (alternativ) |
 
+> **OBS:** Kommandona är verb utan bindestreck (pywin32:s `HandleCommandLine`,
+> samma stil som `net start` och `sc`), medan `install_hex.py` använder
+> argparse-flaggor (`--upgrade`, `--uninstall`).
+
 Tjänsten startar automatiskt med Windows om du ställt in det i services.msc
 (Startup type: Automatic).
+
+**Uppdatera koden:** `stop` → byt filer → `start`. `remove` + `install` behövs
+bara när registreringen ändras (sökväg, Python-tolk, tjänstnamn eller
+uppgraderad pywin32). Fullständig rutin i
+[09_installera-uppdatera-hex.md](../../docs/09_installera-uppdatera-hex.md#uppdatera-lyssnartjänsten-på-geoserver-servern).
 
 ---
 
@@ -789,32 +916,33 @@ Tjänsten startar automatiskt med Windows om du ställt in det i services.msc
 
 | Fil | Beskrivning |
 |---|---|
-| `D:\ProgramData\Hex\geoserver_listener.log` | Huvudlogg (standardsökväg) |
+| `D:\Hex\Logs\hex_geoserver_listener.log` | Huvudlogg (standardsökväg) |
 | Windows Event Viewer > Application | Start/stopp-händelser |
 
-Loggen roterar automatiskt vid 5 MB (5 gamla filer sparas).
+Loggen roterar vid midnatt och 14 dagars historik sparas.
 
 ### Anpassa loggkatalogen med HEX_LOG_DIR
 
-Loggfilens plats styrs av miljövariabeln `HEX_LOG_DIR`. Om den inte är satt
-används standardvärdet `D:\ProgramData\Hex`.
-
-Sätt den i `.env` för att lägga loggen nära övriga installationsfiler:
+Loggkatalogen styrs av miljövariabeln `HEX_LOG_DIR`. Om den inte är satt
+används standardvärdet `D:\Hex\Logs`.
 
 ```env
-HEX_LOG_DIR=D:\Hex\src\geoserver\logs
+HEX_LOG_DIR=D:\Hex\Logs
 ```
+
+> **Lägg inte loggen i kodkatalogen.** Tjänsten håller loggfilen öppen medan den
+> kör, vilket hindrar att katalogen byts ut vid en uppgradering. Standardvärdet
+> ligger redan utanför `src\geoserver`.
 
 Katalogen skapas automatiskt om den inte finns. Den exakta sökvägen loggas
 vid uppstart:
 
 ```
-[INFO] Loggfil: D:\Hex\src\geoserver\logs\geoserver_listener.log
+[INFO] Loggfil: D:\Hex\Logs\hex_geoserver_listener.log
 ```
 
 > **OBS:** Kommandona för att läsa loggen i steg 9d och 10 nedan använder
-> standardsökvägen `D:\ProgramData\Hex`. Ersätt med din sökväg om du har
-> satt `HEX_LOG_DIR`.
+> standardsökvägen. Ersätt med din sökväg om du har satt `HEX_LOG_DIR`.
 
 ---
 
@@ -823,14 +951,14 @@ vid uppstart:
 ### Lägga till en ny databas (t.ex. sk3)
 
 1. Installera alla event-triggers i den nya databasen (enklast via `install_hex.py`):
-   - `hantera_standardiserade_roller` (skapar roller och lösenord)
-   - `notifiera_geoserver` (skickar CREATE-notifiering)
-   - `notifiera_geoserver_borttagning` (skickar DROP-notifiering)
+   - `hex_hantera_std_roller` (skapar roller och lösenord)
+   - `hex_notifiera_gs` (skickar CREATE-notifiering)
+   - `hex_notifiera_gs_borttagning` (skickar DROP-notifiering)
 2. Ge `hex_listener` nödvändiga rättigheter på den nya databasen:
    ```sql
    GRANT CONNECT ON DATABASE geodata_sk3 TO hex_listener;
    -- Kör i den nya databasen:
-   GRANT SELECT ON public.hex_role_credentials TO hex_listener;
+   GRANT SELECT ON public.hex_rolluppgifter TO hex_listener;
    ```
 3. Lägg till en ny databasgrupp i `.env`:
    ```env
@@ -839,7 +967,7 @@ vid uppstart:
 4. Starta om tjänsten: `python geoserver_service.py restart`
 
 > Lyssnaren läser vilka scheman som ska publiceras till GeoServer direkt från
-> `standardiserade_skyddsnivaer` (`publiceras_geoserver = true`) vid uppstart.
+> `hex_standardiserade_skyddsnivaer` (`publiceras_geoserver = true`) vid uppstart.
 > Ingen kodredigering krävs för att lägga till en ny skyddsnivå — lägg till
 > raden i konfigurationstabellen så hanteras den automatiskt.
 
@@ -847,13 +975,14 @@ vid uppstart:
 
 Autentiseringsuppgifter för GeoServer-datastores hanteras automatiskt av Hex:
 
-- `hantera_standardiserade_roller()` skapar `r_{schema}` med LOGIN och ett
-  autogenererat lösenord vid varje CREATE SCHEMA
-- Lösenordet sparas i `hex_role_credentials` och läses av lyssnaren vid
-  datastore-skapandet
+- `hex_hantera_std_roller()` skapar `gs_r_{schema}` (läs) och `gs_w_{schema}` (skriv)
+  med LOGIN och autogenererade lösenord vid varje CREATE SCHEMA
+- Lösenorden sparas i `hex_rolluppgifter` och läses av lyssnaren vid
+  datastore-skapandet — `gs_r_{schema}` för läs-workspacet och `gs_w_{schema}` för
+  skriv-workspacet
 
 Det finns normalt inget att konfigurera manuellt. Om du behöver återskapa
-en datastore för ett befintligt schema, skicka en manuell notifiering:
+datastores för ett befintligt schema, skicka en manuell notifiering:
 
 ```sql
 NOTIFY geoserver_schema, 'sk0_kba_mittschema';
@@ -878,7 +1007,7 @@ Lyssnaren har inbyggd retry-logik för transienta fel mot GeoServer:
 
 **Vad som INTE ger retry:**
 - HTTP-felkoder (400, 401, 404, 500 etc.) - dessa returneras direkt
-- Ogiltiga schemanamn, saknade uppgifter i `hex_role_credentials`, autentiseringsfel mot GeoServer, etc.
+- Ogiltiga schemanamn, saknade uppgifter i `hex_rolluppgifter`, autentiseringsfel mot GeoServer, etc.
 
 Om alla retry-försök misslyckas loggas felet tydligt. Lyssnaren hoppar
 sedan över notifieringen. För att försöka igen manuellt:

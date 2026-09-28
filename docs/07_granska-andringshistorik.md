@@ -7,7 +7,7 @@
 ## Bakgrund
 
 För varje tabell i ett schema som har minst en kolumn med `historik_qa = true`
-i `standardiserade_kolumner` skapar Hex automatiskt en historiktabell med
+i `hex_standardiserade_kolumner` skapar Hex automatiskt en historiktabell med
 suffixet `_h`. Historiktabellen innehåller alla kolumner från originaltabellen
 plus tre extra:
 
@@ -15,7 +15,7 @@ plus tre extra:
 |--------|-------------|
 | `h_typ` | `U` = uppdatering, `D` = radering |
 | `h_tidpunkt` | Tidpunkt för händelsen |
-| `h_av` | Databasanvändaren som utförde ändringen |
+| `h_av` | Databasanvändaren som utförde ändringen (`session_user` — den autentiserade inloggningen, opåverkad av `SET ROLE`) |
 
 Historiktabellen loggar automatiskt vid varje `UPDATE` och `DELETE`.
 `INSERT` loggas inte – de syns i originaltabellen.
@@ -100,4 +100,38 @@ WHERE parent_schema = 'sk1_kba_parkering'
   AND parent_table = 'p_platser_p';
 ```
 
-Returnerar en rad om historik är aktiverat, annars tomt.
+Returnerar en rad om historik är aktiverat, annars tomt. `created_by` visar
+vilken inloggning som skapade tabellen (`NULL` för tabeller registrerade innan
+kolumnen fanns).
+
+---
+
+## När modertabellen ändras
+
+Historiktabellen följer med automatiskt vid `ALTER TABLE`:
+
+| Ändring i modertabellen | Vad som händer i `_h` |
+|-------------------------|-----------------------|
+| `ADD COLUMN` (även via `AddGeometryColumn()`) | Kolumnen läggs till |
+| `DROP COLUMN` | Kolumnen ligger kvar med sina gamla värden; nya rader får `NULL` |
+| Kolumnen läggs tillbaka med samma typ | Den befintliga kolumnen återanvänds |
+| `ALTER COLUMN TYPE`, eller tillbaka med annan typ | Konverteras om inget värde ändras, annars arkiveras den gamla kolumnen som `<kolumn>_arkiv_<ÅÅÅÅMMDD>` |
+| `RENAME COLUMN` | Kolumnen döps om i `_h` |
+
+| `RENAME TO` | `_h` döps om och QA-triggern byggs om |
+| Ändring direkt i `_h` (t.ex. `DROP COLUMN`) | Saknade kolumner läggs tillbaka, triggern byggs om |
+
+Historiktabeller som redan hamnat ur synk rättas av `install_hex.py --upgrade`,
+som kör underhållet. Det går också att köra för en tabell eller för alla:
+
+```sql
+SELECT public.hex_synka_historik('sk1_kba_parkering', 'p_platser_p');
+SELECT * FROM public.hex_underhall()
+WHERE trigger_namn IN ('afvaktande_geometri', 'historiksynk');
+```
+
+Underhållet returnerar `synkad: N ändringar` för tabeller som rättades och
+`redan synkad` för övriga.
+
+Värden som aldrig loggades kan inte återskapas. Saknade `_h` en kolumn när en
+rad ändrades är den kolumnen `NULL` i den historikraden.

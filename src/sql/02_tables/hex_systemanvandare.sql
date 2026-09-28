@@ -5,21 +5,30 @@
 --   2. ALTER TABLE ... ADD COLUMN geom geometry(...)
 --
 -- När en session matchar en post här (via session_user, current_user eller
--- application_name) tillåter händelsetriggern hantera_ny_tabell att tabeller
+-- application_name) tillåter händelsetriggern hex_hantera_ny_tabell att tabeller
 -- med geometrisuffix (_p, _l, _y, _g) skapas utan geometrikolumn. Tabellen
 -- registreras istället i hex_afvaktande_geometri i stället för att ett fel
 -- kastas. Geometrispecifik efterbehandling (GiST-index, valideringsbegränsning)
--- slutförs av hantera_kolumntillagg när geometrikolumnen anländer.
+-- slutförs av hex_hantera_ny_kolumn när geometrikolumnen anländer.
 --
 -- Underhålls av:  DBA / systemadministratör
--- Läses av:       hantera_ny_tabell(), hantera_kolumntillagg()
+-- Läses av:       hex_hantera_ny_tabell(), hex_hantera_ny_kolumn()
 
 CREATE TABLE IF NOT EXISTS public.hex_systemanvandare (
     anvandare    text  PRIMARY KEY,
     beskrivning  text
 );
 
-ALTER TABLE public.hex_systemanvandare OWNER TO gis_admin;
+-- Ägaren sätts via hex_systemagare() i stället för ett hårdkodat rollnamn,
+-- så att manuell installation ger samma ägarskap som install_hex.py.
+DO $$
+BEGIN
+    EXECUTE format(
+        'ALTER TABLE public.hex_systemanvandare OWNER TO %I',
+        public.hex_systemagare()
+    );
+END;
+$$;
 
 -- Händelsetriggerfunktioner körs i den anropande användarens säkerhetskontext.
 -- Läsrättighet krävs av triggerfunktioner som körs som vilken användare som helst.

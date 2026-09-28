@@ -1,0 +1,195 @@
+# Instruktioner för Claude i det här repot
+
+## Språk
+
+Alla kodkommentarer och all dokumentation (docstrings, inline-kommentarer, markdown-filer, SQL-kommentarer) ska skrivas på **svenska**. Det gäller även den här filen.
+
+---
+
+## Namnkonvention för filer
+
+**Varje ny fil prefixas efter vad den är:**
+
+| Typ | Prefix | Exempel |
+| --- | --- | --- |
+| Operativa filer (databasobjekt i `src/sql/`) | `hex_` | `hex_metadata.sql`, `hex_validera_schemanamn.sql` |
+| Testfiler i `tests/` | `test_` | `test_reserved_words.sql`, `test_pg_notify_listener.py` |
+
+Regler:
+
+- Prefixet står **först** i filnamnet – inte i mitten och inte på slutet
+  (`test_stress.sql`, aldrig `stress_test.sql`).
+- Filnamnet ska spegla objektet filen skapar, så att `hex_metadata.sql`
+  innehåller `CREATE TABLE public.hex_metadata`. Byter objektet namn ska filen
+  och posten i `INSTALL_ORDER` i `install_hex.py` följa med.
+- Samtliga filer under `src/sql/` har `hex_`-prefix. En ny fil utan prefix där
+  är ett fel, inte ett undantag.
+- Undantagna är de operativa Python-filerna i repotets rot och i
+  `src/geoserver/` (`install_hex.py`, `geoserver_listener.py`,
+  `geoserver_service.py`). De namnger program, inte databasobjekt, och
+  behåller sina namn.
+- `tests/test_run_all.py` är testkörare snarare än testsvit, men följer
+  konventionen ändå. Den utesluter sig själv ur sin egen `test_*.py`-sökning
+  via `Path(__file__).name`, så prefixet gör den inte till en svit som kör
+  sig själv.
+
+---
+
+## Checklista för SQL-granskning
+
+Kör de här kontrollerna mot `src/sql/` när du granskar SQL-ändringar.
+
+### 1. Ogiltiga `format()`-specifierare i PostgreSQL
+
+PostgreSQL:s `format()` stöder bara `%s`, `%I`, `%L` och `%%`.
+Specifierare i C-stil som `%.0f`, `%.3f`, `%d`, `%f`, `%i`, `%u` m.fl. stöds **inte** och orsakar körningsfel.
+
+```bash
+# Fånga %.Nf / %.Nd-stil
+grep -rPn 'format\([^)]*%\.\d+[a-zA-Z]' src/sql/
+
+# Fånga C-stil: %d, %f, %i, %u, %x, %e, %g osv.
+grep -rPn 'format\(.*%[dfiuoxeEgGbB]' src/sql/
+```
+
+**Åtgärd:** Använd `round(val, 2)::text` för tal, `%s` för strängar, `%I` för identifierare och `%L` för literaler.
+
+---
+
+### 2. `EXECUTE` med strängkonkatenering (`||`)
+
+Dynamisk SQL som byggs med `||` är en risk för SQL-injektion.
+
+```bash
+grep -rPn 'EXECUTE\s+.*\|\|' src/sql/
+```
+
+**Åtgärd:** Använd `format()` med `%I`/`%L` samt `EXECUTE ... USING` istället.
+
+---
+
+### 3. `SECURITY DEFINER` utan `SET search_path`
+
+`SECURITY DEFINER`-funktioner körs med ägarens rättigheter (`postgres`). Namn utan schemaprefix slås upp via **anroparens** `search_path`, så utan ett låst `search_path` kan en anropare lägga ett eget objekt tidigare i sökvägen och få det kört som superanvändare.
+
+Repots standard är `SET search_path = public, pg_temp`. `pg_temp` sist är medvetet: nämns det inte söks temp-schemat först för tabell- och typnamn, vilket gör skuggning via temporära tabeller möjlig.
+
+```bash
+# Kommentarer strippas först – annars räcker det att frasen nämns i en kommentar
+# för att filen ska flaggas (samma resonemang som _strip_sql_comments i
+# tests/test_installer.py).
+for f in $(grep -rl 'SECURITY DEFINER' src/sql/); do
+  perl -0777 -pe 's{/\*.*?\*/}{}gs; s{--[^\n]*}{}g' "$f" | grep -q 'SECURITY DEFINER' || continue
+  grep -q 'SET search_path' "$f" || echo "Saknar SET search_path: $f"
+done
+```
+
+> **OBS:** Samtliga `SECURITY DEFINER`-funktioner i repot har klausulen på plats. Kontrollen är en regressionsvakt — en träff är ett verkligt fynd och ska åtgärdas innan merge.
+
+**Åtgärd:** Lägg till `SET search_path = public, pg_temp` i funktionsdefinitionen, efter `SECURITY DEFINER`. Se `hex_tillampa_grupprattigheter.sql` för mönstret.
+
+Låsningen förutsätter att `public` inte är skrivbart för otrodda roller. Det är standard från PostgreSQL 15, och `kontrollera_forutsattningar()` i `install_hex.py` varnar vid installation om `PUBLIC` har `CREATE` där (vilket kan vara kvar i databaser uppgraderade från äldre versioner).
+
+---
+
+### 4. Icke-ASCII-tecken i lagrade SQL-strängar (teckenkodningsfälla)
+
+SQL-filer med icke-ASCII-tecken (svenska å/ä/ö m.fl.) i **lagrade** strängvärden — dvs. i `COMMENT ON`, `INSERT INTO` eller liknande — kan ge mojibake (`fÃ¶r` istället för `för`) om klientkodningen inte är tillförlitligt satt till UTF-8.
+
+**Riskfyllt mönster:** `client_encoding='UTF8'` som argument till `psycopg2.connect()` ber libpq om rätt kodning på protokollnivå, men uppdaterar **inte** psycopg2:s eget Python-sidiga kodningstillstånd på ett tillförlitligt sätt.
+
+**Rätt åtgärd:** Anropa `conn.set_client_encoding('UTF8')` explicit efter anslutning.
+
+```bash
+# Verifiera att set_client_encoding anropas efter varje connect() i Python-installatörer
+grep -n "psycopg2.connect\|set_client_encoding" install_hex.py
+
+# Hitta SQL-filer med icke-ASCII i COMMENT ON-rader
+grep -rPn 'COMMENT\s+ON\s+.*[^\x00-\x7F]' src/sql/
+```
+
+**Åtgärd:** Se till att `conn.set_client_encoding('UTF8')` anropas i installatören innan SQL körs. Förlita dig **inte** enbart på `client_encoding='UTF8'` i argumenten till `psycopg2.connect()`. Anropet finns redan på plats i `install_hex.py` — kontrollen ovan är till för att fånga regressioner.
+
+---
+
+## Migreringar: märk dem, testa dem, städa bort dem
+
+En ändring som gör att en **redan installerad databas skiljer sig från vad
+SQL-filerna skapar** kräver migreringshjälp. Typfallet är `hex_`-prefixet: alla
+filer bytte namn, och varje befintlig databas bar kvar objekt under de gamla
+namnen. Andra fall är en ny kolumn, ett kolumnnamnbyte och ett ändrat
+standardvärde som måste backfyllas.
+
+Migreringshjälp är avsedd att vara **tillfällig**. Den lever tills alla
+driftsatta databaser passerat den, och ska sedan bort — annars blir den
+dödvikt som gör återställningsvägen svårare att läsa. Problemet är att hitta
+den igen ett halvår senare. Därför gäller tre regler.
+
+### 1. Märk varje migrering med `HEX-MIGRERING`
+
+Skriv taggen i en kommentar direkt ovanför koden, med datum och vad som ska ha
+hänt innan den får tas bort:
+
+```sql
+-- HEX-MIGRERING 2026-08: anonym_las tillkom efter tabellen. Backfyllningen är
+-- en engångsåtgärd. Tas bort när alla fyra produktionsdatabaserna kört
+-- --upgrade med den här versionen.
+```
+
+```python
+# HEX-MIGRERING 2026-08: läser inställningar under namnen före hex_-prefixet.
+# Tas bort när samtliga databaser installerats om med prefixade namn.
+```
+
+Då blir hela inventeringen ett kommando:
+
+```bash
+git grep -n "HEX-MIGRERING"
+```
+
+Det är hela poängen. Utan taggen måste man leta på ord som råkar användas —
+`legacy`, `ärvd`, `migrer`, `reparera` — och de orden har legitima
+betydelser i det här repot också: `hex_underhall()` *reparerar* triggers på
+varje körning, och roller *ärver* rättigheter via `arvs_fran`. En sökning på
+dem ger både falska träffar och missade fynd. En reserverad tagg ger varken.
+
+### 2. Skriv ett test som bevisar att `--upgrade` klarar övergången
+
+Migreringen ska ha ett test som bygger upp det **gamla** tillståndet, kör
+`install_hex.upgrade()` och kontrollerar att konfiguration och drifttillstånd
+kom över. Testklassen taggas i sin docstring:
+
+```python
+class TestUppgraderingFranNagot(unittest.TestCase):
+    """HEX-MIGRERING 2026-08: ... Tas bort tillsammans med migreringen."""
+```
+
+Utan testet vet man inte om migreringen behövs eller redan är överflödig, och
+då vågar ingen ta bort den. Testet är det som gör borttagningen till ett
+beslut i stället för en gissning.
+
+### 3. Skilj migrering från invariant innan du tar bort något
+
+Allt som ser ut som migrering är det inte. En **invariant** gäller varje
+framtida körning och ska stanna även när alla databaser är uppgraderade:
+
+| Migrering — tas bort | Invariant — behålls |
+| --- | --- |
+| `ADD COLUMN IF NOT EXISTS` för en kolumn som nu står i `CREATE TABLE` | `ON CONFLICT DO NOTHING` som skyddar DBA:ns värden vid ominstallation |
+| Läsning av tabellnamn som inte längre skapas | `hex_agda` på `hex_standardiserade_roller` |
+| Backfyllning som körts en gång | `hex_underhall()`s vakt att `r_`/`w_` är NOLOGIN |
+
+Frågan som skiljer dem: *kan tillståndet uppstå igen efter att alla databaser
+är uppgraderade?* Kan det uppstå genom att en DBA ändrar ett värde för hand
+är det en invariant, oavsett att den också råkade rätta gamla data. Tagga
+därför aldrig en invariant med `HEX-MIGRERING` — och när en vakt bara
+motiveras med sin historia, skriv om motiveringen i stället för att ta bort
+vakten.
+
+---
+
+## Allmänna kodfakta
+
+- All SQL riktar sig mot PostgreSQL **16 eller senare** — inga MySQL/SQLite-idiom, och inga bakåtkompatibilitetshänsyn till äldre PostgreSQL-versioner. Installern avbryter mot äldre servrar. Testsviten körs mot både 16 och 17.
+- Spatiala funktioner använder PostGIS; typen `geometry` och `ST_*`-funktioner är förväntade.
+- FME läser direkt från PostgreSQL-vyer — returnera inte `NULL` där FME förväntar sig ett typat värde.

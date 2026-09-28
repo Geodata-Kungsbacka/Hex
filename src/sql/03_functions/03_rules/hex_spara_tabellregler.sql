@@ -1,0 +1,185 @@
+-- FUNCTION: public.hex_spara_tabellregler(text, text)
+
+-- DROP FUNCTION IF EXISTS public.hex_spara_tabellregler(text, text);
+
+CREATE OR REPLACE FUNCTION public.hex_spara_tabellregler(
+	p_schema_namn text,
+	p_tabell_namn text)
+    RETURNS hex_tabellregler
+    LANGUAGE 'plpgsql'
+    COST 100
+    VOLATILE PARALLEL UNSAFE
+AS $BODY$
+
+/******************************************************************************
+ * Denna funktion sparar tabellövergripande regler som sedan kan återskapas
+ * vid omstrukturering av tabeller. Funktionen har anpassats för att endast
+ * hantera äkta hex_tabellregler, medan hex_kolumnegenskaper hanteras separat av
+ * hex_spara_kolumnegenskaper().
+ *
+ * Funktionen sparar:
+ * 1. Index
+ *    - Alla index utom PRIMARY KEY och UNIQUE constraints
+ *    - Format: Kompletta CREATE INDEX-satser
+ *
+ * 2. Foreign Keys
+ *    - Alla FK-relationer till andra tabeller
+ *    - Format: konstraintnamn;definition
+ *
+ * 3. Tabellomfattande Constraints
+ *    - CHECK som refererar flera kolumner
+ *    - UNIQUE över en eller flera kolumner
+ *    - PRIMARY KEY
+ *    - Format: konstraintnamn;definition
+ *
+ * Kolumnegenskaper (DEFAULT, NOT NULL, enkla CHECK, IDENTITY) hanteras nu
+ * av funktionen hex_spara_kolumnegenskaper().
+ *
+ * Loggningsstrategi:
+ * - Alla meddelanden prefixas med [hex_spara_tabellregler]
+ * - Tydliga steg-markörer visar progression
+ * - Detaljerad regelinformation loggas
+ * - Slutresultat sammanfattas
+ ******************************************************************************/
+DECLARE
+    resultat hex_tabellregler;     -- Variabel som håller alla regler
+    tabell_oid oid;           -- Tabellens unika PostgreSQL-ID
+    antal_index integer;      -- För statistik
+    antal_fk integer;         -- För statistik
+    antal_constr integer;     -- För statistik
+BEGIN
+    RAISE NOTICE E'[hex_spara_tabellregler] === START ===';
+    RAISE NOTICE '[hex_spara_tabellregler] Analyserar regler för %.%', p_schema_namn, p_tabell_namn;
+    
+    -- Steg 1: Hämta tabellens OID (via regclass för korrekt hantering av
+    -- specialtecken som åäö i tabell-/schemanamn)
+    RAISE NOTICE '[hex_spara_tabellregler] Steg 1: Hämtar tabellidentifierare';
+    tabell_oid := format('%I.%I', p_schema_namn, p_tabell_namn)::regclass::oid;
+
+    RAISE NOTICE '[hex_spara_tabellregler]   » Tabell-OID: %', tabell_oid;
+
+    -- Steg 2: Spara index
+    RAISE NOTICE '[hex_spara_tabellregler] Steg 2: Analyserar index';
+    WITH index_data AS (
+        SELECT pg_get_indexdef(i.indexrelid) as indexdef
+        FROM pg_index i
+        JOIN pg_class c ON c.oid = i.indexrelid
+        WHERE i.indrelid = tabell_oid
+        AND NOT i.indisprimary      -- Skippa primärnycklar, de hanteras med constraints
+        AND NOT i.indisunique       -- Skippa unique constraints, de hanteras med constraints
+    )
+    SELECT array_agg(indexdef), COUNT(*)
+    INTO resultat.index_defs, antal_index
+    FROM index_data;
+
+    IF antal_index > 0 THEN
+        RAISE NOTICE '[hex_spara_tabellregler]   » Hittade % index:', antal_index;
+        FOR i IN 1..antal_index LOOP
+            RAISE NOTICE '[hex_spara_tabellregler]     #%: %', i, resultat.index_defs[i];
+        END LOOP;
+    ELSE
+        RAISE NOTICE '[hex_spara_tabellregler]   » Inga index hittades';
+    END IF;
+
+    -- Steg 3: Spara foreign keys
+    RAISE NOTICE '[hex_spara_tabellregler] Steg 3: Analyserar foreign keys';
+    WITH fk_data AS (
+        SELECT format('%s;%s', 
+            conname, 
+            pg_get_constraintdef(oid)
+        ) as fkdef
+        FROM pg_constraint
+        WHERE conrelid = tabell_oid
+        AND contype = 'f'          -- 'f' = foreign key
+    )
+    SELECT array_agg(fkdef), COUNT(*)
+    INTO resultat.fk_defs, antal_fk
+    FROM fk_data;
+
+    IF antal_fk > 0 THEN
+        RAISE NOTICE '[hex_spara_tabellregler]   » Hittade % foreign keys:', antal_fk;
+        FOR i IN 1..antal_fk LOOP
+            RAISE NOTICE '[hex_spara_tabellregler]     #%: %', i, resultat.fk_defs[i];
+        END LOOP;
+    ELSE
+        RAISE NOTICE '[hex_spara_tabellregler]   » Inga foreign keys hittades';
+    END IF;
+
+    -- Steg 4: Spara tabellövergripande constraints (CHECK och UNIQUE)
+    RAISE NOTICE '[hex_spara_tabellregler] Steg 4: Analyserar tabellövergripande constraints';
+    WITH constraint_data AS (
+        SELECT 
+            conname,
+            contype,
+            pg_get_constraintdef(oid) as definition,
+            array_length(conkey, 1) as col_count  -- Antal kolumner i constraint
+        FROM pg_constraint
+        WHERE conrelid = tabell_oid
+        AND (
+            contype = 'p' OR                      -- PRIMARY KEY
+            contype = 'u' OR                      -- UNIQUE constraint
+            (contype = 'c' AND array_length(conkey, 1) > 1)  -- CHECK med flera kolumner
+        )
+    )
+    SELECT 
+        array_agg(format('%s;%s', conname, definition)), 
+        COUNT(*)
+    INTO 
+        resultat.constraint_defs, 
+        antal_constr
+    FROM constraint_data;
+    
+    IF antal_constr > 0 THEN
+        RAISE NOTICE '[hex_spara_tabellregler]   » Hittade % tabellövergripande constraints:', antal_constr;
+        FOR i IN 1..antal_constr LOOP
+            RAISE NOTICE '[hex_spara_tabellregler]     #%: %', i, resultat.constraint_defs[i];
+        END LOOP;
+    ELSE
+        RAISE NOTICE '[hex_spara_tabellregler]   » Inga tabellövergripande constraints hittades';
+    END IF;
+
+    -- Summera resultatet
+    RAISE NOTICE '[hex_spara_tabellregler] Sammanfattning:';
+    RAISE NOTICE '[hex_spara_tabellregler]   » Index:         %', COALESCE(antal_index, 0);
+    RAISE NOTICE '[hex_spara_tabellregler]   » Foreign Keys:  %', COALESCE(antal_fk, 0);
+    RAISE NOTICE '[hex_spara_tabellregler]   » Constraints:   %', COALESCE(antal_constr, 0);
+    RAISE NOTICE '[hex_spara_tabellregler] === SLUT ===';
+
+    RETURN resultat;
+
+EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+        RAISE NOTICE '[hex_spara_tabellregler] !!! FEL UPPSTOD !!!';
+        RAISE EXCEPTION '[hex_spara_tabellregler] Tabell %.% existerar inte', 
+            p_schema_namn, p_tabell_namn;
+    WHEN TOO_MANY_ROWS THEN
+        RAISE NOTICE '[hex_spara_tabellregler] !!! FEL UPPSTOD !!!';
+        RAISE EXCEPTION '[hex_spara_tabellregler] Flera tabeller matchade %.% - kontakta databasadmin', 
+            p_schema_namn, p_tabell_namn;
+    WHEN OTHERS THEN
+        RAISE NOTICE '[hex_spara_tabellregler] !!! FEL UPPSTOD !!!';
+        RAISE NOTICE '[hex_spara_tabellregler]   - Schema: %', p_schema_namn;
+        RAISE NOTICE '[hex_spara_tabellregler]   - Tabell: %', p_tabell_namn;
+        RAISE NOTICE '[hex_spara_tabellregler]   - Felkod: %', SQLSTATE;
+        RAISE NOTICE '[hex_spara_tabellregler]   - Felmeddelande: %', SQLERRM;
+        RAISE NOTICE '[hex_spara_tabellregler]   - Kontext: %', PG_EXCEPTION_CONTEXT;
+        RAISE;
+END;
+$BODY$;
+
+-- Ägaren sätts via hex_systemagare() i stället för ett hårdkodat rollnamn,
+-- så att manuell installation ger samma ägarskap som install_hex.py.
+DO $$
+BEGIN
+    EXECUTE format(
+        'ALTER FUNCTION public.hex_spara_tabellregler(text, text) OWNER TO %I',
+        public.hex_systemagare()
+    );
+END;
+$$;
+
+COMMENT ON FUNCTION public.hex_spara_tabellregler(text, text)
+    IS 'Sparar tabellövergripande regler från PostgreSQL:s systemtabeller.
+Hanterar nu endast äkta hex_tabellregler (index, FK, multikolumns-constraints),
+medan hex_kolumnegenskaper har flyttats till en separat funktion. Del av uppdelningen 
+mellan hex_tabellregler och hex_kolumnegenskaper för ett tydligare struktureringssystem.';

@@ -1,25 +1,28 @@
 #!/usr/bin/env python3
 """
-GeoServer Schema Listener - Lyssnar på pg_notify och hanterar workspace/store i GeoServer.
+GeoServer Schema Listener - Lyssnar på pg_notify och hanterar workspaces/stores i GeoServer.
 
 Processen lyssnar på två PostgreSQL-kanaler och hanterar schema-händelser automatiskt:
 
   Kanal 'geoserver_schema'  (utlöses av CREATE SCHEMA via SQL-triggern
-                             notifiera_geoserver_trigger):
-    1. Skapar en workspace i GeoServer med samma namn som schemat.
-    2. Hämtar autentiseringsuppgifter för läsrollen (r_{schema}) från
-       tabellen hex_role_credentials.
-    3. Skapar en direkt PostGIS-datastore i workspace med dessa uppgifter.
+                             hex_notifiera_gs_trigger):
+    Per schema skapas två workspaces med varsin PostGIS-datastore:
+
+    Läsworkspace  '{schema}'   — ansluter med gs_r_{schema} (SELECT-behörighet).
+                                 Används av WMS/WFS-läsanrop.
+    Skrivworkspace '{schema}_w' — ansluter med gs_w_{schema} (ALL-behörighet).
+                                  Används av WFS-T-transaktioner (Insert/Update/Delete).
+
+    Autentiseringsuppgifterna hämtas från tabellen hex_rolluppgifter där
+    hex_hantera_std_roller() lagrar de autogenererade lösenorden vid CREATE SCHEMA.
 
   Kanal 'geoserver_schema_drop'  (utlöses av DROP SCHEMA via SQL-triggern
-                                  notifiera_geoserver_borttagning_trigger):
-    1. Tar bort workspace från GeoServer med recurse=true, vilket raderar
-       alla datastores och publicerade lager i workspace.
-       Det förhindrar att GeoServer gör upprepade anrop mot ett schema
-       som inte längre existerar.
+                                  hex_notifiera_gs_borttagning_trigger):
+    Tar bort båda workspaces ('{schema}' och '{schema}_w') med recurse=true,
+    vilket raderar datastores och publicerade lager i respektive workspace.
 
 Båda kanalerna hanterar enbart scheman vars skyddsnivå har publiceras_geoserver = true
-i tabellen standardiserade_skyddsnivaer. Standardkonfigurationen publicerar sk0 och sk1;
+i tabellen hex_standardiserade_skyddsnivaer. Standardkonfigurationen publicerar sk0 och sk1;
 övriga prefix (sk2, skx m.fl.) kan aktiveras genom att sätta publiceras_geoserver = true
 för respektive rad. Mönstret laddas om dynamiskt vid varje notifiering.
 
@@ -32,8 +35,8 @@ Användning:
     python geoserver_listener.py --dry-run    # Visa vad som skulle göras utan att göra det
 
 Manuell återutsändning (om lyssnaren var nere när ett schema skapades/togs bort):
-    NOTIFY geoserver_schema,      'sk0_kba_mittschema';   -- lägg till workspace
-    NOTIFY geoserver_schema_drop, 'sk0_kba_mittschema';   -- ta bort workspace
+    NOTIFY geoserver_schema,      'sk0_kba_mittschema';   -- lägg till workspaces
+    NOTIFY geoserver_schema_drop, 'sk0_kba_mittschema';   -- ta bort workspaces
 
 Krav:
     pip install psycopg2 requests python-dotenv
@@ -81,6 +84,62 @@ log.propagate = False
 # CONFIGURATION
 # =============================================================================
 
+# Lägen för uppstädning av föräldralösa GeoServer-workspaces.
+# Styrs av HEX_ORPHAN_CLEANUP och läses av _reconcile_geoserver_schemas.
+CLEANUP_OFF     = "off"       # Endast varning i loggen (standard)
+CLEANUP_DRY_RUN = "dry-run"   # Loggar vad som skulle tas bort, tar inte bort
+CLEANUP_ON      = "on"        # Tar bort workspaces som Hex säkert äger
+
+# Accepterade stavningar per läge – ett stavfel ska varken aktivera borttagning
+# eller tyst avaktivera en uppstädning som driftansvarig tror är påslagen.
+_CLEANUP_ALIASES = {
+    "":         CLEANUP_OFF,
+    "off":      CLEANUP_OFF,
+    "false":    CLEANUP_OFF,
+    "0":        CLEANUP_OFF,
+    "nej":      CLEANUP_OFF,
+    "dry-run":  CLEANUP_DRY_RUN,
+    "dry_run":  CLEANUP_DRY_RUN,
+    "dryrun":   CLEANUP_DRY_RUN,
+    "on":       CLEANUP_ON,
+    "true":     CLEANUP_ON,
+    "1":        CLEANUP_ON,
+    "ja":       CLEANUP_ON,
+}
+
+
+def resolve_env_path():
+    """Returnerar sökvägen till .env-filen som ska laddas.
+
+    HEX_ENV_FILE pekar ut en fil utanför kodkatalogen. Det gör att
+    installationsmappen kan bytas ut vid uppgradering utan att konfigurationen
+    följer med — och utan att en öppen .env i mappen blockerar utbytet.
+    Utan variabeln används .env i skriptets katalog som tidigare.
+    """
+    override = os.environ.get("HEX_ENV_FILE", "").strip().strip('"')
+    if override:
+        return Path(override)
+    return Path(__file__).parent / ".env"
+
+
+def _read_cleanup_mode():
+    """Läser HEX_ORPHAN_CLEANUP och översätter till ett giltigt uppstädningsläge.
+
+    Okända värden ger CLEANUP_OFF plus en varning: borttagning aktiveras aldrig
+    av ett värde vi inte känner igen.
+    """
+    raw = os.environ.get("HEX_ORPHAN_CLEANUP", "").strip().lower()
+    mode = _CLEANUP_ALIASES.get(raw)
+    if mode is None:
+        log.warning(
+            "HEX_ORPHAN_CLEANUP='%s' är inte ett giltigt värde (off | dry-run | on) – "
+            "uppstädning av föräldralösa workspaces förblir avstängd.",
+            raw,
+        )
+        return CLEANUP_OFF
+    return mode
+
+
 def load_config():
     """Laddar konfiguration från miljövariabler.
 
@@ -91,8 +150,8 @@ def load_config():
     1. Nytt flerdatabas-format: HEX_DB_1_DBNAME, HEX_DB_1_HOST osv.
     2. Gammalt enkeldatabas-format: HEX_PG_DBNAME, HEX_PG_HOST osv.
     """
-    # Försök ladda .env från samma katalog som skriptet
-    env_path = Path(__file__).parent / ".env"
+    # Försök ladda .env – sökvägen kan pekas ut med HEX_ENV_FILE
+    env_path = resolve_env_path()
     if env_path.exists():
         try:
             from dotenv import load_dotenv
@@ -116,8 +175,16 @@ def load_config():
         "gs_namespace_base": os.environ.get("HEX_GS_NAMESPACE_BASE", ""),
         # Reconnect
         "reconnect_delay": int(os.environ.get("HEX_RECONNECT_DELAY", "5")),
-        # Periodisk avstämning – intervall i sekunder (0 = avaktiverad)
-        "reconcile_interval": int(os.environ.get("HEX_RECONCILE_INTERVAL", "3600")),
+        # Periodisk avstämning – intervall i sekunder (0 = avaktiverad).
+        # Standard 43200 (12 h): avstämningen fångar bara notifieringar som
+        # missats medan lyssnaren varit uppe OCH ansluten, vilket är sällsynt –
+        # startavstämningen vid varje (åter)anslutning täcker nedtidsfallet.
+        # Två körningar per dygn gör att minst en alltid hamnar utanför
+        # kontorstid oavsett när tjänsten senast startades om (intervallet
+        # räknas från tjänstestart, inte från klockslag).
+        "reconcile_interval": int(os.environ.get("HEX_RECONCILE_INTERVAL", "43200")),
+        # Uppstädning av föräldralösa workspaces: off | dry-run | on
+        "orphan_cleanup": _read_cleanup_mode(),
         # Databaser
         "databases": _parse_database_configs(),
         # E-post (valfritt - inaktivt om HEX_SMTP_TO inte är satt)
@@ -208,20 +275,59 @@ def _parse_multi_database_configs(db_numbers):
     return databases
 
 
+def _tolka_env_varde(ravarde):
+    """Tolkar värdet i en .env-rad enligt samma regler som python-dotenv.
+
+    Reglerna är dotenv:s, inte påhittade – hela poängen med reservläsaren är
+    att en .env ska betyda samma sak oavsett om python-dotenv råkar vara
+    installerat på maskinen:
+
+      värde   # kommentar   ->  "värde"      (# efter blanktecken inleder kommentar)
+      lo#sen                ->  "lo#sen"     (# utan blanktecken före tillhör värdet)
+      #värde                ->  "#värde"     (samma sak i början av värdet)
+      "värde # här"         ->  "värde # här" (citerat värde tas ordagrant)
+      slutar_med_citat"     ->  'slutar_med_citat"' (oparat citattecken behålls)
+
+    Den gamla varianten strippade varken kommentarer eller citattecken parvis.
+    Följden var att raderna SETUP.md och docs/08 visar –
+    HEX_RECONCILE_INTERVAL=43200   # sekunder mellan kontroller – gav värdet
+    "43200   # sekunder mellan kontroller", och int() på det avbröt uppstarten.
+    """
+    varde = ravarde.strip()
+
+    # Citerat värde: allt mellan citattecknen tas ordagrant, allt efter det
+    # avslutande citattecknet ignoreras.
+    if varde[:1] in ('"', "'"):
+        citat = varde[0]
+        slut = varde.find(citat, 1)
+        if slut != -1:
+            return varde[1:slut]
+        # Oavslutat citattecken – behandla raden som ociterad.
+
+    # Ociterat värde: en kommentar inleds av # föregånget av blanktecken.
+    return re.split(r"\s+#", varde, maxsplit=1)[0].rstrip()
+
+
 def _load_env_file_fallback(env_path):
-    """Enkel .env-laddare om python-dotenv inte är tillgängligt."""
+    """Enkel .env-laddare om python-dotenv inte är tillgängligt.
+
+    Sätter bara variabler som inte redan finns i miljön, precis som
+    load_dotenv(override=False).
+    """
     try:
         with open(env_path, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
-                if not line or line.startswith("#"):
+                if not line or line.startswith("#") or "=" not in line:
                     continue
-                if "=" in line:
-                    key, _, value = line.partition("=")
-                    key = key.strip()
-                    value = value.strip().strip('"').strip("'")
-                    if key not in os.environ:
-                        os.environ[key] = value
+                # "export NYCKEL=värde" är giltigt i en .env och hanteras av
+                # python-dotenv. Utan det här blir nyckeln "export NYCKEL".
+                if line.startswith("export "):
+                    line = line[len("export "):].lstrip()
+                key, _, value = line.partition("=")
+                key = key.strip()
+                if key and key not in os.environ:
+                    os.environ[key] = _tolka_env_varde(value)
     except Exception as e:
         log.warning("Kunde inte ladda %s: %s", env_path, e)
 
@@ -353,6 +459,53 @@ class EmailNotifier:
 # GEOSERVER REST API
 # =============================================================================
 
+# GeoServer-versioner som lyssnaren är verifierad mot. Intervallet anges som
+# (major, minor) och är inklusivt i båda ändar. Lyssnarens REST-anrop är
+# testade mot 2.28.0 och 3.0.0; 2.27 ingår eftersom regressionshanteringen av
+# 404 "already exists" härrör därifrån.
+GS_VERSION_TESTAD_LAGST = (2, 27)
+GS_VERSION_TESTAD_HOGST = (3, 0)
+
+
+def _parsa_gs_version(gs_version):
+    """Plockar ut (major, minor) ur en GeoServer-versionssträng.
+
+    Hanterar former som '2.28.0', '3.0.0', '3.1-SNAPSHOT' och '2.28-RC'.
+    Returnerar None om strängen inte går att tolka (t.ex. 'okänd').
+    """
+    if not isinstance(gs_version, str):
+        return None
+    m = re.match(r"^\s*(\d+)\.(\d+)", gs_version)
+    if not m:
+        return None
+    return (int(m.group(1)), int(m.group(2)))
+
+
+def _varna_om_otestad_gs_version(gs_version):
+    """Loggar en varning om GeoServer-versionen ligger utanför testat intervall.
+
+    Rent informativt – lyssnaren fortsätter alltid. Syftet är att en
+    GeoServer-uppgradering ska synas direkt i loggen i stället för att visa
+    sig som svårtolkade fel längre fram.
+    """
+    version = _parsa_gs_version(gs_version)
+    if version is None:
+        log.warning(
+            "Kunde inte tolka GeoServer-versionen '%s' - fortsätter ändå",
+            gs_version,
+        )
+        return
+
+    if version < GS_VERSION_TESTAD_LAGST or version > GS_VERSION_TESTAD_HOGST:
+        log.warning(
+            "GeoServer %s ligger utanför det testade intervallet %d.%d-%d.%d. "
+            "Lyssnaren fortsätter, men verifiera särskilt roll- och ACL-hanteringen.",
+            gs_version,
+            GS_VERSION_TESTAD_LAGST[0], GS_VERSION_TESTAD_LAGST[1],
+            GS_VERSION_TESTAD_HOGST[0], GS_VERSION_TESTAD_HOGST[1],
+        )
+
+
 class GeoServerClient:
     """Klient för GeoServer REST API."""
 
@@ -363,6 +516,11 @@ class GeoServerClient:
     MAX_RETRIES = 3
     RETRY_BACKOFF = [2, 5, 10]  # Sekunder mellan försök
 
+    # Tröskel i sekunder för att logga ett anrop som långsamt. Normala
+    # REST-anrop mot GeoServer svarar på bråkdelar av en sekund, så allt
+    # över några sekunder är värt en varning.
+    LANGSAM_ANROP_SEKUNDER = 5
+
     def __init__(self, base_url, user, password, dry_run=False, namespace_uri_base=""):
         self.base_url = base_url.rstrip("/")
         self.rest_url = f"{self.base_url}/rest"
@@ -372,10 +530,51 @@ class GeoServerClient:
         self.namespace_uri_base = (namespace_uri_base or self.base_url).rstrip("/")
         self.session = requests.Session()
         self.session.auth = self.auth
+        # Enbart Accept sätts sessionsbrett. Content-Type hör till kroppen och
+        # sätts av requests själv för varje anrop som skickar json=, så ett
+        # sessionsbrett värde skulle bara påstå att kroppslösa GET-, DELETE-
+        # och POST-anrop har en JSON-kropp de inte har. GeoServer 2.28 och 3.0
+        # svarar identiskt med och utan headern (verifierat mot båda), men
+        # Spring blir strängare för varje version och påståendet är ändå fel.
         self.session.headers.update({
-            "Content-Type": "application/json",
             "Accept": "application/json",
         })
+        # Tidpunkt (monotont) då föregående anrop på den här sessionen
+        # avslutades. Används enbart för att sätta långsamma anrop i relation
+        # till hur länge sessionen stått oanvänd (se _request_with_retry).
+        # Varje tråd har sin egen klient, så värdet delas aldrig mellan trådar.
+        self._senaste_anrop = None
+
+    def _logga_langsamt_anrop(self, method, url, start):
+        """Varnar om ett GeoServer-anrop tog onormalt lång tid.
+
+        Uppdaterar samtidigt tidsstämpeln för föregående anrop, så att nästa
+        varning kan ange hur länge sessionen stått oanvänd. Anropas både när
+        anropet lyckades och när det gav ett transient fel – ett anrop som
+        hänger sig och sedan misslyckas är minst lika intressant.
+
+        Args:
+            method: HTTP-metod, för loggraden.
+            url:    Anropad URL, för loggraden.
+            start:  time.monotonic() taget precis före anropet.
+        """
+        slut = time.monotonic()
+        varaktighet = slut - start
+        vilotid = self._senaste_anrop
+        self._senaste_anrop = slut
+
+        if varaktighet < self.LANGSAM_ANROP_SEKUNDER:
+            return
+
+        if vilotid is None:
+            paus = "sessionens första anrop"
+        else:
+            paus = "föregående anrop avslutades för %.0f s sedan" % (start - vilotid)
+
+        log.warning(
+            "  Långsamt GeoServer-anrop: %s %s tog %.1f s (%s)",
+            method, url, varaktighet, paus,
+        )
 
     def _request_with_retry(self, method, url, **kwargs):
         """Gör ett HTTP-anrop med retry vid transienta fel.
@@ -383,6 +582,15 @@ class GeoServerClient:
         Transienta fel (timeout, anslutningsfel) får upp till MAX_RETRIES
         nya försök med exponentiell backoff. Lyckade svar och HTTP-felkoder
         (4xx, 5xx) returneras direkt utan retry.
+
+        Anrop som tar längre än LANGSAM_ANROP_SEKUNDER loggas som varning
+        tillsammans med hur länge sessionen stått oanvänd. Tolkning: är det
+        långsamma anropet alltid det första efter en lång paus, medan
+        efterföljande anrop i samma svep går snabbt, ligger kostnaden i att
+        bygga upp anslutningen och inte i anropet. Vanligaste orsaken är att
+        HEX_GS_URL pekar på ett värdnamn vars första adress inte svarar
+        (t.ex. 'localhost' som slår upp ::1 medan GeoServer bara lyssnar på
+        IPv4) – då får varje ny anslutning vänta ut TCP-timeouten först.
 
         Returns:
             requests.Response
@@ -394,10 +602,13 @@ class GeoServerClient:
         last_exc = None
 
         for attempt in range(1 + self.MAX_RETRIES):
+            start = time.monotonic()
             try:
                 resp = self.session.request(method, url, **kwargs)
+                self._logga_langsamt_anrop(method, url, start)
                 return resp
             except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                self._logga_langsamt_anrop(method, url, start)
                 last_exc = e
                 if attempt < self.MAX_RETRIES:
                     delay = self.RETRY_BACKOFF[attempt]
@@ -432,6 +643,7 @@ class GeoServerClient:
                         gs_version = r.get("Version", "okänd")
                         break
                 log.info("Ansluten till GeoServer %s på %s", gs_version, self.base_url)
+                _varna_om_otestad_gs_version(gs_version)
                 return True
             elif resp.status_code == 401:
                 log.error("Autentisering misslyckades - kontrollera användarnamn/lösenord")
@@ -545,6 +757,94 @@ class GeoServerClient:
         )
         return resp.status_code == 200
 
+    # REST-resurser per lagringstyp: (URL-segment, JSON-rotnyckel, JSON-postnyckel).
+    # Används av list_store_names för att inventera en workspace innan uppstädning.
+    STORE_RESOURCES = {
+        "datastores":     ("dataStores",     "dataStore"),
+        "coveragestores": ("coverageStores", "coverageStore"),
+        "wmsstores":      ("wmsStores",      "wmsStore"),
+        "wmtsstores":     ("wmtsStores",     "wmtsStore"),
+    }
+
+    def list_store_names(self, workspace, store_type):
+        """Listar namnen på en workspaces lagringar av en given typ.
+
+        Args:
+            workspace:  Workspace-namn.
+            store_type: Nyckel i STORE_RESOURCES, t.ex. 'datastores' eller
+                        'coveragestores'.
+
+        Returns:
+            Lista med namn (tom lista om inga finns), eller None om GeoServer
+            inte kunde svara. None betyder "vet inte" och ska aldrig tolkas som
+            "tom" av anropande kod — uppstädning måste avstå vid osäkerhet.
+        """
+        root_key, item_key = self.STORE_RESOURCES[store_type]
+        try:
+            resp = self._request_with_retry(
+                "GET", f"{self.rest_url}/workspaces/{workspace}/{store_type}.json"
+            )
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            log.warning("  Kunde inte lista %s i workspace '%s': %s", store_type, workspace, e)
+            return None
+
+        # 404 = workspace eller resurstyp saknas helt; det är detsamma som tomt.
+        if resp.status_code == 404:
+            return []
+        if resp.status_code != 200:
+            log.warning(
+                "  Kunde inte lista %s i workspace '%s': HTTP %d",
+                store_type, workspace, resp.status_code,
+            )
+            return None
+
+        try:
+            payload = resp.json().get(root_key)
+        except ValueError:
+            log.warning("  Ogiltigt JSON-svar vid listning av %s i '%s'", store_type, workspace)
+            return None
+
+        # GeoServer serialiserar en tom samling som strängen "" i stället för {}.
+        if not isinstance(payload, dict):
+            return []
+        entries = payload.get(item_key) or []
+        return [e.get("name") for e in entries if e.get("name")]
+
+    def get_datastore_parameters(self, workspace, store_name):
+        """Hämtar en datastores connectionParameters som en dict.
+
+        Returns:
+            Dict med parametrar (t.ex. {'dbtype': 'postgis', 'host': ...}),
+            eller None om datastoren inte kunde läsas.
+        """
+        try:
+            resp = self._request_with_retry(
+                "GET", f"{self.rest_url}/workspaces/{workspace}/datastores/{store_name}.json"
+            )
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            log.warning("  Kunde inte läsa datastore '%s/%s': %s", workspace, store_name, e)
+            return None
+
+        if resp.status_code != 200:
+            log.warning(
+                "  Kunde inte läsa datastore '%s/%s': HTTP %d",
+                workspace, store_name, resp.status_code,
+            )
+            return None
+
+        try:
+            entries = (
+                resp.json()
+                .get("dataStore", {})
+                .get("connectionParameters", {})
+                .get("entry", [])
+            )
+        except ValueError:
+            log.warning("  Ogiltigt JSON-svar för datastore '%s/%s'", workspace, store_name)
+            return None
+
+        return {e.get("@key"): e.get("$") for e in entries if e.get("@key")}
+
     def get_namespace_uri(self, name):
         """Hämtar namespace-URI för en workspace, eller None om ej hittad."""
         resp = self._request_with_retry(
@@ -622,23 +922,54 @@ class GeoServerClient:
                 "type": "PostGIS",
                 "enabled": True,
                 "connectionParameters": {
+                    # Poolinställningarna gäller per datastore och lever i
+                    # GeoServers JVM, inte i lyssnaren. min connections = 0
+                    # gör att en oanvänd datastore inte håller kvar någon
+                    # anslutning; evictor-raderna styr hur snabbt den töms.
+                    # Evictor tests per run måste vara minst max connections
+                    # för att en körning ska hinna gå igenom hela poolen.
+                    #
+                    # Max connection idle time är 300 s, inte 60. Att öppna en
+                    # ny anslutning mättes till ~33 ms serverarbete mot
+                    # PostgreSQL på Windows (backend-start ~27 ms plus SCRAM
+                    # ~6 ms), med enstaka utfall på flera hundra ms. Med 60 s
+                    # blev den kostnaden normalfallet för varje lager som ses
+                    # mer sällan än en gång i minuten. 300 s är GeoTools
+                    # standard och håller poolen varm genom vanliga pauser i
+                    # kartbläddring; golvet på 0 är kvar, så en datastore som
+                    # står helt oanvänd släpper ändå alla sina anslutningar.
+                    # Evictor run periodicity ligger kvar på 60 s så att
+                    # gallringen sker inom 300-360 s i stället för 300-600 s.
+                    #
+                    # max connections är 10, inte 8. Det var golvet som fick
+                    # beståndet att äta max_connections oberoende av last, och
+                    # det är borta med min connections = 0. Taket styr bara hur
+                    # många samtidiga frågor en enskild datastore klarar, så
+                    # att sänka det köper nästan ingenting mot max_connections
+                    # men gör att en kakelskur lättare slår i Connection
+                    # timeout.
                     "entry": [
-                        {"@key": "dbtype",               "$": "postgis"},
-                        {"@key": "namespace",            "$": f"{self.namespace_uri_base}/{workspace}"},
-                        {"@key": "host",                 "$": host},
-                        {"@key": "port",                 "$": str(port)},
-                        {"@key": "database",             "$": dbname},
-                        {"@key": "schema",               "$": schema_name},
-                        {"@key": "user",                 "$": pg_user},
-                        {"@key": "passwd",               "$": pg_password},
-                        {"@key": "Expose primary keys",  "$": "true"},
-                        {"@key": "fetch size",           "$": "1000"},
-                        {"@key": "Loose bbox",           "$": "true"},
-                        {"@key": "Estimated extends",    "$": "true"},
-                        {"@key": "encode functions",     "$": "true"},
-                        {"@key": "validate connections", "$": "true"},
-                        {"@key": "max connections",      "$": "10"},
-                        {"@key": "min connections",      "$": "1"},
+                        {"@key": "dbtype",                   "$": "postgis"},
+                        {"@key": "namespace",                "$": f"{self.namespace_uri_base}/{workspace}"},
+                        {"@key": "host",                     "$": host},
+                        {"@key": "port",                     "$": str(port)},
+                        {"@key": "database",                 "$": dbname},
+                        {"@key": "schema",                   "$": schema_name},
+                        {"@key": "user",                     "$": pg_user},
+                        {"@key": "passwd",                   "$": pg_password},
+                        {"@key": "Expose primary keys",      "$": "true"},
+                        {"@key": "fetch size",               "$": "1000"},
+                        {"@key": "Loose bbox",               "$": "true"},
+                        {"@key": "Estimated extends",        "$": "true"},
+                        {"@key": "encode functions",         "$": "true"},
+                        {"@key": "validate connections",     "$": "true"},
+                        {"@key": "max connections",          "$": "10"},
+                        {"@key": "min connections",          "$": "0"},
+                        {"@key": "Connection timeout",       "$": "10"},
+                        {"@key": "Test while idle",          "$": "true"},
+                        {"@key": "Evictor run periodicity",  "$": "60"},
+                        {"@key": "Max connection idle time", "$": "300"},
+                        {"@key": "Evictor tests per run",    "$": "10"},
                     ]
                 },
             }
@@ -671,7 +1002,7 @@ class GeoServerClient:
         """Skapar eller uppdaterar en PostGIS-datastore i GeoServer.
 
         Skapar en ny datastore om den inte finns. Om datastore redan existerar
-        uppdateras den alltid via PUT med aktuella uppgifter från hex_role_credentials,
+        uppdateras den alltid via PUT med aktuella uppgifter från hex_rolluppgifter,
         så att lösenordsändringar (t.ex. efter ominstallation) slår igenom.
 
         Args:
@@ -705,23 +1036,54 @@ class GeoServerClient:
                 "type": "PostGIS",
                 "enabled": True,
                 "connectionParameters": {
+                    # Poolinställningarna gäller per datastore och lever i
+                    # GeoServers JVM, inte i lyssnaren. min connections = 0
+                    # gör att en oanvänd datastore inte håller kvar någon
+                    # anslutning; evictor-raderna styr hur snabbt den töms.
+                    # Evictor tests per run måste vara minst max connections
+                    # för att en körning ska hinna gå igenom hela poolen.
+                    #
+                    # Max connection idle time är 300 s, inte 60. Att öppna en
+                    # ny anslutning mättes till ~33 ms serverarbete mot
+                    # PostgreSQL på Windows (backend-start ~27 ms plus SCRAM
+                    # ~6 ms), med enstaka utfall på flera hundra ms. Med 60 s
+                    # blev den kostnaden normalfallet för varje lager som ses
+                    # mer sällan än en gång i minuten. 300 s är GeoTools
+                    # standard och håller poolen varm genom vanliga pauser i
+                    # kartbläddring; golvet på 0 är kvar, så en datastore som
+                    # står helt oanvänd släpper ändå alla sina anslutningar.
+                    # Evictor run periodicity ligger kvar på 60 s så att
+                    # gallringen sker inom 300-360 s i stället för 300-600 s.
+                    #
+                    # max connections är 10, inte 8. Det var golvet som fick
+                    # beståndet att äta max_connections oberoende av last, och
+                    # det är borta med min connections = 0. Taket styr bara hur
+                    # många samtidiga frågor en enskild datastore klarar, så
+                    # att sänka det köper nästan ingenting mot max_connections
+                    # men gör att en kakelskur lättare slår i Connection
+                    # timeout.
                     "entry": [
-                        {"@key": "dbtype",              "$": "postgis"},
-                        {"@key": "namespace",           "$": f"{self.namespace_uri_base}/{workspace}"},
-                        {"@key": "host",                "$": host},
-                        {"@key": "port",                "$": str(port)},
-                        {"@key": "database",            "$": dbname},
-                        {"@key": "schema",              "$": schema_name},
-                        {"@key": "user",                "$": pg_user},
-                        {"@key": "passwd",              "$": pg_password},
-                        {"@key": "Expose primary keys", "$": "true"},
-                        {"@key": "fetch size",          "$": "1000"},
-                        {"@key": "Loose bbox",          "$": "true"},
-                        {"@key": "Estimated extends",   "$": "true"},
-                        {"@key": "encode functions",    "$": "true"},
-                        {"@key": "validate connections","$": "true"},
-                        {"@key": "max connections",     "$": "10"},
-                        {"@key": "min connections",     "$": "1"},
+                        {"@key": "dbtype",                   "$": "postgis"},
+                        {"@key": "namespace",                "$": f"{self.namespace_uri_base}/{workspace}"},
+                        {"@key": "host",                     "$": host},
+                        {"@key": "port",                     "$": str(port)},
+                        {"@key": "database",                 "$": dbname},
+                        {"@key": "schema",                   "$": schema_name},
+                        {"@key": "user",                     "$": pg_user},
+                        {"@key": "passwd",                   "$": pg_password},
+                        {"@key": "Expose primary keys",      "$": "true"},
+                        {"@key": "fetch size",               "$": "1000"},
+                        {"@key": "Loose bbox",               "$": "true"},
+                        {"@key": "Estimated extends",        "$": "true"},
+                        {"@key": "encode functions",         "$": "true"},
+                        {"@key": "validate connections",     "$": "true"},
+                        {"@key": "max connections",          "$": "10"},
+                        {"@key": "min connections",          "$": "0"},
+                        {"@key": "Connection timeout",       "$": "10"},
+                        {"@key": "Test while idle",          "$": "true"},
+                        {"@key": "Evictor run periodicity",  "$": "60"},
+                        {"@key": "Max connection idle time", "$": "300"},
+                        {"@key": "Evictor tests per run",    "$": "10"},
                     ]
                 },
             }
@@ -759,10 +1121,84 @@ class GeoServerClient:
             )
             return False
 
+    # Statuskoder där GeoServer kan mena "rollen fanns redan" respektive
+    # "rollen fanns inte", utan att svaret går att skilja från ett äkta fel.
+    # GeoServer 2.x svarar 404 med orsaken i klartext ("... already exists").
+    # GeoServer 3.x svarar 400 med ett generiskt meddelande som bara hänvisar
+    # till serverloggen, så svarstexten går inte längre att matcha på.
+    # Se _gs_role_finns för hur tvetydigheten löses.
+    ROLL_TVETYDIGA_STATUSAR = (400, 404, 500)
+
+    def list_gs_roles(self):
+        """Hämtar samtliga rollnamn från GeoServers aktiva rolltjänst.
+
+        Endpointen är '/rest/security/roles.json' och svarar {"roles": [...]}
+        identiskt i 2.27, 2.28 och 3.0. (Användarhandboken anger '/rest/roles/',
+        vilket ger 404 i samtliga versioner – använd inte den sökvägen. Notera
+        också att avslutande snedstreck ger 404 i 3.x.)
+
+        Returns:
+            Mängd med rollnamn, eller None om GeoServer inte kunde svara.
+            None betyder "vet inte" och får aldrig tolkas som "tom".
+        """
+        try:
+            resp = self._request_with_retry(
+                "GET", f"{self.rest_url}/security/roles.json"
+            )
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            log.warning("  Kunde inte hämta GeoServer-roller: %s", e)
+            return None
+
+        if resp.status_code != 200:
+            log.warning(
+                "  Kunde inte hämta GeoServer-roller: HTTP %d", resp.status_code
+            )
+            return None
+
+        try:
+            roller = resp.json().get("roles")
+        except ValueError:
+            log.warning("  Ogiltigt JSON-svar vid hämtning av GeoServer-roller")
+            return None
+
+        if not isinstance(roller, list):
+            return None
+
+        return {r for r in roller if isinstance(r, str)}
+
+    def _gs_role_finns(self, role_name):
+        """Kontrollerar mot GeoServer om en roll existerar.
+
+        Används för att tolka tvetydiga felsvar från rollendpointen: i stället
+        för att gissa utifrån statuskod och svarstext frågar vi GeoServer vad
+        som faktiskt gäller.
+
+        Returns:
+            True om rollen finns, False om den inte finns, None om GeoServer
+            inte kunde svara (då är utfallet okänt och får inte antas).
+        """
+        roller = self.list_gs_roles()
+        if roller is None:
+            return None
+        return role_name in roller
+
     def create_gs_role(self, role_name):
         """Skapar en GeoServer-roll om den inte redan finns.
 
         Returnerar True om rollen skapades eller redan existerar.
+
+        Idempotensen måste hålla över flera GeoServer-generationer eftersom
+        avstämningen kör om anropet för varje publicerat schema:
+
+          201                        Rollen skapades.
+          409                        Rollen fanns redan.
+          404 + "already exists"     GeoServer 2.x: rollen fanns redan.
+          400 (generiskt meddelande) GeoServer 3.x: kan vara "fanns redan" –
+                                     verifieras mot /security/roles.
+
+        De tre första fallen avgörs direkt på svaret, precis som tidigare.
+        Först när svaret är tvetydigt görs ett extra anrop för att kontrollera
+        om rollen finns; det sker alltså aldrig i det normala flödet.
         """
         if self.dry_run:
             log.info("  [DRY-RUN] Skulle skapa GeoServer-roll: %s", role_name)
@@ -779,6 +1215,15 @@ class GeoServerClient:
         ):
             log.info("  GeoServer-roll '%s' finns redan - hoppar över", role_name)
             return True
+        elif resp.status_code in self.ROLL_TVETYDIGA_STATUSAR and (
+            self._gs_role_finns(role_name) is True
+        ):
+            log.info(
+                "  GeoServer-roll '%s' finns redan (HTTP %d, bekräftat via"
+                " /security/roles) - hoppar över",
+                role_name, resp.status_code,
+            )
+            return True
         else:
             log.error(
                 "  Misslyckades att skapa GeoServer-roll '%s': %d %s",
@@ -790,6 +1235,10 @@ class GeoServerClient:
         """Tar bort en GeoServer-roll.
 
         Returnerar True om rollen togs bort eller inte hittades (idempotent).
+
+        Samma versionsskillnad som i create_gs_role gäller här: en roll som
+        inte finns ger 404 i GeoServer 2.x men 400 i 3.x. Ett 400-svar
+        verifieras därför mot /security/roles innan det underkänns.
         """
         if self.dry_run:
             log.info("  [DRY-RUN] Skulle ta bort GeoServer-roll: %s", role_name)
@@ -804,6 +1253,15 @@ class GeoServerClient:
         elif resp.status_code == 404:
             log.info("  GeoServer-roll '%s' hittades inte - inget att ta bort", role_name)
             return True
+        elif resp.status_code in self.ROLL_TVETYDIGA_STATUSAR and (
+            self._gs_role_finns(role_name) is False
+        ):
+            log.info(
+                "  GeoServer-roll '%s' hittades inte (HTTP %d, bekräftat via"
+                " /security/roles) - inget att ta bort",
+                role_name, resp.status_code,
+            )
+            return True
         else:
             log.error(
                 "  Misslyckades att ta bort GeoServer-roll '%s': %d %s",
@@ -812,30 +1270,55 @@ class GeoServerClient:
             return False
 
     def create_workspace_acl(self, workspace, anonymous_read=False):
-        """Skapar ACL-regler för en workspace.
+        """Skapar ACL-regler för läs-workspace.
 
-        Ger r_{workspace} läsrättighet och w_{workspace} skrivrättighet
-        till alla lager i workspace. Om anonymous_read är True läggs
-        ROLE_ANONYMOUS till i läsregeln så att oautentiserade anrop tillåts
-        (förutsätter att åtkomst begränsas på nätverksnivå, t.ex. IP-vitlista).
+        Ger r_{workspace} läsrättighet till alla lager i workspace.
+        Om anonymous_read är True läggs ROLE_ANONYMOUS till i läsregeln
+        så att oautentiserade anrop tillåts (förutsätter att åtkomst
+        begränsas på nätverksnivå, t.ex. IP-vitlista).
+
+        Skrivrättigheter hanteras av skriv-workspacet (se create_write_workspace_acl).
         """
         read_role = f"r_{workspace},ROLE_ANONYMOUS" if anonymous_read else f"r_{workspace}"
         rules = {
             f"{workspace}.*.r": read_role,
-            f"{workspace}.*.w": f"w_{workspace}",
         }
 
         if self.dry_run:
-            log.info("  [DRY-RUN] Skulle skapa ACL-regler för workspace '%s':", workspace)
+            log.info("  [DRY-RUN] Skulle skapa ACL-regler för läs-workspace '%s':", workspace)
             for rule, role in rules.items():
                 log.info("  [DRY-RUN]   %s = %s", rule, role)
             return True
 
         return self._ensure_acl_rules(workspace, rules)
 
+    def create_write_workspace_acl(self, schema_name):
+        """Skapar ACL-regler för skriv-workspace ('{schema}_w').
+
+        Ger w_{schema_name} både läs- och skrivrättighet till alla lager i
+        skriv-workspacet. Det innebär att enbart användare med skrivrollen kan
+        nå workspacet — WFS-T-anrop (Insert/Update/Delete) riktas dit och når
+        en datastore med gs_w_{schema_name}-uppgifter (ALL-behörighet i PostgreSQL).
+        """
+        write_workspace = f"{schema_name}{WRITE_WORKSPACE_SUFFIX}"
+        write_role = f"w_{schema_name}"
+        rules = {
+            f"{write_workspace}.*.r": write_role,
+            f"{write_workspace}.*.w": write_role,
+        }
+
+        if self.dry_run:
+            log.info("  [DRY-RUN] Skulle skapa ACL-regler för skriv-workspace '%s':", write_workspace)
+            for rule, role in rules.items():
+                log.info("  [DRY-RUN]   %s = %s", rule, role)
+            return True
+
+        return self._ensure_acl_rules(write_workspace, rules)
+
     def delete_workspace_acl(self, workspace):
         """Tar bort ACL-regler för en workspace.
 
+        Tar bort {workspace}.*.r och (om den finns) {workspace}.*.w.
         Returnerar True om reglerna togs bort eller inte hittades (idempotent).
         """
         rules = [f"{workspace}.*.r", f"{workspace}.*.w"]
@@ -877,6 +1360,26 @@ class GeoServerClient:
             return None
         return resp.json()
 
+    @staticmethod
+    def _rollmangd(varde):
+        """Delar upp en ACL-regels rollista i en mängd rollnamn.
+
+        GeoServer lagrar flera roller som en kommaseparerad sträng, men
+        returnerar dem inte nödvändigtvis i den ordning de skickades in:
+        'r_sk0_ext_sgu,ROLE_ANONYMOUS' kommer tillbaka som
+        'ROLE_ANONYMOUS,r_sk0_ext_sgu'. Ordningen saknar betydelse för
+        behörigheten, så jämförelsen måste ske på mängden — annars tror
+        lyssnaren att regeln är fel vid varje avstämning och skriver om den
+        i all evighet.
+
+        None (regeln saknas) ger en tom mängd.
+        """
+        if not varde:
+            return frozenset()
+        return frozenset(
+            del_.strip() for del_ in varde.split(",") if del_.strip()
+        )
+
     def _ensure_acl_rules(self, workspace, expected_rules):
         """Verifierar och korrigerar ACL-regler mot förväntat utfall.
 
@@ -903,7 +1406,9 @@ class GeoServerClient:
         for rule_key, expected_role in expected_rules.items():
             current_role = all_rules.get(rule_key)
 
-            if current_role == expected_role:
+            # Mängdjämförelse, inte strängjämförelse: GeoServer normaliserar
+            # ordningen på flerrollsregler (se _rollmangd).
+            if self._rollmangd(current_role) == self._rollmangd(expected_role):
                 log.info("  ACL-regel '%s' är korrekt – hoppar över", rule_key)
                 continue
 
@@ -946,35 +1451,47 @@ class GeoServerClient:
 # SCHEMA HANDLER
 # =============================================================================
 
+# Suffix som läggs till schemanamnet för att bilda skriv-workspace-namnet.
+# Läs-workspace: '{schema}',  skriv-workspace: '{schema}{WRITE_WORKSPACE_SUFFIX}'.
+WRITE_WORKSPACE_SUFFIX = "_w"
+
 # Regex som matchar giltiga schemanamn för GeoServer-publicering.
-# Laddas dynamiskt från standardiserade_skyddsnivaer (publiceras_geoserver = true)
-# och standardiserade_datakategorier vid uppstart via _load_schema_pattern().
-# Standardvärdet nedan används som fallback om DB-laddningen misslyckas.
+# Används som fallback om DB-laddningen misslyckas. Varje lyssnartråd håller
+# sitt eget mönster i _thread_local.schema_pattern, laddat från sin egen databas,
+# så att skilda publiceras_geoserver-konfigurationer i olika databaser inte
+# skriver över varandra.
 SCHEMA_PATTERN = re.compile(r"^sk[01]_(ext|kba|sys)_.+$")
-_schema_pattern_lock = threading.Lock()
+_thread_local = threading.local()
+
+
+def _get_schema_pattern():
+    """Returnerar det aktuella trådlokala mönstret, eller det globala fallback-mönstret."""
+    return getattr(_thread_local, "schema_pattern", SCHEMA_PATTERN)
 
 
 def _load_schema_pattern(cur):
-    """Laddar schemanamnsmönstret från konfigurationstabellerna och uppdaterar SCHEMA_PATTERN.
+    """Laddar schemanamnsmönstret från konfigurationstabellerna och sparar det trådlokalt.
 
     Bygger ett regex baserat på:
-      - standardiserade_skyddsnivaer WHERE publiceras_geoserver = true  → tillåtna prefix
-      - standardiserade_datakategorier                                  → tillåtna kategorier
+      - hex_standardiserade_skyddsnivaer WHERE publiceras_geoserver = true  → tillåtna prefix
+      - hex_standardiserade_datakategorier                                  → tillåtna kategorier
 
+    Mönstret sparas i _thread_local.schema_pattern så att varje lyssnartråd
+    använder sin egen databas konfiguration utan att påverka övriga trådar.
     Om tabellerna är tomma eller ett fel uppstår behålls det befintliga mönstret.
     Anropas i listen_loop efter lyckad DB-anslutning så att mönstret hålls i synk
     med konfigurationen utan omstart av tjänsten.
     """
-    global SCHEMA_PATTERN
+    current = _get_schema_pattern()
     try:
         cur.execute(
-            "SELECT prefix FROM public.standardiserade_skyddsnivaer"
+            "SELECT prefix FROM public.hex_standardiserade_skyddsnivaer"
             " WHERE publiceras_geoserver = true ORDER BY prefix"
         )
         skyddsnivaer = [row[0] for row in cur.fetchall()]
 
         cur.execute(
-            "SELECT prefix FROM public.standardiserade_datakategorier ORDER BY prefix"
+            "SELECT prefix FROM public.hex_standardiserade_datakategorier ORDER BY prefix"
         )
         kategorier = [row[0] for row in cur.fetchall()]
 
@@ -982,7 +1499,7 @@ def _load_schema_pattern(cur):
             log.warning(
                 "Schemanamnsmönster: konfigurationstabellerna är tomma – "
                 "behåller nuvarande mönster '%s'",
-                SCHEMA_PATTERN.pattern,
+                current.pattern,
             )
             return
 
@@ -990,19 +1507,18 @@ def _load_schema_pattern(cur):
         kat_alts    = "|".join(re.escape(k) for k in kategorier)
         pattern = re.compile(rf"^({prefix_alts})_({kat_alts})_.+$")
 
-        with _schema_pattern_lock:
-            SCHEMA_PATTERN = pattern
+        _thread_local.schema_pattern = pattern
         log.info("Schemanamnsmönster uppdaterat från DB: %s", pattern.pattern)
 
     except Exception as e:
         log.warning(
             "Kunde inte ladda schemanamnsmönster från DB: %s – "
             "behåller nuvarande mönster '%s'",
-            e, SCHEMA_PATTERN.pattern,
+            e, current.pattern,
         )
 
 # pg_notify-kanalnamn. Måste överensstämma med SQL-funktionerna
-# notifiera_geoserver() och notifiera_geoserver_borttagning().
+# hex_notifiera_gs() och hex_notifiera_gs_borttagning().
 CHANNEL_SCHEMA_CREATE = "geoserver_schema"
 CHANNEL_SCHEMA_DROP   = "geoserver_schema_drop"
 
@@ -1013,22 +1529,51 @@ def _db_tag(db_label):
 
 
 def _fetch_role_credentials(conn, schema_name):
-    """Hämtar autentiseringsuppgifter för läsrollen för ett schema.
+    """Hämtar autentiseringsuppgifter för läs-tjänstekontot (gs_r_) för ett schema.
 
-    Slår upp gs_r_{schema_name} i hex_role_credentials.
+    Slår upp gs_r_{schema_name} i hex_rolluppgifter.
 
     Args:
         conn:        psycopg2-anslutning till databasen (AUTOCOMMIT OK)
         schema_name: Schemanamn (t.ex. 'sk1_kba_bygg')
 
     Returns:
-        (rolname, password) tuple, eller (None, None) om ej hittad.
+        (rollnamn, losenord) tuple, eller (None, None) om ej hittad.
     """
     role_name = f"gs_r_{schema_name}"
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT rolname, password FROM public.hex_role_credentials WHERE rolname = %s",
+                "SELECT rollnamn, losenord FROM public.hex_rolluppgifter WHERE rollnamn = %s",
+                (role_name,),
+            )
+            row = cur.fetchone()
+        if row:
+            return row[0], row[1]
+        return None, None
+    except Exception as e:
+        log.error("Kunde inte hämta autentiseringsuppgifter för '%s': %s", role_name, e)
+        return None, None
+
+
+def _fetch_write_role_credentials(conn, schema_name):
+    """Hämtar autentiseringsuppgifter för skriv-tjänstekontot (gs_w_) för ett schema.
+
+    Slår upp gs_w_{schema_name} i hex_rolluppgifter. Returnerar (None, None) om
+    raden saknas — t.ex. för äldre scheman skapade innan gs_w_*-stödet lades till.
+
+    Args:
+        conn:        psycopg2-anslutning till databasen (AUTOCOMMIT OK)
+        schema_name: Schemanamn (t.ex. 'sk1_kba_bygg')
+
+    Returns:
+        (rollnamn, losenord) tuple, eller (None, None) om ej hittad.
+    """
+    role_name = f"gs_w_{schema_name}"
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT rollnamn, losenord FROM public.hex_rolluppgifter WHERE rollnamn = %s",
                 (role_name,),
             )
             row = cur.fetchone()
@@ -1053,12 +1598,13 @@ def _validate_schema_name(schema_name, tag):
     Returns:
         True om schemanamnet är giltigt, annars False (efter loggning).
     """
-    if not SCHEMA_PATTERN.match(schema_name):
+    pattern = _get_schema_pattern()
+    if not pattern.match(schema_name):
         log.warning(
             "%sOgiltigt schemanamn '%s' - matchar inte mönster '%s'. Ignorerar.",
             tag,
             schema_name,
-            SCHEMA_PATTERN.pattern,
+            pattern.pattern,
         )
         return False
     return True
@@ -1067,7 +1613,7 @@ def _validate_schema_name(schema_name, tag):
 def _fetch_anonymous_read(conn, schema_name):
     """Returnerar True om prefixet för schema_name har anonym_las aktiverat.
 
-    Slår upp standardiserade_skyddsnivaer.anonym_las för prefixet (första
+    Slår upp hex_standardiserade_skyddsnivaer.anonym_las för prefixet (första
     segmentet i schemanamnet, t.ex. 'sk0' ur 'sk0_kba_fg'). Returnerar False
     vid databasfel eller om prefixet inte hittas.
     """
@@ -1075,7 +1621,7 @@ def _fetch_anonymous_read(conn, schema_name):
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT anonym_las FROM public.standardiserade_skyddsnivaer"
+                "SELECT anonym_las FROM public.hex_standardiserade_skyddsnivaer"
                 " WHERE prefix = %s",
                 (prefix,),
             )
@@ -1088,8 +1634,10 @@ def _fetch_anonymous_read(conn, schema_name):
 def handle_schema_notification(schema_name, db_config, pg_conn, gs_client, db_label=""):
     """Hanterar en notifiering om nytt schema (kanal: CHANNEL_SCHEMA_CREATE).
 
-    Hämtar autentiseringsuppgifter för läsrollen från hex_role_credentials
-    och skapar workspace och direkt PostGIS-datastore i GeoServer.
+    Skapar två workspaces med varsin PostGIS-datastore i GeoServer:
+      - Läs-workspace  '{schema}'   med gs_r_{schema}-uppgifter (SELECT).
+      - Skriv-workspace '{schema}_w' med gs_w_{schema}-uppgifter (ALL),
+        som möjliggör WFS-T (Insert/Update/Delete) via rätt databasanslutning.
 
     Args:
         schema_name: Schemanamnet från pg_notify-payloaden
@@ -1102,7 +1650,7 @@ def handle_schema_notification(schema_name, db_config, pg_conn, gs_client, db_la
     log.info("%sMottog notifiering för schema: %s", tag, schema_name)
 
     # Ladda om mönstret innan validering så att ändringar i
-    # standardiserade_skyddsnivaer (t.ex. publiceras_geoserver = true för ett
+    # hex_standardiserade_skyddsnivaer (t.ex. publiceras_geoserver = true för ett
     # nytt prefix) slår igenom utan omstart av tjänsten.
     with pg_conn.cursor() as cur:
         _load_schema_pattern(cur)
@@ -1110,26 +1658,36 @@ def handle_schema_notification(schema_name, db_config, pg_conn, gs_client, db_la
     if not _validate_schema_name(schema_name, tag):
         return False
 
-    # Hämta autentiseringsuppgifter för läsrollen från hex_role_credentials
-    role_name, password = _fetch_role_credentials(pg_conn, schema_name)
-    if not role_name:
+    # Hämta autentiseringsuppgifter för läs- och skriv-tjänstekontona
+    r_role, r_password = _fetch_role_credentials(pg_conn, schema_name)
+    if not r_role:
         log.error(
-            "%sIngen autentiseringsuppgifter hittades för 'gs_r_%s' i hex_role_credentials - "
+            "%sIngen autentiseringsuppgifter hittades för 'gs_r_%s' i hex_rolluppgifter - "
             "hoppar över schema '%s'",
             tag, schema_name, schema_name,
         )
         return False
+    log.info("%s  Hittade autentiseringsuppgifter för läsroll: %s", tag, r_role)
 
-    log.info("%s  Hittade autentiseringsuppgifter för roll: %s", tag, role_name)
+    w_role, w_password = _fetch_write_role_credentials(pg_conn, schema_name)
+    if not w_role:
+        log.warning(
+            "%sIngen autentiseringsuppgifter hittades för 'gs_w_%s' i hex_rolluppgifter - "
+            "skriv-workspace utelämnas för schema '%s'",
+            tag, schema_name, schema_name,
+        )
 
-    # 1. Skapa workspace
-    log.info("%s  Steg 1: Skapar workspace '%s'...", tag, schema_name)
+    write_workspace = f"{schema_name}{WRITE_WORKSPACE_SUFFIX}"
+    anonymous_read = _fetch_anonymous_read(pg_conn, schema_name)
+
+    # 1. Skapa läs-workspace
+    log.info("%s  Steg 1: Skapar läs-workspace '%s'...", tag, schema_name)
     if not gs_client.create_workspace(schema_name):
-        log.error("%s  Avbryter - workspace kunde inte skapas", tag)
+        log.error("%s  Avbryter - läs-workspace kunde inte skapas", tag)
         return False
 
-    # 2. Skapa direkt PostGIS-datastore med läsrollens uppgifter
-    log.info("%s  Steg 2: Skapar PostGIS-datastore '%s'...", tag, schema_name)
+    # 2. Skapa PostGIS-datastore med läsrollens uppgifter
+    log.info("%s  Steg 2: Skapar läs-datastore '%s'...", tag, schema_name)
     if not gs_client.create_pg_datastore(
         workspace=schema_name,
         store_name=schema_name,
@@ -1137,25 +1695,56 @@ def handle_schema_notification(schema_name, db_config, pg_conn, gs_client, db_la
         port=db_config["port"],
         dbname=db_config["dbname"],
         schema_name=schema_name,
-        pg_user=role_name,
-        pg_password=password,
+        pg_user=r_role,
+        pg_password=r_password,
     ):
-        log.error("%s  Avbryter - datastore kunde inte skapas", tag)
+        log.error("%s  Avbryter - läs-datastore kunde inte skapas", tag)
         return False
 
-    # 3. Skapa GeoServer-roller (r_ och w_) som speglar PostgreSQL-rollerna
-    log.info("%s  Steg 3: Skapar GeoServer-roller för '%s'...", tag, schema_name)
+    # 3. Skapa skriv-workspace och skriv-datastore (kräver gs_w_-uppgifter)
+    if w_role:
+        log.info("%s  Steg 3: Skapar skriv-workspace '%s'...", tag, write_workspace)
+        if not gs_client.create_workspace(write_workspace):
+            log.error("%s  Avbryter - skriv-workspace kunde inte skapas", tag)
+            return False
+
+        log.info("%s  Steg 4: Skapar skriv-datastore '%s'...", tag, write_workspace)
+        if not gs_client.create_pg_datastore(
+            workspace=write_workspace,
+            store_name=write_workspace,
+            host=db_config["host"],
+            port=db_config["port"],
+            dbname=db_config["dbname"],
+            schema_name=schema_name,
+            pg_user=w_role,
+            pg_password=w_password,
+        ):
+            log.error("%s  Avbryter - skriv-datastore kunde inte skapas", tag)
+            return False
+    else:
+        log.info("%s  Steg 3-4: Hoppar över skriv-workspace (saknade gs_w_-uppgifter)", tag)
+
+    # 5. Skapa GeoServer-roller (r_ och w_) som speglar PostgreSQL-rollerna
+    log.info("%s  Steg 5: Skapar GeoServer-roller för '%s'...", tag, schema_name)
     for gs_role in (f"r_{schema_name}", f"w_{schema_name}"):
         if not gs_client.create_gs_role(gs_role):
             log.error("%s  Avbryter - GeoServer-roll '%s' kunde inte skapas", tag, gs_role)
             return False
 
-    # 4. Skapa ACL-regler så att rollerna får tillgång till workspace
-    anonymous_read = _fetch_anonymous_read(pg_conn, schema_name)
-    log.info("%s  Steg 4: Skapar ACL-regler för '%s'...", tag, schema_name)
+    # 6. Skapa ACL-regler för läs-workspace (r_-rollen läser)
+    log.info("%s  Steg 6: Skapar ACL-regler för läs-workspace '%s'...", tag, schema_name)
     if not gs_client.create_workspace_acl(schema_name, anonymous_read=anonymous_read):
-        log.error("%s  Avbryter - ACL-regler kunde inte skapas", tag)
+        log.error("%s  Avbryter - ACL-regler för läs-workspace kunde inte skapas", tag)
         return False
+
+    # 7. Skapa ACL-regler för skriv-workspace (w_-rollen läser och skriver)
+    if w_role:
+        log.info("%s  Steg 7: Skapar ACL-regler för skriv-workspace '%s'...", tag, write_workspace)
+        if not gs_client.create_write_workspace_acl(schema_name):
+            log.error("%s  Avbryter - ACL-regler för skriv-workspace kunde inte skapas", tag)
+            return False
+    else:
+        log.info("%s  Steg 7: Hoppar över ACL för skriv-workspace (saknade gs_w_-uppgifter)", tag)
 
     log.info("%s  Schema '%s' publicerat till GeoServer", tag, schema_name)
     return True
@@ -1188,18 +1777,28 @@ def handle_schema_removal_notification(schema_name, gs_client, pg_conn=None, db_
     if not _validate_schema_name(schema_name, tag):
         return False
 
-    # 1. Ta bort ACL-regler innan workspace raderas
-    log.info("%s  Steg 1: Tar bort ACL-regler för '%s'...", tag, schema_name)
+    write_workspace = f"{schema_name}{WRITE_WORKSPACE_SUFFIX}"
+
+    # 1. Ta bort ACL-regler för läs-workspace innan workspace raderas
+    log.info("%s  Steg 1: Tar bort ACL-regler för läs-workspace '%s'...", tag, schema_name)
     gs_client.delete_workspace_acl(schema_name)
 
-    # 2. Ta bort workspace (kaskadraderar datastores och publicerade lager)
-    log.info("%s  Steg 2: Tar bort workspace '%s' från GeoServer...", tag, schema_name)
+    # 2. Ta bort ACL-regler för skriv-workspace
+    log.info("%s  Steg 2: Tar bort ACL-regler för skriv-workspace '%s'...", tag, write_workspace)
+    gs_client.delete_workspace_acl(write_workspace)
+
+    # 3. Ta bort läs-workspace (kaskadraderar datastores och publicerade lager)
+    log.info("%s  Steg 3: Tar bort läs-workspace '%s' från GeoServer...", tag, schema_name)
     if not gs_client.delete_workspace(schema_name):
-        log.error("%s  Workspace '%s' kunde inte tas bort", tag, schema_name)
+        log.error("%s  Läs-workspace '%s' kunde inte tas bort", tag, schema_name)
         return False
 
-    # 3. Ta bort GeoServer-rollerna
-    log.info("%s  Steg 3: Tar bort GeoServer-roller för '%s'...", tag, schema_name)
+    # 4. Ta bort skriv-workspace (kaskadraderar datastores och publicerade lager)
+    log.info("%s  Steg 4: Tar bort skriv-workspace '%s' från GeoServer...", tag, write_workspace)
+    gs_client.delete_workspace(write_workspace)
+
+    # 5. Ta bort GeoServer-rollerna
+    log.info("%s  Steg 5: Tar bort GeoServer-roller för '%s'...", tag, schema_name)
     for gs_role in (f"r_{schema_name}", f"w_{schema_name}"):
         gs_client.delete_gs_role(gs_role)
 
@@ -1214,7 +1813,10 @@ def _fetch_publishable_schemas(db_config):
     alla övervakade databaser, så att startavstämningens varplansvarning
     inte slår falskt vid multi-databaskonfiguration.
 
-    Returnerar tom mängd vid anslutningsfel eller om tabellerna saknas.
+    Returnerar en mängd schemanamn (tom om databasen saknar publicerbara
+    scheman) eller None om databasen inte kunde läsas. Skillnaden är viktig:
+    en tom mängd är ett svar, None är avsaknad av svar, och uppstädning av
+    föräldralösa workspaces får aldrig köras på avsaknad av svar.
     """
     try:
         conn = psycopg2.connect(
@@ -1233,8 +1835,8 @@ def _fetch_publishable_schemas(db_config):
                     " FROM pg_namespace"
                     " WHERE EXISTS ("
                     "   SELECT 1"
-                    "   FROM public.standardiserade_skyddsnivaer n,"
-                    "        public.standardiserade_datakategorier d"
+                    "   FROM public.hex_standardiserade_skyddsnivaer n,"
+                    "        public.hex_standardiserade_datakategorier d"
                     "   WHERE n.publiceras_geoserver = true"
                     "     AND nspname ~ ('^' || n.prefix || '_' || d.prefix || '_')"
                     " )"
@@ -1247,10 +1849,265 @@ def _fetch_publishable_schemas(db_config):
             "Kunde inte hämta scheman från '%s' för startavstämning: %s",
             db_config["dbname"], e,
         )
+        return None
+
+
+def _fetch_skyddsnivaer_config(db_config):
+    """Hämtar hex_standardiserade_skyddsnivaer-konfigurationen från en databas.
+
+    Returnerar en frozenset av (prefix, publiceras_geoserver, anonym_las)-tupler,
+    eller None vid anslutningsfel.  Används av run_all_listeners för att
+    redovisa vilken skyddsnivåkonfiguration varje databas kör med.
+    """
+    try:
+        conn = psycopg2.connect(
+            host=db_config["host"],
+            port=db_config["port"],
+            dbname=db_config["dbname"],
+            user=db_config["user"],
+            password=db_config["password"],
+            connect_timeout=10,
+            client_encoding="utf8",
+        )
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT prefix, publiceras_geoserver, anonym_las"
+                    " FROM public.hex_standardiserade_skyddsnivaer"
+                    " ORDER BY prefix"
+                )
+                return frozenset(cur.fetchall())
+        finally:
+            conn.close()
+    except Exception as e:
+        log.warning(
+            "Kunde inte hämta skyddsnivaer-konfiguration från '%s': %s",
+            db_config["dbname"], e,
+        )
+        return None
+
+
+# =============================================================================
+# FÖRÄLDRALÖSA WORKSPACES
+# =============================================================================
+
+# Klassificering av en workspace som saknar motsvarande PostgreSQL-schema.
+WS_HEX     = "hex"      # Innehåller bara PostGIS-datastores mot ett övervakat schema
+WS_FOREIGN = "foreign"  # Innehåller något Hex inte skapat (raster, WMS, annan databas)
+WS_EMPTY   = "empty"    # Saknar lagringar helt
+WS_UNKNOWN = "unknown"  # Kunde inte inventeras – GeoServer svarade inte
+
+
+def _publishable_prefixes(cur, tag=""):
+    """Hämtar de skyddsnivåprefix databasen publicerar till GeoServer.
+
+    Läser hex_standardiserade_skyddsnivaer i stället för att härleda prefixen ur
+    de scheman som råkar finnas. En databas som är tömd (eller nyinstallerad)
+    äger fortfarande sina prefix och ska larma om workspaces som blivit kvar i
+    GeoServer — härledning ur befintliga scheman gav tystnad i just det läget.
+
+    Returnerar en mängd prefix, eller en tom mängd om frågan misslyckades.
+    """
+    try:
+        cur.execute(
+            "SELECT prefix FROM public.hex_standardiserade_skyddsnivaer"
+            " WHERE publiceras_geoserver = true"
+        )
+        return {row[0] for row in cur.fetchall()}
+    except Exception as e:
+        log.warning(
+            "%sKunde inte läsa publicerbara prefix ur hex_standardiserade_skyddsnivaer: %s",
+            tag, e,
+        )
         return set()
 
 
-def _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label="", all_pg_schemas=None):
+def _collect_known_schemas(pg_schemas, db_config, all_db_configs, all_pg_schemas, tag=""):
+    """Bygger mängden schemanamn som finns i någon övervakad databas just nu.
+
+    Args:
+        pg_schemas:     Färska scheman från denna databas (redan hämtade).
+        db_config:      Denna databas konfiguration.
+        all_db_configs: Samtliga övervakade databaser, eller None.
+        all_pg_schemas: Startmängden från run_all_listeners (kan vara inaktuell).
+        tag:            Logg-prefix.
+
+    Returns:
+        (kända scheman, complete) där complete är False om minst en annan
+        övervakad databas inte kunde läsas. Vid False får ingen borttagning
+        ske — ett schema kan finnas i databasen vi inte nådde.
+
+    Startmängden all_pg_schemas byggs en gång vid uppstart och blir inaktuell
+    i takt med att scheman skapas. Den läggs bara till mängden (aldrig
+    ersätter den), eftersom en för stor känd-mängd bara ger färre borttagningar.
+    """
+    known = set(pg_schemas)
+    if all_pg_schemas:
+        known |= set(all_pg_schemas)
+
+    others = [
+        db for db in (all_db_configs or [])
+        if (db.get("host"), db.get("port"), db.get("dbname"))
+        != (db_config.get("host"), db_config.get("port"), db_config.get("dbname"))
+    ]
+    if not others:
+        # Enkeldatabasläge: pg_schemas är färskt och fullständigt.
+        return known, True
+
+    complete = True
+    for other in others:
+        fetched = _fetch_publishable_schemas(other)
+        if fetched is None:
+            complete = False
+            log.warning(
+                "%sAvstämning: databasen '%s' kunde inte läsas – "
+                "föräldralösa workspaces kan inte avgöras säkert denna gång",
+                tag, other.get("dbname"),
+            )
+        else:
+            known |= fetched
+    return known, complete
+
+
+def _classify_workspace(gs_client, ws_names, schema_name, db_targets):
+    """Avgör om en föräldralös workspace är skapad av Hex och trygg att ta bort.
+
+    En workspace räknas som Hex:s egen (WS_HEX) bara om samtliga dessa gäller
+    för varje workspace-namn i ws_names:
+
+      - Den innehåller inga coverage-, WMS- eller WMTS-lagringar. Det skyddar
+        en manuell rasterpublicering vars namn råkar matcha schemamönstret.
+      - Den innehåller minst en datastore.
+      - Varje datastore är av typen postgis, pekar på en av de övervakade
+        databaserna (host, port, databas) och exponerar exakt schema_name.
+
+    Allt annat ger WS_FOREIGN (rör inte), WS_EMPTY (inga lagringar alls) eller
+    WS_UNKNOWN (GeoServer svarade inte – vi vet inget och avstår).
+    """
+    saw_datastore = False
+
+    for ws in sorted(ws_names):
+        for store_type in ("coveragestores", "wmsstores", "wmtsstores"):
+            names = gs_client.list_store_names(ws, store_type)
+            if names is None:
+                return WS_UNKNOWN, f"kunde inte lista {store_type} i '{ws}'"
+            if names:
+                return WS_FOREIGN, f"'{ws}' innehåller {store_type}: {', '.join(sorted(names))}"
+
+        datastores = gs_client.list_store_names(ws, "datastores")
+        if datastores is None:
+            return WS_UNKNOWN, f"kunde inte lista datastores i '{ws}'"
+
+        for store in sorted(datastores):
+            params = gs_client.get_datastore_parameters(ws, store)
+            if params is None:
+                return WS_UNKNOWN, f"kunde inte läsa datastore '{ws}/{store}'"
+
+            dbtype = (params.get("dbtype") or "").lower()
+            if dbtype != "postgis":
+                return WS_FOREIGN, (
+                    f"datastore '{ws}/{store}' har dbtype "
+                    f"'{dbtype or 'okänd'}', inte postgis"
+                )
+
+            target = (params.get("host"), str(params.get("port")), params.get("database"))
+            if target not in db_targets:
+                return WS_FOREIGN, (
+                    f"datastore '{ws}/{store}' pekar på {target[0]}:{target[1]}/{target[2]} "
+                    "som inte är en övervakad databas"
+                )
+
+            if params.get("schema") != schema_name:
+                return WS_FOREIGN, (
+                    f"datastore '{ws}/{store}' exponerar schemat "
+                    f"'{params.get('schema')}', inte '{schema_name}'"
+                )
+            saw_datastore = True
+
+    if not saw_datastore:
+        return WS_EMPTY, "inga lagringar alls"
+    return WS_HEX, "endast PostGIS-datastores mot det saknade schemat"
+
+
+def _handle_orphan_workspace(schema_name, ws_names, gs_client, pg_conn, db_targets,
+                             cleanup_mode, verification_complete, db_label="", tag=""):
+    """Varnar om — och städar eventuellt bort — en föräldralös workspace.
+
+    Args:
+        schema_name:           Schemat som saknas i samtliga övervakade databaser.
+        ws_names:              Workspace-namn som hör till schemat ('X' och 'X_w').
+        gs_client:             GeoServerClient-instans.
+        pg_conn:               PG-anslutning (används av borttagningsflödet).
+        db_targets:            Mängd (host, port, dbnamn) för övervakade databaser.
+        cleanup_mode:          CLEANUP_OFF | CLEANUP_DRY_RUN | CLEANUP_ON.
+        verification_complete: False om någon övervakad databas inte kunde läsas.
+        db_label, tag:         Loggetiketter.
+    """
+    namn = ", ".join(sorted(ws_names))
+
+    if cleanup_mode == CLEANUP_OFF:
+        log.warning(
+            "%sAvstämning: workspace %s finns i GeoServer men PG-schemat '%s' "
+            "saknas i samtliga övervakade databaser – kräver manuell DBA-granskning "
+            "(sätt HEX_ORPHAN_CLEANUP=dry-run för att se vad en uppstädning skulle göra)",
+            tag, namn, schema_name,
+        )
+        return
+
+    if not verification_complete:
+        log.warning(
+            "%sAvstämning: workspace %s ser föräldralös ut men minst en övervakad "
+            "databas kunde inte läsas – ingen uppstädning görs denna gång",
+            tag, namn,
+        )
+        return
+
+    verdict, reason = _classify_workspace(gs_client, ws_names, schema_name, db_targets)
+
+    if verdict == WS_UNKNOWN:
+        log.warning(
+            "%sAvstämning: workspace %s kunde inte inventeras (%s) – lämnas orörd",
+            tag, namn, reason,
+        )
+        return
+
+    if verdict == WS_FOREIGN:
+        log.warning(
+            "%sAvstämning: workspace %s matchar schemamönstret men %s – "
+            "lämnas orörd, Hex städar bara det Hex har skapat",
+            tag, namn, reason,
+        )
+        return
+
+    if verdict == WS_EMPTY:
+        log.warning(
+            "%sAvstämning: workspace %s saknar PG-schema och har %s – "
+            "lämnas orörd, kräver manuell DBA-granskning",
+            tag, namn, reason,
+        )
+        return
+
+    if cleanup_mode == CLEANUP_DRY_RUN:
+        log.warning(
+            "%sAvstämning [DRY-RUN]: skulle ta bort workspace %s "
+            "(PG-schemat '%s' saknas, %s). Sätt HEX_ORPHAN_CLEANUP=on för skarp körning.",
+            tag, namn, schema_name, reason,
+        )
+        return
+
+    log.warning(
+        "%sAvstämning: tar bort föräldralös workspace %s – PG-schemat '%s' saknas i "
+        "samtliga övervakade databaser (%s)",
+        tag, namn, schema_name, reason,
+    )
+    if handle_schema_removal_notification(schema_name, gs_client, pg_conn=pg_conn, db_label=db_label):
+        log.info("%sAvstämning: workspace %s borttagen", tag, namn)
+    else:
+        log.error("%sAvstämning: workspace %s kunde inte tas bort", tag, namn)
+
+
+def _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label="", all_pg_schemas=None,
+                                 all_db_configs=None, cleanup_mode=CLEANUP_OFF):
     """Avstämning: skapar saknade GeoServer-workspaces och datastores för befintliga PG-scheman.
 
     Körs vid uppstart och periodiskt (se _periodic_reconcile_loop). Använder den
@@ -1262,21 +2119,27 @@ def _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label="", all_pg_
         gs_client:      GeoServerClient-instans
         db_label:       Logg-prefix
         all_pg_schemas: Samlad mängd scheman från ALLA övervakade databaser,
-                        förbyggd av run_all_listeners. Används för att avgöra
-                        om en GeoServer-workspace verkligen är föräldralös eller
-                        om den tillhör en annan övervakad databas. Om None
-                        används endast denna databas scheman.
+                        förbyggd av run_all_listeners vid uppstart. Används som
+                        säkerhetsnät i orphan-kontrollen. Om None används endast
+                        denna databas scheman.
+        all_db_configs: Samtliga övervakade databaser. Används för att läsa om
+                        schemamängden färskt vid varje avstämning (startmängden
+                        blir inaktuell) och för att avgöra vilka datastores som
+                        pekar på en övervakad databas. Om None antas enkeldatabas.
+        cleanup_mode:   CLEANUP_OFF (endast varning), CLEANUP_DRY_RUN (loggar vad
+                        som skulle tas bort) eller CLEANUP_ON (tar bort).
 
     Logik:
       a) Hämtar publicerbara scheman från denna databas (pg_namespace).
       b) Hämtar befintliga workspaces via GeoServer REST GET /rest/workspaces.json.
       c) Kör handle_schema_notification för ALLA PG-scheman (inte bara saknade).
          Saknade workspaces skapas; befintliga datastores uppdateras alltid med
-         aktuella autentiseringsuppgifter från hex_role_credentials (så att
+         aktuella autentiseringsuppgifter från hex_rolluppgifter (så att
          lösenordsändringar efter ominstallation slår igenom vid omstart).
       d) Loggar INFO för varje nyskapad workspace.
-      e) Loggar WARNING för varje GeoServer-workspace som saknar PG-schema i
-         SAMTLIGA övervakade databaser (ingen borttagning görs automatiskt).
+      e) Varnar för varje GeoServer-workspace som saknar PG-schema i SAMTLIGA
+         övervakade databaser, och tar bort den om cleanup_mode tillåter det
+         OCH workspacen bevisligen är skapad av Hex (se _classify_workspace).
       f) Alla fel loggas; funktionen avbryter aldrig LISTEN-loopen.
     """
     tag = _db_tag(db_label)
@@ -1289,8 +2152,8 @@ def _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label="", all_pg_
             " FROM pg_namespace"
             " WHERE EXISTS ("
             "   SELECT 1"
-            "   FROM public.standardiserade_skyddsnivaer n,"
-            "        public.standardiserade_datakategorier d"
+            "   FROM public.hex_standardiserade_skyddsnivaer n,"
+            "        public.hex_standardiserade_datakategorier d"
             "   WHERE n.publiceras_geoserver = true"
             "     AND nspname ~ ('^' || n.prefix || '_' || d.prefix || '_')"
             " )"
@@ -1357,33 +2220,67 @@ def _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label="", all_pg_
                     tag, schema_name, e,
                 )
 
-        # e) Workspaces i GeoServer utan motsvarande PG-schema – logga varning, gör inget.
-        #    I multi-DB-läge (all_pg_schemas angiven) begränsas varningar till de prefix
-        #    som denna databas faktiskt hanterar, så att varje äkta föräldralös workspace
-        #    bara rapporteras av rätt databas (sk0_oppen → sk0_*, skx_utveckling → skx_*).
-        #    Databaser utan egna scheman hoppas över helt i multi-DB-läge.
-        known_schemas = all_pg_schemas if all_pg_schemas is not None else pg_schemas
-        own_prefixes = {name.split("_")[0] for name in pg_schemas}
-        if own_prefixes:
-            extra_in_gs = {
-                ws for ws in gs_workspaces - known_schemas
-                if SCHEMA_PATTERN.match(ws) and ws.split("_")[0] in own_prefixes
-            }
-        elif all_pg_schemas is None:
-            # Enskild databas utan egna scheman: rapportera alla matchande föräldralösa
-            extra_in_gs = {ws for ws in gs_workspaces - known_schemas if SCHEMA_PATTERN.match(ws)}
-        else:
-            # Multi-DB utan egna scheman: denna databas äger inga prefix – hoppa över
-            extra_in_gs = set()
-        for ws_name in sorted(extra_in_gs):
-            log.warning(
-                "%sStartavstämning: workspace '%s' finns i GeoServer men "
-                "PG-schemat saknas i samtliga övervakade databaser – "
-                "kräver manuell DBA-granskning",
-                tag, ws_name,
-            )
+        # e) Workspaces i GeoServer utan motsvarande PG-schema.
+        #    Kända scheman läses färskt från samtliga övervakade databaser – den
+        #    förbyggda startmängden blir inaktuell så fort ett schema skapas.
+        known_schemas, verification_complete = _collect_known_schemas(
+            pg_schemas, db_config, all_db_configs, all_pg_schemas, tag
+        )
 
-        if not missing_in_gs and not extra_in_gs:
+        #    I multi-DB-läge begränsas kontrollen till de prefix denna databas
+        #    publicerar, så att varje tråd rapporterar sina egna workspaces.
+        #    Prefixen läses ur konfigurationen (hex_standardiserade_skyddsnivaer),
+        #    inte ur befintliga scheman: en tömd databas äger fortfarande sina
+        #    prefix och måste kunna larma om kvarlämnade workspaces.
+        own_prefixes = None
+        if all_db_configs and len(all_db_configs) > 1:
+            own_prefixes = _publishable_prefixes(cur, tag) or {
+                name.split("_")[0] for name in pg_schemas
+            }
+
+        #    Gruppera per schema: läs-workspacen '<schema>' och skriv-workspacen
+        #    '<schema>_w' hör ihop och ska bedömas och städas som en enhet.
+        _pattern = _get_schema_pattern()
+        orphans = {}
+        for ws in gs_workspaces:
+            if ws in known_schemas:
+                continue                      # workspacen har ett levande schema
+            if ws.endswith(WRITE_WORKSPACE_SUFFIX):
+                base = ws[: -len(WRITE_WORKSPACE_SUFFIX)]
+                if base in known_schemas:
+                    continue                  # skriv-workspace till ett levande schema
+            else:
+                base = ws
+            if not _pattern.match(base):
+                continue                      # inte ett Hex-schemanamn – rör inte
+            if own_prefixes is not None and base.split("_")[0] not in own_prefixes:
+                continue                      # en annan databas prefix
+            orphans.setdefault(base, set()).add(ws)
+
+        db_targets = {
+            (db["host"], str(db["port"]), db["dbname"])
+            for db in (all_db_configs or [db_config])
+        }
+        for schema_name in sorted(orphans):
+            try:
+                _handle_orphan_workspace(
+                    schema_name,
+                    orphans[schema_name],
+                    gs_client,
+                    cur.connection,
+                    db_targets,
+                    cleanup_mode,
+                    verification_complete,
+                    db_label=db_label,
+                    tag=tag,
+                )
+            except Exception as e:
+                log.error(
+                    "%sAvstämning: fel vid hantering av föräldralös workspace '%s': %s",
+                    tag, schema_name, e,
+                )
+
+        if not missing_in_gs and not orphans:
             log.info("%sStartavstämning: GeoServer och PostgreSQL är i synk", tag)
 
     except Exception as e:
@@ -1399,7 +2296,8 @@ def _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label="", all_pg_
 # POSTGRESQL LISTENER
 # =============================================================================
 
-def _periodic_reconcile_loop(db_config, gs_client, stop_event, interval_seconds, db_label="", all_pg_schemas=None):
+def _periodic_reconcile_loop(db_config, gs_client, stop_event, interval_seconds, db_label="",
+                            all_pg_schemas=None, all_db_configs=None, cleanup_mode=CLEANUP_OFF):
     """Periodisk avstämning som kör _reconcile_geoserver_schemas på ett fast intervall.
 
     Öppnar en egen kortlivad PG-anslutning per körning, oberoende av
@@ -1412,6 +2310,8 @@ def _periodic_reconcile_loop(db_config, gs_client, stop_event, interval_seconds,
         interval_seconds: Sekunder mellan körningar.
         db_label:         Logg-prefix.
         all_pg_schemas:   Samlad schema-mängd från alla övervakade databaser (se run_all_listeners).
+        all_db_configs:   Samtliga övervakade databaser (se _reconcile_geoserver_schemas).
+        cleanup_mode:     Uppstädningsläge för föräldralösa workspaces.
     """
     tag = _db_tag(db_label)
     log.info(
@@ -1434,7 +2334,10 @@ def _periodic_reconcile_loop(db_config, gs_client, stop_event, interval_seconds,
             conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
             try:
                 with conn.cursor() as cur:
-                    _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label, all_pg_schemas)
+                    _reconcile_geoserver_schemas(
+                        cur, db_config, gs_client, db_label, all_pg_schemas,
+                        all_db_configs=all_db_configs, cleanup_mode=cleanup_mode,
+                    )
             finally:
                 conn.close()
         except psycopg2.OperationalError as e:
@@ -1495,7 +2398,9 @@ def _dispatch_notification_error(channel, db_label, schema_name, error, notifier
         if notifier:
             notifier.notify_schema_failure(schema_name, db_label, error)
 
-def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None, notifier=None, all_pg_schemas=None, reconcile_interval=0):
+def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None, notifier=None,
+                all_pg_schemas=None, reconcile_interval=0, all_db_configs=None,
+                cleanup_mode=CLEANUP_OFF):
     """Huvudloop som lyssnar på pg_notify och hanterar notifieringar för en databas.
 
     Args:
@@ -1508,6 +2413,8 @@ def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None, notifier
         all_pg_schemas:     Samlad schema-mängd från alla övervakade databaser,
                             förbyggd av run_all_listeners för korrekt orphan-kontroll.
         reconcile_interval: Sekunder mellan periodiska avstämningar (0 = avaktiverat).
+        all_db_configs:     Samtliga övervakade databaser (se _reconcile_geoserver_schemas).
+        cleanup_mode:       Uppstädningsläge för föräldralösa workspaces.
     """
     db_label = db_config["dbname"]
     was_disconnected = False  # Sparar om vi tappat anslutning för återhämtningsnotifiering
@@ -1522,6 +2429,7 @@ def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None, notifier
         t = threading.Thread(
             target=_periodic_reconcile_loop,
             args=(db_config, gs_client, stop_event, reconcile_interval, db_label, all_pg_schemas),
+            kwargs={"all_db_configs": all_db_configs, "cleanup_mode": cleanup_mode},
             name=f"reconcile-{db_label}",
             daemon=True,
         )
@@ -1557,7 +2465,10 @@ def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None, notifier
 
             # Startavstämning – körs vid varje (åter)anslutning för att fånga upp
             # scheman som skapades medan lyssnaren var nere.
-            _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label, all_pg_schemas)
+            _reconcile_geoserver_schemas(
+                cur, db_config, gs_client, db_label, all_pg_schemas,
+                all_db_configs=all_db_configs, cleanup_mode=cleanup_mode,
+            )
 
             # Skicka återhämtningsnotifiering om vi tappat anslutning tidigare
             if was_disconnected:
@@ -1648,13 +2559,49 @@ def run_all_listeners(config, dry_run=False, stop_event=None):
 
     databases = config["databases"]
     notifier = EmailNotifier(config["smtp"])
+    cleanup_mode = config.get("orphan_cleanup", CLEANUP_OFF)
+    if cleanup_mode == CLEANUP_ON:
+        log.info(
+            "Uppstädning av föräldralösa workspaces: PÅ – workspaces som bara "
+            "innehåller PostGIS-datastores mot ett saknat schema tas bort automatiskt."
+        )
+    elif cleanup_mode == CLEANUP_DRY_RUN:
+        log.info(
+            "Uppstädning av föräldralösa workspaces: DRY-RUN – loggar vad som "
+            "skulle tas bort, tar inte bort något."
+        )
 
     # Bygg en samlad schema-mängd över alla databaser för korrekt orphan-kontroll
     # i startavstämningen. Varje enskild databas-tråd jämför annars bara mot sina
     # egna scheman och larmar falskt om workspaces som tillhör en annan databas.
     all_pg_schemas = set()
     for db_config in databases:
-        all_pg_schemas |= _fetch_publishable_schemas(db_config)
+        fetched = _fetch_publishable_schemas(db_config)
+        if fetched:
+            all_pg_schemas |= fetched
+
+    # Redovisa hex_standardiserade_skyddsnivaer per databas vid start.
+    #
+    # Varje skyddsniva har sin egen databas och sin egen lyssnartråd, och varje
+    # tråd använder sin egen databas konfiguration (via _thread_local). Att
+    # konfigurationerna skiljer sig åt är alltså designat, inte ett fel — det är
+    # hela poängen med uppdelningen. Raden är därför en inventering av vad som
+    # faktiskt gäller per databas, inte en avvikelsekontroll.
+    if len(databases) > 1:
+        skyddsnivaer_per_db = {
+            db["dbname"]: _fetch_skyddsnivaer_config(db) for db in databases
+        }
+        for db_name, cfg in skyddsnivaer_per_db.items():
+            if cfg is None:
+                continue
+            log.info(
+                "Skyddsnivåer i %s: %s",
+                db_name,
+                ", ".join(
+                    f"{prefix}(geoserver={pub}, anonym={anon})"
+                    for prefix, pub, anon in sorted(cfg)
+                ),
+            )
 
     if len(databases) == 1:
         # En databas - kör direkt utan extra tråd
@@ -1665,7 +2612,11 @@ def run_all_listeners(config, dry_run=False, stop_event=None):
             dry_run=dry_run,
             namespace_uri_base=config.get("gs_namespace_base", ""),
         )
-        listen_loop(databases[0], config["reconnect_delay"], gs_client, stop_event, notifier, all_pg_schemas, config.get("reconcile_interval", 0))
+        listen_loop(
+            databases[0], config["reconnect_delay"], gs_client, stop_event, notifier,
+            all_pg_schemas, config.get("reconcile_interval", 0),
+            all_db_configs=databases, cleanup_mode=cleanup_mode,
+        )
         return
 
     # Flera databaser - en tråd per databas
@@ -1682,6 +2633,7 @@ def run_all_listeners(config, dry_run=False, stop_event=None):
         t = threading.Thread(
             target=listen_loop,
             args=(db_config, config["reconnect_delay"], gs_client, stop_event, notifier, all_pg_schemas, config.get("reconcile_interval", 0)),
+            kwargs={"all_db_configs": databases, "cleanup_mode": cleanup_mode},
             name=f"listener-{db_config['dbname']}",
             daemon=True,
         )
@@ -1727,11 +2679,12 @@ def main():
     log.info("GeoServer Schema Listener")
     log.info("=" * 60)
     log.info("GeoServer:  %s", config["gs_url"])
-    log.info("Anslutning: direkt PostGIS (autentiseringsuppgifter från hex_role_credentials)")
+    log.info("Anslutning: direkt PostGIS (autentiseringsuppgifter från hex_rolluppgifter)")
     log.info("Databaser:  %d st", len(config["databases"]))
     for db in config["databases"]:
         log.info("  [%s] %s@%s:%d/%s",
                  db["dbname"], db["user"], db["host"], db["port"], db["dbname"])
+    log.info("Uppstädning: %s (HEX_ORPHAN_CLEANUP)", config["orphan_cleanup"])
     if config["smtp"]["enabled"]:
         log.info("E-post:     %s -> %s", config["smtp"]["host"], config["smtp"]["to_addr"])
     else:

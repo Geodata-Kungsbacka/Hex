@@ -1,0 +1,1307 @@
+-- FUNCTION: public.hex_hantera_ny_kolumn()
+
+-- DROP FUNCTION IF EXISTS public.hex_hantera_ny_kolumn();
+
+CREATE OR REPLACE FUNCTION public.hex_hantera_ny_kolumn()
+    RETURNS event_trigger
+    LANGUAGE 'plpgsql'
+    COST 100
+    VOLATILE NOT LEAKPROOF
+AS $BODY$
+
+/******************************************************************************
+ * Denna funktion hanterar omstrukturering av tabeller när kolumner ändras
+ * via ALTER TABLE-operationer. När nya kolumner läggs till hamnar de sist i
+ * tabellen, vilket kräver omorganisering för att bibehålla systemets standarder.
+ *
+ * Funktionen utför följande operationer:
+ * 1. Flyttar standardkolumner med negativ ordinal_position så att de hamnar
+ *    efter nyligen tillagda kolumner
+ * 2. Flyttar geometrikolumnen sist för korrekt struktur
+ * 3. Kontrollerar strukturskillnader mellan modertabeller och historiktabeller
+ * 4. UPPDATERAD: Lägger automatiskt till saknade kolumner i historiktabeller
+ * 5. Ger användaren instruktioner för manuell synkronisering vid typskillnader
+ * 6. Synkar historiken via hex_synka_historik() efter varje ALTER TABLE –
+ *    även DROP COLUMN och ALTER COLUMN TYPE, som inte omstruktureras
+ *
+ * Steg 5b/5c: FME-tvåstegsmönster och liknande omvägar
+ * - 5b: tabell var afvaktande (skapades utan geom, geom anländer via ALTER TABLE)
+ *       → suffix+SRID valideras, GiST/validering/dummy slutförs
+ * - 5c: tabell är INTE afvaktande men har ny geom utan GiST-index
+ *       → suffix valideras strikt (RAISE EXCEPTION om fel → ALTER TABLE rullas tillbaka),
+ *          sedan GiST/validering/dummy om suffix är korrekt
+ *
+ * Loggningsstrategi:
+ * - Alla meddelanden prefixas med funktionsnamnet för tydlig källhänvisning
+ * - Huvudsteg och tabelloperationer loggas på övergripande nivå
+ * - SQL-satser loggas precis innan exekvering för felsökning
+ * - Vid fel loggas detaljerad diagnostikinformation med operationskontext
+ * - Tydliga avgränsare används för att separera olika operationer i loggen
+ * - Varningsmeddelanden för historiktabeller använder WARNING-nivå för synlighet
+ ******************************************************************************/
+<<hkt>>
+DECLARE
+    -- Grundläggande variabler för tabellhantering
+    flagg_varde text;          -- För rekursionskontroll
+    kommando record;           -- Information om ALTER TABLE-kommandot
+    schema_namn text;          -- Schema för tabellen
+    tabell_namn text;          -- Namn på tabellen
+    
+    -- Variabler för kolumnhantering
+    flyttkolumner hex_kolumnkonfig[];     -- Kolumner som ska flyttas
+    kolumn hex_kolumnkonfig;             -- För iteration över kolumner
+    geometriinfo hex_geom_info;          -- Strukturerad geometriinformation
+    sql_sats text;                   -- För att bygga SQL-satser
+    
+    -- Variabler för statushantering
+    ar_fme boolean := false;           -- Om anroparen är FME
+    antal_flyttade integer := 0;      -- Räknare för flyttade kolumner
+    antal_fel integer := 0;           -- Räknare för eventuella problem
+    op_steg text;                     -- Operationssteg för felsökning
+    
+    -- Variabler för historiktabellhantering
+    historik_tabell_namn text;        -- Namnet på historiktabellen
+    har_historiktabell boolean;       -- Om historiktabell existerar
+    antal_skillnader integer := 0;    -- Antal strukturskillnader mellan moder- och historiktabell
+    qa_trigger_inaktiverad boolean := false;  -- Flagga för QA-trigger status
+    afvaktande_tabell boolean := false;       -- Om nuvarande tabell väntar på geometri (FME-tvåstegsmönster)
+BEGIN
+    RAISE NOTICE E'[hex_hantera_ny_kolumn] ======== START ========';
+
+    -- ----------------------------------------------------------------
+    -- Spärr: ALTER TABLE ... SET SCHEMA
+    -- Tabellen flyttas men triggerfunktionerna och historiktabellen blir
+    -- kvar i det gamla schemat. QA-triggerns kropp pekar då på en tabell som
+    -- inte finns (varje UPDATE/DELETE kraschar), rättigheterna följer inte
+    -- med, och en senare DROP SCHEMA ... CASCADE på det gamla schemat tar
+    -- med sig triggern tyst. In i ett Hex-schema hoppar tabellen dessutom
+    -- över hela omstruktureringen i hex_hantera_ny_tabell().
+    --
+    -- Spärras när målschemat är ett Hex-schema eller tabellen redan är
+    -- Hex-hanterad (har en hex_-trigger). Rätt väg är CREATE TABLE i
+    -- målschemat och INSERT ... SELECT.
+    -- ----------------------------------------------------------------
+    IF current_query() ~* '\mSET\s+SCHEMA\M' THEN
+        FOR kommando IN SELECT * FROM pg_event_trigger_ddl_commands()
+            WHERE command_tag = 'ALTER TABLE' AND object_type = 'table'
+        LOOP
+            SELECT n.nspname, c.relname
+            INTO schema_namn, tabell_namn
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE c.oid = kommando.objid;
+
+            IF schema_namn ~ public.hex_schema_regex()
+               OR EXISTS (
+                   SELECT 1 FROM pg_trigger t
+                   WHERE t.tgrelid = kommando.objid
+                     AND NOT t.tgisinternal
+                     AND t.tgname LIKE 'hex\_%'
+               )
+            THEN
+                RAISE EXCEPTION 'ALTER TABLE ... SET SCHEMA är blockerat för Hex-tabeller (%.%).', schema_namn, tabell_namn
+                    USING HINT = 'Skapa tabellen i målschemat och flytta datan med INSERT ... SELECT. '
+                                 'SET SCHEMA lämnar historiktabell och triggerfunktioner kvar i det gamla schemat.';
+            END IF;
+        END LOOP;
+    END IF;
+    
+    -- Steg 1: Hantera rekursion
+    -- Detta förhindrar oändliga loopar när vi modifierar tabellen
+    RAISE NOTICE '[hex_hantera_ny_kolumn] (1/4) Kontrollerar rekursionsflagga';
+    SELECT COALESCE(current_setting('temp.reorganization_in_progress', true), 'false')
+    INTO flagg_varde;
+    
+    IF flagg_varde = 'true' THEN
+        RAISE NOTICE '[hex_hantera_ny_kolumn] Rekursion upptäckt - avbryter för att undvika oändlig loop';
+        RETURN;
+    END IF;
+
+    -- Kontrollera om hex_hantera_ny_tabell pågår - avbryt för att inte störa
+    -- steg 8 (GiST-index) och steg 9 (geometrivalidering)
+    IF current_setting('temp.tabellstrukturering_pagar', true) = 'true' THEN
+        RAISE NOTICE '[hex_hantera_ny_kolumn] hex_hantera_ny_tabell pågår - avbryter';
+        RETURN;
+    END IF;
+
+    PERFORM set_config('temp.reorganization_in_progress', 'true', true);
+    RAISE NOTICE '[hex_hantera_ny_kolumn] Rekursionsflagga satt - påbörjar omstrukturering';
+
+    -- ----------------------------------------------------------------
+    -- Specialfall: ALTER TABLE ... RENAME TO
+    -- Använd OID (stabilt genom rename) för att hitta och döpa om
+    -- tillhörande historiktabell via hex_metadata.
+    -- ----------------------------------------------------------------
+    IF current_query() ~* '\mRENAME\s+TO\M' THEN
+        FOR kommando IN SELECT * FROM pg_event_trigger_ddl_commands()
+            WHERE command_tag = 'ALTER TABLE'
+        LOOP
+            schema_namn := replace(split_part(kommando.object_identity, '.', 1), '"', '');
+            tabell_namn := replace(split_part(kommando.object_identity, '.', 2), '"', '');
+
+            DECLARE
+                meta_rad       record;
+                ny_historik    text;
+            BEGIN
+                SELECT * INTO meta_rad
+                FROM hex_metadata
+                WHERE parent_oid = kommando.objid;
+
+                IF FOUND THEN
+                    -- Cap at 63 bytes (PostgreSQL identifier limit)
+                    ny_historik := left(tabell_namn || '_h', 63);
+
+                    EXECUTE format('ALTER TABLE %I.%I RENAME TO %I',
+                        meta_rad.history_schema,
+                        meta_rad.history_table,
+                        ny_historik);
+
+                    PERFORM hex_uppdatera_metadata_namn(kommando.objid);
+
+                    RAISE NOTICE '[hex_hantera_ny_kolumn] ✓ Historiktabell omdöpt: % → % (tabell omdöpt: % → %)',
+                        meta_rad.history_table, ny_historik,
+                        meta_rad.parent_table, tabell_namn;
+
+                    -- QA-triggerns kropp namnger både modertabellen (%ROWTYPE)
+                    -- och historiktabellen. Utan ombyggnad kraschar varje
+                    -- UPDATE/DELETE efter namnbytet med "relation ... does not
+                    -- exist".
+                    PERFORM hex_synka_historik(schema_namn, tabell_namn);
+                ELSE
+                    RAISE NOTICE '[hex_hantera_ny_kolumn] Ingen historiktabell registrerad för OID % (tabell %, har troligen ingen historik)',
+                        kommando.objid, tabell_namn;
+                END IF;
+            END;
+        END LOOP;
+        -- Flaggan är transaktionslokal. Lämnas den satt hoppas varje senare
+        -- ALTER TABLE i samma transaktion över (QGIS sparar alla fältändringar
+        -- i en transaktion).
+        PERFORM set_config('temp.reorganization_in_progress', 'false', true);
+        RETURN;  -- Inget kolumnarbete behövs vid rename
+    END IF;
+
+    -- ----------------------------------------------------------------
+    -- Specialfall: ALTER TABLE ... RENAME COLUMN
+    -- Namnbytet måste speglas i historiktabellen, annars pekar QA-triggern
+    -- på en kolumn som inte längre finns och nästa UPDATE/DELETE kraschar.
+    --
+    -- object_type = 'table column' sätts bara vid kolumnnamnbyte; ADD COLUMN,
+    -- DROP COLUMN, ALTER COLUMN TYPE och OWNER TO ger alla object_type =
+    -- 'table'. Hex egna interna namnbyten (kolumnflytt via _temp0001) filtreras
+    -- redan bort av rekursionsflaggan ovan.
+    -- ----------------------------------------------------------------
+    IF NOT (current_query() ~* 'add\s+column') AND EXISTS (
+        SELECT 1 FROM pg_event_trigger_ddl_commands()
+        WHERE object_type = 'table column'
+    ) THEN
+        FOR kommando IN SELECT * FROM pg_event_trigger_ddl_commands()
+            WHERE object_type = 'table column'
+        LOOP
+            DECLARE
+                nytt_kolumnnamn  text;
+                gammalt_kolumnnamn text;
+                antal_kandidater integer;
+                meta_rad         record;
+            BEGIN
+                SELECT n.nspname, c.relname
+                INTO schema_namn, tabell_namn
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE c.oid = kommando.objid;
+
+                -- Historiktabeller hanteras aldrig direkt
+                CONTINUE WHEN tabell_namn IS NULL OR tabell_namn ~ '_h$';
+
+                SELECT * INTO meta_rad
+                FROM hex_metadata
+                WHERE parent_oid = kommando.objid;
+
+                IF NOT FOUND THEN
+                    RAISE NOTICE '[hex_hantera_ny_kolumn] Kolumnnamnbyte i %.% - ingen historiktabell registrerad, inget att synka',
+                        schema_namn, tabell_namn;
+                    CONTINUE;
+                END IF;
+
+                -- Nya namnet hämtas via attnum (objsubid) - stabilt oavsett citering
+                SELECT a.attname
+                INTO nytt_kolumnnamn
+                FROM pg_attribute a
+                WHERE a.attrelid = kommando.objid
+                  AND a.attnum = kommando.objsubid;
+
+                -- Redan synkroniserad (t.ex. vid omkörning) - inget att göra
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = meta_rad.history_schema
+                      AND table_name = meta_rad.history_table
+                      AND column_name = nytt_kolumnnamn
+                ) THEN
+                    -- Kolumnen kan finnas kvar i historiken sedan den tagits
+                    -- bort tidigare. Den gamla kolumnen står då kvar som
+                    -- historik, men triggern måste fortfarande byggas om.
+                    RAISE NOTICE '[hex_hantera_ny_kolumn] Kolumnen % finns redan i historiktabellen %.% - synkar',
+                        nytt_kolumnnamn, meta_rad.history_schema, meta_rad.history_table;
+                    PERFORM hex_synka_historik(schema_namn, tabell_namn);
+                    CONTINUE;
+                END IF;
+
+                -- Gamla namnet = kolumnen som finns i historiktabellen men inte i
+                -- modertabellen. h_-kolumnerna är historiktabellens egna och räknas inte.
+                SELECT count(*), min(h.column_name)
+                INTO antal_kandidater, gammalt_kolumnnamn
+                FROM information_schema.columns h
+                WHERE h.table_schema = meta_rad.history_schema
+                  AND h.table_name = meta_rad.history_table
+                  AND h.column_name NOT IN ('h_typ', 'h_tidpunkt', 'h_av')
+                  AND NOT EXISTS (
+                      SELECT 1 FROM information_schema.columns m
+                      WHERE m.table_schema = schema_namn
+                        AND m.table_name = tabell_namn
+                        AND m.column_name = h.column_name
+                  );
+
+                IF antal_kandidater <> 1 THEN
+                    -- OBS: RAISE stöder inte %I - identifierare citeras med quote_ident()
+                    -- Utan entydig kandidat läggs det nya namnet till som ny
+                    -- kolumn. Historiken delas då på två kolumner, men inget
+                    -- går förlorat och triggern fungerar.
+                    RAISE WARNING '[hex_hantera_ny_kolumn] Kunde inte entydigt avgöra vilket kolumnnamn som byttes i %.% (% kandidater i historiktabellen). % läggs till som ny kolumn i historiken.',
+                        schema_namn, tabell_namn, antal_kandidater,
+                        quote_ident(nytt_kolumnnamn);
+                    PERFORM hex_synka_historik(schema_namn, tabell_namn);
+                    CONTINUE;
+                END IF;
+
+                EXECUTE format('ALTER TABLE %I.%I RENAME COLUMN %I TO %I',
+                    meta_rad.history_schema, meta_rad.history_table,
+                    gammalt_kolumnnamn, nytt_kolumnnamn);
+
+                RAISE NOTICE '[hex_hantera_ny_kolumn] ✓ Historiktabell synkad: %.%.% → %',
+                    meta_rad.history_schema, meta_rad.history_table,
+                    gammalt_kolumnnamn, nytt_kolumnnamn;
+
+                -- QA-triggerns kolumnlista innehåller det gamla namnet och måste byggas om
+                PERFORM hex_synka_historik(schema_namn, tabell_namn);
+            END;
+        END LOOP;
+        PERFORM set_config('temp.reorganization_in_progress', 'false', true);
+        RETURN;  -- Kolumnnamnbyte kräver ingen omstrukturering
+    END IF;
+
+    -- ----------------------------------------------------------------
+    -- Är det här ett kolumntillägg?
+    --
+    -- pg_event_trigger_ddl_commands() ger object_type = 'table' för ADD
+    -- COLUMN, DROP COLUMN, ALTER COLUMN TYPE och OWNER TO, så satstexten får
+    -- avgöra. current_query() är den yttersta klientsatsen, vilket missar två
+    -- vägar:
+    --
+    --   * AddGeometryColumn() – klienten skickar SELECT AddGeometryColumn(...)
+    --     och PostGIS kör ALTER TABLE ... ADD COLUMN internt. FME och QGIS
+    --     kan använda den i tvåstegsmönstret.
+    --   * ADD COLUMN via EXECUTE i en funktion eller ett DO-block.
+    --
+    -- Det första fångas på namnet. Båda fångas strukturellt för afvaktande
+    -- tabeller: har en afvaktande tabell nu en geom-kolumn har den lagts till.
+    --
+    -- Vid EXECUTE inuti hex_underhall() innehåller current_query() aldrig
+    -- 'ADD COLUMN', så underhållets egna ALTER TABLE omstruktureras inte.
+    -- ----------------------------------------------------------------
+    IF NOT (
+        current_query() ~* 'add\s+column|addgeometrycolumn'
+        OR EXISTS (
+            SELECT 1
+            FROM pg_event_trigger_ddl_commands() k
+            JOIN pg_class c ON c.oid = k.objid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            JOIN public.hex_afvaktande_geometri ag
+              ON ag.schema_namn = n.nspname AND ag.tabell_namn = c.relname
+            JOIN pg_attribute a
+              ON a.attrelid = c.oid AND a.attname = 'geom' AND NOT a.attisdropped
+            WHERE k.command_tag = 'ALTER TABLE'
+        )
+    ) THEN
+        -- Inget kolumntillägg: DROP COLUMN, ALTER COLUMN TYPE, OWNER TO,
+        -- ENABLE/DISABLE TRIGGER o.s.v. Ingen kolumnomstrukturering, men
+        -- historiken synkas alltid. Synken är idempotent och billig, och den
+        -- fångar DROP COLUMN (triggern pekar annars på en kolumn som inte
+        -- finns) och ALTER COLUMN TYPE (historikkolumnen får fel typ) utan
+        -- att tolka satstexten.
+        FOR kommando IN SELECT * FROM pg_event_trigger_ddl_commands()
+            WHERE command_tag = 'ALTER TABLE' AND object_type = 'table'
+        LOOP
+            SELECT n.nspname, c.relname
+            INTO schema_namn, tabell_namn
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE c.oid = kommando.objid;
+
+            CONTINUE WHEN tabell_namn IS NULL;
+
+            -- Ändras historiktabellen själv (t.ex. DROP COLUMN direkt i _h)
+            -- synkas dess modertabell, så att triggern inte pekar på en
+            -- kolumn som inte finns.
+            IF tabell_namn ~ '_h$' THEN
+                SELECT m.parent_schema, m.parent_table
+                INTO schema_namn, tabell_namn
+                FROM hex_metadata m
+                WHERE m.history_schema = schema_namn
+                  AND m.history_table = tabell_namn;
+                CONTINUE WHEN NOT FOUND;
+            END IF;
+
+            PERFORM hex_synka_historik(schema_namn, tabell_namn);
+        END LOOP;
+
+        RAISE NOTICE '[hex_hantera_ny_kolumn] Inga kolumntillägg – avbryter';
+        PERFORM set_config('temp.reorganization_in_progress', 'false', true);
+        RETURN;
+    END IF;
+
+    -- Detektera FME-anslutning för utökad felsökningsloggning
+    ar_fme := (lower(coalesce(current_setting('application_name', true), '')) = 'fme');
+    IF ar_fme THEN
+        RAISE NOTICE '[hex_hantera_ny_kolumn] *** FME-ANSLUTNING DETEKTERAD ***';
+        RAISE NOTICE '[hex_hantera_ny_kolumn] Sessionsinformation:';
+        RAISE NOTICE '[hex_hantera_ny_kolumn]   » application_name: %', current_setting('application_name', true);
+        RAISE NOTICE '[hex_hantera_ny_kolumn]   » session_user: %', session_user;
+        RAISE NOTICE '[hex_hantera_ny_kolumn]   » inet_client_addr: %', inet_client_addr();
+        RAISE NOTICE '[hex_hantera_ny_kolumn]   » backend_pid: %', pg_backend_pid();
+    END IF;
+
+    -- Steg 2: Identifiera och hantera tabeller
+    RAISE NOTICE '[hex_hantera_ny_kolumn] (2/4) Börjar identifiera modifierade tabeller';
+    FOR kommando IN SELECT * FROM pg_event_trigger_ddl_commands()
+    WHERE command_tag = 'ALTER TABLE'
+    LOOP
+        -- Identifiera vilken tabell som modifieras
+        schema_namn := replace(split_part(kommando.object_identity, '.', 1), '"', '');
+        tabell_namn := replace(split_part(kommando.object_identity, '.', 2), '"', '');
+        geometriinfo := NULL;  -- Återställ per iteration (förhindrar spill från föregående tabell)
+
+        RAISE NOTICE E'[hex_hantera_ny_kolumn] --------------------------------------------------';
+        RAISE NOTICE '[hex_hantera_ny_kolumn] Bearbetar tabell %.%', schema_namn, tabell_namn;
+
+        -- FME-debug: Visa aktuella kolumner innan omstrukturering
+        IF ar_fme THEN
+            RAISE NOTICE '[hex_hantera_ny_kolumn] [FME-DEBUG] Kolumner i %.% innan omstrukturering:', schema_namn, tabell_namn;
+            DECLARE
+                fme_kol record;
+            BEGIN
+                FOR fme_kol IN
+                    SELECT column_name, data_type, ordinal_position
+                    FROM information_schema.columns
+                    WHERE table_schema = schema_namn AND table_name = tabell_namn
+                    ORDER BY ordinal_position
+                LOOP
+                    RAISE NOTICE '[hex_hantera_ny_kolumn] [FME-DEBUG]   #% % (%)', fme_kol.ordinal_position, fme_kol.column_name, fme_kol.data_type;
+                END LOOP;
+            END;
+        END IF;
+
+        -- Kontrollera om vi ska hantera denna tabell
+        -- UPPDATERAT: Tar bort undantaget för historiktabeller (%\_h)
+        -- Nu behandlas även historiktabeller för att få korrekt kolumnordning
+        IF schema_namn = 'public' OR
+            EXISTS (
+                SELECT 1 
+                FROM information_schema.columns 
+                WHERE table_schema = schema_namn
+                AND table_name = tabell_namn
+                AND column_name LIKE '%_temp0001'
+        ) THEN
+            RAISE NOTICE '[hex_hantera_ny_kolumn] Hoppar över tabell: %', 
+                CASE 
+                    WHEN schema_namn = 'public' THEN 'public-schema'
+                    ELSE 'temporär operation pågår'
+                END;
+            CONTINUE;
+        END IF;
+
+        -- Inaktivera QA-trigger innan omstrukturering påbörjas.
+        -- Steg 4 och 5 utför UPDATE-satser som annars triggar QA-funktionen, vilken
+        -- försöker INSERT INTO historiktabell SELECT OLD.* — men historiktabellen har
+        -- inte de temporära _temp0001-kolumnerna, vilket ger felet
+        -- "INSERT has more expressions than target columns" och lämnar föräldralösa
+        -- _temp0001-kolumner kvar.
+        BEGIN
+            EXECUTE format('ALTER TABLE %I.%I DISABLE TRIGGER trg_%s_qa',
+                schema_namn, tabell_namn, tabell_namn);
+            qa_trigger_inaktiverad := true;
+            RAISE NOTICE '[hex_hantera_ny_kolumn] QA-trigger inaktiverad inför omstrukturering';
+        EXCEPTION
+            WHEN OTHERS THEN
+                RAISE NOTICE '[hex_hantera_ny_kolumn] Ingen QA-trigger att inaktivera (eller fel): %', SQLERRM;
+        END;
+
+        -- Steg 3: Hämta standardkolumner som ska flyttas (filtrerade per schema_uttryck)
+        -- Speglar hex_hamta_kolumnstandard: evaluera schema_uttryck dynamiskt per kolumn
+        -- så att t.ex. skapad_av (LIKE '%_kba_%') inte försöks flyttas på _ext_-tabeller.
+        RAISE NOTICE '[hex_hantera_ny_kolumn] (3/4) Identifierar kolumner som ska flyttas';
+        DECLARE
+            stdkol       record;
+            kol_matchar  boolean;
+        BEGIN
+            flyttkolumner := ARRAY[]::hex_kolumnkonfig[];
+            FOR stdkol IN
+                SELECT kolumnnamn, ordinal_position, datatyp, default_varde,
+                       historik_qa, schema_uttryck
+                FROM hex_standardiserade_kolumner
+                WHERE ordinal_position < 0
+                ORDER BY ordinal_position
+            LOOP
+                EXECUTE format('SELECT %L %s', schema_namn, stdkol.schema_uttryck)
+                    INTO kol_matchar;
+                IF kol_matchar THEN
+                    flyttkolumner := array_append(
+                        flyttkolumner,
+                        ROW(
+                            stdkol.kolumnnamn,
+                            stdkol.ordinal_position,
+                            CASE
+                                WHEN stdkol.default_varde IS NOT NULL
+                                     AND stdkol.historik_qa = false THEN
+                                    stdkol.datatyp || ' DEFAULT ' || stdkol.default_varde
+                                ELSE
+                                    stdkol.datatyp
+                            END
+                        )::hex_kolumnkonfig
+                    );
+                END IF;
+            END LOOP;
+        END;
+
+        IF array_length(flyttkolumner, 1) > 0 THEN
+            RAISE NOTICE '[hex_hantera_ny_kolumn] Hittade % standardkolumner att flytta', array_length(flyttkolumner, 1);
+            -- Lista kolumnerna som ska flyttas
+            FOR i IN 1..array_length(flyttkolumner, 1) LOOP
+                RAISE NOTICE '[hex_hantera_ny_kolumn]   #%: % (position: %)', 
+                    i, flyttkolumner[i].kolumnnamn, flyttkolumner[i].ordinal_position;
+            END LOOP;
+        ELSE
+            RAISE NOTICE '[hex_hantera_ny_kolumn] Inga standardkolumner att flytta';
+        END IF;
+
+        -- Steg 4: Flytta varje standardkolumn
+        FOR i IN 1..COALESCE(array_length(flyttkolumner, 1), 0) LOOP
+            IF i <= array_length(flyttkolumner, 1) THEN
+                kolumn := flyttkolumner[i];
+                RAISE NOTICE E'[hex_hantera_ny_kolumn] ----------';
+                RAISE NOTICE '[hex_hantera_ny_kolumn] Flyttar kolumn %/% - %',
+                    i, array_length(flyttkolumner, 1), kolumn.kolumnnamn;
+
+                -- Kontrollera att originalkolumnen faktiskt finns innan vi försöker flytta den.
+                -- Om den saknas (t.ex. efter DROP COLUMN av en standardkolumn) hoppar vi över
+                -- steget för att undvika att lämna kvar en föräldralös _temp0001-kolumn.
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = schema_namn
+                      AND table_name   = tabell_namn
+                      AND column_name  = kolumn.kolumnnamn
+                ) THEN
+                    RAISE NOTICE '[hex_hantera_ny_kolumn]   Kolumn "%" saknas i tabellen – hoppar över flytt', kolumn.kolumnnamn;
+                    CONTINUE;
+                END IF;
+
+                BEGIN
+                    -- Steg 4.1: Skapa temporär kolumn
+                    op_steg := 'skapar temporär kolumn';
+                    sql_sats := format(
+                        'ALTER TABLE %I.%I ADD COLUMN %I_temp0001 %s',
+                        schema_namn, tabell_namn,
+                        kolumn.kolumnnamn, kolumn.datatyp
+                    );
+                    RAISE NOTICE '[hex_hantera_ny_kolumn]   SQL [1/4]: %', sql_sats;
+                    EXECUTE sql_sats;
+                    RAISE NOTICE '[hex_hantera_ny_kolumn]   Temporär kolumn skapad';
+
+                    -- Steg 4.2: Kopiera data till temporär kolumn
+                    op_steg := 'kopierar data';
+                    sql_sats := format(
+                        'UPDATE %I.%I SET %I_temp0001 = %I',
+                        schema_namn, tabell_namn,
+                        kolumn.kolumnnamn, kolumn.kolumnnamn
+                    );
+                    RAISE NOTICE '[hex_hantera_ny_kolumn]   SQL [2/4]: %', sql_sats;
+                    EXECUTE sql_sats;
+                    RAISE NOTICE '[hex_hantera_ny_kolumn]   Data kopierad';
+
+                    -- Steg 4.3: Ta bort originalkolumnen
+                    op_steg := 'tar bort originalkolumn';
+                    sql_sats := format(
+                        'ALTER TABLE %I.%I DROP COLUMN %I',
+                        schema_namn, tabell_namn,
+                        kolumn.kolumnnamn
+                    );
+                    RAISE NOTICE '[hex_hantera_ny_kolumn]   SQL [3/4]: %', sql_sats;
+                    EXECUTE sql_sats;
+                    RAISE NOTICE '[hex_hantera_ny_kolumn]   Originalkolumn borttagen';
+
+                    -- Steg 4.4: Döp om temporär kolumn till originalnamn
+                    op_steg := 'döper om temporär kolumn';
+                    sql_sats := format(
+                        'ALTER TABLE %I.%I RENAME COLUMN %I_temp0001 TO %I',
+                        schema_namn, tabell_namn,
+                        kolumn.kolumnnamn, kolumn.kolumnnamn
+                    );
+                    RAISE NOTICE '[hex_hantera_ny_kolumn]   SQL [4/4]: %', sql_sats;
+                    EXECUTE sql_sats;
+                    RAISE NOTICE '[hex_hantera_ny_kolumn]   Kolumn omdöpt till %', kolumn.kolumnnamn;
+
+                    antal_flyttade := antal_flyttade + 1;
+                    RAISE NOTICE '[hex_hantera_ny_kolumn]   Kolumnflytt slutförd';
+                EXCEPTION
+                    WHEN OTHERS THEN
+                        antal_fel := antal_fel + 1;
+                        RAISE WARNING '[hex_hantera_ny_kolumn] FEL vid flyttning av standardkolumn "%"', kolumn.kolumnnamn;
+                        RAISE WARNING '[hex_hantera_ny_kolumn] Operation: %', op_steg;
+                        RAISE WARNING '[hex_hantera_ny_kolumn] SQL: %', sql_sats;
+                        RAISE WARNING '[hex_hantera_ny_kolumn] Felmeddelande: %', SQLERRM;
+                        -- Rensa eventuell föräldralös temporär kolumn så att nästa körning inte blockeras
+                        EXECUTE format('ALTER TABLE %I.%I DROP COLUMN IF EXISTS %I',
+                            schema_namn, tabell_namn, kolumn.kolumnnamn || '_temp0001');
+                END;
+            END IF;
+        END LOOP;
+
+        -- Steg 5: Hantera geometrikolumnen
+        RAISE NOTICE E'[hex_hantera_ny_kolumn] ----------';
+        RAISE NOTICE '[hex_hantera_ny_kolumn] Kontrollerar om geometrikolumn finns...';
+        IF EXISTS (
+            SELECT 1 FROM geometry_columns
+            WHERE f_table_schema = schema_namn
+            AND f_table_name = tabell_namn
+            AND f_geometry_column = 'geom'
+        ) THEN
+            RAISE NOTICE '[hex_hantera_ny_kolumn] Geometrikolumn "geom" hittad';
+            RAISE NOTICE '[hex_hantera_ny_kolumn] Hämtar geometridefinition (detaljerad analys sker i hjälpfunktion)';
+
+            -- Hämta strukturerad geometriinformation; fånga fel för att inte abbortera ALTER TABLE
+            BEGIN
+                geometriinfo := hex_hamta_geometri_definition(schema_namn, tabell_namn);
+            EXCEPTION
+                WHEN OTHERS THEN
+                    RAISE WARNING '[hex_hantera_ny_kolumn] Kunde inte hämta geometridefinition: %', SQLERRM;
+                    geometriinfo := NULL;
+            END;
+
+            -- Flytta geometrikolumnen om vi fick en korrekt definition
+            IF geometriinfo IS NOT NULL AND geometriinfo.definition IS NOT NULL THEN
+                RAISE NOTICE '[hex_hantera_ny_kolumn] Använder geometridefinition: %', geometriinfo.definition;
+                
+                BEGIN
+                    -- Steg 5.1: Skapa temporär geometrikolumn
+                    op_steg := 'skapar temporär geometrikolumn';
+                    sql_sats := format(
+                        'ALTER TABLE %I.%I ADD COLUMN geom_temp0001 %s',
+                        schema_namn, tabell_namn, geometriinfo.definition
+                    );
+                    RAISE NOTICE '[hex_hantera_ny_kolumn]   SQL [1/4]: %', sql_sats;
+                    EXECUTE sql_sats;
+                    RAISE NOTICE '[hex_hantera_ny_kolumn]   Temporär geometrikolumn skapad';
+                    
+                    -- Steg 5.2: Kopiera geometridata
+                    op_steg := 'kopierar geometridata';
+                    sql_sats := format(
+                        'UPDATE %I.%I SET geom_temp0001 = geom',
+                        schema_namn, tabell_namn
+                    );
+                    RAISE NOTICE '[hex_hantera_ny_kolumn]   SQL [2/4]: %', sql_sats;
+                    EXECUTE sql_sats;
+                    RAISE NOTICE '[hex_hantera_ny_kolumn]   Geometridata kopierad';
+                    
+                    -- Steg 5.3: Ta bort original geometrikolumn
+                    op_steg := 'tar bort originalgeometri';
+                    sql_sats := format(
+                        'ALTER TABLE %I.%I DROP COLUMN geom',
+                        schema_namn, tabell_namn
+                    );
+                    RAISE NOTICE '[hex_hantera_ny_kolumn]   SQL [3/4]: %', sql_sats;
+                    EXECUTE sql_sats;
+                    RAISE NOTICE '[hex_hantera_ny_kolumn]   Original geometrikolumn borttagen';
+                    
+                    -- Steg 5.4: Döp om temporär kolumn
+                    op_steg := 'döper om temporär geometrikolumn';
+                    sql_sats := format(
+                        'ALTER TABLE %I.%I RENAME COLUMN geom_temp0001 TO geom',
+                        schema_namn, tabell_namn
+                    );
+                    RAISE NOTICE '[hex_hantera_ny_kolumn]   SQL [4/4]: %', sql_sats;
+                    EXECUTE sql_sats;
+                    RAISE NOTICE '[hex_hantera_ny_kolumn]   Geometrikolumn omdöpt till "geom"';
+                    
+                    antal_flyttade := antal_flyttade + 1;
+                    RAISE NOTICE '[hex_hantera_ny_kolumn]   Geometriflytt slutförd';
+                EXCEPTION
+                    WHEN OTHERS THEN
+                        antal_fel := antal_fel + 1;
+                        RAISE WARNING '[hex_hantera_ny_kolumn] FEL vid flyttning av geometrikolumn';
+                        RAISE WARNING '[hex_hantera_ny_kolumn] Operation: %', op_steg;
+                        RAISE WARNING '[hex_hantera_ny_kolumn] SQL: %', sql_sats;
+                        RAISE WARNING '[hex_hantera_ny_kolumn] Geometriinfo: %',
+                            coalesce(geometriinfo.definition, 'NULL');
+                        RAISE WARNING '[hex_hantera_ny_kolumn] Felmeddelande: %', SQLERRM;
+                        -- Rensa eventuell föräldralös temporär geometrikolumn
+                        EXECUTE format('ALTER TABLE %I.%I DROP COLUMN IF EXISTS geom_temp0001',
+                            schema_namn, tabell_namn);
+                END;
+            ELSE
+                RAISE WARNING '[hex_hantera_ny_kolumn] ⚠ Geometrikolumn hittad men ingen giltig definition returnerades';
+                RAISE WARNING '[hex_hantera_ny_kolumn] ⚠ Geometriinfo: %', geometriinfo;
+                antal_fel := antal_fel + 1;
+            END IF;
+        ELSE
+            RAISE NOTICE '[hex_hantera_ny_kolumn] Ingen geometrikolumn att hantera';
+        END IF;
+
+        -- Steg 5b: Slutför afvaktande tabell om geometrikolumn precis anlände
+        -- Om tabellen registrerades i hex_afvaktande_geometri av hex_hantera_ny_tabell()
+        -- (dvs. systemanvändare skapade tabellen utan geom), kör vi nu de steg som
+        -- hoppades över då: suffixvalidering, GiST-index och geometrivalidering.
+        RAISE NOTICE E'[hex_hantera_ny_kolumn] ----------';
+        RAISE NOTICE '[hex_hantera_ny_kolumn] Kontrollerar hex_afvaktande_geometri...';
+        -- EXECUTE USING krävs: kolumnnamnen i hex_afvaktande_geometri (schema_namn, tabell_namn)
+        -- är identiska med de lokala variabelnamnen. PostgreSQL tolkar annars $1/$2 (USING)
+        -- som PL/pgSQL-variabler oförväxlingsbart – ingen kolumnambiguitet möjlig.
+        EXECUTE 'SELECT EXISTS (SELECT 1 FROM public.hex_afvaktande_geometri WHERE schema_namn = $1 AND tabell_namn = $2)'
+            INTO afvaktande_tabell USING schema_namn, tabell_namn;
+        IF afvaktande_tabell THEN
+            RAISE NOTICE '[hex_hantera_ny_kolumn] Tabell %.% är afvaktande – slutför geometrihantering',
+                schema_namn, tabell_namn;
+
+            -- Steg 5b.1: Validera att suffixet stämmer med faktisk geometrityp
+            -- (geometriinfo är redan hämtad ovan om geom-kolumnen finns)
+            IF geometriinfo IS NOT NULL AND geometriinfo.typ_basal IS NOT NULL THEN
+                DECLARE
+                    forvantat_suffix text;
+                    faktiskt_suffix   text;
+                BEGIN
+                    forvantat_suffix := CASE
+                        WHEN geometriinfo.typ_basal IN ('POINT', 'MULTIPOINT')           THEN '_p'
+                        WHEN geometriinfo.typ_basal IN ('LINESTRING', 'MULTILINESTRING') THEN '_l'
+                        WHEN geometriinfo.typ_basal IN ('POLYGON', 'MULTIPOLYGON')       THEN '_y'
+                        ELSE '_g'
+                    END;
+                    faktiskt_suffix := CASE
+                        WHEN tabell_namn ~ '_p$' THEN '_p'
+                        WHEN tabell_namn ~ '_l$' THEN '_l'
+                        WHEN tabell_namn ~ '_y$' THEN '_y'
+                        WHEN tabell_namn ~ '_g$' THEN '_g'
+                        ELSE NULL
+                    END;
+
+                    IF faktiskt_suffix IS NOT NULL AND faktiskt_suffix <> forvantat_suffix THEN
+                        RAISE EXCEPTION
+                            '[hex_hantera_ny_kolumn] Suffixkollision för afvaktande tabell %.%: '
+                            'tabellnamnet antyder % men geometritypen är % (förväntar %).',
+                            schema_namn, tabell_namn,
+                            faktiskt_suffix, geometriinfo.typ_basal, forvantat_suffix;
+                    END IF;
+                    RAISE NOTICE '[hex_hantera_ny_kolumn]   ✓ Suffix % stämmer med geometrityp %',
+                        coalesce(faktiskt_suffix, '(inget suffix)'), geometriinfo.typ_basal;
+                END;
+            END IF;
+
+            -- Steg 5b.2: Kontrollera SRID (EPSG 3007 krävs)
+            IF geometriinfo IS NOT NULL AND geometriinfo.srid IS NOT NULL
+               AND geometriinfo.srid <> 3007
+            THEN
+                RAISE WARNING
+                    '[hex_hantera_ny_kolumn] Tabell %.% har SRID % – förväntar 3007 (SWEREF99 12 00). '
+                    'Data i fel koordinatsystem måste transformeras innan produktionsbruk. '
+                    'Tabellen registreras i hex_avvikande_srid för granskning.',
+                    schema_namn, tabell_namn, geometriinfo.srid;
+
+                INSERT INTO public.hex_avvikande_srid (schema_namn, tabell_namn, srid)
+                VALUES (hkt.schema_namn, hkt.tabell_namn, geometriinfo.srid)
+                ON CONFLICT ON CONSTRAINT hex_avvikande_srid_pkey
+                    DO UPDATE SET srid           = EXCLUDED.srid,
+                                  registrerad    = now(),
+                                  registrerad_av = current_user;
+            END IF;
+
+            -- Steg 5b.3: Skapa GiST-index för geometrikolumnen
+            IF geometriinfo IS NOT NULL AND geometriinfo.kolumnnamn IS NOT NULL THEN
+                DECLARE
+                    index_namn text := left(tabell_namn, 50) || '_geom_gidx';
+                    r          record;
+                BEGIN
+                    op_steg := 'skapar GiST-index (afvaktande tabell)';
+                    -- Ta bort GiST-index med annat namn (t.ex. FME-skapade) för att undvika dubbletter
+                    FOR r IN
+                        SELECT indexname FROM pg_indexes
+                        WHERE schemaname = schema_namn
+                          AND tablename  = tabell_namn
+                          AND indexdef   LIKE '%USING gist%'
+                          AND indexname  <> index_namn
+                    LOOP
+                        EXECUTE format('DROP INDEX %I.%I', schema_namn, r.indexname);
+                        RAISE NOTICE '[hex_hantera_ny_kolumn]   ✓ Dubblerat GiST-index borttaget: %', r.indexname;
+                    END LOOP;
+                    EXECUTE format(
+                        'CREATE INDEX IF NOT EXISTS %I ON %I.%I USING GIST (%I)',
+                        index_namn, schema_namn, tabell_namn, geometriinfo.kolumnnamn
+                    );
+                    RAISE NOTICE '[hex_hantera_ny_kolumn]   ✓ GiST-index skapat: %', index_namn;
+                END;
+            END IF;
+
+            -- Steg 5b.4: Lägg till geometrivalidering för scheman vars datakategori
+            --            har hex_validera_geometri = true i hex_standardiserade_datakategorier
+            IF geometriinfo IS NOT NULL AND geometriinfo.kolumnnamn IS NOT NULL
+               AND EXISTS (
+                   SELECT 1 FROM public.hex_standardiserade_datakategorier d
+                   WHERE d.hex_validera_geometri = true
+                     AND schema_namn ~ (public.hex_schema_regex() || d.prefix || '_')
+               )
+            THEN
+                DECLARE
+                    constraint_namn text := 'validera_geom_' || tabell_namn;
+                BEGIN
+                    op_steg := 'lägger till geometrivalidering (afvaktande tabell)';
+                    EXECUTE format(
+                        'ALTER TABLE %I.%I ADD CONSTRAINT %I CHECK (public.hex_validera_geometri(geom))',
+                        schema_namn, tabell_namn, constraint_namn
+                    );
+                    RAISE NOTICE '[hex_hantera_ny_kolumn]   ✓ Geometrivalidering tillagd: %', constraint_namn;
+                    op_steg := 'lägger till geometritrigger (afvaktande tabell)';
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_trigger t
+                        JOIN pg_class c ON c.oid = t.tgrelid
+                        JOIN pg_namespace n ON n.oid = c.relnamespace
+                        WHERE n.nspname = schema_namn
+                          AND c.relname = tabell_namn
+                          AND t.tgname  = 'hex_kontrollera_geom'
+                    ) THEN
+                        EXECUTE format(
+                            'CREATE TRIGGER hex_kontrollera_geom'
+                            ' BEFORE INSERT OR UPDATE ON %I.%I'
+                            ' FOR EACH ROW EXECUTE FUNCTION public.hex_kontrollera_geometri_trigger()',
+                            schema_namn, tabell_namn
+                        );
+                        RAISE NOTICE '[hex_hantera_ny_kolumn]   ✓ Geometritrigger tillagd: hex_kontrollera_geom';
+                    ELSE
+                        RAISE NOTICE '[hex_hantera_ny_kolumn]   ✓ Geometritrigger finns redan: hex_kontrollera_geom';
+                    END IF;
+                END;
+            END IF;
+
+            -- Steg 5b.5: Ta bort från afvaktande-registret
+            -- (EXECUTE USING av samma skäl som EXISTS-kontrollen ovan)
+            EXECUTE 'DELETE FROM public.hex_afvaktande_geometri WHERE schema_namn = $1 AND tabell_namn = $2'
+                USING schema_namn, tabell_namn;
+            RAISE NOTICE '[hex_hantera_ny_kolumn]   ✓ Tabell %.% borttagen ur hex_afvaktande_geometri',
+                schema_namn, tabell_namn;
+
+            -- Steg 5b.6: Lägg till dummy-geometrirad för QGIS-kompatibilitet
+            IF geometriinfo IS NOT NULL AND geometriinfo.kolumnnamn IS NOT NULL THEN
+                op_steg := 'dummy-geometri för QGIS (afvaktande tabell)';
+                PERFORM hex_lagg_till_dummy_geometri(schema_namn, tabell_namn, geometriinfo);
+                RAISE NOTICE '[hex_hantera_ny_kolumn]   ✓ Dummy-geometrirad tillagd';
+            END IF;
+        ELSIF geometriinfo IS NOT NULL
+              AND NOT tabell_namn ~ '_h$'
+              AND NOT EXISTS (
+                  SELECT 1 FROM pg_indexes
+                  WHERE schemaname = schema_namn
+                    AND tablename  = tabell_namn
+                    AND indexdef   LIKE '%USING gist%'
+              )
+        THEN
+            -- Steg 5c: Geom-kolumn har precis lagts till i en tabell som INTE är
+            -- afvaktande och som INTE har GiST-index – dvs. tabellen har inte
+            -- gått genom normal Hex-hantering med korrekt suffix + CREATE TABLE.
+            --
+            -- Typiskt scenario: FME skapar tabell utan suffix (tillåtet för
+            -- icke-geometritabeller) och lägger sedan till geom via ALTER TABLE.
+            -- Det innebär att suffixvalidering, GiST-index, geometrivalidering och
+            -- dummy alla hoppades över.
+            --
+            -- NOT tabell_namn ~ '_h$': historiktabeller undantas helt. De har alltid
+            -- en geom-kolumn (kopierad från modertabellen för historik) men får
+            -- aldrig ett GiST-index (behövs inte för historik) och följer aldrig
+            -- p/l/y/g-suffixkonventionen (de heter alltid <modertabell>_h). Utan
+            -- detta undantag tolkas "geom utan GiST-index" felaktigt som "ny,
+            -- obehandlad geometrikolumn" och RAISE EXCEPTION nedan avvisar
+            -- historiktabellens namn – vilket kraschar VARJE ALTER TABLE på en
+            -- historiktabell med geometri, inklusive t.ex. hex_underhall()'s
+            -- ägarskapsöverföring (ALTER TABLE ... OWNER TO).
+            --
+            -- Åtgärd:
+            --   a) Validera att tabellnamnet har korrekt suffix för geometritypen.
+            --      Om suffixet är fel: RAISE EXCEPTION → ALTER TABLE rullas tillbaka,
+            --      tabellen finns kvar utan geom-kolumnen.
+            --   b) Om suffix är korrekt: kör geometrisetup (GiST, validering, dummy).
+            RAISE NOTICE '[hex_hantera_ny_kolumn] ⚠ Tabell %.% har ny geom utan föregående Hex-hantering – validerar suffix och kör geometrisetup',
+                schema_namn, tabell_namn;
+            DECLARE
+                forvantat_suffix text;
+            BEGIN
+                forvantat_suffix := CASE
+                    WHEN geometriinfo.typ_basal IN ('POINT', 'MULTIPOINT')           THEN '_p'
+                    WHEN geometriinfo.typ_basal IN ('LINESTRING', 'MULTILINESTRING') THEN '_l'
+                    WHEN geometriinfo.typ_basal IN ('POLYGON', 'MULTIPOLYGON')       THEN '_y'
+                    ELSE '_g'
+                END;
+
+                IF NOT tabell_namn LIKE '%' || forvantat_suffix THEN
+                    RAISE EXCEPTION
+                        E'[hex_hantera_ny_kolumn] Tabellen %.% innehåller geometri (%) men saknar korrekt suffix.\n'
+                        '[hex_hantera_ny_kolumn] Kräver suffix: %\n'
+                        '[hex_hantera_ny_kolumn] Föreslaget namn: "%"\n'
+                        '[hex_hantera_ny_kolumn]\n'
+                        '[hex_hantera_ny_kolumn] Geometrikolumnen har INTE lagts till (ändringen är återställd).\n'
+                        '[hex_hantera_ny_kolumn] Åtgärd: döp om tabellen med rätt suffix och försök igen,\n'
+                        '[hex_hantera_ny_kolumn]         eller radera tabellen och skapa om den med rätt namn.',
+                        schema_namn, tabell_namn,
+                        geometriinfo.typ_basal,
+                        forvantat_suffix,
+                        regexp_replace(tabell_namn, '_[plyg]$', '') || forvantat_suffix;
+                END IF;
+
+                RAISE NOTICE '[hex_hantera_ny_kolumn]   ✓ Suffix % stämmer med geometrityp %',
+                    forvantat_suffix, geometriinfo.typ_basal;
+
+                -- SRID-kontroll
+                IF geometriinfo.srid IS NOT NULL AND geometriinfo.srid <> 3007 THEN
+                    RAISE WARNING
+                        '[hex_hantera_ny_kolumn] Tabell %.% har SRID % – förväntar 3007 (SWEREF99 12 00). '
+                        'Tabellen registreras i hex_avvikande_srid.',
+                        schema_namn, tabell_namn, geometriinfo.srid;
+                    INSERT INTO public.hex_avvikande_srid (schema_namn, tabell_namn, srid)
+                    VALUES (hkt.schema_namn, hkt.tabell_namn, geometriinfo.srid)
+                    ON CONFLICT ON CONSTRAINT hex_avvikande_srid_pkey
+                        DO UPDATE SET srid           = EXCLUDED.srid,
+                                      registrerad    = now(),
+                                      registrerad_av = current_user;
+                END IF;
+
+                -- GiST-index
+                DECLARE
+                    index_namn text := left(tabell_namn, 50) || '_geom_gidx';
+                    r          record;
+                BEGIN
+                    op_steg := 'skapar GiST-index (ny geom utan afvaktande)';
+                    -- Ta bort GiST-index med annat namn (t.ex. FME-skapade) för att undvika dubbletter
+                    FOR r IN
+                        SELECT indexname FROM pg_indexes
+                        WHERE schemaname = schema_namn
+                          AND tablename  = tabell_namn
+                          AND indexdef   LIKE '%USING gist%'
+                          AND indexname  <> index_namn
+                    LOOP
+                        EXECUTE format('DROP INDEX %I.%I', schema_namn, r.indexname);
+                        RAISE NOTICE '[hex_hantera_ny_kolumn]   ✓ Dubblerat GiST-index borttaget: %', r.indexname;
+                    END LOOP;
+                    EXECUTE format(
+                        'CREATE INDEX IF NOT EXISTS %I ON %I.%I USING GIST (%I)',
+                        index_namn, schema_namn, tabell_namn, geometriinfo.kolumnnamn
+                    );
+                    RAISE NOTICE '[hex_hantera_ny_kolumn]   ✓ GiST-index skapat: %', index_namn;
+                END;
+
+                -- Geometrivalidering (datakategorier med hex_validera_geometri = true)
+                IF EXISTS (
+                    SELECT 1 FROM public.hex_standardiserade_datakategorier d
+                    WHERE d.hex_validera_geometri = true
+                      AND schema_namn ~ (public.hex_schema_regex() || d.prefix || '_')
+                ) THEN
+                    DECLARE
+                        constraint_namn text := 'validera_geom_' || tabell_namn;
+                    BEGIN
+                        op_steg := 'lägger till geometrivalidering (ny geom utan afvaktande)';
+                        EXECUTE format(
+                            'ALTER TABLE %I.%I ADD CONSTRAINT %I CHECK (public.hex_validera_geometri(geom))',
+                            schema_namn, tabell_namn, constraint_namn
+                        );
+                        RAISE NOTICE '[hex_hantera_ny_kolumn]   ✓ Geometrivalidering tillagd: %', constraint_namn;
+                        op_steg := 'lägger till geometritrigger (ny geom utan afvaktande)';
+                        IF NOT EXISTS (
+                            SELECT 1 FROM pg_trigger t
+                            JOIN pg_class c ON c.oid = t.tgrelid
+                            JOIN pg_namespace n ON n.oid = c.relnamespace
+                            WHERE n.nspname = schema_namn
+                              AND c.relname = tabell_namn
+                              AND t.tgname  = 'hex_kontrollera_geom'
+                        ) THEN
+                            EXECUTE format(
+                                'CREATE TRIGGER hex_kontrollera_geom'
+                                ' BEFORE INSERT OR UPDATE ON %I.%I'
+                                ' FOR EACH ROW EXECUTE FUNCTION public.hex_kontrollera_geometri_trigger()',
+                                schema_namn, tabell_namn
+                            );
+                            RAISE NOTICE '[hex_hantera_ny_kolumn]   ✓ Geometritrigger tillagd: hex_kontrollera_geom';
+                        ELSE
+                            RAISE NOTICE '[hex_hantera_ny_kolumn]   ✓ Geometritrigger finns redan: hex_kontrollera_geom';
+                        END IF;
+                    END;
+                END IF;
+
+                -- Dummy-geometri för QGIS
+                op_steg := 'dummy-geometri för QGIS (ny geom utan afvaktande)';
+                PERFORM hex_lagg_till_dummy_geometri(schema_namn, tabell_namn, geometriinfo);
+                RAISE NOTICE '[hex_hantera_ny_kolumn]   ✓ Dummy-geometrirad tillagd';
+            END;
+        ELSE
+            RAISE NOTICE '[hex_hantera_ny_kolumn] Tabell ej afvaktande, inget extra steg behövs';
+        END IF;
+
+        -- Steg 6: Kontrollera historiktabell och synkronisera automatiskt
+        RAISE NOTICE E'[hex_hantera_ny_kolumn] ----------';
+        RAISE NOTICE '[hex_hantera_ny_kolumn] (4/4) Kontrollerar historiktabellsynkronisering';
+        
+        -- Bestäm historiktabellnamn (hoppa över om detta redan ÄR en historiktabell)
+        -- Samma 63-bytesgräns som hex_skapa_historik_qa(). Utan left() hittades
+        -- aldrig historiktabellen för modertabeller med 62+ tecken i namnet.
+        historik_tabell_namn := left(tabell_namn || '_h', 63);
+        
+        IF NOT tabell_namn ~ '_h$' THEN
+            -- Detta är en modertabell, kontrollera om det finns motsvarande historiktabell
+            SELECT EXISTS(
+                SELECT 1 FROM information_schema.tables 
+                WHERE table_schema = schema_namn 
+                AND table_name = historik_tabell_namn
+            ) INTO har_historiktabell;
+            
+            IF har_historiktabell THEN
+                RAISE NOTICE '[hex_hantera_ny_kolumn] Hittade historiktabell %.% - analyserar och synkroniserar',
+                    schema_namn, historik_tabell_namn;
+                
+                -- Analysera strukturskillnader mellan moder- och historiktabell
+                DECLARE
+                    saknade_i_historik text[];      -- Kolumner som finns i moder men saknas i historik
+                    extra_i_historik text[];        -- Kolumner som finns i historik men saknas i moder  
+                    typ_skillnader text[];          -- Kolumner med olika datatyper
+                    kolumn_info record;
+                    antal_tillagda integer := 0;
+                BEGIN
+                    -- Hitta kolumner som finns i modertabell men saknas i historiktabell
+                    -- (exkluderar h_-kolumner som bara finns i historik)
+                    SELECT array_agg(m.column_name ORDER BY m.ordinal_position)
+                    INTO saknade_i_historik
+                    FROM information_schema.columns m
+                    WHERE m.table_schema = schema_namn 
+                    AND m.table_name = tabell_namn
+                    AND NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns h
+                        WHERE h.table_schema = schema_namn
+                        AND h.table_name = historik_tabell_namn
+                        AND h.column_name = m.column_name
+                    );
+                    
+                    -- Hitta kolumner som finns i historiktabell men saknas i modertabell
+                    -- (exkluderar h_-kolumner som är normala i historik)
+                    SELECT array_agg(h.column_name ORDER BY h.ordinal_position)
+                    INTO extra_i_historik
+                    FROM information_schema.columns h
+                    WHERE h.table_schema = schema_namn 
+                    AND h.table_name = historik_tabell_namn
+                    AND h.column_name NOT LIKE 'h\_%'  -- Hoppa över historikkolumner
+                    AND NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns m
+                        WHERE m.table_schema = schema_namn
+                        AND m.table_name = tabell_namn
+                        AND m.column_name = h.column_name
+                    );
+                    
+                    -- Hitta kolumner med olika datatyper
+                    SELECT array_agg(
+                        format('%s (moder: %s, historik: %s)', 
+                            m.column_name, m.data_type, h.data_type)
+                        ORDER BY m.ordinal_position
+                    )
+                    INTO typ_skillnader
+                    FROM information_schema.columns m
+                    JOIN information_schema.columns h ON (
+                        h.table_schema = schema_namn
+                        AND h.table_name = historik_tabell_namn
+                        AND h.column_name = m.column_name
+                        AND h.data_type != m.data_type
+                    )
+                    WHERE m.table_schema = schema_namn
+                    AND m.table_name = tabell_namn;
+                    
+                    -- Räkna totalt antal skillnader (sätt på funktion-nivå variabel)
+                    antal_skillnader := COALESCE(array_length(saknade_i_historik, 1), 0) +
+                                       COALESCE(array_length(extra_i_historik, 1), 0) +
+                                       COALESCE(array_length(typ_skillnader, 1), 0);
+                    
+                    -- Om strukturskillnader finns, inaktivera QA-triggers temporärt för säker kolumnflyttning
+                    IF antal_skillnader > 0 THEN
+                        BEGIN
+                            EXECUTE format('ALTER TABLE %I.%I DISABLE TRIGGER trg_%s_qa', 
+                                schema_namn, tabell_namn, tabell_namn);
+                            qa_trigger_inaktiverad := true;
+                            RAISE NOTICE '[hex_hantera_ny_kolumn] QA-trigger tillfälligt inaktiverad för säker strukturändring';
+                        EXCEPTION
+                            WHEN OTHERS THEN
+                                RAISE NOTICE '[hex_hantera_ny_kolumn] Kunde inte inaktivera QA-trigger: %', SQLERRM;
+                                -- Fortsätt ändå, men varna användaren extra
+                        END;
+                    END IF;
+                    
+                    -- Saknade kolumner, typkonflikter och QA-triggern hanteras av
+                    -- hex_synka_historik(). Den körs även när inga kolumner saknas:
+                    -- en kolumn som tagits bort och lagts tillbaka finns redan i
+                    -- historiken, men triggern måste ändå byggas om för att ta med den.
+                    antal_tillagda := coalesce(hex_synka_historik(schema_namn, tabell_namn), 0);
+                    RAISE NOTICE '[hex_hantera_ny_kolumn] Historiktabell synkroniserad: % ändringar', antal_tillagda;
+
+                    IF array_length(saknade_i_historik, 1) > 0 THEN
+                        -- Flytta standardkolumner med negativ ordinal_position till rätt plats i historiktabellen
+                        RAISE NOTICE '[hex_hantera_ny_kolumn] Reorganiserar standardkolumner i historiktabellen...';
+                        
+                        DECLARE
+                            h_kolumn record;
+                            h_kolumn_typ text;
+                        BEGIN
+                            FOR h_kolumn IN 
+                                SELECT sk.kolumnnamn
+                                FROM hex_standardiserade_kolumner sk
+                                WHERE sk.ordinal_position < 0
+                                AND EXISTS (
+                                    SELECT 1 FROM information_schema.columns c
+                                    WHERE c.table_schema = schema_namn
+                                    AND c.table_name = historik_tabell_namn
+                                    AND c.column_name = sk.kolumnnamn
+                                )
+                                ORDER BY sk.ordinal_position
+                            LOOP
+                                -- Hämta kolumntyp från historiktabellen.
+                                -- Kolumnen flyttas nedan med tekniken
+                                -- ADD COLUMN → UPDATE → DROP → RENAME, så den
+                                -- återskapas ur den här strängen. Den handskrivna
+                                -- CASE-satsen som stod här saknade till och med
+                                -- numeric-grenen, vilket gjorde att en flyttad
+                                -- numeric(10,2)-kolumn tyst blev numeric.
+                                h_kolumn_typ := public.hex_kolumntyp(
+                                    schema_namn, historik_tabell_namn, h_kolumn.kolumnnamn);
+
+                                -- Flytta kolumnen med temp-kolumn-teknik
+                                EXECUTE format(
+                                    'ALTER TABLE %I.%I ADD COLUMN %I_temp0001 %s',
+                                    schema_namn, historik_tabell_namn, h_kolumn.kolumnnamn, h_kolumn_typ
+                                );
+                                EXECUTE format(
+                                    'UPDATE %I.%I SET %I_temp0001 = %I',
+                                    schema_namn, historik_tabell_namn, h_kolumn.kolumnnamn, h_kolumn.kolumnnamn
+                                );
+                                EXECUTE format(
+                                    'ALTER TABLE %I.%I DROP COLUMN %I',
+                                    schema_namn, historik_tabell_namn, h_kolumn.kolumnnamn
+                                );
+                                EXECUTE format(
+                                    'ALTER TABLE %I.%I RENAME COLUMN %I_temp0001 TO %I',
+                                    schema_namn, historik_tabell_namn, h_kolumn.kolumnnamn, h_kolumn.kolumnnamn
+                                );
+                                
+                                RAISE NOTICE '[hex_hantera_ny_kolumn]   ✓ Flyttade % till slutet av %', 
+                                    h_kolumn.kolumnnamn, historik_tabell_namn;
+                            END LOOP;
+                        EXCEPTION
+                            WHEN OTHERS THEN
+                                RAISE WARNING '[hex_hantera_ny_kolumn]   ✗ Kunde inte reorganisera standardkolumner i historiktabell: %', SQLERRM;
+                        END;
+                        
+                        -- Flytta geom till slutet av historiktabellen om den finns
+                        IF EXISTS (
+                            SELECT 1 FROM information_schema.columns
+                            WHERE table_schema = schema_namn
+                            AND table_name = historik_tabell_namn
+                            AND column_name = 'geom'
+                        ) THEN
+                            RAISE NOTICE '[hex_hantera_ny_kolumn] Flyttar geom till slutet av historiktabellen...';
+                            
+                            DECLARE
+                                h_geom_def text;
+                            BEGIN
+                                -- Hämta geometridefinition från modertabellen
+                                SELECT geometriinfo.definition INTO h_geom_def;
+                                
+                                -- Om vi inte har geometriinfo, hämta från history table
+                                IF h_geom_def IS NULL THEN
+                                    SELECT format('geometry(%s,%s)', type, srid)
+                                    INTO h_geom_def
+                                    FROM geometry_columns
+                                    WHERE f_table_schema = schema_namn
+                                    AND f_table_name = historik_tabell_namn
+                                    AND f_geometry_column = 'geom';
+                                END IF;
+                                
+                                IF h_geom_def IS NOT NULL THEN
+                                    -- Temp kolumn
+                                    EXECUTE format(
+                                        'ALTER TABLE %I.%I ADD COLUMN geom_temp0001 %s',
+                                        schema_namn, historik_tabell_namn, h_geom_def
+                                    );
+                                    -- Kopiera data
+                                    EXECUTE format(
+                                        'UPDATE %I.%I SET geom_temp0001 = geom',
+                                        schema_namn, historik_tabell_namn
+                                    );
+                                    -- Ta bort original
+                                    EXECUTE format(
+                                        'ALTER TABLE %I.%I DROP COLUMN geom',
+                                        schema_namn, historik_tabell_namn
+                                    );
+                                    -- Döp om
+                                    EXECUTE format(
+                                        'ALTER TABLE %I.%I RENAME COLUMN geom_temp0001 TO geom',
+                                        schema_namn, historik_tabell_namn
+                                    );
+                                    
+                                    RAISE NOTICE '[hex_hantera_ny_kolumn]   ✓ geom flyttad till slutet av %', historik_tabell_namn;
+                                END IF;
+                            EXCEPTION
+                                WHEN OTHERS THEN
+                                    RAISE WARNING '[hex_hantera_ny_kolumn]   ✗ Kunde inte flytta geom i historiktabell: %', SQLERRM;
+                            END;
+                        END IF;
+                    END IF;
+                    
+                    -- Visa kolumner som finns extra i historik (bara info, ingen åtgärd)
+                    IF array_length(extra_i_historik, 1) > 0 THEN
+                        RAISE NOTICE '[hex_hantera_ny_kolumn] Extra kolumner i historik (behålls): %',
+                            array_to_string(extra_i_historik, ', ');
+                    END IF;
+                    
+                    -- Typskillnader är redan lösta av hex_synka_historik() ovan
+                    IF array_length(typ_skillnader, 1) > 0 THEN
+                        RAISE NOTICE '[hex_hantera_ny_kolumn] Typskillnader hanterade av hex_synka_historik: %',
+                            array_to_string(typ_skillnader, ', ');
+                    END IF;
+                    
+                    IF antal_skillnader = 0 THEN
+                        -- Inga skillnader - tabellerna är synkroniserade
+                        RAISE NOTICE '[hex_hantera_ny_kolumn] Historiktabell %.% är redan synkroniserad',
+                            schema_namn, historik_tabell_namn;
+                    END IF;
+                END;
+            ELSE
+                RAISE NOTICE '[hex_hantera_ny_kolumn] Ingen historiktabell hittades - ingen ytterligare åtgärd krävs';
+                antal_skillnader := 0;  -- Inga skillnader att rapportera
+            END IF;
+        ELSE
+            -- Detta är redan en historiktabell
+            RAISE NOTICE '[hex_hantera_ny_kolumn] Detta är en historiktabell - inga varningar behövs';
+            antal_skillnader := 0;  -- Historiktabeller analyseras inte
+        END IF;
+
+        -- Återaktivera QA-trigger om den inaktiverades
+        IF qa_trigger_inaktiverad THEN
+            BEGIN
+                EXECUTE format('ALTER TABLE %I.%I ENABLE TRIGGER trg_%s_qa', 
+                    schema_namn, tabell_namn, tabell_namn);
+                RAISE NOTICE '[hex_hantera_ny_kolumn] QA-trigger återaktiverad efter strukturändring';
+                
+            EXCEPTION
+                WHEN OTHERS THEN
+                    RAISE WARNING '[hex_hantera_ny_kolumn] KRITISKT: Kunde inte återaktivera QA-trigger: %', SQLERRM;
+                    -- OBS: RAISE stöder inte %I - identifierare citeras med quote_ident()
+                    RAISE WARNING '[hex_hantera_ny_kolumn] Du måste manuellt aktivera: ALTER TABLE %.% ENABLE TRIGGER %;',
+                        quote_ident(schema_namn), quote_ident(tabell_namn),
+                        quote_ident('trg_' || tabell_namn || '_qa');
+            END;
+        END IF;
+
+        -- FME-debug: Visa slutgiltig kolumnordning
+        IF ar_fme THEN
+            RAISE NOTICE '[hex_hantera_ny_kolumn] [FME-DEBUG] Slutgiltig kolumnordning i %.%:', schema_namn, tabell_namn;
+            DECLARE
+                fme_kol record;
+            BEGIN
+                FOR fme_kol IN
+                    SELECT column_name, data_type, ordinal_position
+                    FROM information_schema.columns
+                    WHERE table_schema = schema_namn AND table_name = tabell_namn
+                    ORDER BY ordinal_position
+                LOOP
+                    RAISE NOTICE '[hex_hantera_ny_kolumn] [FME-DEBUG]   #% % (%)', fme_kol.ordinal_position, fme_kol.column_name, fme_kol.data_type;
+                END LOOP;
+            END;
+        END IF;
+
+        -- Sammanfattning för denna tabell
+        RAISE NOTICE E'[hex_hantera_ny_kolumn] ----------';
+        RAISE NOTICE '[hex_hantera_ny_kolumn] Sammanfattning för tabell %.%:', schema_namn, tabell_namn;
+        RAISE NOTICE '[hex_hantera_ny_kolumn]   » Flyttade kolumner: %', antal_flyttade;
+        RAISE NOTICE '[hex_hantera_ny_kolumn]   » Problem uppstod: %', antal_fel;
+        RAISE NOTICE '[hex_hantera_ny_kolumn]   » Historiktabell: %',
+            CASE WHEN NOT tabell_namn ~ '_h$' AND har_historiktabell
+                 THEN 'Synkroniserad'
+                 WHEN NOT tabell_namn ~ '_h$' AND NOT har_historiktabell
+                 THEN 'Ingen historik'
+                 ELSE 'Historiktabell'
+            END;
+        RAISE NOTICE '[hex_hantera_ny_kolumn]   » Status: %',
+            CASE WHEN antal_fel = 0 THEN 'Slutförd utan fel'
+                 ELSE format('Slutförd med %s fel', antal_fel)
+            END;
+        
+        -- Återställ räknare för nästa tabell
+        antal_flyttade := 0;
+        antal_fel := 0;
+        antal_skillnader := 0;
+        qa_trigger_inaktiverad := false;
+    END LOOP;
+
+    -- Återställ flaggan
+    RAISE NOTICE '[hex_hantera_ny_kolumn] Återställer rekursionsflagga';
+    PERFORM set_config('temp.reorganization_in_progress', 'false', true);
+
+    RAISE NOTICE '[hex_hantera_ny_kolumn] ======== SLUT ========';
+
+EXCEPTION
+    WHEN OTHERS THEN
+        -- Återställ flaggan och ge detaljerad felinformation
+        PERFORM set_config('temp.reorganization_in_progress', 'false', true);
+        
+        RAISE NOTICE E'[hex_hantera_ny_kolumn] !!!!! KRITISKT FEL !!!!!';
+        RAISE NOTICE '[hex_hantera_ny_kolumn] Senaste kontext:';
+        RAISE NOTICE '[hex_hantera_ny_kolumn]   - Schema: %', schema_namn;
+        RAISE NOTICE '[hex_hantera_ny_kolumn]   - Tabell: %', tabell_namn;
+        RAISE NOTICE '[hex_hantera_ny_kolumn]   - Operation: %', op_steg;
+        RAISE NOTICE '[hex_hantera_ny_kolumn]   - SQL: %', coalesce(sql_sats, 'Ingen SQL');
+        RAISE NOTICE '[hex_hantera_ny_kolumn]   - Status: % kolumner flyttade, % fel innan kraschen',
+            antal_flyttade, antal_fel;
+        RAISE NOTICE '[hex_hantera_ny_kolumn] Tekniska feldetaljer:';
+        RAISE NOTICE '[hex_hantera_ny_kolumn]   - Felkod: %', SQLSTATE;
+        RAISE NOTICE '[hex_hantera_ny_kolumn]   - Felmeddelande: %', SQLERRM;
+        RAISE;
+END;
+$BODY$;
+
+-- Ägaren sätts via hex_systemagare() i stället för ett hårdkodat rollnamn,
+-- så att manuell installation ger samma ägarskap som install_hex.py.
+DO $$
+BEGIN
+    EXECUTE format(
+        'ALTER FUNCTION public.hex_hantera_ny_kolumn() OWNER TO %I',
+        public.hex_systemagare()
+    );
+END;
+$$;
+
+COMMENT ON FUNCTION public.hex_hantera_ny_kolumn()
+    IS 'Event trigger-funktion som triggas vid ALTER TABLE-operationer. Funktionen:
+
+1. Omstrukturerar tabeller genom att flytta standardkolumner med negativ 
+   ordinal_position så att de hamnar sist i tabellen efter nyligen tillagda kolumner.
+
+2. Flyttar geometrikolumnen (geom) till allra sist för att bibehålla korrekt 
+   kolumnordning enligt systemets standarder.
+
+3. Analyserar strukturskillnader mellan modertabeller och deras motsvarande 
+   historiktabeller (_h).
+
+4. UPPDATERAD: Lägger automatiskt till saknade kolumner i historiktabeller för att
+   hålla dem synkroniserade med modertabellen och undvika QA-trigger-krascher.
+
+5. Varnar för typskillnader som kräver manuell åtgärd.
+
+6. Behandlar även historiktabeller direkt för att säkerställa korrekt 
+   kolumnordning i dessa tabeller också.
+
+Funktionen använder detaljerad loggning med tydlig funktionsmarkering för att 
+underlätta felsökning och omfattar rekursionskontroll för att undvika oändliga 
+loopar vid tabellmodifieringar.';

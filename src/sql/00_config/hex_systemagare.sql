@@ -1,0 +1,26 @@
+-- FUNCTION: public.hex_systemagare()
+
+/******************************************************************************
+ * Returnerar namnet på ägarrollen för Hex-objekt.
+ * 
+ * MANUELL INSTALLATION:
+ * Ändra 'gis_admin' nedan till din ägarroll INNAN du kör detta skript.
+ * Denna funktion måste installeras FÖRST, före alla andra Hex-filer.
+ *
+ * INSTALLER:
+ * Om du använder install_hex.py ignoreras denna fil - installern
+ * genererar funktionen dynamiskt från nyckeln owner_role i DATABASES.
+ ******************************************************************************/
+
+CREATE OR REPLACE FUNCTION public.hex_systemagare()
+    RETURNS text
+    LANGUAGE 'sql'
+    IMMUTABLE
+AS $BODY$
+    SELECT 'gis_admin'::text;  -- ← Ändra detta till din ägarroll
+$BODY$;
+
+ALTER FUNCTION public.hex_systemagare() OWNER TO postgres;
+
+COMMENT ON FUNCTION public.hex_systemagare()
+    IS 'Returnerar ägarrollen för Hex-skapade roller. Används för att ge ADMIN OPTION så att ägarrollen kan hantera roller skapade av event triggers.';

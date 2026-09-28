@@ -1,0 +1,502 @@
+CREATE OR REPLACE FUNCTION public.hex_hantera_ny_tabell()
+    RETURNS event_trigger
+    LANGUAGE 'plpgsql'
+    COST 100
+    VOLATILE NOT LEAKPROOF
+    SECURITY DEFINER
+    SET search_path = public, pg_temp
+AS $BODY$
+/******************************************************************************
+ * Denna funktion hanterar omstrukturering av tabeller när de skapas. Den:
+ * 1. Validerar tabellen (namngivning + geometri). Kända systemanvändare
+ *    (hex_systemanvandare, t.ex. FME) kan skapa tabeller med geometrisuffix
+ *    utan geometrikolumn – dessa registreras i hex_afvaktande_geometri och
+ *    stegen 8–9 slutförs av hex_hantera_ny_kolumn när geom-kolumnen anländer.
+ * 2. Sparar hex_tabellregler och hex_kolumnegenskaper
+ * 3. Bestämmer kolumnstruktur (standardkolumner för aktuellt schema)
+ * 4. Skapar en temporär tabell med standardkolumner
+ * 5. Ersätter originaltabellen med den temporära och döper om sekvenser
+ * 6. Återskapar hex_tabellregler (PRIMARY KEY undantas – hanteras av gid)
+ * 7. Återskapar hex_kolumnegenskaper
+ * 7.4. Skapar PRIMARY KEY (gid) (krävs för att QGIS ska hitta gid-sekvensen)
+ * 7.5. Skapar trigger hex_tvinga_gid (gid sätts alltid av sekvensen, aldrig av klienten)
+ * 8. Skapar GiST-index för geometrikolumn (alla scheman)
+ * 9. Lägger till geometrivalidering för _kba_-scheman
+ * 10. Skapar historiktabell och QA-triggers om behövs
+ * 11. Lägger till dummy-geometrirad för QGIS-kompatibilitet (tabeller med geom)
+ ******************************************************************************/
+<<hnt>>
+DECLARE
+    -- Grundläggande variabler för tabellhantering
+    flagg_varde text;          -- För rekursionskontroll
+    kommando record;           -- Information om CREATE TABLE-kommandot
+    schema_namn text;          -- Schema för tabellen
+    tabell_namn text;          -- Namn på tabellen
+    temp_tabellnamn text;      -- Temporärt tabellnamn
+    
+    -- Variabel för kolumnhantering
+    standardkolumner hex_kolumnkonfig[];   -- Kolumner för den nya tabellen
+    
+    -- Variabler för regler och egenskaper
+    tabell_regler hex_tabellregler;        -- Tabellövergripande regler
+    kolumn_egenskaper hex_kolumnegenskaper; -- Kolumnspecifika egenskaper
+    
+    -- För geometrihantering
+    geometriinfo hex_geom_info;            -- Strukturerad geometriinformation
+    
+    -- För felhantering och loggning
+    op_steg text;                      -- Operationssteg för felsökning
+    ar_fme boolean := false;           -- Om anroparen är FME (bakåtkompatibel flagga)
+    ar_systemanvandare boolean := false; -- Om anroparen är en känd systemanvändare
+BEGIN
+    RAISE NOTICE E'\n======== hex_hantera_ny_tabell START ========';
+
+    -- Kontrollera rekursion
+    IF current_setting('temp.tabellstrukturering_pagar', true) = 'true' THEN
+        RETURN;
+    END IF;
+    PERFORM set_config('temp.tabellstrukturering_pagar', 'true', true);
+
+    -- Detektera känd systemanvändare (t.ex. FME) via hex_systemanvandare-tabellen.
+    -- Matchning sker mot session_user, current_user och application_name.
+    SELECT EXISTS (
+        SELECT 1 FROM public.hex_systemanvandare
+        WHERE anvandare IN (
+            lower(session_user),
+            lower(current_user),
+            lower(coalesce(current_setting('application_name', true), ''))
+        )
+    ) INTO ar_systemanvandare;
+
+    -- Bakåtkompatibel flagga (används fortfarande för FME-specifik debugloggning)
+    ar_fme := ar_systemanvandare OR
+              (lower(coalesce(current_setting('application_name', true), '')) = 'fme');
+
+    IF ar_systemanvandare THEN
+        RAISE NOTICE E'\n[hex_hantera_ny_tabell] *** SYSTEMANVÄNDARE DETEKTERAD ***';
+        RAISE NOTICE '[hex_hantera_ny_tabell] Sessionsinformation:';
+        RAISE NOTICE '[hex_hantera_ny_tabell]   » application_name: %', current_setting('application_name', true);
+        RAISE NOTICE '[hex_hantera_ny_tabell]   » session_user: %', session_user;
+        RAISE NOTICE '[hex_hantera_ny_tabell]   » current_user: %', current_user;
+        RAISE NOTICE '[hex_hantera_ny_tabell]   » inet_client_addr: %', inet_client_addr();
+        RAISE NOTICE '[hex_hantera_ny_tabell]   » backend_pid: %', pg_backend_pid();
+        RAISE NOTICE '[hex_hantera_ny_tabell]   » Tvåstegshantering aktiv (geometri kan komma via ALTER TABLE)';
+    ELSIF ar_fme THEN
+        RAISE NOTICE E'\n[hex_hantera_ny_tabell] *** FME-ANSLUTNING DETEKTERAD (ej i hex_systemanvandare) ***';
+        RAISE NOTICE '[hex_hantera_ny_tabell]   » application_name: %', current_setting('application_name', true);
+    END IF;
+
+    -- Bearbeta tabeller
+    FOR kommando IN SELECT * FROM pg_event_trigger_ddl_commands()
+    WHERE command_tag = 'CREATE TABLE'
+    LOOP
+        -- Extrahera schema och tabellnamn (ta bort eventuella citattecken
+        -- som PostgreSQL lägger till för namn med specialtecken som åäö)
+        schema_namn := replace(split_part(kommando.object_identity, '.', 1), '"', '');
+        tabell_namn := replace(split_part(kommando.object_identity, '.', 2), '"', '');
+        temp_tabellnamn := tabell_namn || '_temp_0001';
+
+        -- Kontrollera undantag: public-schema
+        IF schema_namn = 'public' THEN
+            RAISE NOTICE 'Hoppar över tabell %.% - public-schema', schema_namn, tabell_namn;
+            CONTINUE;
+        END IF;
+
+        -- Kontrollera undantag: temporära scheman (pg_temp, pg_temp_N)
+        IF schema_namn = 'pg_temp' OR schema_namn LIKE 'pg_temp_%' THEN
+            RAISE NOTICE 'Hoppar över tabell %.% - temporär tabell (pg_temp)', schema_namn, tabell_namn;
+            CONTINUE;
+        END IF;
+
+        -- Kontrollera undantag: _h-suffix (reserverat för historiktabeller)
+        -- Systemets egna _h-tabeller (skapade av hex_skapa_historik_qa i steg 10)
+        -- når aldrig hit - de fångas av rekursionsskyddet (temp.tabellstrukturering_pagar)
+        IF tabell_namn ~ '_h$' THEN
+            IF EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_schema = schema_namn
+                AND table_name = regexp_replace(tabell_namn, '_h$', '')
+            ) THEN
+                RAISE NOTICE 'Hoppar över tabell %.% - historiktabell (modertabell finns)',
+                    schema_namn, tabell_namn;
+                CONTINUE;
+            ELSE
+                RAISE EXCEPTION E'[hex_hantera_ny_tabell] Ogiltigt tabellnamn "%.%".\n'
+                    '[hex_hantera_ny_tabell] Suffixet _h är reserverat för historiktabeller.\n'
+                    '[hex_hantera_ny_tabell] Modertabell "%" saknas i schema "%".\n'
+                    '[hex_hantera_ny_tabell] Byt namn eller skapa modertabellen först.',
+                    schema_namn, tabell_namn,
+                    regexp_replace(tabell_namn, '_h$', ''),
+                    schema_namn;
+            END IF;
+        END IF;
+
+        RAISE NOTICE E'\n--- Bearbetar %.% ---', schema_namn, tabell_namn;
+
+        BEGIN
+            -- Steg 1: Validera
+            -- Systemanvändare (t.ex. FME) skapar ibland tabeller i två steg:
+            --   steg A) CREATE TABLE utan geometrikolumn
+            --   steg B) ALTER TABLE ADD COLUMN geom geometry(...)
+            -- I det fallet tillåter vi tabellen att passera validering och
+            -- registrerar den i hex_afvaktande_geometri. Geometrispecifik
+            -- efterbearbetning (GiST-index, geometrivalidering) sker i
+            -- hex_hantera_ny_kolumn() när geom-kolumnen dyker upp.
+            op_steg := 'validering';
+            RAISE NOTICE 'Steg 1/11: Validerar tabell';
+
+            IF ar_systemanvandare
+               AND tabell_namn ~ '_[plyg]$'
+               AND NOT EXISTS (
+                   SELECT 1 FROM geometry_columns
+                   WHERE f_table_schema = schema_namn
+                   AND f_table_name = tabell_namn
+               )
+            THEN
+                RAISE WARNING
+                    '[hex_hantera_ny_tabell] Tabell %.% har geometrisuffix men saknar geometrikolumn. '
+                    'Registreras som afvaktande – geometri förväntas via ALTER TABLE.',
+                    schema_namn, tabell_namn;
+
+                INSERT INTO public.hex_afvaktande_geometri (schema_namn, tabell_namn)
+                VALUES (schema_namn, tabell_namn)
+                ON CONFLICT DO NOTHING;
+
+                geometriinfo := NULL;  -- Geometrispecifika steg (8+9) hoppas över nedan
+            ELSE
+                geometriinfo := hex_validera_tabell(schema_namn, tabell_namn);
+
+                -- Kontrollera SRID: alla geometritabeller ska använda EPSG 3007 (SWEREF99 12 00)
+                IF geometriinfo IS NOT NULL AND geometriinfo.srid IS NOT NULL
+                   AND geometriinfo.srid <> 3007
+                THEN
+                    RAISE WARNING
+                        '[hex_hantera_ny_tabell] Tabell %.% har SRID % – förväntar 3007 (SWEREF99 12 00). '
+                        'Data i fel koordinatsystem måste transformeras innan produktionsbruk. '
+                        'Tabellen registreras i hex_avvikande_srid för granskning.',
+                        schema_namn, tabell_namn, geometriinfo.srid;
+
+                    INSERT INTO public.hex_avvikande_srid (schema_namn, tabell_namn, srid)
+                    VALUES (hnt.schema_namn, hnt.tabell_namn, geometriinfo.srid)
+                    ON CONFLICT ON CONSTRAINT hex_avvikande_srid_pkey
+                        DO UPDATE SET srid           = EXCLUDED.srid,
+                                      registrerad    = now(),
+                                      registrerad_av = current_user;
+                END IF;
+            END IF;
+
+            -- FME-debug: Visa kolumner FME skickade innan omstrukturering
+            IF ar_fme THEN
+                RAISE NOTICE '[hex_hantera_ny_tabell] [FME-DEBUG] Originalkolumner (från FME) i %.%:', schema_namn, tabell_namn;
+                DECLARE
+                    fme_kol record;
+                BEGIN
+                    FOR fme_kol IN
+                        SELECT column_name, data_type, ordinal_position
+                        FROM information_schema.columns
+                        WHERE table_schema = schema_namn AND table_name = tabell_namn
+                        ORDER BY ordinal_position
+                    LOOP
+                        RAISE NOTICE '[hex_hantera_ny_tabell] [FME-DEBUG]   #% % (%)', fme_kol.ordinal_position, fme_kol.column_name, fme_kol.data_type;
+                    END LOOP;
+                END;
+            END IF;
+
+            -- Steg 2: Spara hex_tabellregler och hex_kolumnegenskaper
+            op_steg := 'spara regler';
+            RAISE NOTICE 'Steg 2/11: Sparar hex_tabellregler och hex_kolumnegenskaper';
+            tabell_regler := hex_spara_tabellregler(schema_namn, tabell_namn);
+            kolumn_egenskaper := hex_spara_kolumnegenskaper(schema_namn, tabell_namn);
+            
+            -- Steg 3: Bestäm kolumner
+            op_steg := 'kolumnstruktur';
+            RAISE NOTICE 'Steg 3/11: Bestämmer kolumnstruktur';
+            standardkolumner := hex_hamta_kolumnstandard(schema_namn, tabell_namn, geometriinfo);
+
+            -- FME-debug: Visa bestämd kolumnstruktur
+            IF ar_fme THEN
+                RAISE NOTICE '[hex_hantera_ny_tabell] [FME-DEBUG] Bestämd kolumnstruktur (% kolumner):', array_length(standardkolumner, 1);
+                DECLARE
+                    fme_sk hex_kolumnkonfig;
+                    fme_idx integer := 0;
+                BEGIN
+                    FOREACH fme_sk IN ARRAY standardkolumner LOOP
+                        fme_idx := fme_idx + 1;
+                        RAISE NOTICE '[hex_hantera_ny_tabell] [FME-DEBUG]   #% % (%)', fme_idx, fme_sk.kolumnnamn, fme_sk.datatyp;
+                    END LOOP;
+                END;
+            END IF;
+
+            -- Steg 4: Skapa temporär tabell
+            op_steg := 'skapa temporär tabell';
+            RAISE NOTICE 'Steg 4/11: Skapar temporär tabell';
+            DECLARE
+                kolumn_sql text;
+                persistens char(1);
+                persistens_nyckelord text := '';
+            BEGIN
+                SELECT string_agg(format('%I %s', kolumnnamn, datatyp), ', ')
+                INTO kolumn_sql
+                FROM unnest(standardkolumner);
+
+                -- Spegla originaltabellens persistens. Ersättningstabellen skapas
+                -- från grunden, så utan detta blir en UNLOGGED-tabell tyst
+                -- permanent (och därmed WAL-loggad) efter omstruktureringen.
+                SELECT c.relpersistence
+                INTO persistens
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = schema_namn AND c.relname = tabell_namn;
+
+                IF persistens = 'u' THEN
+                    persistens_nyckelord := 'UNLOGGED ';
+                    RAISE NOTICE '[hex_hantera_ny_tabell]   » Originaltabellen är UNLOGGED - egenskapen bevaras';
+                END IF;
+
+                -- %s är en format()-platshållare, inte en RAISE-platshållare:
+                -- RAISE använder bara %, så "CREATE %sTABLE" skrev ut den
+                -- felaktiga satsen "CREATE sTABLE ..." i loggen. Det är just den
+                -- här raden man läser när CREATE TABLE misslyckas, så den måste
+                -- visa exakt den sats som körs.
+                RAISE NOTICE '[hex_hantera_ny_tabell] SQL för temporär tabell: CREATE %TABLE %.% (%)',
+                persistens_nyckelord, schema_namn, temp_tabellnamn, kolumn_sql;
+
+                EXECUTE format(
+                    'CREATE %sTABLE %I.%I (%s)',
+                    persistens_nyckelord,
+                    schema_namn,
+                    temp_tabellnamn,
+                    kolumn_sql
+                );
+            END;
+            
+            -- Steg 5: Byt ut tabeller
+            op_steg := 'byt tabeller';
+            RAISE NOTICE 'Steg 5/11: Byter ut tabeller';
+            PERFORM hex_byt_ut_tabell(schema_namn, tabell_namn, temp_tabellnamn);
+
+            -- FME-debug: Visa slutgiltig tabellstruktur efter byte
+            IF ar_fme THEN
+                RAISE NOTICE '[hex_hantera_ny_tabell] [FME-DEBUG] Tabellstruktur efter byte för %.%:', schema_namn, tabell_namn;
+                DECLARE
+                    fme_kol record;
+                BEGIN
+                    FOR fme_kol IN
+                        SELECT column_name, data_type, ordinal_position
+                        FROM information_schema.columns
+                        WHERE table_schema = schema_namn AND table_name = tabell_namn
+                        ORDER BY ordinal_position
+                    LOOP
+                        RAISE NOTICE '[hex_hantera_ny_tabell] [FME-DEBUG]   #% % (%)', fme_kol.ordinal_position, fme_kol.column_name, fme_kol.data_type;
+                    END LOOP;
+                END;
+            END IF;
+
+            -- Steg 5.5: Överför ägarskap till hex_systemagare()
+            op_steg := 'överför ägarskap';
+            RAISE NOTICE 'Steg 5.5/11: Överför ägarskap till %', hex_systemagare();
+            EXECUTE format('ALTER TABLE %I.%I OWNER TO %I',
+                schema_namn, tabell_namn, hex_systemagare());
+            DECLARE
+                seq record;
+            BEGIN
+                FOR seq IN
+                    SELECT sequence_name
+                    FROM information_schema.sequences
+                    WHERE sequence_schema = schema_namn
+                      AND sequence_name LIKE tabell_namn || '_%'
+                LOOP
+                    EXECUTE format('ALTER SEQUENCE %I.%I OWNER TO %I',
+                        schema_namn, seq.sequence_name, hex_systemagare());
+                    RAISE NOTICE '  ✓ Sekvens ägarskap överförd: %', seq.sequence_name;
+                END LOOP;
+            END;
+            RAISE NOTICE '  ✓ Tabell ägarskap överförd till %', hex_systemagare();
+
+            -- Hantera sekvenser
+            DECLARE
+                antal_sekvenser integer;
+            BEGIN
+                antal_sekvenser := hex_uppdatera_sekvensnamn(schema_namn, tabell_namn);
+                IF antal_sekvenser > 0 THEN
+                    RAISE NOTICE '  ✓ % sekvenser uppdaterade', antal_sekvenser;
+                END IF;
+            END;
+            
+            -- Steg 6: Återskapa hex_tabellregler
+            op_steg := 'återskapa regler';
+            RAISE NOTICE 'Steg 6/11: Återskapar hex_tabellregler';
+            PERFORM hex_aterskapa_tabellregler(schema_namn, tabell_namn, tabell_regler);
+            
+            -- Steg 7: Återskapa hex_kolumnegenskaper
+            op_steg := 'återskapa egenskaper';
+            RAISE NOTICE 'Steg 7/11: Återskapar hex_kolumnegenskaper';
+            PERFORM hex_aterskapa_kolumnegenskaper(schema_namn, tabell_namn, kolumn_egenskaper);
+            
+            -- Steg 7.4: Primärnyckel på gid
+            -- Utan unikt index på gid hittar QGIS inte kolumnens
+            -- nextval()-default och visar gid som ett tomt obligatoriskt fält,
+            -- samtidigt som dubbletter kan skrivas tyst. Nyckeln läggs efter
+            -- hex_aterskapa_tabellregler (som medvetet hoppar över inkommande
+            -- PRIMARY KEY) så att den alltid blir Hex egen.
+            op_steg := 'primärnyckel på gid';
+            RAISE NOTICE 'Steg 7.4/11: Säkerställer primärnyckel på gid';
+            RAISE NOTICE '  ✓ gid-nyckel: %',
+                hex_sakerstall_gid_primarnyckel(schema_namn, tabell_namn);
+
+            -- Steg 7.5: Tvinga gid att alltid hämtas från sekvensen
+            -- Klienter som QGIS använder OVERRIDING SYSTEM VALUE för att skicka
+            -- med ett eget gid-värde. Denna trigger kastar klientens värde och
+            -- sätter alltid NEW.gid = nextval(sekvens) innan raden skrivs.
+            --
+            -- Med primärnyckeln på plats (steg 7.4) utelämnar QGIS normalt gid
+            -- helt ur sin INSERT. Triggern är därmed ett skyddsnät för klienter
+            -- som ändå skickar ett eget värde, inte längre huvudmekanismen.
+            op_steg := 'tvinga gid från sekvens';
+            RAISE NOTICE 'Steg 7.5/11: Skapar trigger hex_tvinga_gid';
+            EXECUTE format(
+                'CREATE TRIGGER hex_tvinga_gid'
+                ' BEFORE INSERT ON %I.%I'
+                ' FOR EACH ROW EXECUTE FUNCTION public.hex_tvinga_gid_fran_sekvens()',
+                schema_namn, tabell_namn
+            );
+            RAISE NOTICE '  ✓ Trigger hex_tvinga_gid skapad';
+
+            -- Steg 8: Skapa GiST-index för geometrikolumn (alla scheman med geometri)
+            op_steg := 'skapa gist-index';
+            RAISE NOTICE 'Steg 8/11: Kontrollerar GiST-index';
+            RAISE NOTICE '  Debug: geometriinfo.kolumnnamn = %', geometriinfo.kolumnnamn;
+            IF geometriinfo IS NOT NULL AND geometriinfo.kolumnnamn IS NOT NULL THEN
+                DECLARE
+                    -- Cap at 60 chars to prevent collision with history table name
+                    -- (history table = left(tabell_namn,61)+'_h' = 63 chars after PG truncation)
+                    index_namn text := left(tabell_namn, 50) || '_geom_gidx';
+                    r          record;
+                BEGIN
+                    -- Ta bort GiST-index med annat namn (t.ex. FME-skapade) för att undvika dubbletter
+                    FOR r IN
+                        SELECT indexname FROM pg_indexes
+                        WHERE schemaname = schema_namn
+                          AND tablename  = tabell_namn
+                          AND indexdef   LIKE '%USING gist%'
+                          AND indexname  <> index_namn
+                    LOOP
+                        EXECUTE format('DROP INDEX %I.%I', schema_namn, r.indexname);
+                        RAISE NOTICE '  ✓ Dubblerat GiST-index borttaget: %', r.indexname;
+                    END LOOP;
+                    EXECUTE format(
+                        'CREATE INDEX IF NOT EXISTS %I ON %I.%I USING GIST (%I)',
+                        index_namn,
+                        schema_namn,
+                        tabell_namn,
+                        geometriinfo.kolumnnamn
+                    );
+                    RAISE NOTICE '  ✓ GiST-index skapat (eller fanns redan): %', index_namn;
+                END;
+            ELSE
+                RAISE NOTICE '  - Ingen geometri, GiST-index ej relevant';
+            END IF;
+
+            -- Steg 9: Lägg till geometrivalidering för scheman vars datakategori
+            --         har hex_validera_geometri = true i hex_standardiserade_datakategorier
+            op_steg := 'geometrivalidering';
+            RAISE NOTICE 'Steg 9/11: Kontrollerar geometrivalidering';
+            RAISE NOTICE '  - geometriinfo.kolumnnamn: %', geometriinfo.kolumnnamn;
+            IF geometriinfo IS NOT NULL AND geometriinfo.kolumnnamn IS NOT NULL AND EXISTS (
+                SELECT 1 FROM public.hex_standardiserade_datakategorier d
+                WHERE d.hex_validera_geometri = true
+                  AND schema_namn ~ (public.hex_schema_regex() || d.prefix || '_')
+            ) THEN
+                DECLARE
+                    constraint_namn text := 'validera_geom_' || tabell_namn;
+                BEGIN
+                    IF EXISTS (
+                        SELECT 1 FROM pg_constraint
+                        WHERE conrelid = format('%I.%I', schema_namn, tabell_namn)::regclass
+                          AND conname = constraint_namn
+                    ) THEN
+                        RAISE NOTICE '  - Geometrivalidering redan tillagd (återställd av hex_aterskapa_kolumnegenskaper): %', constraint_namn;
+                    ELSE
+                        EXECUTE format(
+                            'ALTER TABLE %I.%I ADD CONSTRAINT %I CHECK (public.hex_validera_geometri(geom))',
+                            schema_namn,
+                            tabell_namn,
+                            constraint_namn
+                        );
+                        RAISE NOTICE '  ✓ Geometrivalidering tillagd: %', constraint_namn;
+                    END IF;
+                    EXECUTE format(
+                        'CREATE TRIGGER hex_kontrollera_geom'
+                        ' BEFORE INSERT OR UPDATE ON %I.%I'
+                        ' FOR EACH ROW EXECUTE FUNCTION public.hex_kontrollera_geometri_trigger()',
+                        schema_namn,
+                        tabell_namn
+                    );
+                    RAISE NOTICE '  ✓ Geometritrigger tillagd: hex_kontrollera_geom';
+                END;
+            ELSE
+                IF geometriinfo IS NULL OR geometriinfo.kolumnnamn IS NULL THEN
+                    RAISE NOTICE '  - Ingen geometri, validering ej relevant';
+                ELSE
+                    RAISE NOTICE '  - Schema % har ingen datakategori med hex_validera_geometri = true, validering ej tillagd', schema_namn;
+                END IF;
+            END IF;
+            
+            -- Steg 10: Skapa historik och QA om behövs
+            op_steg := 'skapa historik/qa';
+            RAISE NOTICE 'Steg 10/11: Kontrollerar historik/QA-behov';
+            IF hex_skapa_historik_qa(schema_namn, tabell_namn) THEN
+                RAISE NOTICE '  ✓ Historiktabell och QA-triggers skapade';
+            ELSE
+                RAISE NOTICE '  - Ingen historik/QA behövs';
+            END IF;
+
+            -- Steg 11: Lägg till dummy-geometrirad för QGIS-kompatibilitet
+            -- En dummy låter QGIS identifiera geometritypen utan manuell dialog.
+            -- Dummyn tas automatiskt bort när den första riktiga raden läggs in.
+            op_steg := 'dummy-geometri för QGIS';
+            RAISE NOTICE 'Steg 11/11: Lägger till dummy-geometrirad för QGIS';
+            IF geometriinfo IS NOT NULL AND geometriinfo.kolumnnamn IS NOT NULL THEN
+                PERFORM hex_lagg_till_dummy_geometri(schema_namn, tabell_namn, geometriinfo);
+            ELSE
+                RAISE NOTICE '  - Ingen geometri, dummy ej relevant';
+            END IF;
+
+            RAISE NOTICE '✓ Tabell %.% omstrukturerad', schema_namn, tabell_namn;
+
+        EXCEPTION
+            WHEN OTHERS THEN
+                RAISE NOTICE '✗ Fel vid bearbetning av %.%', schema_namn, tabell_namn;
+                RAISE NOTICE '  Operation: %', op_steg;
+                RAISE NOTICE '  Felmeddelande: %', SQLERRM;
+                RAISE;
+        END;
+    END LOOP;
+
+    -- Återställ flaggan
+    PERFORM set_config('temp.tabellstrukturering_pagar', 'false', true);
+    RAISE NOTICE E'======== hex_hantera_ny_tabell SLUT ========\n';
+
+EXCEPTION
+    WHEN OTHERS THEN
+        PERFORM set_config('temp.tabellstrukturering_pagar', 'false', true);
+        RAISE;
+END;
+$BODY$;
+
+ALTER FUNCTION public.hex_hantera_ny_tabell()
+    OWNER TO postgres;
+
+COMMENT ON FUNCTION public.hex_hantera_ny_tabell()
+    IS 'Event trigger-funktion som körs vid CREATE TABLE för att validera och
+omstrukturera tabeller enligt standardiserade kolumner. Kör som SECURITY DEFINER
+(postgres) för att alltid kunna överföra ägarskap till hex_systemagare() oavsett
+vilken roll som skapar tabellen. Kända systemanvändare (hex_systemanvandare,
+t.ex. FME) stödjer ett tvåstegsmönster: tabell skapas utan geometrikolumn och
+registreras i hex_afvaktande_geometri; GiST-index och geometrivalidering
+slutförs av hex_hantera_ny_kolumn när geom-kolumnen läggs till via ALTER TABLE.
+PRIMARY KEY-constraints från den ursprungliga tabellen återställs inte – Hex
+tillhandahåller alltid sin egen PK via gid-kolumnen. Geometritabeller får en
+dummy-geometrirad via hex_lagg_till_dummy_geometri() för att QGIS ska kunna
+identifiera geometritypen utan manuell dialog. Dummyn tas automatiskt bort av
+triggern hex_ta_bort_dummy när riktig data läggs in.';

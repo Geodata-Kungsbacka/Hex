@@ -38,82 +38,123 @@ Ordningen är viktig.
 
 ```sql
 -- 1. Event triggers (måste tas bort innan funktioner)
-DROP EVENT TRIGGER IF EXISTS notifiera_geoserver_borttagning_trigger;
-DROP EVENT TRIGGER IF EXISTS notifiera_geoserver_trigger;
-DROP EVENT TRIGGER IF EXISTS validera_schemanamn_trigger;
-DROP EVENT TRIGGER IF EXISTS blockera_schema_namnbyte_trigger;
-DROP EVENT TRIGGER IF EXISTS hantera_standardiserade_roller_trigger;
-DROP EVENT TRIGGER IF EXISTS ta_bort_schemaroller_trigger;
-DROP EVENT TRIGGER IF EXISTS hantera_ny_vy_trigger;
-DROP EVENT TRIGGER IF EXISTS hantera_kolumntillagg_trigger;
-DROP EVENT TRIGGER IF EXISTS hantera_ny_tabell_trigger;
-DROP EVENT TRIGGER IF EXISTS hantera_borttagen_tabell_trigger;
+DROP EVENT TRIGGER IF EXISTS hex_notifiera_gs_borttagning_trigger;
+DROP EVENT TRIGGER IF EXISTS hex_notifiera_gs_trigger;
+DROP EVENT TRIGGER IF EXISTS hex_validera_schemanamn_trigger;
+DROP EVENT TRIGGER IF EXISTS hex_blockera_schema_namnbyte_trigger;
+DROP EVENT TRIGGER IF EXISTS hex_hantera_std_roller_trigger;
+DROP EVENT TRIGGER IF EXISTS hex_ta_bort_schemaroller_trigger;
+DROP EVENT TRIGGER IF EXISTS hex_hantera_ny_vy_trigger;
+DROP EVENT TRIGGER IF EXISTS hex_hantera_ny_kolumn_trigger;
+DROP EVENT TRIGGER IF EXISTS hex_hantera_ny_tabell_trigger;
+DROP EVENT TRIGGER IF EXISTS hex_hantera_borttagen_tabell_trigger;
 
 -- 2. Triggerfunktioner
-DROP FUNCTION IF EXISTS public.notifiera_geoserver_borttagning();
-DROP FUNCTION IF EXISTS public.notifiera_geoserver();
-DROP FUNCTION IF EXISTS public.hantera_standardiserade_roller();
-DROP FUNCTION IF EXISTS public.ta_bort_schemaroller();
-DROP FUNCTION IF EXISTS public.hantera_ny_vy();
-DROP FUNCTION IF EXISTS public.hantera_kolumntillagg();
-DROP FUNCTION IF EXISTS public.hantera_ny_tabell();
-DROP FUNCTION IF EXISTS public.hantera_borttagen_tabell();
-DROP FUNCTION IF EXISTS public.kontrollera_geometri_trigger() CASCADE;
+DROP FUNCTION IF EXISTS public.hex_notifiera_gs_borttagning();
+DROP FUNCTION IF EXISTS public.hex_notifiera_gs();
+DROP FUNCTION IF EXISTS public.hex_hantera_std_roller();
+DROP FUNCTION IF EXISTS public.hex_ta_bort_schemaroller();
+DROP FUNCTION IF EXISTS public.hex_hantera_ny_vy();
+DROP FUNCTION IF EXISTS public.hex_hantera_ny_kolumn();
+DROP FUNCTION IF EXISTS public.hex_hantera_ny_tabell();
+DROP FUNCTION IF EXISTS public.hex_hantera_borttagen_tabell();
+DROP FUNCTION IF EXISTS public.hex_kontrollera_geometri_trigger() CASCADE;
 
 -- 3. Hjälpfunktioner
-DROP FUNCTION IF EXISTS public.tillämpa_grupprattigheter();
-DROP FUNCTION IF EXISTS public.lagg_till_dummy_geometri(text, text, geom_info);
-DROP FUNCTION IF EXISTS public.ta_bort_dummy_rad() CASCADE;
-DROP FUNCTION IF EXISTS public.tvinga_gid_fran_sekvens() CASCADE;
-DROP FUNCTION IF EXISTS public.underhall_hex();
-DROP FUNCTION IF EXISTS public.reparera_rad_triggers();
-DROP FUNCTION IF EXISTS public.tilldela_rollrattigheter(text, text, text);
-DROP FUNCTION IF EXISTS public.skapa_historik_qa(text, text);
-DROP FUNCTION IF EXISTS public.uppdatera_sekvensnamn(text, text, text);
-DROP FUNCTION IF EXISTS public.byt_ut_tabell(text, text, text);
+DROP FUNCTION IF EXISTS public.hex_tillampa_grupprattigheter();
+DROP FUNCTION IF EXISTS public.hex_synka_historik(text, text);
+DROP FUNCTION IF EXISTS public.hex_registrera_metadata(text, text);
+DROP FUNCTION IF EXISTS public.hex_uppdatera_metadata_namn(oid);
+DROP FUNCTION IF EXISTS public.hex_rensa_metadata();
+DROP FUNCTION IF EXISTS public.hex_aterskapa_qa_trigger(text, text, text);
+DROP FUNCTION IF EXISTS public.hex_lagg_till_dummy_geometri(text, text, hex_geom_info);
+DROP FUNCTION IF EXISTS public.hex_ta_bort_dummy_rad() CASCADE;
+DROP FUNCTION IF EXISTS public.hex_tvinga_gid_fran_sekvens() CASCADE;
+DROP FUNCTION IF EXISTS public.hex_underhall();
+DROP FUNCTION IF EXISTS public.hex_reparera_gid_dubbletter(text, text, boolean);
+DROP FUNCTION IF EXISTS public.hex_sakerstall_gid_primarnyckel(text, text);
+DROP FUNCTION IF EXISTS public.hex_tilldela_rollrattigheter(text, text, text);
+DROP FUNCTION IF EXISTS public.hex_skapa_historik_qa(text, text);
+DROP FUNCTION IF EXISTS public.hex_uppdatera_sekvensnamn(text, text, text);
+DROP FUNCTION IF EXISTS public.hex_byt_ut_tabell(text, text, text);
 
 -- 4. Regelfunktioner
-DROP FUNCTION IF EXISTS public.aterskapa_kolumnegenskaper(text, text, kolumnegenskaper);
-DROP FUNCTION IF EXISTS public.aterskapa_tabellregler(text, text, tabellregler);
-DROP FUNCTION IF EXISTS public.spara_kolumnegenskaper(text, text);
-DROP FUNCTION IF EXISTS public.spara_tabellregler(text, text);
+DROP FUNCTION IF EXISTS public.hex_aterskapa_kolumnegenskaper(text, text, hex_kolumnegenskaper);
+DROP FUNCTION IF EXISTS public.hex_aterskapa_tabellregler(text, text, hex_tabellregler);
+DROP FUNCTION IF EXISTS public.hex_spara_kolumnegenskaper(text, text);
+DROP FUNCTION IF EXISTS public.hex_spara_tabellregler(text, text);
 
 -- 5. Valideringsfunktioner
-DROP FUNCTION IF EXISTS public.forklara_geometrifel(geometry);
-DROP FUNCTION IF EXISTS public.validera_geometri(geometry) CASCADE;
-DROP FUNCTION IF EXISTS public.validera_schemanamn();
-DROP FUNCTION IF EXISTS public.blockera_schema_namnbyte();
-DROP FUNCTION IF EXISTS public.validera_vynamn(text, text);
-DROP FUNCTION IF EXISTS public.validera_tabell(text, text);
+DROP FUNCTION IF EXISTS public.hex_forklara_geometrifel(geometry);
+DROP FUNCTION IF EXISTS public.hex_validera_geometri(geometry) CASCADE;
+DROP FUNCTION IF EXISTS public.hex_validera_schemanamn();
+DROP FUNCTION IF EXISTS public.hex_blockera_schema_namnbyte();
+DROP FUNCTION IF EXISTS public.hex_validera_vynamn(text, text);
+DROP FUNCTION IF EXISTS public.hex_validera_tabell(text, text);
 
 -- 6. Strukturfunktioner
-DROP FUNCTION IF EXISTS public.hamta_kolumnstandard(text, text, geom_info);
-DROP FUNCTION IF EXISTS public.hamta_geometri_definition(text, text);
+DROP FUNCTION IF EXISTS public.hex_hamta_kolumnstandard(text, text, hex_geom_info);
+DROP FUNCTION IF EXISTS public.hex_kolumntyp(text, text, text);
+DROP FUNCTION IF EXISTS public.hex_hamta_geometri_definition(text, text);
 
--- 7. Konfigurationsfunktioner och roller
+-- 7. Konfigurationsfunktioner
 DROP FUNCTION IF EXISTS public.hex_schema_regex();
-DROP FUNCTION IF EXISTS public.system_owner();
-DROP ROLE IF EXISTS hex_geoserver_roller;
+DROP FUNCTION IF EXISTS public.hex_systemagare();
+-- OBS: hex_geoserver_roller tas INTE bort här – se avsnittet nedan.
 
 -- 8. Konfigurationstabeller
-DROP TABLE IF EXISTS public.hex_role_credentials;
+DROP TABLE IF EXISTS public.hex_rolluppgifter;
 DROP TABLE IF EXISTS public.hex_avvikande_srid;
 DROP TABLE IF EXISTS public.hex_dummy_geometrier;
 DROP TABLE IF EXISTS public.hex_afvaktande_geometri;
 DROP TABLE IF EXISTS public.hex_grupprattigheter;
 DROP TABLE IF EXISTS public.hex_systemanvandare;
 DROP TABLE IF EXISTS public.hex_metadata;
-DROP TABLE IF EXISTS public.standardiserade_roller;
-DROP TABLE IF EXISTS public.standardiserade_kolumner;
-DROP TABLE IF EXISTS public.standardiserade_skyddsnivaer;
-DROP TABLE IF EXISTS public.standardiserade_datakategorier;
+DROP TABLE IF EXISTS public.hex_standardiserade_roller;
+DROP TABLE IF EXISTS public.hex_standardiserade_kolumner;
+DROP TABLE IF EXISTS public.hex_standardiserade_skyddsnivaer;
+DROP TABLE IF EXISTS public.hex_standardiserade_datakategorier;
 
 -- 9. Anpassade datatyper (sist)
-DROP TYPE IF EXISTS public.tabellregler;
-DROP TYPE IF EXISTS public.kolumnegenskaper;
-DROP TYPE IF EXISTS public.kolumnkonfig;
-DROP TYPE IF EXISTS public.geom_info;
+DROP TYPE IF EXISTS public.hex_tabellregler;
+DROP TYPE IF EXISTS public.hex_kolumnegenskaper;
+DROP TYPE IF EXISTS public.hex_kolumnkonfig;
+DROP TYPE IF EXISTS public.hex_geom_info;
 ```
+
+---
+
+---
+
+## Rollen `hex_geoserver_roller` — ta inte bort den rutinmässigt
+
+`hex_geoserver_roller` är en **klusterroll**, inte ett databasobjekt. Samma roll
+delas av alla databaser i klustret som kör Hex, och den är målet för
+`pg_hba.conf`-posten `+hex_geoserver_roller`.
+
+Droppar du den när du avinstallerar Hex ur *en* databas förlorar alla
+`gs_r_`/`gs_w_`-konton i klustrets **övriga** databaser sitt gruppmedlemskap.
+De matchar då inte längre `pg_hba.conf`, och GeoServer tappar anslutningen till
+scheman som inte har med den avinstallerade databasen att göra. Därför tar
+varken `install_hex.py --uninstall` eller SQL:en ovan bort rollen.
+
+Ska Hex bort ur **samtliga** databaser i klustret, och rollen inte längre
+behövas, tar du bort den separat efteråt:
+
+```sql
+-- Kontrollera först att inga medlemmar finns kvar
+SELECT m.rolname
+FROM pg_auth_members am
+JOIN pg_roles g ON g.oid = am.roleid
+JOIN pg_roles m ON m.oid = am.member
+WHERE g.rolname = 'hex_geoserver_roller';
+
+-- Tom lista ovan → rollen kan tas bort
+DROP ROLE hex_geoserver_roller;
+```
+
+Glöm inte att ta bort motsvarande `+hex_geoserver_roller`-post ur
+`pg_hba.conf` och köra `SELECT pg_reload_conf();`.
 
 ---
 
