@@ -35,6 +35,8 @@ Exempel på giltiga schemanamn (standardkonfiguration):
 - `sk2_sys_admin`
 - `skx_kba_testprojekt`
 
+**`ALTER TABLE ... SET SCHEMA` är blockerat** för tabeller i eller till ett Hex-schema. Historiktabellen och triggerfunktionerna följer inte med, så QA-triggern slutar fungera och en senare `DROP SCHEMA ... CASCADE` på det gamla schemat tar tyst med sig triggern. Skapa tabellen i målschemat och flytta datan med `INSERT ... SELECT`.
+
 **`ALTER SCHEMA ... RENAME TO` är blockerat.** Schemanamnet är identitetsnyckeln för GeoServer-workspace, databasroller (`r_`/`w_`), `hex_rolluppgifter` och `hex_metadata`. Ett namnbyte river sönder alla dessa kopplingar. Rätt tillvägagångssätt är `DROP SCHEMA CASCADE` (Hex städar upp) följt av `CREATE SCHEMA` med det nya namnet.
 
 #### Tabellnamn

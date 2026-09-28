@@ -67,6 +67,44 @@ DECLARE
     afvaktande_tabell boolean := false;       -- Om nuvarande tabell väntar på geometri (FME-tvåstegsmönster)
 BEGIN
     RAISE NOTICE E'[hex_hantera_ny_kolumn] ======== START ========';
+
+    -- ----------------------------------------------------------------
+    -- Spärr: ALTER TABLE ... SET SCHEMA
+    -- Tabellen flyttas men triggerfunktionerna och historiktabellen blir
+    -- kvar i det gamla schemat. QA-triggerns kropp pekar då på en tabell som
+    -- inte finns (varje UPDATE/DELETE kraschar), rättigheterna följer inte
+    -- med, och en senare DROP SCHEMA ... CASCADE på det gamla schemat tar
+    -- med sig triggern tyst. In i ett Hex-schema hoppar tabellen dessutom
+    -- över hela omstruktureringen i hex_hantera_ny_tabell().
+    --
+    -- Spärras när målschemat är ett Hex-schema eller tabellen redan är
+    -- Hex-hanterad (har en hex_-trigger). Rätt väg är CREATE TABLE i
+    -- målschemat och INSERT ... SELECT.
+    -- ----------------------------------------------------------------
+    IF current_query() ~* '\mSET\s+SCHEMA\M' THEN
+        FOR kommando IN SELECT * FROM pg_event_trigger_ddl_commands()
+            WHERE command_tag = 'ALTER TABLE' AND object_type = 'table'
+        LOOP
+            SELECT n.nspname, c.relname
+            INTO schema_namn, tabell_namn
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE c.oid = kommando.objid;
+
+            IF schema_namn ~ public.hex_schema_regex()
+               OR EXISTS (
+                   SELECT 1 FROM pg_trigger t
+                   WHERE t.tgrelid = kommando.objid
+                     AND NOT t.tgisinternal
+                     AND t.tgname LIKE 'hex\_%'
+               )
+            THEN
+                RAISE EXCEPTION 'ALTER TABLE ... SET SCHEMA är blockerat för Hex-tabeller (%.%).', schema_namn, tabell_namn
+                    USING HINT = 'Skapa tabellen i målschemat och flytta datan med INSERT ... SELECT. '
+                                 'SET SCHEMA lämnar historiktabell och triggerfunktioner kvar i det gamla schemat.';
+            END IF;
+        END LOOP;
+    END IF;
     
     -- Steg 1: Hantera rekursion
     -- Detta förhindrar oändliga loopar när vi modifierar tabellen

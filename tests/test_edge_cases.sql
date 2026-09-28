@@ -18,7 +18,7 @@
 --    I4  ADD CONSTRAINT CHECK (användardefinierad, efter skapande)
 --    I5  ADD CONSTRAINT UNIQUE (användardefinierad, efter skapande)
 --    I6  DROP CONSTRAINT (användardefinierad)
---    I7  SET SCHEMA (tabell flyttad mellan schematyper)
+--    I7  SET SCHEMA är blockerat för Hex-tabeller
 --
 -- J  Specialfall för schemanamngivning
 --    J1  sk0_sys_*-schemabehandling
@@ -383,34 +383,27 @@ BEGIN
     END IF;
 END $$;
 
--- I7: ALTER TABLE ... SET SCHEMA (flytta tabell från ext- till kba-schema)
+-- I7: ALTER TABLE ... SET SCHEMA är blockerat. Tabellen skulle lämna
+-- historiktabell och triggerfunktioner kvar i det gamla schemat.
 CREATE TABLE sk0_ext_edge.to_move_y (
     naam text,
     geom geometry(Polygon, 3007)
 );
 
-ALTER TABLE sk0_ext_edge.to_move_y SET SCHEMA sk1_kba_edge;
-
 DO $$
-DECLARE
-    i_ny  boolean;
-    i_gam boolean;
 BEGIN
-    SELECT EXISTS (
-        SELECT 1 FROM information_schema.tables
-        WHERE table_schema = 'sk1_kba_edge' AND table_name = 'to_move_y'
-    ) INTO i_ny;
-
-    SELECT EXISTS (
-        SELECT 1 FROM information_schema.tables
-        WHERE table_schema = 'sk0_ext_edge' AND table_name = 'to_move_y'
-    ) INTO i_gam;
-
-    IF i_ny AND NOT i_gam THEN
-        RAISE NOTICE 'TEST I7 PASSED: SET SCHEMA flyttade tabellen från sk0_ext_edge till sk1_kba_edge. Obs: tabellen behåller ext-stilens omstrukturering — kba-regler tillämpas inte retroaktivt.';
-    ELSE
-        RAISE WARNING 'TEST I7 FAILED: i_ny=%, i_gam=%', i_ny, i_gam;
-    END IF;
+    BEGIN
+        EXECUTE 'ALTER TABLE sk0_ext_edge.to_move_y SET SCHEMA sk1_kba_edge';
+        RAISE WARNING 'TEST I7 FAILED: SET SCHEMA gick igenom';
+    EXCEPTION
+        WHEN raise_exception THEN
+            IF SQLERRM LIKE '%SET SCHEMA är blockerat%'
+               AND to_regclass('sk0_ext_edge.to_move_y') IS NOT NULL THEN
+                RAISE NOTICE 'TEST I7 PASSED: SET SCHEMA blockerat, tabellen står kvar i sk0_ext_edge';
+            ELSE
+                RAISE WARNING 'TEST I7 FAILED: oväntat fel: %', SQLERRM;
+            END IF;
+    END;
 END $$;
 
 -- ============================================================
