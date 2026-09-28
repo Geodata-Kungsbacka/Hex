@@ -377,7 +377,6 @@ src/sql/03_functions/04_utility/hex_uppdatera_sekvensnamn.sql
 src/sql/03_functions/04_utility/hex_skapa_historik_qa.sql
 src/sql/03_functions/04_utility/hex_aterskapa_qa_trigger.sql
 src/sql/03_functions/04_utility/hex_synka_historik.sql
-src/sql/03_functions/04_utility/hex_kontrollera_historik.sql
 src/sql/03_functions/04_utility/hex_tilldela_rollrattigheter.sql
 src/sql/03_functions/04_utility/hex_tillampa_grupprattigheter.sql
 src/sql/03_functions/04_utility/hex_tvinga_gid_fran_sekvens.sql
@@ -838,22 +837,14 @@ historiken innehåller allt modertabellen innehåller och allt den har innehåll
   `<kolumn>_arkiv_<ÅÅÅÅMMDD>` och en ny läggs till.
 - QA-triggern byggs om.
 
-Körs av `hex_hantera_ny_kolumn()` efter varje `ALTER TABLE` och av
-`hex_underhall()` för alla tabeller med historik. Returnerar antal ändringar,
+Körs av `hex_hantera_ny_kolumn()` efter varje `ALTER TABLE` – även `RENAME TO`
+och ändringar direkt i `_h` – och av `hex_underhall()` för alla tabeller med
+historik. Kan QA-triggern inte byggas om avbryts hela `ALTER TABLE`, eftersom
+en trigger som inte speglar tabellen tappar historik tyst. Returnerar antal ändringar,
 `NULL` om tabellen saknar historik.
 
 ```sql
 SELECT public.hex_synka_historik('sk1_kba_geo', 'vagar_l');
-```
-
-#### `hex_kontrollera_historik()`
-**Syfte**: Listar tabeller vars historiktabell eller QA-trigger inte stämmer med
-modertabellen: saknade kolumner, typskillnader, triggerkolumner som inte finns,
-saknade triggers, par som bara hittas via namnkonventionen och afvaktande
-tabeller som redan fått `geom`. Läser bara.
-
-```sql
-SELECT * FROM public.hex_kontrollera_historik();
 ```
 
 #### `hex_forklara_geometrifel(geom)`

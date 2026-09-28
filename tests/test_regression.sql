@@ -1760,9 +1760,11 @@ END $$;
 
 DROP TABLE IF EXISTS sk1_kba_test.efter_namnbyte_y;
 
--- 13j: hex_kontrollera_historik() hittar avvikelserna och hex_synka_historik()
--- rättar dem. Avvikelserna byggs med event-triggern avstängd.
+-- 13j: hex_synka_historik() rättar en historik som redan är ur synk.
+-- Avvikelserna byggs med event-triggern avstängd.
 CREATE TABLE sk1_kba_test.kontroll_y (namn text, fid bigint, geom geometry(Polygon, 3007));
+INSERT INTO sk1_kba_test.kontroll_y (namn, geom)
+VALUES ('a', 'SRID=3007;POLYGON((0 0,0 10,10 10,10 0,0 0))');
 ALTER EVENT TRIGGER hex_hantera_ny_kolumn_trigger DISABLE;
 ALTER TABLE sk1_kba_test.kontroll_y_h DROP COLUMN geom;
 ALTER TABLE sk1_kba_test.kontroll_y DROP COLUMN fid;
@@ -1770,23 +1772,20 @@ ALTER EVENT TRIGGER hex_hantera_ny_kolumn_trigger ENABLE;
 
 DO $$
 DECLARE
-    fore  text;
-    efter integer;
+    forsta integer;
+    andra  integer;
 BEGIN
-    SELECT string_agg(problem, ',' ORDER BY problem) INTO fore
-    FROM public.hex_kontrollera_historik()
-    WHERE schema_namn = 'sk1_kba_test' AND tabell_namn = 'kontroll_y';
+    forsta := public.hex_synka_historik('sk1_kba_test', 'kontroll_y');
+    andra  := public.hex_synka_historik('sk1_kba_test', 'kontroll_y');
+    UPDATE sk1_kba_test.kontroll_y SET namn = 'b';
 
-    PERFORM public.hex_synka_historik('sk1_kba_test', 'kontroll_y');
-
-    SELECT count(*) INTO efter
-    FROM public.hex_kontrollera_historik()
-    WHERE schema_namn = 'sk1_kba_test' AND tabell_namn = 'kontroll_y';
-
-    IF fore = 'saknas i historik,trigger: borttagen kolumn' AND efter = 0 THEN
-        RAISE NOTICE 'TEST 13j PASSED: kontrollen hittar (%) och synken rättar', fore;
+    IF forsta > 0 AND andra = 0 AND EXISTS (
+        SELECT 1 FROM sk1_kba_test.kontroll_y_h
+        WHERE h_typ = 'U' AND namn = 'a' AND geom IS NOT NULL
+    ) THEN
+        RAISE NOTICE 'TEST 13j PASSED: synken rättar (% ändringar), är idempotent och historiken skrivs', forsta;
     ELSE
-        RAISE WARNING 'TEST 13j FAILED: före=% efter=%', fore, efter;
+        RAISE WARNING 'TEST 13j FAILED: första=% andra=% eller historikraden saknar geom', forsta, andra;
     END IF;
 EXCEPTION
     WHEN OTHERS THEN
@@ -1794,6 +1793,131 @@ EXCEPTION
 END $$;
 
 DROP TABLE IF EXISTS sk1_kba_test.kontroll_y;
+
+-- 13k: RENAME TO utan kolumnändring. QA-triggerns kropp namnger både
+-- modertabellen och historiktabellen; utan ombyggnad kraschade varje
+-- UPDATE efter namnbytet med "relation ... does not exist". DISCARD PLANS
+-- tvingar fram en ny kompilering, som i en ny session.
+CREATE TABLE sk1_kba_test.namn_fore_y (namn text, geom geometry(Polygon, 3007));
+INSERT INTO sk1_kba_test.namn_fore_y (namn, geom)
+VALUES ('a', 'SRID=3007;POLYGON((0 0,0 10,10 10,10 0,0 0))');
+UPDATE sk1_kba_test.namn_fore_y SET namn = 'b';
+ALTER TABLE sk1_kba_test.namn_fore_y RENAME TO namn_efter_y;
+DISCARD PLANS;
+
+DO $$
+BEGIN
+    UPDATE sk1_kba_test.namn_efter_y SET namn = 'c';
+    IF (SELECT string_agg(namn, ',' ORDER BY h_tidpunkt, namn)
+        FROM sk1_kba_test.namn_efter_y_h WHERE h_typ = 'U') = 'a,b' THEN
+        RAISE NOTICE 'TEST 13k PASSED: historiken skrivs efter RENAME TO';
+    ELSE
+        RAISE WARNING 'TEST 13k FAILED: historiken efter RENAME TO är fel';
+    END IF;
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE WARNING 'TEST 13k FAILED: UPDATE efter RENAME TO gav fel: %', SQLERRM;
+END $$;
+
+DROP TABLE IF EXISTS sk1_kba_test.namn_efter_y;
+
+-- 13l: DROP COLUMN direkt i historiktabellen. Triggern skriver fortfarande
+-- till kolumnen; synken via modertabellen lägger tillbaka den.
+CREATE TABLE sk1_kba_test.h_andrad_y (namn text, geom geometry(Polygon, 3007));
+INSERT INTO sk1_kba_test.h_andrad_y (namn, geom)
+VALUES ('a', 'SRID=3007;POLYGON((0 0,0 10,10 10,10 0,0 0))');
+ALTER TABLE sk1_kba_test.h_andrad_y_h DROP COLUMN namn;
+
+DO $$
+BEGIN
+    UPDATE sk1_kba_test.h_andrad_y SET namn = 'b';
+    IF EXISTS (SELECT 1 FROM sk1_kba_test.h_andrad_y_h WHERE h_typ = 'U' AND namn = 'a') THEN
+        RAISE NOTICE 'TEST 13l PASSED: kolumn borttagen ur _h läggs tillbaka och loggas';
+    ELSE
+        RAISE WARNING 'TEST 13l FAILED: namn loggades inte efter DROP COLUMN i _h';
+    END IF;
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE WARNING 'TEST 13l FAILED: UPDATE efter DROP COLUMN i _h gav fel: %', SQLERRM;
+END $$;
+
+DROP TABLE IF EXISTS sk1_kba_test.h_andrad_y;
+
+-- 13m: FME:s faktiska sekvens, ur produktionsloggen 2026-09-28: CREATE TABLE
+-- och AddGeometryColumn(..., 'POINT', 4) i samma transaktion, COPY, COMMIT,
+-- och sedan FME:s eget GiST-index. Identifieras via session_user/
+-- application_name mot hex_systemanvandare.
+SET application_name = 'fme';
+BEGIN;
+CREATE TABLE sk1_kba_test.fme_logg_p ("nr" int4, "omrade" varchar(254), "x_rt90" float8);
+SELECT AddGeometryColumn('sk1_kba_test', 'fme_logg_p', 'geom', 3007, 'POINT', 4);
+INSERT INTO sk1_kba_test.fme_logg_p (nr, omrade, geom)
+VALUES (1, 'a', 'SRID=3007;POINT ZM (1 2 3 4)');
+COMMIT;
+CREATE INDEX "fme_logg_p_geom_1790577785110" ON sk1_kba_test.fme_logg_p USING GIST (geom);
+RESET application_name;
+
+DO $$
+BEGIN
+    UPDATE sk1_kba_test.fme_logg_p SET omrade = 'b' WHERE nr = 1;
+    IF EXISTS (
+           SELECT 1 FROM sk1_kba_test.fme_logg_p_h
+           WHERE h_typ = 'U' AND omrade = 'a' AND geom IS NOT NULL
+       )
+       AND public.hex_kolumntyp('sk1_kba_test', 'fme_logg_p_h', 'geom') = 'geometry(PointZM,3007)'
+       AND NOT EXISTS (
+           SELECT 1 FROM public.hex_afvaktande_geometri
+           WHERE schema_namn = 'sk1_kba_test' AND tabell_namn = 'fme_logg_p'
+       )
+    THEN
+        RAISE NOTICE 'TEST 13m PASSED: FME-sekvensen ger historik med PointZM-geometri';
+    ELSE
+        RAISE WARNING 'TEST 13m FAILED: historiken saknar geom (%), eller tabellen är kvar som afvaktande',
+            public.hex_kolumntyp('sk1_kba_test', 'fme_logg_p_h', 'geom');
+    END IF;
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE WARNING 'TEST 13m FAILED: %', SQLERRM;
+END $$;
+
+DROP TABLE IF EXISTS sk1_kba_test.fme_logg_p;
+
+-- 13n: hex_underhall() slutför en tabell som redan fastnat som afvaktande
+-- (tvåsteget kördes med en version som inte kände igen AddGeometryColumn).
+SET application_name = 'fme';
+CREATE TABLE sk1_kba_test.fastnad_p (nr integer);
+RESET application_name;
+ALTER EVENT TRIGGER hex_hantera_ny_kolumn_trigger DISABLE;
+SELECT AddGeometryColumn('sk1_kba_test', 'fastnad_p', 'geom', 3007, 'POINT', 2);
+ALTER EVENT TRIGGER hex_hantera_ny_kolumn_trigger ENABLE;
+
+DO $$
+DECLARE
+    resultat text;
+BEGIN
+    SELECT atgard INTO resultat
+    FROM public.hex_underhall()
+    WHERE schema_namn = 'sk1_kba_test' AND tabell_namn = 'fastnad_p'
+      AND trigger_namn = 'afvaktande_geometri';
+
+    IF resultat = 'slutförd'
+       AND public.hex_kolumntyp('sk1_kba_test', 'fastnad_p_h', 'geom') IS NOT NULL
+       AND EXISTS (
+           SELECT 1 FROM pg_indexes
+           WHERE schemaname = 'sk1_kba_test' AND tablename = 'fastnad_p'
+             AND indexdef ILIKE '%gist%'
+       )
+    THEN
+        RAISE NOTICE 'TEST 13n PASSED: underhållet slutför fastnad afvaktande tabell';
+    ELSE
+        RAISE WARNING 'TEST 13n FAILED: resultat=%', resultat;
+    END IF;
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE WARNING 'TEST 13n FAILED: %', SQLERRM;
+END $$;
+
+DROP TABLE IF EXISTS sk1_kba_test.fastnad_p;
 
 ------------------------------------------------------------------------
 -- SLUTLIG STÄDNING

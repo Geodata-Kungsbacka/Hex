@@ -53,6 +53,8 @@ DECLARE
     fn_oid       oid;
     kropp_fore   text;
     kropp_efter  text;
+    kolumn_lista     text;
+    old_kolumn_lista text;
     flagga       text;
     antal        integer := 0;
 BEGIN
@@ -75,6 +77,16 @@ BEGIN
 
     h_oid := to_regclass(format('%I.%I', p_schema_namn, h_tabell));
     IF h_oid IS NULL OR h_oid = moder_oid THEN
+        RETURN NULL;
+    END IF;
+
+    -- Bara en riktig historiktabell synkas. Namnkonventionen ensam kan träffa
+    -- en vanlig tabell som råkar heta <tabell>_h, och den ska inte få
+    -- modertabellens kolumner.
+    IF (SELECT count(*) FROM pg_attribute a
+        WHERE a.attrelid = h_oid
+          AND a.attname IN ('h_typ', 'h_tidpunkt', 'h_av')
+          AND NOT a.attisdropped) <> 3 THEN
         RETURN NULL;
     END IF;
 
@@ -195,10 +207,33 @@ BEGIN
 
     IF fn_oid IS NOT NULL THEN
         SELECT prosrc INTO kropp_fore FROM pg_proc WHERE oid = fn_oid;
-        PERFORM public.hex_aterskapa_qa_trigger(p_schema_namn, p_tabell_namn, h_tabell);
-        SELECT prosrc INTO kropp_efter FROM pg_proc WHERE oid = fn_oid;
-        IF kropp_fore IS DISTINCT FROM kropp_efter THEN
-            antal := antal + 1;
+
+        -- Triggern är aktuell om kroppen innehåller exakt den INSERT och den
+        -- %ROWTYPE som hex_aterskapa_qa_trigger() skulle skriva. Då byggs den
+        -- inte om, så att ALTER TABLE OWNER TO och liknande inte ersätter
+        -- funktionen i onödan. En kropp i äldre format byggs om en gång.
+        SELECT string_agg(format('%I', a.attname), ', ' ORDER BY a.attnum),
+               string_agg(format('OLD.%I', a.attname), ', ' ORDER BY a.attnum)
+        INTO kolumn_lista, old_kolumn_lista
+        FROM pg_attribute a
+        WHERE a.attrelid = moder_oid AND a.attnum > 0 AND NOT a.attisdropped;
+
+        IF position(format('INSERT INTO %I.%I (h_typ, h_tidpunkt, h_av, %s)',
+                           p_schema_namn, h_tabell, kolumn_lista) IN kropp_fore) = 0
+           OR position(format('session_user, %s;', old_kolumn_lista) IN kropp_fore) = 0
+           OR position(format('rad %I.%I%%ROWTYPE;', p_schema_namn, p_tabell_namn) IN kropp_fore) = 0
+        THEN
+            -- Misslyckas ombyggnaden avbryts hela ALTER TABLE. En trigger som
+            -- inte speglar tabellen tappar historik tyst, och det är värre
+            -- än att DDL:en nekas.
+            IF NOT public.hex_aterskapa_qa_trigger(p_schema_namn, p_tabell_namn, h_tabell) THEN
+                RAISE EXCEPTION '[hex_synka_historik] QA-triggern för %.% kunde inte byggas om – se WARNING ovan. Ändringen avbryts så att ingen historik går förlorad.',
+                    p_schema_namn, p_tabell_namn;
+            END IF;
+            SELECT prosrc INTO kropp_efter FROM pg_proc WHERE oid = fn_oid;
+            IF kropp_fore IS DISTINCT FROM kropp_efter THEN
+                antal := antal + 1;
+            END IF;
         END IF;
     ELSE
         RAISE NOTICE '[hex_synka_historik] %.% har historiktabell men ingen QA-trigger – hex_underhall() återkopplar den',

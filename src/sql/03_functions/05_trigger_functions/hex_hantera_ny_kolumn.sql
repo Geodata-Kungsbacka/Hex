@@ -126,6 +126,12 @@ BEGIN
                     RAISE NOTICE '[hex_hantera_ny_kolumn] ✓ Historiktabell omdöpt: % → % (tabell omdöpt: % → %)',
                         meta_rad.history_table, ny_historik,
                         meta_rad.parent_table, tabell_namn;
+
+                    -- QA-triggerns kropp namnger både modertabellen (%ROWTYPE)
+                    -- och historiktabellen. Utan ombyggnad kraschar varje
+                    -- UPDATE/DELETE efter namnbytet med "relation ... does not
+                    -- exist".
+                    PERFORM hex_synka_historik(schema_namn, tabell_namn);
                 ELSE
                     RAISE NOTICE '[hex_hantera_ny_kolumn] Ingen historiktabell registrerad för OID % (tabell %, har troligen ingen historik)',
                         kommando.objid, tabell_namn;
@@ -295,7 +301,20 @@ BEGIN
             JOIN pg_namespace n ON n.oid = c.relnamespace
             WHERE c.oid = kommando.objid;
 
-            CONTINUE WHEN tabell_namn IS NULL OR tabell_namn ~ '_h$';
+            CONTINUE WHEN tabell_namn IS NULL;
+
+            -- Ändras historiktabellen själv (t.ex. DROP COLUMN direkt i _h)
+            -- synkas dess modertabell, så att triggern inte pekar på en
+            -- kolumn som inte finns.
+            IF tabell_namn ~ '_h$' THEN
+                SELECT m.parent_schema, m.parent_table
+                INTO schema_namn, tabell_namn
+                FROM hex_metadata m
+                WHERE m.history_schema = schema_namn
+                  AND m.history_table = tabell_namn;
+                CONTINUE WHEN NOT FOUND;
+            END IF;
+
             PERFORM hex_synka_historik(schema_namn, tabell_namn);
         END LOOP;
 
@@ -897,7 +916,9 @@ BEGIN
         RAISE NOTICE '[hex_hantera_ny_kolumn] (4/4) Kontrollerar historiktabellsynkronisering';
         
         -- Bestäm historiktabellnamn (hoppa över om detta redan ÄR en historiktabell)
-        historik_tabell_namn := tabell_namn || '_h';
+        -- Samma 63-bytesgräns som hex_skapa_historik_qa(). Utan left() hittades
+        -- aldrig historiktabellen för modertabeller med 62+ tecken i namnet.
+        historik_tabell_namn := left(tabell_namn || '_h', 63);
         
         IF NOT tabell_namn ~ '_h$' THEN
             -- Detta är en modertabell, kontrollera om det finns motsvarande historiktabell

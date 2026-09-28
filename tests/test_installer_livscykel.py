@@ -1540,6 +1540,10 @@ class TestUppgraderingSynkarHistorik(unittest.TestCase):
                       historiktabell och en QA-trigger utan geom.
       - borttagen:    DROP COLUMN lämnade triggern med OLD.fid, så varje
                       UPDATE kraschade.
+      - fastnad_p:    FME-tvåsteget exakt som i produktionsloggen
+                      2026-09-28: CREATE TABLE som fme, AddGeometryColumn
+                      som event-triggern inte kände igen. Tabellen står kvar
+                      som afvaktande utan geom i historiken.
 
     Invariant, inte migrering: tillståndet kan uppstå igen om tabeller ändras
     medan Hex är avinstallerat.
@@ -1577,6 +1581,14 @@ class TestUppgraderingSynkarHistorik(unittest.TestCase):
             " RETURN NEW; END $$"
         )
         _kor_autocommit("ALTER TABLE sk1_kba_hsynk.borttagen_y DROP COLUMN fid")
+        _kor_autocommit(
+            "SET application_name = 'fme';"
+            " CREATE TABLE sk1_kba_hsynk.fastnad_p (nr int4, omrade varchar(254))"
+        )
+        _kor_autocommit(
+            "SELECT AddGeometryColumn('sk1_kba_hsynk', 'fastnad_p', 'geom',"
+            " 3007, 'POINT', 4)"
+        )
 
         install_hex.upgrade(_db_config(), base_path=str(PROJECT_ROOT))
 
@@ -1584,12 +1596,37 @@ class TestUppgraderingSynkarHistorik(unittest.TestCase):
     def tearDownClass(cls):
         _ta_bort_databas()
 
-    def test_inga_avvikelser_efter_uppgradering(self):
+    def test_historiksynk_rapporterad_och_idempotent(self):
+        """Efter upgrade() finns inget kvar att synka."""
         rader = _fraga(
-            "SELECT tabell_namn, problem FROM public.hex_kontrollera_historik()"
-            " WHERE schema_namn = 'sk1_kba_hsynk'"
+            "SELECT tabell_namn, atgard FROM public.hex_underhall()"
+            " WHERE schema_namn = 'sk1_kba_hsynk' AND trigger_namn = 'historiksynk'"
+            " ORDER BY tabell_namn"
         )
-        self.assertEqual(rader, [])
+        self.assertEqual(
+            rader,
+            [
+                ("borttagen_y", "redan synkad"),
+                ("fastnad_p", "redan synkad"),
+                ("saknad_geom_y", "redan synkad"),
+            ],
+        )
+
+    def test_fastnad_afvaktande_slutford(self):
+        """Tabellen lämnar hex_afvaktande_geometri och historiken får geom."""
+        self.assertEqual(
+            _fraga(
+                "SELECT count(*) FROM public.hex_afvaktande_geometri"
+                " WHERE schema_namn = 'sk1_kba_hsynk'"
+            ),
+            [(0,)],
+        )
+        self.assertEqual(
+            _fraga(
+                "SELECT public.hex_kolumntyp('sk1_kba_hsynk', 'fastnad_p_h', 'geom')"
+            ),
+            [("geometry(PointZM,3007)",)],
+        )
 
     def test_update_fungerar_efter_borttagen_kolumn(self):
         _kor_autocommit("UPDATE sk1_kba_hsynk.borttagen_y SET namn = 'b'")

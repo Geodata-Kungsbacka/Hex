@@ -118,18 +118,20 @@ Historiktabellen följer med automatiskt vid `ALTER TABLE`:
 | `ALTER COLUMN TYPE`, eller tillbaka med annan typ | Konverteras om inget värde ändras, annars arkiveras den gamla kolumnen som `<kolumn>_arkiv_<ÅÅÅÅMMDD>` |
 | `RENAME COLUMN` | Kolumnen döps om i `_h` |
 
-Kontrollera att alla historiktabeller stämmer:
+| `RENAME TO` | `_h` döps om och QA-triggern byggs om |
+| Ändring direkt i `_h` (t.ex. `DROP COLUMN`) | Saknade kolumner läggs tillbaka, triggern byggs om |
 
-```sql
-SELECT * FROM public.hex_kontrollera_historik();
-```
-
-Rätta en tabell, eller alla via underhållet:
+Historiktabeller som redan hamnat ur synk rättas av `install_hex.py --upgrade`,
+som kör underhållet. Det går också att köra för en tabell eller för alla:
 
 ```sql
 SELECT public.hex_synka_historik('sk1_kba_parkering', 'p_platser_p');
-SELECT * FROM public.hex_underhall() WHERE trigger_namn = 'historiksynk';
+SELECT * FROM public.hex_underhall()
+WHERE trigger_namn IN ('afvaktande_geometri', 'historiksynk');
 ```
+
+Underhållet returnerar `synkad: N ändringar` för tabeller som rättades och
+`redan synkad` för övriga.
 
 Värden som aldrig loggades kan inte återskapas. Saknade `_h` en kolumn när en
 rad ändrades är den kolumnen `NULL` i den historikraden.

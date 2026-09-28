@@ -18,7 +18,7 @@ AS $BODY$
  * Schemaprefix hämtas dynamiskt från hex_standardiserade_skyddsnivaer, så att
  * egna prefix (t.ex. sc1, sk3) fungerar utan kodändringar.
  *
- * Hanterar fjorton åtgärdstyper:
+ * Hanterar femton åtgärdstyper:
  *
  *   ägarskapsöverföring  Säkerställer att scheman, tabeller, sekvenser och
  *                        funktioner i Hex-hanterade scheman ägs av
@@ -51,6 +51,10 @@ AS $BODY$
  *                        en dummy-rad registrerad i hex_dummy_geometrier.
  *                        Transient – tar bort sig själv när första riktiga
  *                        raden infogas. Återkopplas bara om dummy-raden finns.
+ *
+ *   afvaktande_geometri  Slutför FME-tvåsteget för tabeller som står kvar
+ *                        som afvaktande trots att de har geom (GiST-index,
+ *                        geometrivalidering, historik). Returnerar 'slutförd'.
  *
  *   historiksynk         Kör hex_synka_historik() på varje tabell med
  *                        historik: saknade kolumner läggs till i _h,
@@ -549,6 +553,50 @@ BEGIN
             atgard := 'redan finns';
         END IF;
 
+        RETURN NEXT;
+    END LOOP;
+
+    -- -------------------------------------------------------------------------
+    -- 4a. afvaktande_geometri
+    --    En tabell som står kvar i hex_afvaktande_geometri trots att den har
+    --    geom fick sin geometri på en väg som hex_hantera_ny_kolumn() inte
+    --    kände igen (före stödet för AddGeometryColumn()). GiST-index,
+    --    geometrivalidering och historiksynk saknas då.
+    --
+    --    Slutförandet ligger i hex_hantera_ny_kolumn(), som känner igen en
+    --    afvaktande tabell med geom på strukturen och inte på satstexten. En
+    --    ALTER TABLE som sätter statistikmålet till sitt nuvarande värde
+    --    ändrar ingenting i sig, men räcker för att event-triggern ska köra
+    --    samma kod som vid ett vanligt tvåsteg. Körs före 4b så att
+    --    historiksynken ser den färdiga tabellen.
+    -- -------------------------------------------------------------------------
+    FOR r IN
+        SELECT ag.schema_namn AS s, ag.tabell_namn AS t,
+               coalesce(a.attstattarget::integer, -1) AS statistik
+        FROM public.hex_afvaktande_geometri ag
+        JOIN pg_attribute a
+          ON a.attrelid = to_regclass(format('%I.%I', ag.schema_namn, ag.tabell_namn))
+         AND a.attname = 'geom'
+         AND NOT a.attisdropped
+        ORDER BY 1, 2
+    LOOP
+        schema_namn  := r.s;
+        tabell_namn  := r.t;
+        trigger_namn := 'afvaktande_geometri';
+        BEGIN
+            EXECUTE format('ALTER TABLE %I.%I ALTER COLUMN geom SET STATISTICS %s',
+                r.s, r.t, r.statistik);
+            atgard := CASE
+                WHEN EXISTS (
+                    SELECT 1 FROM public.hex_afvaktande_geometri ag
+                    WHERE ag.schema_namn = r.s AND ag.tabell_namn = r.t
+                ) THEN 'fel: fortfarande afvaktande – se NOTICE/WARNING'
+                ELSE 'slutförd'
+            END;
+        EXCEPTION
+            WHEN OTHERS THEN
+                atgard := 'fel: ' || SQLERRM;
+        END;
         RETURN NEXT;
     END LOOP;
 

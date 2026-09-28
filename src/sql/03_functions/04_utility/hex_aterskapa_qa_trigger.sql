@@ -53,12 +53,16 @@ BEGIN
     LIMIT 1;
     trigger_funktionsnamn := coalesce(trigger_funktionsnamn, 'trg_fn_' || p_tabell_namn || '_qa');
 
-    -- Aktuell kolumnlista från modertabellen
-    SELECT string_agg(format('%I', c.column_name), ', ' ORDER BY c.ordinal_position)
+    -- Aktuell kolumnlista från modertabellen. pg_attribute i stället för
+    -- information_schema.columns: den senare visar bara kolumner som den
+    -- aktuella rollen har rättigheter på, och en kolumn som inte syns skulle
+    -- tyst falla ur triggern.
+    SELECT string_agg(format('%I', a.attname), ', ' ORDER BY a.attnum)
     INTO kolumn_lista
-    FROM information_schema.columns c
-    WHERE c.table_schema = p_schema_namn
-      AND c.table_name = p_tabell_namn;
+    FROM pg_attribute a
+    WHERE a.attrelid = to_regclass(format('%I.%I', p_schema_namn, p_tabell_namn))
+      AND a.attnum > 0
+      AND NOT a.attisdropped;
 
     IF kolumn_lista IS NULL THEN
         RAISE WARNING '[hex_aterskapa_qa_trigger] Hittade inga kolumner för %.% - hoppar över',
@@ -67,11 +71,12 @@ BEGIN
     END IF;
 
     -- Matchande OLD.-lista i samma ordning
-    SELECT string_agg(format('OLD.%I', c.column_name), ', ' ORDER BY c.ordinal_position)
+    SELECT string_agg(format('OLD.%I', a.attname), ', ' ORDER BY a.attnum)
     INTO old_kolumn_lista
-    FROM information_schema.columns c
-    WHERE c.table_schema = p_schema_namn
-      AND c.table_name = p_tabell_namn;
+    FROM pg_attribute a
+    WHERE a.attrelid = to_regclass(format('%I.%I', p_schema_namn, p_tabell_namn))
+      AND a.attnum > 0
+      AND NOT a.attisdropped;
 
     -- QA-kolumner som finns på tabellen och har ett uttryck
     SELECT
@@ -82,10 +87,11 @@ BEGIN
     WHERE sk.historik_qa = true
       AND sk.default_varde IS NOT NULL
       AND EXISTS (
-          SELECT 1 FROM information_schema.columns c
-          WHERE c.table_schema = p_schema_namn
-            AND c.table_name = p_tabell_namn
-            AND c.column_name = sk.kolumnnamn
+          SELECT 1 FROM pg_attribute a
+          WHERE a.attrelid = to_regclass(format('%I.%I', p_schema_namn, p_tabell_namn))
+            AND a.attname = sk.kolumnnamn
+            AND a.attnum > 0
+            AND NOT a.attisdropped
       );
 
     FOR i IN 1..COALESCE(array_length(qa_kolumner, 1), 0) LOOP

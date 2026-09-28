@@ -94,7 +94,6 @@ INSTALL_ORDER = [
     # hex_synka_historik anropar hex_aterskapa_qa_trigger; båda används av
     # hex_hantera_ny_kolumn och hex_underhall
     "src/sql/03_functions/04_utility/hex_synka_historik.sql",
-    "src/sql/03_functions/04_utility/hex_kontrollera_historik.sql",
     "src/sql/03_functions/04_utility/hex_tilldela_rollrattigheter.sql",
     "src/sql/03_functions/04_utility/hex_tillampa_grupprattigheter.sql",
     "src/sql/03_functions/04_utility/hex_tvinga_gid_fran_sekvens.sql",
@@ -158,7 +157,6 @@ DROP FUNCTION IF EXISTS public.hex_kontrollera_geometri_trigger() CASCADE;
 -- Hjälpfunktioner
 DROP FUNCTION IF EXISTS public.hex_tillampa_grupprattigheter();
 DROP FUNCTION IF EXISTS public.hex_synka_historik(text, text);
-DROP FUNCTION IF EXISTS public.hex_kontrollera_historik();
 DROP FUNCTION IF EXISTS public.hex_aterskapa_qa_trigger(text, text, text);
 DROP FUNCTION IF EXISTS public.hex_lagg_till_dummy_geometri(text, text, hex_geom_info);
 DROP FUNCTION IF EXISTS public.hex_ta_bort_dummy_rad() CASCADE;
