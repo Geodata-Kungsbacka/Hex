@@ -183,6 +183,7 @@ och betyder inte att ett test misslyckats.
 | `test_underhall.sql`           | `hex_underhall()` – reparation av triggers, roller, ägarskap    |
 | `test_underhall_hex.sql`       | Ägarskapsreparation och idempotens i underhållet               |
 | `test_schema_namnbyte.sql`     | Blockering av `ALTER SCHEMA ... RENAME TO`                     |
+| `test_schema_borttagning.sql`  | `DROP SCHEMA ... CASCADE` rensar `hex_metadata` m.fl.          |
 | `test_grupprattigheter.sql`    | `hex_tillampa_grupprattigheter()` – AD-grupproll → Hex-roll     |
 | `test_gid_primarnyckel.sql`    | `PRIMARY KEY (gid)`: QGIS-villkoren, migrering av äldre tabeller, dubblettreparation |
 | `test_client_encoding.py`      | Att lyssnaren alltid sätter UTF-8 som klientkodning             |

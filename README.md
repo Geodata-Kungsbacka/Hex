@@ -480,7 +480,7 @@ skedd räcker det inte med `hex_underhall()` — rollerna skapas bara vid
 **Livscykel**:
 - *Registreras* av `hex_skapa_historik_qa()` när en historiktabell skapas
 - *Uppdateras* av `hex_hantera_ny_kolumn()` vid `ALTER TABLE RENAME TO` (historiktabell och parent_table uppdateras)
-- *Raderas* av `hex_hantera_borttagen_tabell()` vid `DROP TABLE`
+- *Raderas* av `hex_hantera_borttagen_tabell()` vid `DROP TABLE` och `DROP SCHEMA ... CASCADE`
 
 `created_by` är inloggningsrollen (`session_user`) som skapade tabellen. Den
 ändras inte om historiken skapas om, och är `NULL` för poster registrerade
@@ -955,7 +955,7 @@ som namnvalideringen använder — `hex_validera_schemanamn()` bygger sitt eget
 - Raden i `hex_afvaktande_geometri` (om tabellen droppades innan geometrin hann läggas till)
 - Raden i `hex_metadata` (om tabellen var registrerad där)
 
-**Trigger**: Körs vid DROP TABLE (SQL_DROP-event).
+**Trigger**: Körs vid DROP TABLE och DROP SCHEMA (SQL_DROP-event). Vid `DROP SCHEMA ... CASCADE` rensas dessutom alla rader för schemat i `hex_metadata`, `hex_afvaktande_geometri`, `hex_avvikande_srid` och `hex_dummy_geometrier`.
 
 **Nytta**: Förhindrar att övergivna historiktabeller, funktioner och afvaktande-rader ackumuleras i databasen.
 
