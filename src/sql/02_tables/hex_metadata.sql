@@ -7,7 +7,7 @@
 --
 -- Skrivs av:      hex_skapa_historik_qa()        (vid skapande av historiktabell)
 -- Uppdateras av:  hex_hantera_ny_kolumn()    (vid ALTER TABLE RENAME TO)
--- Raderas av:     hex_hantera_borttagen_tabell() (vid DROP TABLE)
+-- Raderas av:     hex_hantera_borttagen_tabell() (vid DROP TABLE och DROP SCHEMA)
 
 CREATE TABLE IF NOT EXISTS public.hex_metadata (
     parent_oid       oid          PRIMARY KEY,

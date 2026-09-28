@@ -42,6 +42,7 @@ flowchart LR
     CV --> HNV["hex_hantera_ny_vy"]
     DT --> HBT["hex_hantera_borttagen_tabell"]
     DS --> TBS["hex_ta_bort_schemaroller"]
+    DS --> HBT
     DS --> NGB["hex_notifiera_gs_borttagning"]
     NG  -.->|pg_notify geoserver_schema| GS["GeoServer-lyssnaren<br/>(Python)"]
     NGB -.->|pg_notify geoserver_schema_drop| GS
@@ -745,7 +746,7 @@ hex_hantera_borttagen_tabell()
   │
   ├── Sätter: temp.historikborttagning_pagar = true
   │
-  └── För varje tabell i pg_event_trigger_dropped_objects():
+  ├── För varje tabell i pg_event_trigger_dropped_objects():
         ├── Hoppar över: tabeller som slutar på _h, public-schema, pg_*-scheman
         │
         ├── Slår upp i hex_metadata via OID
@@ -761,7 +762,14 @@ hex_hantera_borttagen_tabell()
         │
         └── DELETE FROM hex_afvaktande_geometri WHERE schema = … AND tabell = …
               (städar upp om tabellen droppades innan geometrikolumnen hann läggas till)
+  │
+  └── För varje schema i pg_event_trigger_dropped_objects() (DROP SCHEMA ... CASCADE):
+        └── DELETE FROM hex_metadata, hex_afvaktande_geometri, hex_avvikande_srid,
+            hex_dummy_geometrier WHERE schema = <schemanamn>
 ```
+
+Triggern lyssnar även på `DROP SCHEMA`: vid `DROP SCHEMA ... CASCADE` rapporteras
+schemats tabeller under taggen `DROP SCHEMA` och städas enligt ovan (se avsnitt 8).
 
 ---
 
@@ -772,6 +780,9 @@ flowchart TD
     START(["DROP SCHEMA sk0_kba_bygg CASCADE"])
     START --> TBS_T["hex_ta_bort_schemaroller_trigger<br/>SQL_DROP"]
     START --> NGB_T["hex_notifiera_gs_borttagning_trigger<br/>SQL_DROP"]
+    START --> HBT_T["hex_hantera_borttagen_tabell_trigger<br/>SQL_DROP"]
+    HBT_T --> META["DELETE schemats rader i hex_metadata,<br/>hex_afvaktande_geometri, hex_avvikande_srid,<br/>hex_dummy_geometrier"]
+    META --> DONE_META(["Hex-metadata rensad ✓"])
 
     TBS_T --> SYS{"Systemschema?"}
     SYS --> |ja| SKIP(["hoppar över"])
@@ -792,7 +803,7 @@ flowchart TD
 DROP SCHEMA sk0_kba_bygg CASCADE;
 ```
 
-Två eventutlösare körs parallellt vid `SQL_DROP`:
+Tre eventutlösare körs vid `SQL_DROP`:
 
 ---
 
@@ -838,8 +849,18 @@ hex_notifiera_gs_borttagning()
 
 > PostgreSQL hanterar borttagningen av schemat och dess objekt
 > (tabeller, vyer etc.) via CASCADE — det är standardbeteende.
-> Hex tar hand om det PostgreSQL inte rensar: roller (Trigger A) och
-> GeoServer workspace (Trigger B).
+> Hex tar hand om det PostgreSQL inte rensar: roller (Trigger A),
+> GeoServer workspace (Trigger B) och Hex-metadata (Trigger C).
+
+---
+
+### Trigger C — `hex_hantera_borttagen_tabell_trigger` → `hex_hantera_borttagen_tabell()`
+
+Samma funktion som vid `DROP TABLE` (avsnitt 7). Schemats tabeller rapporteras
+under taggen `DROP SCHEMA` och städas per tabell; därefter tas alla rader för
+schemat bort ur `hex_metadata`, `hex_afvaktande_geometri`, `hex_avvikande_srid`
+och `hex_dummy_geometrier`. Utan detta skulle inaktuella `parent_oid` bli kvar i
+`hex_metadata` och kunna matcha en ny tabell som får samma OID.
 
 ---
 
@@ -1094,7 +1115,7 @@ det utlöser i sin tur nya eventutlösare. Tre flaggor förhindrar oändliga ked
 | `hex_hantera_ny_tabell()` | `hex_hantera_ny_tabell_trigger` | CREATE TABLE, DDL_COMMAND_END |
 | `hex_hantera_ny_kolumn()` | `hex_hantera_ny_kolumn_trigger` | ALTER TABLE, DDL_COMMAND_END |
 | `hex_hantera_ny_vy()` | `hex_hantera_ny_vy_trigger` | CREATE VIEW, DDL_COMMAND_END |
-| `hex_hantera_borttagen_tabell()` | `hex_hantera_borttagen_tabell_trigger` | DROP TABLE, SQL_DROP |
+| `hex_hantera_borttagen_tabell()` | `hex_hantera_borttagen_tabell_trigger` | DROP TABLE, DROP SCHEMA, SQL_DROP |
 | `hex_ta_bort_schemaroller()` | `hex_ta_bort_schemaroller_trigger` | DROP SCHEMA, SQL_DROP |
 
 ### Valideringsfunktioner

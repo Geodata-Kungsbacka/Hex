@@ -16,6 +16,14 @@ AS $BODY$
  *      (uppstår om en systemanvändare, t.ex. FME, droppade tabellen innan
  *      geometrikolumnen hann läggas till via ALTER TABLE)
  *
+ * DROP SCHEMA ... CASCADE:
+ *   Triggern lyssnar även på DROP SCHEMA. Schemats tabeller rapporteras då av
+ *   pg_event_trigger_dropped_objects() under taggen DROP SCHEMA och städas på
+ *   samma sätt som vid DROP TABLE. Historiktabeller och triggerfunktioner är
+ *   redan borttagna av CASCADE, så EXISTS-kontrollerna nedan blir falska.
+ *   Därefter rensas alla kvarvarande Hex-rader för själva schemat, så att inga
+ *   inaktuella OID:er (som kan återanvändas av en ny tabell) blir kvar.
+ *
  * REKURSIONSSKYDD:
  * - Hoppar över om tabellstrukturering pågår (hex_byt_ut_tabell droppar
  *   tabeller internt som del av omstruktureringen)
@@ -133,6 +141,28 @@ BEGIN
         END IF;
     END LOOP;
 
+    -- Rensa alla Hex-rader för borttagna scheman (DROP SCHEMA ... CASCADE).
+    -- Fångar även rader som inte matchades per tabell ovan.
+    FOR kommando IN SELECT * FROM pg_event_trigger_dropped_objects()
+        WHERE object_type = 'schema'
+    LOOP
+        schema_namn := kommando.object_name;
+        tabell_namn := NULL;
+
+        IF schema_namn = 'public' OR schema_namn ~ '^pg_' THEN
+            CONTINUE;
+        END IF;
+
+        DELETE FROM public.hex_metadata WHERE parent_schema = schema_namn;
+        -- EXECUTE USING av samma skäl som ovan (kolumnnamn = variabelnamn)
+        EXECUTE 'DELETE FROM public.hex_afvaktande_geometri WHERE schema_namn = $1'
+            USING schema_namn;
+        EXECUTE 'DELETE FROM public.hex_avvikande_srid WHERE schema_namn = $1'
+            USING schema_namn;
+        EXECUTE 'DELETE FROM public.hex_dummy_geometrier WHERE schema_namn = $1'
+            USING schema_namn;
+    END LOOP;
+
     PERFORM set_config('temp.historikborttagning_pagar', 'false', true);
 
 EXCEPTION
@@ -158,9 +188,11 @@ END;
 $$;
 
 COMMENT ON FUNCTION public.hex_hantera_borttagen_tabell()
-    IS 'Händelsetriggerfunktion som körs vid DROP TABLE och automatiskt tar bort
+    IS 'Händelsetriggerfunktion som körs vid DROP TABLE och DROP SCHEMA och automatiskt tar bort
 tillhörande historiktabell (_h), QA-triggerfunktion (trg_fn_*_qa) samt eventuell
 afvaktande geometripost i hex_afvaktande_geometri (uppstår vid FME-tvåstegsmönster
-om tabellen droppas innan geometrikolumnen hunnit läggas till). Hoppar över under
+om tabellen droppas innan geometrikolumnen hunnit läggas till). Vid DROP SCHEMA
+rensas även alla rader för schemat i hex_metadata, hex_afvaktande_geometri,
+hex_avvikande_srid och hex_dummy_geometrier. Hoppar över under
 tabellomstrukturering (hex_byt_ut_tabell) och förhindrar rekursion vid borttagning
 av historiktabeller.';

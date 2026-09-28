@@ -3,7 +3,7 @@
 DROP EVENT TRIGGER IF EXISTS hex_hantera_borttagen_tabell_trigger;
 
 CREATE EVENT TRIGGER hex_hantera_borttagen_tabell_trigger ON SQL_DROP
-    WHEN TAG IN ('DROP TABLE')
+    WHEN TAG IN ('DROP TABLE', 'DROP SCHEMA')
     EXECUTE PROCEDURE public.hex_hantera_borttagen_tabell();
 
 ALTER EVENT TRIGGER hex_hantera_borttagen_tabell_trigger
@@ -11,4 +11,5 @@ ALTER EVENT TRIGGER hex_hantera_borttagen_tabell_trigger
 
 COMMENT ON EVENT TRIGGER hex_hantera_borttagen_tabell_trigger
     IS 'Tar automatiskt bort historiktabeller och QA-triggerfunktioner när
-en tabell tas bort. Hoppar över under tabellomstrukturering.';
+en tabell tas bort, även när tabellen försvinner via DROP SCHEMA ... CASCADE.
+Hoppar över under tabellomstrukturering.';
