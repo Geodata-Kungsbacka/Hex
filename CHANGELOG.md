@@ -3,16 +3,28 @@
 Alla märkbara ändringar i Hex dokumenteras i den här filen.
 
 Formatet bygger på [Keep a Changelog](https://keepachangelog.com/sv/1.1.0/).
-Versionerna motsvarar taggarna i repot (`Beta`, `v.1.0.0`). Loggen är
-sammanställd i efterhand ur commit-historiken. Datum avser commit- eller
+Versionerna motsvarar taggarna i repot (`Beta`, `v.1.0.0`, `v2.0.0`). Loggen
+är sammanställd i efterhand ur commit-historiken. Datum avser commit- eller
 merge-datum.
 
 ---
 
 ## [Ej släppt]
 
-Ändringar efter `v.1.0.0` på grenen `naming-convention/hex-prefix`
-(PR #131–#171).
+---
+
+## [2.0.0] – 2026-09-24
+
+Tagg `v2.0.0` (PR #131–#171, grenen `naming-convention/hex-prefix`).
+
+> **Uppgradera inte en databas på `v.1.0.0` direkt till 2.0.0.** Migreringen
+> av namnen före `hex_`-prefixet togs bort ur installern före releasen (se
+> *Borttaget*). En direkt `--upgrade` avinstallerar, faller sedan på
+> 1.0.0:s kvarlämnade event-triggers och lämnar databasen utan Hex-tabeller
+> och utan de sparade inställningarna. Uppgradera i två steg: först
+> `install_hex.py --upgrade` från commit `4cc52a8^` (sista versionen med
+> migreringen), sedan `--upgrade` från `v2.0.0`. Se
+> [docs/09](docs/09_installera-uppdatera-hex.md#uppgradering-från-100).
 
 ### Ändrat – brytande
 
@@ -275,6 +287,7 @@ Projektet började som **Praxis** och döptes om till Hex i februari 2026
 - 2026-01–02: `install_praxis.py`, schemanamnskontroll, GiST-index och
   geometri-`CHECK`, rollägare.
 
-[Ej släppt]: https://github.com/Geodata-Kungsbacka/Hex/compare/v.1.0.0...naming-convention/hex-prefix
+[Ej släppt]: https://github.com/Geodata-Kungsbacka/Hex/compare/v2.0.0...main
+[2.0.0]: https://github.com/Geodata-Kungsbacka/Hex/compare/v.1.0.0...v2.0.0
 [1.0.0]: https://github.com/Geodata-Kungsbacka/Hex/compare/Beta...v.1.0.0
 [Beta]: https://github.com/Geodata-Kungsbacka/Hex/releases/tag/Beta

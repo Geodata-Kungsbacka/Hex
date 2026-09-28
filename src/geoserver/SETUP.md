@@ -589,6 +589,13 @@ rasterpublicering vars namn råkar matcha schemamönstret rörs aldrig. Kör
 `dry-run` först och läs loggen. Fullständig beskrivning finns i
 [08_geoserver-lyssnaren.md](../../docs/08_geoserver-lyssnaren.md#kvarlämnade-workspaces-i-geoserver).
 
+#### Övriga inställningar (valfritt)
+
+| Variabel | Standard | Beskrivning |
+|---|---|---|
+| `HEX_GS_NAMESPACE_BASE` | värdet på `HEX_GS_URL` | Bas för workspacens namespace-URI, som blir `{bas}/{schema}`. Sätt t.ex. `https://gis.min-org.se` för en URI som inte följer serverns adress. |
+| `HEX_RECONNECT_DELAY` | `5` | Sekunder mellan återanslutningsförsöken när PostgreSQL-anslutningen tappats. |
+
 #### E-postnotifieringar (valfritt)
 
 Lyssnaren kan skicka e-post vid fel och återhämtning. Lägg till följande

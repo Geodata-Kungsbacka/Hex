@@ -15,7 +15,7 @@
 6. [CREATE VIEW](#6-create-view)
 7. [DROP TABLE](#7-drop-table)
 8. [DROP SCHEMA](#8-drop-schema)
-9. [Externt system: GeoServer-lyssnaren (Python)](#9-externt-system-geoserver-lyssnaren)
+9. [Externt system: GeoServer-lyssnaren (Python)](#9-externt-system-geoserver-lyssnaren-python)
 10. [Rekursionsskydd](#10-rekursionsskydd)
 11. [Snabbreferens: alla funktioner](#11-snabbreferens-alla-funktioner)
 
