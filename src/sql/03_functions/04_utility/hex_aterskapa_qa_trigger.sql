@@ -20,9 +20,8 @@ AS $BODY$
  * fungerar i den genererade funktionskroppen.
  *
  * ANVÄNDS AV:
- * - hex_hantera_ny_kolumn() efter ADD COLUMN-synk mot historiktabellen
- * - hex_hantera_ny_kolumn() efter RENAME COLUMN-synk mot historiktabellen
- * - hex_hantera_ny_kolumn() efter DROP COLUMN
+ * - hex_synka_historik(), som i sin tur anropas av hex_hantera_ny_kolumn()
+ *   efter varje ALTER TABLE och av hex_underhall()
  *
  * PARAMETRAR:
  * - p_schema_namn:     Schemat som modertabellen ligger i
@@ -36,12 +35,24 @@ AS $BODY$
 DECLARE
     kolumn_lista          text;
     old_kolumn_lista      text;
-    trigger_funktionsnamn text := 'trg_fn_' || p_tabell_namn || '_qa';
+    trigger_funktionsnamn text;
     qa_kolumner           text[];
     qa_uttryck            text[];
     trigger_satser        text := '';
     i                     integer;
 BEGIN
+    -- Bygg om den funktion som triggern faktiskt anropar. Efter ALTER TABLE
+    -- RENAME TO heter den fortfarande trg_fn_<gammalt namn>_qa, och det
+    -- härledda namnet skulle skapa en ny funktion som ingen trigger använder.
+    SELECT p.proname INTO trigger_funktionsnamn
+    FROM pg_trigger t
+    JOIN pg_proc p ON p.oid = t.tgfoid
+    WHERE t.tgrelid = to_regclass(format('%I.%I', p_schema_namn, p_tabell_namn))
+      AND NOT t.tgisinternal
+      AND p.proname ~ '^trg_fn_.+_qa$'
+    LIMIT 1;
+    trigger_funktionsnamn := coalesce(trigger_funktionsnamn, 'trg_fn_' || p_tabell_namn || '_qa');
+
     -- Aktuell kolumnlista från modertabellen
     SELECT string_agg(format('%I', c.column_name), ', ' ORDER BY c.ordinal_position)
     INTO kolumn_lista
@@ -146,6 +157,6 @@ $$;
 
 COMMENT ON FUNCTION public.hex_aterskapa_qa_trigger(text, text, text)
     IS 'Återskapar QA-triggerfunktionen trg_fn_<tabell>_qa med modertabellens aktuella
-kolumnlista. Anropas efter ADD COLUMN, RENAME COLUMN och DROP COLUMN så att den genererade
+kolumnlista. Anropas via hex_synka_historik() efter varje ALTER TABLE så att den genererade
 INSERT-satsen mot historiktabellen fortsätter matcha tabellstrukturen. Kolumnnamn
 citeras så att reserverade ord fungerar.';

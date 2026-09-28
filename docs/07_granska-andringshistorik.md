@@ -100,4 +100,36 @@ WHERE parent_schema = 'sk1_kba_parkering'
   AND parent_table = 'p_platser_p';
 ```
 
-Returnerar en rad om historik är aktiverat, annars tomt.
+Returnerar en rad om historik är aktiverat, annars tomt. `created_by` visar
+vilken inloggning som skapade tabellen (`NULL` för tabeller registrerade innan
+kolumnen fanns).
+
+---
+
+## När modertabellen ändras
+
+Historiktabellen följer med automatiskt vid `ALTER TABLE`:
+
+| Ändring i modertabellen | Vad som händer i `_h` |
+|-------------------------|-----------------------|
+| `ADD COLUMN` (även via `AddGeometryColumn()`) | Kolumnen läggs till |
+| `DROP COLUMN` | Kolumnen ligger kvar med sina gamla värden; nya rader får `NULL` |
+| Kolumnen läggs tillbaka med samma typ | Den befintliga kolumnen återanvänds |
+| `ALTER COLUMN TYPE`, eller tillbaka med annan typ | Konverteras om inget värde ändras, annars arkiveras den gamla kolumnen som `<kolumn>_arkiv_<ÅÅÅÅMMDD>` |
+| `RENAME COLUMN` | Kolumnen döps om i `_h` |
+
+Kontrollera att alla historiktabeller stämmer:
+
+```sql
+SELECT * FROM public.hex_kontrollera_historik();
+```
+
+Rätta en tabell, eller alla via underhållet:
+
+```sql
+SELECT public.hex_synka_historik('sk1_kba_parkering', 'p_platser_p');
+SELECT * FROM public.hex_underhall() WHERE trigger_namn = 'historiksynk';
+```
+
+Värden som aldrig loggades kan inte återskapas. Saknade `_h` en kolumn när en
+rad ändrades är den kolumnen `NULL` i den historikraden.

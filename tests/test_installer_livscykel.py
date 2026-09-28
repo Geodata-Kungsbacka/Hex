@@ -1474,5 +1474,143 @@ class TestUppgraderingGidPrimarnyckel(unittest.TestCase):
         )
 
 
+
+def _kor_autocommit(sql):
+    """Kör en sats i autocommit — _fraga() rullar tillbaka vid stängning."""
+    conn = _koppla()
+    conn.autocommit = True
+    try:
+        cur = conn.cursor()
+        cur.execute(sql)
+        return cur.fetchall() if cur.description else []
+    finally:
+        conn.close()
+
+
+@unittest.skipUnless(KAN_KORA, "kräver superuser-anslutning till PostgreSQL")
+class TestUppgraderingCreatedBy(unittest.TestCase):
+    """
+    HEX-MIGRERING 2026-09: hex_metadata.created_by tillkom efter tabellen.
+    Sviten bygger upp det gamla tillståndet (kolumnen borttagen, en registrerad
+    tabell), kör upgrade() och kontrollerar att den befintliga posten får NULL
+    – inte den som körde uppgraderingen – medan nya tabeller får sin skapare.
+    Tas bort tillsammans med SAKNAS_I_SNAPSHOT_SOM_NULL i install_hex.py.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        _skapa_tom_databas()
+        install_hex.install(_db_config(), base_path=str(PROJECT_ROOT))
+        _kor_autocommit("CREATE SCHEMA sk1_kba_skapare")
+        _kor_autocommit("CREATE TABLE sk1_kba_skapare.fore (namn text)")
+        _kor_autocommit("ALTER TABLE public.hex_metadata DROP COLUMN created_by")
+
+        install_hex.upgrade(_db_config(), base_path=str(PROJECT_ROOT))
+        _kor_autocommit("CREATE TABLE sk1_kba_skapare.efter (namn text)")
+
+    @classmethod
+    def tearDownClass(cls):
+        _ta_bort_databas()
+
+    def _skapare(self, tabell):
+        return _fraga(
+            "SELECT created_by FROM public.hex_metadata"
+            " WHERE parent_schema = 'sk1_kba_skapare' AND parent_table = %s",
+            (tabell,),
+        )
+
+    def test_befintlig_post_far_okand_skapare(self):
+        """DEFAULT session_user får inte peka ut uppgraderaren som skapare."""
+        self.assertEqual(self._skapare("fore"), [(None,)])
+
+    def test_ny_tabell_far_skaparen(self):
+        """Tabeller skapade efter uppgraderingen får inloggningsrollen."""
+        anvandare = _fraga("SELECT session_user")[0][0]
+        self.assertEqual(self._skapare("efter"), [(anvandare,)])
+
+
+@unittest.skipUnless(KAN_KORA, "kräver superuser-anslutning till PostgreSQL")
+class TestUppgraderingSynkarHistorik(unittest.TestCase):
+    """
+    En historiktabell som hamnat ur synk rättas av upgrade() via
+    hex_underhall()s steg 4b. Det här är vägen för databaser som redan har
+    trasiga historiktabeller från före hex_synka_historik():
+
+      - saknad_geom:  FME-tvåsteget via AddGeometryColumn() gav en
+                      historiktabell och en QA-trigger utan geom.
+      - borttagen:    DROP COLUMN lämnade triggern med OLD.fid, så varje
+                      UPDATE kraschade.
+
+    Invariant, inte migrering: tillståndet kan uppstå igen om tabeller ändras
+    medan Hex är avinstallerat.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        _skapa_tom_databas()
+        install_hex.install(_db_config(), base_path=str(PROJECT_ROOT))
+        _kor_autocommit("CREATE SCHEMA sk1_kba_hsynk")
+        _kor_autocommit(
+            "CREATE TABLE sk1_kba_hsynk.saknad_geom_y"
+            " (namn text, geom geometry(Polygon, 3007))"
+        )
+        _kor_autocommit(
+            "CREATE TABLE sk1_kba_hsynk.borttagen_y"
+            " (namn text, fid bigint, geom geometry(Polygon, 3007))"
+        )
+        for tabell in ("saknad_geom_y", "borttagen_y"):
+            _kor_autocommit(
+                f"INSERT INTO sk1_kba_hsynk.{tabell} (namn, geom) VALUES"
+                " ('a', 'SRID=3007;POLYGON((0 0,0 1,1 1,0 0))')"
+            )
+
+        # Återskapa de trasiga lägena med event-triggern avstängd, så att den
+        # inte rättar dem på vägen. upgrade() installerar om den.
+        _kor_autocommit("ALTER EVENT TRIGGER hex_hantera_ny_kolumn_trigger DISABLE")
+        _kor_autocommit("ALTER TABLE sk1_kba_hsynk.saknad_geom_y_h DROP COLUMN geom")
+        _kor_autocommit(
+            "CREATE OR REPLACE FUNCTION sk1_kba_hsynk.trg_fn_saknad_geom_y_qa()"
+            " RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN"
+            " INSERT INTO sk1_kba_hsynk.saknad_geom_y_h"
+            " (h_typ, h_tidpunkt, h_av, gid, namn)"
+            " SELECT 'U', now(), session_user, OLD.gid, OLD.namn;"
+            " RETURN NEW; END $$"
+        )
+        _kor_autocommit("ALTER TABLE sk1_kba_hsynk.borttagen_y DROP COLUMN fid")
+
+        install_hex.upgrade(_db_config(), base_path=str(PROJECT_ROOT))
+
+    @classmethod
+    def tearDownClass(cls):
+        _ta_bort_databas()
+
+    def test_inga_avvikelser_efter_uppgradering(self):
+        rader = _fraga(
+            "SELECT tabell_namn, problem FROM public.hex_kontrollera_historik()"
+            " WHERE schema_namn = 'sk1_kba_hsynk'"
+        )
+        self.assertEqual(rader, [])
+
+    def test_update_fungerar_efter_borttagen_kolumn(self):
+        _kor_autocommit("UPDATE sk1_kba_hsynk.borttagen_y SET namn = 'b'")
+        self.assertEqual(
+            _fraga(
+                "SELECT count(*) FROM sk1_kba_hsynk.borttagen_y_h"
+                " WHERE h_typ = 'U' AND namn = 'a'"
+            ),
+            [(1,)],
+        )
+
+    def test_geometrin_loggas_framat(self):
+        """Historiken saknar geom bakåt, men nya ändringar får den."""
+        _kor_autocommit("UPDATE sk1_kba_hsynk.saknad_geom_y SET namn = 'b'")
+        self.assertEqual(
+            _fraga(
+                "SELECT count(*) FROM sk1_kba_hsynk.saknad_geom_y_h"
+                " WHERE h_typ = 'U' AND namn = 'a' AND geom IS NOT NULL"
+            ),
+            [(1,)],
+        )
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

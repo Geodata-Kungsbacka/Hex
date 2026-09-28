@@ -1545,6 +1545,256 @@ END $$;
 
 DROP TABLE IF EXISTS sk1_kba_test.drop_kol_y;
 
+-- 13c: fid tillbaka med samma typ – historikkolumnen återanvänds och triggern
+-- tar med den igen. Tidigare fanns kolumnen redan i historiken, så inget lades
+-- till, triggern byggdes inte om och fid loggades tyst aldrig mer.
+CREATE TABLE sk1_kba_test.atertillagd_y (
+    namn text,
+    fid  bigint,
+    geom geometry(Polygon, 3007)
+);
+INSERT INTO sk1_kba_test.atertillagd_y (namn, fid, geom)
+VALUES ('a', 1, 'SRID=3007;POLYGON((0 0,0 10,10 10,10 0,0 0))');
+UPDATE sk1_kba_test.atertillagd_y SET namn = 'b';
+ALTER TABLE sk1_kba_test.atertillagd_y DROP COLUMN fid;
+UPDATE sk1_kba_test.atertillagd_y SET namn = 'c';
+ALTER TABLE sk1_kba_test.atertillagd_y ADD COLUMN fid bigint;
+UPDATE sk1_kba_test.atertillagd_y SET fid = 42;
+UPDATE sk1_kba_test.atertillagd_y SET namn = 'd';
+
+DO $$
+DECLARE
+    loggade text;
+BEGIN
+    SELECT string_agg(namn || ':' || coalesce(fid::text, '-'), ',' ORDER BY h_tidpunkt, namn)
+    INTO loggade
+    FROM sk1_kba_test.atertillagd_y_h
+    WHERE h_typ = 'U';
+
+    -- a:1 före borttagningen, b:- medan kolumnen var borta, c:- första
+    -- uppdateringen efter tillägget, c:42 när fid väl har ett värde
+    IF loggade = 'a:1,b:-,c:-,c:42' THEN
+        RAISE NOTICE 'TEST 13c PASSED: fid återanvänds i historiken och loggas igen (%)', loggade;
+    ELSE
+        RAISE WARNING 'TEST 13c FAILED: historiken blev % (förväntade a:1,b:-,c:-,c:42)', loggade;
+    END IF;
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE WARNING 'TEST 13c FAILED: %', SQLERRM;
+END $$;
+
+-- 13d: fid tillbaka som text – bigint → text klarar vägen fram och tillbaka,
+-- så historikkolumnen konverteras och de gamla värdena står kvar.
+ALTER TABLE sk1_kba_test.atertillagd_y DROP COLUMN fid;
+ALTER TABLE sk1_kba_test.atertillagd_y ADD COLUMN fid text;
+UPDATE sk1_kba_test.atertillagd_y SET fid = 'abc';
+UPDATE sk1_kba_test.atertillagd_y SET namn = 'e';
+
+DO $$
+BEGIN
+    IF public.hex_kolumntyp('sk1_kba_test', 'atertillagd_y_h', 'fid') = 'text'
+       AND EXISTS (SELECT 1 FROM sk1_kba_test.atertillagd_y_h WHERE fid = '1')
+       AND EXISTS (SELECT 1 FROM sk1_kba_test.atertillagd_y_h WHERE fid = 'abc')
+    THEN
+        RAISE NOTICE 'TEST 13d PASSED: historikens fid konverterad till text utan förlust';
+    ELSE
+        RAISE WARNING 'TEST 13d FAILED: fid i historiken är % eller värden saknas',
+            public.hex_kolumntyp('sk1_kba_test', 'atertillagd_y_h', 'fid');
+    END IF;
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE WARNING 'TEST 13d FAILED: %', SQLERRM;
+END $$;
+
+-- 13e: fid tillbaka som integer – 'abc' går inte att konvertera. Den gamla
+-- kolumnen arkiveras och en ny läggs till.
+ALTER TABLE sk1_kba_test.atertillagd_y DROP COLUMN fid;
+ALTER TABLE sk1_kba_test.atertillagd_y ADD COLUMN fid integer;
+UPDATE sk1_kba_test.atertillagd_y SET fid = 7;
+UPDATE sk1_kba_test.atertillagd_y SET namn = 'f';
+
+DO $$
+DECLARE
+    arkiv text;
+BEGIN
+    SELECT column_name INTO arkiv
+    FROM information_schema.columns
+    WHERE table_schema = 'sk1_kba_test'
+      AND table_name = 'atertillagd_y_h'
+      AND column_name LIKE 'fid\_arkiv\_%';
+
+    IF arkiv IS NOT NULL
+       AND public.hex_kolumntyp('sk1_kba_test', 'atertillagd_y_h', 'fid') = 'integer'
+       AND EXISTS (SELECT 1 FROM sk1_kba_test.atertillagd_y_h WHERE fid = 7)
+    THEN
+        EXECUTE format('SELECT count(*) FROM sk1_kba_test.atertillagd_y_h WHERE %I = %L', arkiv, 'abc')
+        INTO STRICT arkiv;
+        IF arkiv::integer > 0 THEN
+            RAISE NOTICE 'TEST 13e PASSED: text-fid arkiverad, ny integer-fid loggas';
+        ELSE
+            RAISE WARNING 'TEST 13e FAILED: arkivkolumnen saknar de gamla värdena';
+        END IF;
+    ELSE
+        RAISE WARNING 'TEST 13e FAILED: ingen arkivkolumn (%) eller fid fel typ/saknar värde', arkiv;
+    END IF;
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE WARNING 'TEST 13e FAILED: %', SQLERRM;
+END $$;
+
+DROP TABLE IF EXISTS sk1_kba_test.atertillagd_y;
+
+-- 13f: ALTER COLUMN TYPE. Tidigare synkades inte typen och varje UPDATE
+-- kraschade ("column nr is of type integer but expression is of type text").
+CREATE TABLE sk1_kba_test.typbyte_y (
+    nr    integer,
+    belopp numeric(10,2),
+    geom  geometry(Polygon, 3007)
+);
+INSERT INTO sk1_kba_test.typbyte_y (nr, belopp, geom)
+VALUES (1, 1.50, 'SRID=3007;POLYGON((0 0,0 10,10 10,10 0,0 0))');
+UPDATE sk1_kba_test.typbyte_y SET nr = 2;
+ALTER TABLE sk1_kba_test.typbyte_y ALTER COLUMN nr TYPE text;
+ALTER TABLE sk1_kba_test.typbyte_y ALTER COLUMN belopp TYPE integer;
+
+DO $$
+BEGIN
+    UPDATE sk1_kba_test.typbyte_y SET nr = 'tre';
+
+    IF public.hex_kolumntyp('sk1_kba_test', 'typbyte_y_h', 'nr') = 'text'
+       AND public.hex_kolumntyp('sk1_kba_test', 'typbyte_y_h', 'belopp') = 'integer'
+       AND EXISTS (
+           SELECT 1 FROM information_schema.columns
+           WHERE table_schema = 'sk1_kba_test' AND table_name = 'typbyte_y_h'
+             AND column_name LIKE 'belopp\_arkiv\_%'
+       )
+    THEN
+        RAISE NOTICE 'TEST 13f PASSED: integer → text konverterad, numeric → integer arkiverad (avrundning)';
+    ELSE
+        RAISE WARNING 'TEST 13f FAILED: nr=% belopp=%',
+            public.hex_kolumntyp('sk1_kba_test', 'typbyte_y_h', 'nr'),
+            public.hex_kolumntyp('sk1_kba_test', 'typbyte_y_h', 'belopp');
+    END IF;
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE WARNING 'TEST 13f FAILED: UPDATE efter ALTER COLUMN TYPE gav fel: %', SQLERRM;
+END $$;
+
+DROP TABLE IF EXISTS sk1_kba_test.typbyte_y;
+
+-- 13g: FME-tvåsteget via AddGeometryColumn(). current_query() är
+-- "SELECT AddGeometryColumn(...)", så ADD COLUMN syntes inte: historiken och
+-- triggern fick aldrig geom, inget GiST-index skapades och tabellen blev
+-- kvar som afvaktande.
+SET application_name = 'fme';
+CREATE TABLE sk1_kba_test.fme_agc_y (namn text);
+SELECT AddGeometryColumn('sk1_kba_test', 'fme_agc_y', 'geom', 3007, 'POLYGON', 2);
+RESET application_name;
+
+DO $$
+BEGIN
+    IF EXISTS (
+           SELECT 1 FROM information_schema.columns
+           WHERE table_schema = 'sk1_kba_test' AND table_name = 'fme_agc_y_h'
+             AND column_name = 'geom'
+       )
+       AND EXISTS (
+           SELECT 1 FROM pg_indexes
+           WHERE schemaname = 'sk1_kba_test' AND tablename = 'fme_agc_y'
+             AND indexdef ILIKE '%gist%'
+       )
+       AND NOT EXISTS (
+           SELECT 1 FROM public.hex_afvaktande_geometri
+           WHERE schema_namn = 'sk1_kba_test' AND tabell_namn = 'fme_agc_y'
+       )
+    THEN
+        RAISE NOTICE 'TEST 13g PASSED: AddGeometryColumn slutför tvåsteget (historik, GiST, ej afvaktande)';
+    ELSE
+        RAISE WARNING 'TEST 13g FAILED: AddGeometryColumn slutförde inte tvåsteget';
+    END IF;
+END $$;
+
+DROP TABLE IF EXISTS sk1_kba_test.fme_agc_y;
+
+-- 13h: RENAME COLUMN och ADD COLUMN i samma transaktion (som när QGIS sparar
+-- fältändringar). Rekursionsflaggan lämnades satt efter namnbytet, så
+-- ADD COLUMN hoppades över och den nya kolumnen kom aldrig till historiken.
+CREATE TABLE sk1_kba_test.samma_tx_y (namn text, geom geometry(Polygon, 3007));
+BEGIN;
+ALTER TABLE sk1_kba_test.samma_tx_y RENAME COLUMN namn TO benamning;
+ALTER TABLE sk1_kba_test.samma_tx_y ADD COLUMN antal integer;
+COMMIT;
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'sk1_kba_test' AND table_name = 'samma_tx_y_h'
+          AND column_name = 'antal'
+    ) THEN
+        RAISE NOTICE 'TEST 13h PASSED: ADD COLUMN efter RENAME COLUMN i samma transaktion synkas';
+    ELSE
+        RAISE WARNING 'TEST 13h FAILED: antal saknas i historiken – ADD COLUMN hoppades över';
+    END IF;
+END $$;
+
+DROP TABLE IF EXISTS sk1_kba_test.samma_tx_y;
+
+-- 13i: RENAME TO följt av DROP COLUMN. Triggern anropar fortfarande
+-- trg_fn_<gammalt namn>_qa; ombyggnaden måste träffa den funktionen och inte
+-- skapa en ny med det nya namnet.
+CREATE TABLE sk1_kba_test.fore_namnbyte_y (namn text, fid bigint, geom geometry(Polygon, 3007));
+INSERT INTO sk1_kba_test.fore_namnbyte_y (namn, fid, geom)
+VALUES ('a', 1, 'SRID=3007;POLYGON((0 0,0 10,10 10,10 0,0 0))');
+ALTER TABLE sk1_kba_test.fore_namnbyte_y RENAME TO efter_namnbyte_y;
+ALTER TABLE sk1_kba_test.efter_namnbyte_y DROP COLUMN fid;
+
+DO $$
+BEGIN
+    UPDATE sk1_kba_test.efter_namnbyte_y SET namn = 'b';
+    RAISE NOTICE 'TEST 13i PASSED: DROP COLUMN efter RENAME TO bygger om rätt triggerfunktion';
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE WARNING 'TEST 13i FAILED: %', SQLERRM;
+END $$;
+
+DROP TABLE IF EXISTS sk1_kba_test.efter_namnbyte_y;
+
+-- 13j: hex_kontrollera_historik() hittar avvikelserna och hex_synka_historik()
+-- rättar dem. Avvikelserna byggs med event-triggern avstängd.
+CREATE TABLE sk1_kba_test.kontroll_y (namn text, fid bigint, geom geometry(Polygon, 3007));
+ALTER EVENT TRIGGER hex_hantera_ny_kolumn_trigger DISABLE;
+ALTER TABLE sk1_kba_test.kontroll_y_h DROP COLUMN geom;
+ALTER TABLE sk1_kba_test.kontroll_y DROP COLUMN fid;
+ALTER EVENT TRIGGER hex_hantera_ny_kolumn_trigger ENABLE;
+
+DO $$
+DECLARE
+    fore  text;
+    efter integer;
+BEGIN
+    SELECT string_agg(problem, ',' ORDER BY problem) INTO fore
+    FROM public.hex_kontrollera_historik()
+    WHERE schema_namn = 'sk1_kba_test' AND tabell_namn = 'kontroll_y';
+
+    PERFORM public.hex_synka_historik('sk1_kba_test', 'kontroll_y');
+
+    SELECT count(*) INTO efter
+    FROM public.hex_kontrollera_historik()
+    WHERE schema_namn = 'sk1_kba_test' AND tabell_namn = 'kontroll_y';
+
+    IF fore = 'saknas i historik,trigger: borttagen kolumn' AND efter = 0 THEN
+        RAISE NOTICE 'TEST 13j PASSED: kontrollen hittar (%) och synken rättar', fore;
+    ELSE
+        RAISE WARNING 'TEST 13j FAILED: före=% efter=%', fore, efter;
+    END IF;
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE WARNING 'TEST 13j FAILED: %', SQLERRM;
+END $$;
+
+DROP TABLE IF EXISTS sk1_kba_test.kontroll_y;
+
 ------------------------------------------------------------------------
 -- SLUTLIG STÄDNING
 ------------------------------------------------------------------------

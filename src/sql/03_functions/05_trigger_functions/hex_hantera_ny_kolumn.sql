@@ -21,8 +21,8 @@ AS $BODY$
  * 3. Kontrollerar strukturskillnader mellan modertabeller och historiktabeller
  * 4. UPPDATERAD: Lägger automatiskt till saknade kolumner i historiktabeller
  * 5. Ger användaren instruktioner för manuell synkronisering vid typskillnader
- * 6. Bygger om QA-triggern efter DROP COLUMN så att den inte refererar till
- *    den borttagna kolumnen
+ * 6. Synkar historiken via hex_synka_historik() efter varje ALTER TABLE –
+ *    även DROP COLUMN och ALTER COLUMN TYPE, som inte omstruktureras
  *
  * Steg 5b/5c: FME-tvåstegsmönster och liknande omvägar
  * - 5b: tabell var afvaktande (skapades utan geom, geom anländer via ALTER TABLE)
@@ -132,6 +132,10 @@ BEGIN
                 END IF;
             END;
         END LOOP;
+        -- Flaggan är transaktionslokal. Lämnas den satt hoppas varje senare
+        -- ALTER TABLE i samma transaktion över (QGIS sparar alla fältändringar
+        -- i en transaktion).
+        PERFORM set_config('temp.reorganization_in_progress', 'false', true);
         RETURN;  -- Inget kolumnarbete behövs vid rename
     END IF;
 
@@ -191,8 +195,12 @@ BEGIN
                       AND table_name = meta_rad.history_table
                       AND column_name = nytt_kolumnnamn
                 ) THEN
-                    RAISE NOTICE '[hex_hantera_ny_kolumn] Kolumnen % finns redan i historiktabellen %.% - hoppar över',
+                    -- Kolumnen kan finnas kvar i historiken sedan den tagits
+                    -- bort tidigare. Den gamla kolumnen står då kvar som
+                    -- historik, men triggern måste fortfarande byggas om.
+                    RAISE NOTICE '[hex_hantera_ny_kolumn] Kolumnen % finns redan i historiktabellen %.% - synkar',
                         nytt_kolumnnamn, meta_rad.history_schema, meta_rad.history_table;
+                    PERFORM hex_synka_historik(schema_namn, tabell_namn);
                     CONTINUE;
                 END IF;
 
@@ -213,11 +221,13 @@ BEGIN
 
                 IF antal_kandidater <> 1 THEN
                     -- OBS: RAISE stöder inte %I - identifierare citeras med quote_ident()
-                    RAISE WARNING '[hex_hantera_ny_kolumn] Kunde inte entydigt avgöra vilket kolumnnamn som byttes i %.% (% kandidater i historiktabellen). Synka manuellt med: ALTER TABLE %.% RENAME COLUMN <gammalt> TO %;',
+                    -- Utan entydig kandidat läggs det nya namnet till som ny
+                    -- kolumn. Historiken delas då på två kolumner, men inget
+                    -- går förlorat och triggern fungerar.
+                    RAISE WARNING '[hex_hantera_ny_kolumn] Kunde inte entydigt avgöra vilket kolumnnamn som byttes i %.% (% kandidater i historiktabellen). % läggs till som ny kolumn i historiken.',
                         schema_namn, tabell_namn, antal_kandidater,
-                        quote_ident(meta_rad.history_schema),
-                        quote_ident(meta_rad.history_table),
                         quote_ident(nytt_kolumnnamn);
+                    PERFORM hex_synka_historik(schema_namn, tabell_namn);
                     CONTINUE;
                 END IF;
 
@@ -230,102 +240,65 @@ BEGIN
                     gammalt_kolumnnamn, nytt_kolumnnamn;
 
                 -- QA-triggerns kolumnlista innehåller det gamla namnet och måste byggas om
-                PERFORM hex_aterskapa_qa_trigger(schema_namn, tabell_namn, meta_rad.history_table);
+                PERFORM hex_synka_historik(schema_namn, tabell_namn);
             END;
         END LOOP;
+        PERFORM set_config('temp.reorganization_in_progress', 'false', true);
         RETURN;  -- Kolumnnamnbyte kräver ingen omstrukturering
     END IF;
 
     -- ----------------------------------------------------------------
-    -- Specialfall: ALTER TABLE ... DROP COLUMN
-    -- QA-triggerns genererade INSERT innehåller OLD.<kolumn> för varje kolumn
-    -- som fanns när den byggdes. Utan ombyggnad kraschar nästa UPDATE/DELETE
-    -- med "record "old" has no field ...".
+    -- Är det här ett kolumntillägg?
     --
-    -- Den borttagna kolumnen ligger kvar i historiktabellen – historiken ska
-    -- behålla de värden den redan har. Kolumner som finns i modertabellen men
-    -- saknas i historiktabellen läggs däremot till först, annars pekar den
-    -- ombyggda triggern på kolumner som historiktabellen inte har.
+    -- pg_event_trigger_ddl_commands() ger object_type = 'table' för ADD
+    -- COLUMN, DROP COLUMN, ALTER COLUMN TYPE och OWNER TO, så satstexten får
+    -- avgöra. current_query() är den yttersta klientsatsen, vilket missar två
+    -- vägar:
     --
-    -- Kombineras DROP med ADD COLUMN i samma sats sköter ADD-vägen nedan
-    -- ombyggnaden, så den här grenen tar bara rena DROP COLUMN.
+    --   * AddGeometryColumn() – klienten skickar SELECT AddGeometryColumn(...)
+    --     och PostGIS kör ALTER TABLE ... ADD COLUMN internt. FME och QGIS
+    --     kan använda den i tvåstegsmönstret.
+    --   * ADD COLUMN via EXECUTE i en funktion eller ett DO-block.
+    --
+    -- Det första fångas på namnet. Båda fångas strukturellt för afvaktande
+    -- tabeller: har en afvaktande tabell nu en geom-kolumn har den lagts till.
+    --
+    -- Vid EXECUTE inuti hex_underhall() innehåller current_query() aldrig
+    -- 'ADD COLUMN', så underhållets egna ALTER TABLE omstruktureras inte.
     -- ----------------------------------------------------------------
-    IF current_query() ~* '\mdrop\s+column\M' AND NOT (current_query() ~* 'add\s+column') THEN
+    IF NOT (
+        current_query() ~* 'add\s+column|addgeometrycolumn'
+        OR EXISTS (
+            SELECT 1
+            FROM pg_event_trigger_ddl_commands() k
+            JOIN pg_class c ON c.oid = k.objid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            JOIN public.hex_afvaktande_geometri ag
+              ON ag.schema_namn = n.nspname AND ag.tabell_namn = c.relname
+            JOIN pg_attribute a
+              ON a.attrelid = c.oid AND a.attname = 'geom' AND NOT a.attisdropped
+            WHERE k.command_tag = 'ALTER TABLE'
+        )
+    ) THEN
+        -- Inget kolumntillägg: DROP COLUMN, ALTER COLUMN TYPE, OWNER TO,
+        -- ENABLE/DISABLE TRIGGER o.s.v. Ingen kolumnomstrukturering, men
+        -- historiken synkas alltid. Synken är idempotent och billig, och den
+        -- fångar DROP COLUMN (triggern pekar annars på en kolumn som inte
+        -- finns) och ALTER COLUMN TYPE (historikkolumnen får fel typ) utan
+        -- att tolka satstexten.
         FOR kommando IN SELECT * FROM pg_event_trigger_ddl_commands()
             WHERE command_tag = 'ALTER TABLE' AND object_type = 'table'
         LOOP
-            DECLARE
-                meta_rad     record;
-                h_schema     text;
-                h_tabell     text;
-                kolumn_info  record;
-            BEGIN
-                SELECT n.nspname, c.relname
-                INTO schema_namn, tabell_namn
-                FROM pg_class c
-                JOIN pg_namespace n ON n.oid = c.relnamespace
-                WHERE c.oid = kommando.objid;
+            SELECT n.nspname, c.relname
+            INTO schema_namn, tabell_namn
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE c.oid = kommando.objid;
 
-                -- Historiktabeller hanteras aldrig direkt
-                CONTINUE WHEN tabell_namn IS NULL OR tabell_namn ~ '_h$';
-
-                SELECT * INTO meta_rad
-                FROM hex_metadata
-                WHERE parent_oid = kommando.objid;
-
-                IF FOUND THEN
-                    h_schema := meta_rad.history_schema;
-                    h_tabell := meta_rad.history_table;
-                ELSE
-                    -- Samma namnkonvention som steg 6 nedan
-                    h_schema := schema_namn;
-                    h_tabell := tabell_namn || '_h';
-                END IF;
-
-                IF to_regclass(format('%I.%I', h_schema, h_tabell)) IS NULL THEN
-                    RAISE NOTICE '[hex_hantera_ny_kolumn] Kolumn borttagen i %.% - ingen historiktabell, inget att synka',
-                        schema_namn, tabell_namn;
-                    CONTINUE;
-                END IF;
-
-                FOR kolumn_info IN
-                    SELECT m.column_name,
-                           public.hex_kolumntyp(schema_namn, tabell_namn, m.column_name) AS full_data_type
-                    FROM information_schema.columns m
-                    WHERE m.table_schema = schema_namn
-                      AND m.table_name = tabell_namn
-                      AND NOT EXISTS (
-                          SELECT 1 FROM information_schema.columns h
-                          WHERE h.table_schema = h_schema
-                            AND h.table_name = h_tabell
-                            AND h.column_name = m.column_name
-                      )
-                    ORDER BY m.ordinal_position
-                LOOP
-                    EXECUTE format('ALTER TABLE %I.%I ADD COLUMN %I %s',
-                        h_schema, h_tabell, kolumn_info.column_name, kolumn_info.full_data_type);
-                    RAISE NOTICE '[hex_hantera_ny_kolumn] ✓ Saknad kolumn tillagd i historiktabell %.%: %',
-                        h_schema, h_tabell, kolumn_info.column_name;
-                END LOOP;
-
-                RAISE NOTICE '[hex_hantera_ny_kolumn] Kolumn borttagen i %.% - bygger om QA-trigger',
-                    schema_namn, tabell_namn;
-                PERFORM hex_aterskapa_qa_trigger(schema_namn, tabell_namn, h_tabell);
-            END;
+            CONTINUE WHEN tabell_namn IS NULL OR tabell_namn ~ '_h$';
+            PERFORM hex_synka_historik(schema_namn, tabell_namn);
         END LOOP;
-        PERFORM set_config('temp.reorganization_in_progress', 'false', true);
-        RETURN;  -- Borttagning kräver ingen kolumnomstrukturering
-    END IF;
 
-    -- Avbryt om DDL-satsen inte är ett ADD COLUMN.
-    -- ALTER TABLE OWNER TO, SET SCHEMA, DROP COLUMN, ENABLE/DISABLE TRIGGER o.s.v.
-    -- ska inte trigga kolumnomstrukturering (DROP COLUMN har redan hanterats ovan). pg_event_trigger_ddl_commands() returnerar
-    -- object_type = 'table' (inte 'table column') även för ADD COLUMN i PostgreSQL 16,
-    -- så vi använder current_query() som en tillförlitlig textuell kontroll.
-    -- Vid EXECUTE inuti PL/pgSQL (t.ex. hex_underhall()) returnerar current_query()
-    -- den yttersta klientsatsen (SELECT * FROM hex_underhall()), som aldrig innehåller
-    -- frasen 'ADD COLUMN', vilket ger korrekt tidig avslutning.
-    IF NOT (current_query() ~* 'add\s+column') THEN
         RAISE NOTICE '[hex_hantera_ny_kolumn] Inga kolumntillägg – avbryter';
         PERFORM set_config('temp.reorganization_in_progress', 'false', true);
         RETURN;
@@ -1011,52 +984,14 @@ BEGIN
                         END;
                     END IF;
                     
-                    -- NYTT: Lägg automatiskt till saknade kolumner i historiktabellen
+                    -- Saknade kolumner, typkonflikter och QA-triggern hanteras av
+                    -- hex_synka_historik(). Den körs även när inga kolumner saknas:
+                    -- en kolumn som tagits bort och lagts tillbaka finns redan i
+                    -- historiken, men triggern måste ändå byggas om för att ta med den.
+                    antal_tillagda := coalesce(hex_synka_historik(schema_namn, tabell_namn), 0);
+                    RAISE NOTICE '[hex_hantera_ny_kolumn] Historiktabell synkroniserad: % ändringar', antal_tillagda;
+
                     IF array_length(saknade_i_historik, 1) > 0 THEN
-                        RAISE NOTICE '[hex_hantera_ny_kolumn] Lägger till % saknade kolumner i historiktabell:',
-                            array_length(saknade_i_historik, 1);
-                        
-                        -- Typen hämtas med hex_kolumntyp() (format_type) i stället
-                        -- för en handskriven CASE. Den gamla varianten tappade
-                        -- typmodifieraren för allt utom varchar och numeric, och
-                        -- gav 'ARRAY' för arraykolumner – kolumnen kunde då inte
-                        -- läggas till i historiktabellen alls.
-                        FOR kolumn_info IN
-                            SELECT
-                                m.column_name,
-                                public.hex_kolumntyp(schema_namn, tabell_namn, m.column_name)
-                                    AS full_data_type
-                            FROM information_schema.columns m
-                            WHERE m.table_schema = schema_namn
-                            AND m.table_name = tabell_namn
-                            AND m.column_name = ANY(saknade_i_historik)
-                            ORDER BY m.ordinal_position
-                        LOOP
-                            BEGIN
-                                sql_sats := format(
-                                    'ALTER TABLE %I.%I ADD COLUMN %I %s',
-                                    schema_namn, historik_tabell_namn,
-                                    kolumn_info.column_name, kolumn_info.full_data_type
-                                );
-                                RAISE NOTICE '[hex_hantera_ny_kolumn]   SQL: %', sql_sats;
-                                EXECUTE sql_sats;
-                                antal_tillagda := antal_tillagda + 1;
-                                RAISE NOTICE '[hex_hantera_ny_kolumn]   ✓ Lade till kolumn: %', kolumn_info.column_name;
-                            EXCEPTION
-                                WHEN OTHERS THEN
-                                    RAISE WARNING '[hex_hantera_ny_kolumn]   ✗ Kunde inte lägga till kolumn %: %', 
-                                        kolumn_info.column_name, SQLERRM;
-                            END;
-                        END LOOP;
-                        
-                        RAISE NOTICE '[hex_hantera_ny_kolumn] Historiktabell synkroniserad: % kolumner tillagda', antal_tillagda;
-                        
-                        -- Regenerera trigger-funktionen med uppdaterad kolumnlista
-                        IF antal_tillagda > 0 THEN
-                            RAISE NOTICE '[hex_hantera_ny_kolumn] Regenererar trigger-funktion för att inkludera nya kolumner...';
-                            PERFORM hex_aterskapa_qa_trigger(schema_namn, tabell_namn, historik_tabell_namn);
-                        END IF;
-                        
                         -- Flytta standardkolumner med negativ ordinal_position till rätt plats i historiktabellen
                         RAISE NOTICE '[hex_hantera_ny_kolumn] Reorganiserar standardkolumner i historiktabellen...';
                         
@@ -1174,9 +1109,9 @@ BEGIN
                             array_to_string(extra_i_historik, ', ');
                     END IF;
                     
-                    -- Visa kolumner med olika datatyper (kräver manuell åtgärd)
+                    -- Typskillnader är redan lösta av hex_synka_historik() ovan
                     IF array_length(typ_skillnader, 1) > 0 THEN
-                        RAISE WARNING '[hex_hantera_ny_kolumn] Olika datatyper (kräver manuell åtgärd): %',
+                        RAISE NOTICE '[hex_hantera_ny_kolumn] Typskillnader hanterade av hex_synka_historik: %',
                             array_to_string(typ_skillnader, ', ');
                     END IF;
                     

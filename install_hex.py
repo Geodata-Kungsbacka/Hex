@@ -91,6 +91,10 @@ INSTALL_ORDER = [
     "src/sql/03_functions/04_utility/hex_uppdatera_sekvensnamn.sql",
     "src/sql/03_functions/04_utility/hex_skapa_historik_qa.sql",
     "src/sql/03_functions/04_utility/hex_aterskapa_qa_trigger.sql",
+    # hex_synka_historik anropar hex_aterskapa_qa_trigger; båda används av
+    # hex_hantera_ny_kolumn och hex_underhall
+    "src/sql/03_functions/04_utility/hex_synka_historik.sql",
+    "src/sql/03_functions/04_utility/hex_kontrollera_historik.sql",
     "src/sql/03_functions/04_utility/hex_tilldela_rollrattigheter.sql",
     "src/sql/03_functions/04_utility/hex_tillampa_grupprattigheter.sql",
     "src/sql/03_functions/04_utility/hex_tvinga_gid_fran_sekvens.sql",
@@ -153,6 +157,8 @@ DROP FUNCTION IF EXISTS public.hex_kontrollera_geometri_trigger() CASCADE;
 
 -- Hjälpfunktioner
 DROP FUNCTION IF EXISTS public.hex_tillampa_grupprattigheter();
+DROP FUNCTION IF EXISTS public.hex_synka_historik(text, text);
+DROP FUNCTION IF EXISTS public.hex_kontrollera_historik();
 DROP FUNCTION IF EXISTS public.hex_aterskapa_qa_trigger(text, text, text);
 DROP FUNCTION IF EXISTS public.hex_lagg_till_dummy_geometri(text, text, hex_geom_info);
 DROP FUNCTION IF EXISTS public.hex_ta_bort_dummy_rad() CASCADE;
@@ -282,6 +288,7 @@ PRESERVE_STATE = {
     "hex_metadata": [
         "parent_oid", "parent_schema", "parent_table",
         "history_schema", "history_table", "trigger_funktion", "created_at",
+        "created_by",
     ],
     "hex_dummy_geometrier": ["schema_namn", "tabell_namn", "gid", "registrerad"],
     "hex_afvaktande_geometri": [
@@ -290,6 +297,15 @@ PRESERVE_STATE = {
     "hex_avvikande_srid": [
         "schema_namn", "tabell_namn", "srid", "registrerad", "registrerad_av",
     ],
+}
+
+# HEX-MIGRERING 2026-09: hex_metadata.created_by tillkom med DEFAULT session_user.
+# En databas som installerades före kolumnen har den inte i snapshoten, och utan
+# det här skulle återställningen låta DEFAULT fylla i den som kör --upgrade som
+# skapare av varje tabell. NULL betyder "okänt". Tas bort när samtliga databaser
+# kört --upgrade med en version som har created_by.
+SAKNAS_I_SNAPSHOT_SOM_NULL = {
+    "hex_metadata": ["created_by"],
 }
 
 # =============================================================================
@@ -564,6 +580,9 @@ def restore_settings(cur, snapshot: dict):
                 }
                 if not insert_params:
                     continue
+                for c in SAKNAS_I_SNAPSHOT_SOM_NULL.get(table, ()):
+                    if c in new_cols and c not in old_cols:
+                        insert_params[c] = None
                 cur.execute(
                     pgsql.SQL(
                         "INSERT INTO public.{} ({}) VALUES ({}) ON CONFLICT DO NOTHING"

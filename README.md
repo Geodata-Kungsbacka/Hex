@@ -376,6 +376,8 @@ src/sql/03_functions/04_utility/hex_byt_ut_tabell.sql
 src/sql/03_functions/04_utility/hex_uppdatera_sekvensnamn.sql
 src/sql/03_functions/04_utility/hex_skapa_historik_qa.sql
 src/sql/03_functions/04_utility/hex_aterskapa_qa_trigger.sql
+src/sql/03_functions/04_utility/hex_synka_historik.sql
+src/sql/03_functions/04_utility/hex_kontrollera_historik.sql
 src/sql/03_functions/04_utility/hex_tilldela_rollrattigheter.sql
 src/sql/03_functions/04_utility/hex_tillampa_grupprattigheter.sql
 src/sql/03_functions/04_utility/hex_tvinga_gid_fran_sekvens.sql
@@ -479,6 +481,10 @@ skedd räcker det inte med `hex_underhall()` — rollerna skapas bara vid
 - *Registreras* av `hex_skapa_historik_qa()` när en historiktabell skapas
 - *Uppdateras* av `hex_hantera_ny_kolumn()` vid `ALTER TABLE RENAME TO` (historiktabell och parent_table uppdateras)
 - *Raderas* av `hex_hantera_borttagen_tabell()` vid `DROP TABLE`
+
+`created_by` är inloggningsrollen (`session_user`) som skapade tabellen. Den
+ändras inte om historiken skapas om, och är `NULL` för poster registrerade
+innan kolumnen fanns.
 
 **Praktisk nytta**: En kvarliggande rad vars föräldertabell inte längre finns indikerar ett ofullständigt DROP — granska och rensa manuellt vid behov.
 
@@ -814,9 +820,41 @@ SELECT public.hex_sakerstall_gid_primarnyckel('sk1_kba_geo', 'vagar_l');
 [Dummy-geometrirad i nya geometritabeller](#7-dummy-geometrirad-i-nya-geometritabeller).
 
 #### `hex_aterskapa_qa_trigger(schema, tabell, historik_tabell)`
-**Syfte**: Kopplar tillbaka QA-triggern på en tabell vars historiktabell redan
-finns — används av `hex_underhall()` och vid `ALTER TABLE ... RENAME TO`, där
-triggern måste följa med det nya namnet.
+**Syfte**: Bygger om QA-triggerfunktionen med modertabellens aktuella
+kolumnlista. Bygger om den funktion triggern faktiskt anropar, så att den
+fortfarande träffar rätt efter `ALTER TABLE ... RENAME TO`. Anropas via
+`hex_synka_historik()`.
+
+#### `hex_synka_historik(schema, tabell)`
+**Syfte**: Håller historiktabellen i takt med modertabellen. Invarianten är att
+historiken innehåller allt modertabellen innehåller och allt den har innehållit:
+
+- Kolumner som saknas i `_h` läggs till.
+- Kolumner som tagits bort ur modertabellen ligger kvar i `_h` med sina värden.
+  Läggs kolumnen tillbaka återanvänds den.
+- Vid typkonflikt (`ALTER COLUMN TYPE`, eller en kolumn som läggs tillbaka med
+  annan typ) konverteras historikkolumnen bara om varje värde överlever
+  konverteringen oförändrat. Annars döps den gamla kolumnen om till
+  `<kolumn>_arkiv_<ÅÅÅÅMMDD>` och en ny läggs till.
+- QA-triggern byggs om.
+
+Körs av `hex_hantera_ny_kolumn()` efter varje `ALTER TABLE` och av
+`hex_underhall()` för alla tabeller med historik. Returnerar antal ändringar,
+`NULL` om tabellen saknar historik.
+
+```sql
+SELECT public.hex_synka_historik('sk1_kba_geo', 'vagar_l');
+```
+
+#### `hex_kontrollera_historik()`
+**Syfte**: Listar tabeller vars historiktabell eller QA-trigger inte stämmer med
+modertabellen: saknade kolumner, typskillnader, triggerkolumner som inte finns,
+saknade triggers, par som bara hittas via namnkonventionen och afvaktande
+tabeller som redan fått `geom`. Läser bara.
+
+```sql
+SELECT * FROM public.hex_kontrollera_historik();
+```
 
 #### `hex_forklara_geometrifel(geom)`
 **Syfte**: Returnerar en läsbar förklaring till varför en geometri underkändes

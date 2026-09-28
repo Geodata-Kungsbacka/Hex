@@ -18,7 +18,7 @@ AS $BODY$
  * Schemaprefix hämtas dynamiskt från hex_standardiserade_skyddsnivaer, så att
  * egna prefix (t.ex. sc1, sk3) fungerar utan kodändringar.
  *
- * Hanterar tretton åtgärdstyper:
+ * Hanterar fjorton åtgärdstyper:
  *
  *   ägarskapsöverföring  Säkerställer att scheman, tabeller, sekvenser och
  *                        funktioner i Hex-hanterade scheman ägs av
@@ -51,6 +51,12 @@ AS $BODY$
  *                        en dummy-rad registrerad i hex_dummy_geometrier.
  *                        Transient – tar bort sig själv när första riktiga
  *                        raden infogas. Återkopplas bara om dummy-raden finns.
+ *
+ *   historiksynk         Kör hex_synka_historik() på varje tabell med
+ *                        historik: saknade kolumner läggs till i _h,
+ *                        typskillnader rättas utan dataförlust och QA-triggern
+ *                        byggs om. Returnerar 'redan synkad' eller
+ *                        'synkad: N ändringar'.
  *
  *   trg_<tabell>_qa      BEFORE UPDATE OR DELETE på tabeller med historik.
  *                        Identifieras via triggerfunktioner (trg_fn_%_qa) som
@@ -115,6 +121,7 @@ DECLARE
     arvs_rollnamn      text;
     schema_regex       text;
     generated_password text;
+    antal_andringar    integer;
 BEGIN
     -- Bygg regex från hex_standardiserade_skyddsnivaer en gång.
     -- Alla schemanamnkontroller i denna funktion använder denna variabel
@@ -542,6 +549,51 @@ BEGIN
             atgard := 'redan finns';
         END IF;
 
+        RETURN NEXT;
+    END LOOP;
+
+    -- -------------------------------------------------------------------------
+    -- 4b. historiksynk
+    --    Varje historiktabell ska innehålla modertabellens kolumner med samma
+    --    typ, och QA-triggern ska kopiera exakt modertabellens kolumner.
+    --    hex_synka_historik() rättar båda och behåller kolumner som tagits bort
+    --    ur modertabellen. Körs efter steg 4 så att nyss återkopplade triggers
+    --    också byggs om.
+    --
+    --    Invariant, inte migrering: en historik kan hamna ur synk igen när som
+    --    helst, t.ex. om någon ändrar en tabell medan Hex är avinstallerat.
+    -- -------------------------------------------------------------------------
+    FOR r IN
+        SELECT DISTINCT n.nspname::text AS s, c.relname::text AS t
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE c.relkind = 'r'
+          AND n.nspname ~ schema_regex
+          AND c.relname !~ '_h$'
+          AND (
+              EXISTS (SELECT 1 FROM public.hex_metadata m WHERE m.parent_oid = c.oid)
+              OR EXISTS (
+                  SELECT 1 FROM pg_class h
+                  WHERE h.relnamespace = c.relnamespace
+                    AND h.relname = left(c.relname || '_h', 63)
+                    AND h.relkind = 'r'
+              )
+          )
+        ORDER BY 1, 2
+    LOOP
+        schema_namn  := r.s;
+        tabell_namn  := r.t;
+        trigger_namn := 'historiksynk';
+        BEGIN
+            antal_andringar := public.hex_synka_historik(r.s, r.t);
+            atgard := CASE
+                WHEN coalesce(antal_andringar, 0) = 0 THEN 'redan synkad'
+                ELSE format('synkad: %s ändringar', antal_andringar)
+            END;
+        EXCEPTION
+            WHEN OTHERS THEN
+                atgard := 'fel: ' || SQLERRM;
+        END;
         RETURN NEXT;
     END LOOP;
 

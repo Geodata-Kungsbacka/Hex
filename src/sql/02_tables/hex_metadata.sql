@@ -16,7 +16,10 @@ CREATE TABLE IF NOT EXISTS public.hex_metadata (
     history_schema   text         NOT NULL,
     history_table    text         NOT NULL,
     trigger_funktion text,        -- NULL om hex_skapa_historik_qa returnerade false
-    created_at       timestamptz  NOT NULL DEFAULT now()
+    created_at       timestamptz  NOT NULL DEFAULT now(),
+    -- session_user, inte current_user: event-triggern kan köras med en annan
+    -- aktiv roll (SET ROLE), men det är inloggningen som skapade tabellen.
+    created_by       text         DEFAULT session_user
 );
 
 -- Ägaren sätts via hex_systemagare() i stället för ett hårdkodat rollnamn,
@@ -57,3 +60,7 @@ COMMENT ON COLUMN public.hex_metadata.trigger_funktion IS
      Ändras INTE när föräldertabellen döps om.';
 COMMENT ON COLUMN public.hex_metadata.created_at IS
     'Tidpunkt då posten registrerades i hex_metadata.';
+COMMENT ON COLUMN public.hex_metadata.created_by IS
+    'Inloggningsrollen (session_user) som skapade tabellen. NULL för poster
+     registrerade innan kolumnen fanns. Ändras inte vid ON CONFLICT DO UPDATE i
+     hex_skapa_historik_qa(), så den som skapade tabellen först står kvar.';
