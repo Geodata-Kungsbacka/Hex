@@ -118,10 +118,7 @@ BEGIN
                         meta_rad.history_table,
                         ny_historik);
 
-                    UPDATE hex_metadata
-                    SET parent_table  = tabell_namn,
-                        history_table = ny_historik
-                    WHERE parent_oid = kommando.objid;
+                    PERFORM hex_uppdatera_metadata_namn(kommando.objid);
 
                     RAISE NOTICE '[hex_hantera_ny_kolumn] ✓ Historiktabell omdöpt: % → % (tabell omdöpt: % → %)',
                         meta_rad.history_table, ny_historik,

@@ -1920,6 +1920,107 @@ END $$;
 DROP TABLE IF EXISTS sk1_kba_test.fastnad_p;
 
 ------------------------------------------------------------------------
+-- TEST 14: hex_metadata är inte skrivbar för PUBLIC
+--
+-- Tabellen hade GRANT SELECT, INSERT, UPDATE, DELETE TO PUBLIC, så vilken
+-- inloggning som helst kunde skriva om kopplingen tabell → historik och
+-- created_by. Skrivningar går nu via SECURITY DEFINER-funktioner som bara
+-- skriver det som är sant enligt systemkatalogen.
+------------------------------------------------------------------------
+\echo ''
+\echo '--- TEST 14: Skrivskydd på hex_metadata ---'
+
+CREATE TABLE sk1_kba_test.skyddad_y (namn text, geom geometry(Polygon, 3007));
+DROP ROLE IF EXISTS hex_test_meta_vanlig;
+CREATE ROLE hex_test_meta_vanlig NOLOGIN;
+
+-- 14a: En vanlig roll kan läsa men inte skriva direkt
+DO $$
+DECLARE
+    antal  integer;
+    nekade integer := 0;
+BEGIN
+    SET LOCAL ROLE hex_test_meta_vanlig;
+    SELECT count(*) INTO antal FROM public.hex_metadata;
+
+    BEGIN
+        UPDATE public.hex_metadata SET created_by = 'någon annan';
+    EXCEPTION WHEN insufficient_privilege THEN nekade := nekade + 1;
+    END;
+    BEGIN
+        DELETE FROM public.hex_metadata;
+    EXCEPTION WHEN insufficient_privilege THEN nekade := nekade + 1;
+    END;
+    BEGIN
+        INSERT INTO public.hex_metadata (parent_oid, parent_schema, parent_table, history_schema, history_table)
+        VALUES (1, 'x', 'x', 'x', 'x_h');
+    EXCEPTION WHEN insufficient_privilege THEN nekade := nekade + 1;
+    END;
+    RESET ROLE;
+
+    IF nekade = 3 AND antal > 0 THEN
+        RAISE NOTICE 'TEST 14a PASSED: vanlig roll läser (% rader) men nekas INSERT/UPDATE/DELETE', antal;
+    ELSE
+        RAISE WARNING 'TEST 14a FAILED: % av 3 skrivningar nekades, % rader lästes', nekade, antal;
+    END IF;
+END $$;
+
+-- 14b: Funktionerna går inte att använda för att förstöra en giltig rad.
+-- rensa tar bara döda rader, registrera och uppdatera skriver bara det
+-- systemkatalogen säger, och created_by står kvar.
+DO $$
+DECLARE
+    fore  record;
+    efter record;
+    t_oid oid := 'sk1_kba_test.skyddad_y'::regclass;
+BEGIN
+    SELECT * INTO fore FROM public.hex_metadata WHERE parent_oid = t_oid;
+
+    SET LOCAL ROLE hex_test_meta_vanlig;
+    PERFORM public.hex_rensa_metadata();
+    PERFORM public.hex_registrera_metadata('sk1_kba_test', 'skyddad_y');
+    PERFORM public.hex_uppdatera_metadata_namn(t_oid);
+    RESET ROLE;
+
+    SELECT * INTO efter FROM public.hex_metadata WHERE parent_oid = t_oid;
+
+    IF efter IS NOT DISTINCT FROM fore AND fore.created_by = session_user THEN
+        RAISE NOTICE 'TEST 14b PASSED: raden oförändrad efter anrop från vanlig roll (created_by=%)', fore.created_by;
+    ELSE
+        RAISE WARNING 'TEST 14b FAILED: före=% efter=%', fore, efter;
+    END IF;
+END $$;
+
+-- 14c: RENAME TO och DROP TABLE håller fortfarande hex_metadata i takt
+ALTER TABLE sk1_kba_test.skyddad_y RENAME TO skyddad2_y;
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM public.hex_metadata
+        WHERE parent_oid = 'sk1_kba_test.skyddad2_y'::regclass
+          AND parent_table = 'skyddad2_y' AND history_table = 'skyddad2_y_h'
+    ) THEN
+        RAISE NOTICE 'TEST 14c PASSED: RENAME TO uppdaterar hex_metadata via funktionen';
+    ELSE
+        RAISE WARNING 'TEST 14c FAILED: hex_metadata följde inte med RENAME TO';
+    END IF;
+END $$;
+
+DROP TABLE sk1_kba_test.skyddad2_y;
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM public.hex_metadata WHERE parent_table = 'skyddad2_y'
+    ) THEN
+        RAISE NOTICE 'TEST 14d PASSED: DROP TABLE rensar hex_metadata via funktionen';
+    ELSE
+        RAISE WARNING 'TEST 14d FAILED: raden blev kvar efter DROP TABLE';
+    END IF;
+END $$;
+
+DROP ROLE IF EXISTS hex_test_meta_vanlig;
+
+------------------------------------------------------------------------
 -- SLUTLIG STÄDNING
 ------------------------------------------------------------------------
 \echo ''

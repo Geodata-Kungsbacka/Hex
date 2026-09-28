@@ -374,6 +374,9 @@ src/sql/03_functions/03_rules/hex_aterskapa_kolumnegenskaper.sql
 -- 3.4 Hjälpfunktioner
 src/sql/03_functions/04_utility/hex_byt_ut_tabell.sql
 src/sql/03_functions/04_utility/hex_uppdatera_sekvensnamn.sql
+src/sql/03_functions/04_utility/hex_registrera_metadata.sql
+src/sql/03_functions/04_utility/hex_uppdatera_metadata_namn.sql
+src/sql/03_functions/04_utility/hex_rensa_metadata.sql
 src/sql/03_functions/04_utility/hex_skapa_historik_qa.sql
 src/sql/03_functions/04_utility/hex_aterskapa_qa_trigger.sql
 src/sql/03_functions/04_utility/hex_synka_historik.sql
@@ -479,6 +482,14 @@ skedd räcker det inte med `hex_underhall()` — rollerna skapas bara vid
 **Livscykel**:
 - *Registreras* av `hex_skapa_historik_qa()` när en historiktabell skapas
 - *Uppdateras* av `hex_hantera_ny_kolumn()` vid `ALTER TABLE RENAME TO` (historiktabell och parent_table uppdateras)
+
+**Rättigheter**: Alla kan läsa, men bara ägaren kan skriva direkt. Event-triggrarna
+körs som den användare som gör DDL:en och skriver därför via tre `SECURITY
+DEFINER`-funktioner: `hex_registrera_metadata(schema, tabell)`,
+`hex_uppdatera_metadata_namn(oid)` och `hex_rensa_metadata()`. De tar inte emot
+några värden som hamnar i tabellen. OID, namn och historiktabell läses ur
+systemkatalogen, `created_by` är alltid `session_user`, och rensningen tar bara
+rader vars tabell inte längre finns. EXECUTE är därför öppet för alla.
 - *Raderas* av `hex_hantera_borttagen_tabell()` vid `DROP TABLE` och `DROP SCHEMA ... CASCADE`
 
 `created_by` är inloggningsrollen (`session_user`) som skapade tabellen. Den

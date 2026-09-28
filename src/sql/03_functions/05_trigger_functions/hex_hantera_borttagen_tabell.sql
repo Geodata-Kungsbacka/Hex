@@ -109,8 +109,7 @@ BEGIN
                 schema_namn, trigger_funktion;
         END IF;
 
-        -- Rensa metadatarad (OID är inte längre giltig efter DROP)
-        DELETE FROM hex_metadata WHERE parent_oid = kommando.objid;
+        -- Metadataraden rensas efter loopen av hex_rensa_metadata()
 
         -- Rensa eventuell afvaktande geometripost (FME-tvåstegsmönster)
         -- Uppstår om systemanvändaren droppade tabellen innan geometrin hann läggas till.
@@ -153,7 +152,6 @@ BEGIN
             CONTINUE;
         END IF;
 
-        DELETE FROM public.hex_metadata WHERE parent_schema = schema_namn;
         -- EXECUTE USING av samma skäl som ovan (kolumnnamn = variabelnamn)
         EXECUTE 'DELETE FROM public.hex_afvaktande_geometri WHERE schema_namn = $1'
             USING schema_namn;
@@ -162,6 +160,11 @@ BEGIN
         EXECUTE 'DELETE FROM public.hex_dummy_geometrier WHERE schema_namn = $1'
             USING schema_namn;
     END LOOP;
+
+    -- hex_metadata är inte skrivbar för PUBLIC. hex_rensa_metadata() (SECURITY
+    -- DEFINER) tar bort rader vars tabell inte längre finns i pg_class – vid
+    -- sql_drop precis de nyss borttagna, både vid DROP TABLE och DROP SCHEMA.
+    PERFORM public.hex_rensa_metadata();
 
     PERFORM set_config('temp.historikborttagning_pagar', 'false', true);
 

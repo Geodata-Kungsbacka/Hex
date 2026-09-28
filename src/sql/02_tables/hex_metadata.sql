@@ -5,9 +5,10 @@
 -- mappningen förblir giltig även när en tabell döps om – till skillnad från den
 -- gamla namnkonventionsuppslaget (tabell_h) som slutar fungera direkt.
 --
--- Skrivs av:      hex_skapa_historik_qa()        (vid skapande av historiktabell)
--- Uppdateras av:  hex_hantera_ny_kolumn()    (vid ALTER TABLE RENAME TO)
--- Raderas av:     hex_hantera_borttagen_tabell() (vid DROP TABLE och DROP SCHEMA)
+-- Skrivs av:      hex_registrera_metadata()      (via hex_skapa_historik_qa)
+-- Uppdateras av:  hex_uppdatera_metadata_namn()  (via hex_hantera_ny_kolumn vid RENAME TO)
+-- Raderas av:     hex_rensa_metadata()           (via hex_hantera_borttagen_tabell vid
+--                                                 DROP TABLE och DROP SCHEMA)
 
 CREATE TABLE IF NOT EXISTS public.hex_metadata (
     parent_oid       oid          PRIMARY KEY,
@@ -33,10 +34,16 @@ BEGIN
 END;
 $$;
 
--- Tillåter alla autentiserade användare att hantera sina egna metadata-poster.
--- Alla skrivningar sker via händelsetriggerfunktioner som körs i den anropande
--- användarens säkerhetskontext, varför PUBLIC-behörighet krävs.
-GRANT SELECT, INSERT, UPDATE, DELETE ON public.hex_metadata TO PUBLIC;
+-- Alla får läsa, ingen utom ägaren får skriva direkt. Event-triggrarna körs
+-- som den användare som gör DDL:en och skriver därför via SECURITY
+-- DEFINER-funktionerna hex_registrera_metadata(), hex_uppdatera_metadata_namn()
+-- och hex_rensa_metadata(), som härleder allt de skriver ur systemkatalogen.
+--
+-- REVOKE står kvar för en ominstallation över en befintlig tabell (CREATE
+-- TABLE IF NOT EXISTS rör inte rättigheterna). Invariant: PUBLIC ska aldrig
+-- kunna skriva här, oavsett hur databasen installerades.
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON public.hex_metadata FROM PUBLIC;
+GRANT SELECT ON public.hex_metadata TO PUBLIC;
 
 COMMENT ON TABLE public.hex_metadata IS
     'OID → mappning till historiktabell och QA-trigger för alla Hex-hanterade tabeller.
