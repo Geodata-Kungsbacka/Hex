@@ -45,11 +45,17 @@ COMMENT ON COLUMN public.hex_standardiserade_kolumner.schema_uttryck
 
 
 -- Lägg till grundläggande standardkolumner
+--
+-- gid är hårdkodat: raden styr bara att kolumnen läggs till och var. Namnet
+-- används direkt av hex_sakerstall_gid_primarnyckel, hex_tvinga_gid_fran_sekvens,
+-- hex_lagg_till_dummy_geometri, hex_ta_bort_dummy_rad, hex_skapa_historik_qa och
+-- hex_underhall. Byt inte namn, schema_uttryck eller typ på gid-raden – se
+-- docs/05_anpassa-standardkolumner.md.
 -- ÄNDRING: Använder session_user istället för current_user för att fånga faktisk autentiserad användare
 INSERT INTO public.hex_standardiserade_kolumner(
     kolumnnamn, ordinal_position, datatyp, default_varde, beskrivning, schema_uttryck, historik_qa, anvandare_kan_redigera)
 VALUES
-    ('gid',              1, 'integer GENERATED ALWAYS AS IDENTITY', NULL,                'Primärnyckel',                  'IS NOT NULL',       false, false),
+    ('gid',              1, 'integer GENERATED ALWAYS AS IDENTITY', NULL,                'Primärnyckel (namnet är hårdkodat i Hex – byt inte)', 'IS NOT NULL', false, false),
     ('skapad_tidpunkt', -4, 'timestamptz',                          'NOW()',             'Tidpunkt då raden skapades',    'IS NOT NULL',       false, false),
     ('skapad_av',       -3, 'character varying',                    'session_user',      'Användare som skapade raden',   'LIKE ''%_kba_%''',  false, false),
     ('andrad_tidpunkt', -2, 'timestamptz',                          'NOW()',             'Senaste ändringstidpunkt',      'LIKE ''%_kba_%''',  true,  false),

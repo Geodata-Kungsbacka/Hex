@@ -546,7 +546,7 @@ innan kolumnen fanns.
 
 **Användning**: Används för att bygga upp den slutliga tabellstrukturen genom att kombinera standardkolumner med användardefinierade kolumner.
 
-**Exempel**: `(gid, 1, 'integer GENERATED ALWAYS AS IDENTITY')` definierar primärnyckeln. Själva `PRIMARY KEY`-constrainten läggs på av `hex_sakerstall_gid_primarnyckel()` efter att tabellen omstrukturerats, eftersom `hex_aterskapa_tabellregler()` medvetet hoppar över inkommande primärnycklar.
+**Exempel**: `(gid, 1, 'integer GENERATED ALWAYS AS IDENTITY')` definierar primärnyckeln. Namnet `gid` är hårdkodat i Hex – raden får inte döpas om (se [docs/05](docs/05_anpassa-standardkolumner.md)). Själva `PRIMARY KEY`-constrainten läggs på av `hex_sakerstall_gid_primarnyckel()` efter att tabellen omstrukturerats, eftersom `hex_aterskapa_tabellregler()` medvetet hoppar över inkommande primärnycklar.
 
 #### `hex_tabellregler`
 **Syfte**: Bevarar tabellövergripande regler vid omstrukturering.

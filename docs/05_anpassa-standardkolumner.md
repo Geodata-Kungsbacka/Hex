@@ -23,6 +23,17 @@ automatiskt när en tabell skapas med `CREATE TABLE`. Standarduppsättningen är
 > redigerad kommunal data), så externa och systemscheman får bara `gid` och
 > `skapad_tidpunkt`. Ändra `schema_uttryck` för att flytta gränsen.
 
+> **`gid` är hårdkodat – byt inte namn, schema_uttryck eller typ på den raden.**
+> Raden i tabellen styr bara att kolumnen läggs till och var. Namnet `gid` är
+> fast i koden: primärnyckeln (`hex_sakerstall_gid_primarnyckel`), triggern som
+> tvingar värdet från sekvensen (`hex_tvinga_gid_fran_sekvens`), dummy-raden
+> (`hex_lagg_till_dummy_geometri`, `hex_ta_bort_dummy_rad`), indexet på
+> historiktabellen (`hex_skapa_historik_qa`) och `hex_underhall()`. Döps raden om
+> till t.ex. `fid` avbryts `CREATE TABLE` i `_kba_`-scheman, och i övriga scheman
+> skapas tabellen utan primärnyckel, utan `hex_tvinga_gid` och utan dummy-rad –
+> utan felmeddelande. Tabeller som ska matcha en extern källa med `fid` e.d. kan
+> ha den som en vanlig kolumn bredvid `gid`.
+
 > **`session_user`, inte `current_user`.** Hex använder genomgående
 > `session_user` för användarspårning — i `skapad_av`, i QA-triggerns
 > `andrad_av` och i historiktabellernas `h_av`. Det är medvetet: `session_user`
