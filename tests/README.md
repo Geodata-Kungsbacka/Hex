@@ -96,7 +96,7 @@ test_reserved_words.sql                24      0      0      0   OK
 ...
 test_stress.sql                        34     14      0      0   OK
 ...
-TOTALT                                744     15      0      0
+TOTALT                                749     15      0      0
 ```
 
 Flaggor:
@@ -179,10 +179,10 @@ och betyder inte att ett test misslyckats.
 | `test_extended_efg.sql`        | Historiksynk, dataöverlevnad, QA-triggersäkerhet               |
 | `test_fme.sql`                 | FME:s tvåstegsmönster för tabellskapande                       |
 | `test_geometry_validation.sql` | `hex_validera_geometri` och geometrikvalitet                    |
-| `test_regression.sql`          | Regressionsskydd för tidigare rättade buggar, bl.a. historiksynken (`DROP COLUMN`, typbyten, `RENAME TO`/`RENAME COLUMN`, `AddGeometryColumn()`) och skrivskyddet på `hex_metadata`, och att `RENAME TO` flyttar registerraderna |
+| `test_regression.sql`          | Regressionsskydd för tidigare rättade buggar, bl.a. historiksynken (`DROP COLUMN`, typbyten, `RENAME TO`/`RENAME COLUMN`, `AddGeometryColumn()`) och skrivskyddet på `hex_metadata`, och att `RENAME TO` flyttar registerraderna via `hex_metadata` även för tabeller utan historik |
 | `test_role_permissions.sql`    | Roller och rättigheter per schema                              |
 | `test_underhall.sql`           | `hex_underhall()` – reparation av triggers, roller, ägarskap    |
-| `test_underhall_hex.sql`       | Ägarskapsreparation och idempotens i underhållet, även att oförändrade schemabehörigheter rapporteras som `redan finns` |
+| `test_underhall_hex.sql`       | Ägarskapsreparation och idempotens i underhållet, även att oförändrade schemabehörigheter rapporteras som `redan finns` och att tabeller utan rad i `hex_metadata` efterregistreras |
 | `test_schema_namnbyte.sql`     | Blockering av `ALTER SCHEMA ... RENAME TO`                     |
 | `test_schema_borttagning.sql`  | `DROP SCHEMA ... CASCADE` rensar `hex_metadata` m.fl.          |
 | `test_grupprattigheter.sql`    | `hex_tillampa_grupprattigheter()` – AD-grupproll → Hex-roll     |

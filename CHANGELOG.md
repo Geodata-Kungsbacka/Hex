@@ -11,8 +11,9 @@ merge-datum.
 
 ## [Ej släppt]
 
-> Nya kolumner i `hex_standardiserade_roller` och den nya tabellen
-> `hex_installningar` kräver `install_hex.py --upgrade`. En vanlig
+> Nya kolumner i `hex_standardiserade_roller`, den nya tabellen
+> `hex_installningar` och att `hex_metadata.history_schema`/`history_table`
+> tillåter NULL kräver `install_hex.py --upgrade`. En vanlig
 > ominstallation mot en databas på 2.0.0 avbryts med `column ... does not exist`.
 
 ### Tillagt
@@ -33,6 +34,9 @@ merge-datum.
   `hex_geoserver_rollnamn(schema, konto)`. GeoServers tjänstekonton hittas via
   markeringen i stället för namnen `gs_r_`/`gs_w_`, så rollmallarna kan döpas
   om.
+- **`hex_underhall()` steg 0b `hex_metadata`** registrerar Hex-tabeller som
+  saknar rad i `hex_metadata`, via nya `hex_komplettera_metadata()`
+  (`created_by` NULL).
 - Testsviten `tests/test_geometrisuffix.sql`.
 
 ### Ändrat
@@ -45,6 +49,12 @@ merge-datum.
   notifieringen hoppas över; avstämningen publicerar schemat senare och letar
   inte föräldralösa workspaces med ett gissat mönster.
 - `gid` i `hex_standardiserade_kolumner` är dokumenterat som hårdkodat.
+- **`hex_metadata` registrerar alla Hex-tabeller**, inte bara de med historik.
+  `history_schema`, `history_table` och `trigger_funktion` är NULL för tabeller
+  utan historik och fylls i om historiken skapas senare (FME-tvåsteget).
+  `RENAME TO` tar därmed alltid det gamla namnet ur `hex_metadata` via OID, och
+  tolkningen av satsen (`parse_ident()`) är borttagen. Läsare som gäller
+  historik filtrerar på `history_table IS NOT NULL`.
 
 ### Rättat
 
@@ -60,7 +70,8 @@ merge-datum.
   `hex_afvaktande_geometri` och `hex_avvikande_srid` på det gamla namnet.
   Dummy-raden togs då aldrig bort vid första riktiga INSERT, och en omdöpt
   afvaktande tabell slutfördes aldrig. Ny hjälpfunktion
-  `hex_flytta_registerposter()` flyttar raderna.
+  `hex_flytta_registerposter()` flyttar raderna. Det gamla namnet hämtas ur
+  `hex_metadata`, så även `RENAME TO"namn"` och namnbyten via `EXECUTE` fungerar.
 - Installerns utskrift efter `hex_underhall()` listade oförändrade utfall
   (`redan synkad`, `redan korrekt`, `redan NOLOGIN`, `arvs_fran redan
   beviljad`) som åtgärder, och schemabehörigheterna rapporterades som

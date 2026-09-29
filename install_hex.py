@@ -99,6 +99,8 @@ INSTALL_ORDER = [
     "src/sql/03_functions/04_utility/hex_uppdatera_sekvensnamn.sql",
     # Skrivfunktionerna för hex_metadata (SECURITY DEFINER) före sina anropare
     "src/sql/03_functions/04_utility/hex_registrera_metadata.sql",
+    # hex_komplettera_metadata anropar hex_registrera_metadata
+    "src/sql/03_functions/04_utility/hex_komplettera_metadata.sql",
     "src/sql/03_functions/04_utility/hex_uppdatera_metadata_namn.sql",
     "src/sql/03_functions/04_utility/hex_rensa_metadata.sql",
     "src/sql/03_functions/04_utility/hex_skapa_historik_qa.sql",
@@ -173,6 +175,7 @@ DROP FUNCTION IF EXISTS public.hex_tillampa_grupprattigheter();
 DROP FUNCTION IF EXISTS public.hex_synka_historik(text, text);
 DROP FUNCTION IF EXISTS public.hex_flytta_registerposter(text, text, text);
 DROP FUNCTION IF EXISTS public.hex_registrera_metadata(text, text);
+DROP FUNCTION IF EXISTS public.hex_komplettera_metadata(text, text);
 DROP FUNCTION IF EXISTS public.hex_uppdatera_metadata_namn(oid);
 DROP FUNCTION IF EXISTS public.hex_rensa_metadata();
 DROP FUNCTION IF EXISTS public.hex_aterskapa_qa_trigger(text, text, text);
@@ -299,8 +302,11 @@ PRESERVE_USER_DATA = {
 # av UNINSTALL_SQL och installationen skapar dem tomma igen, och till skillnad
 # från triggers och funktioner kan innehållet inte härledas ur databasen:
 #
-#   hex_metadata            OID -> historiktabell och QA-trigger. Utan den slutar
-#                           historiken följa med vid ALTER TABLE ... RENAME TO.
+#   hex_metadata            OID -> namn för varje Hex-tabell, och historiktabell
+#                           och QA-trigger för dem med historik. Utan den slutar
+#                           historiken och registerraderna följa med vid
+#                           ALTER TABLE ... RENAME TO. hex_underhall() lägger
+#                           till saknade rader, men med created_by NULL.
 #   hex_dummy_geometrier    Vilka tabeller som fortfarande bär en dummy-rad.
 #                           hex_underhall() bygger hex_ta_bort_dummy-triggern ur
 #                           den här tabellen; är den tom återkopplas triggern

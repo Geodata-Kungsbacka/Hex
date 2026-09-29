@@ -132,8 +132,9 @@ BEGIN
 
     -- ----------------------------------------------------------------
     -- Specialfall: ALTER TABLE ... RENAME TO
-    -- Använd OID (stabilt genom rename) för att hitta och döpa om
-    -- tillhörande historiktabell via hex_metadata.
+    -- Använd OID (stabilt genom rename) för att slå upp det gamla namnet i
+    -- hex_metadata, flytta de namnnycklade registerraderna och – om tabellen
+    -- har historik – döpa om historiktabellen.
     -- ----------------------------------------------------------------
     IF current_query() ~* '\mRENAME\s+TO\M' THEN
         FOR kommando IN SELECT * FROM pg_event_trigger_ddl_commands()
@@ -144,54 +145,35 @@ BEGIN
 
             -- Historiktabeller döps om av grenen nedan och hanteras aldrig direkt
             CONTINUE WHEN tabell_namn ~ '_h$' OR kommando.object_type <> 'table';
+            -- Tabeller utanför Hex-scheman registreras aldrig och berörs inte
+            CONTINUE WHEN schema_namn !~ public.hex_schema_regex();
 
             DECLARE
                 meta_rad       record;
                 ny_historik    text;
-                gammalt_namn   text;
-                kandidat       record;
-                delar          text[];
-                har_historik   boolean;
             BEGIN
+                -- Det gamla namnet finns inte kvar i katalogen, men hex_metadata
+                -- har det: varje Hex-tabell registreras där på sin OID när den
+                -- skapas, oavsett om den har historik.
                 SELECT * INTO meta_rad
                 FROM hex_metadata
                 WHERE parent_oid = kommando.objid;
-                har_historik := FOUND;
 
-                -- Det gamla namnet finns inte kvar i katalogen. hex_metadata har
-                -- det för tabeller med historik. För övriga läses det ur satsen:
-                -- varje "ALTER TABLE <namn> RENAME TO" tolkas med parse_ident(),
-                -- och namnet godtas bara om det ligger i samma schema och inte
-                -- längre är en relation där.
-                IF har_historik THEN
-                    gammalt_namn := meta_rad.parent_table;
-                ELSE
-                    FOR kandidat IN
-                        SELECT (regexp_matches(current_query(),
-                            'alter\s+table\s+(?:if\s+exists\s+)?(?:only\s+)?([^;]+?)\s+rename\s+to\s',
-                            'gi'))[1] AS text
-                    LOOP
-                        BEGIN
-                            delar := parse_ident(btrim(kandidat.text));
-                        EXCEPTION
-                            WHEN OTHERS THEN
-                                CONTINUE;
-                        END;
-                        CONTINUE WHEN array_length(delar, 1) > 1
-                            AND delar[array_length(delar, 1) - 1] <> schema_namn;
-                        CONTINUE WHEN delar[array_length(delar, 1)] = tabell_namn
-                            OR to_regclass(format('%I.%I', schema_namn,
-                                                  delar[array_length(delar, 1)])) IS NOT NULL;
-                        gammalt_namn := delar[array_length(delar, 1)];
-                        EXIT;
-                    END LOOP;
+                IF NOT FOUND THEN
+                    -- Skapad förbi event-triggrarna och ännu inte registrerad
+                    -- av hex_underhall(). Det gamla namnet går inte att få
+                    -- fram; registerraderna blir kvar på det och rensas av
+                    -- underhållet (avvikande SRID) eller får flyttas för hand.
+                    RAISE WARNING '[hex_hantera_ny_kolumn] %.% saknas i hex_metadata – registerrader flyttas inte. Kör SELECT * FROM public.hex_underhall().',
+                        schema_namn, tabell_namn;
+                    CONTINUE;
                 END IF;
 
                 -- hex_dummy_geometrier, hex_afvaktande_geometri och
                 -- hex_avvikande_srid nycklas på namn och måste följa med
-                PERFORM hex_flytta_registerposter(schema_namn, gammalt_namn, tabell_namn);
+                PERFORM hex_flytta_registerposter(schema_namn, meta_rad.parent_table, tabell_namn);
 
-                IF har_historik THEN
+                IF meta_rad.history_table IS NOT NULL THEN
                     -- Cap at 63 bytes (PostgreSQL identifier limit)
                     ny_historik := left(tabell_namn || '_h', 63);
 
@@ -212,8 +194,9 @@ BEGIN
                     -- exist".
                     PERFORM hex_synka_historik(schema_namn, tabell_namn);
                 ELSE
-                    RAISE NOTICE '[hex_hantera_ny_kolumn] Ingen historiktabell registrerad för OID % (tabell %, har troligen ingen historik)',
-                        kommando.objid, tabell_namn;
+                    PERFORM hex_uppdatera_metadata_namn(kommando.objid);
+                    RAISE NOTICE '[hex_hantera_ny_kolumn] ✓ hex_metadata uppdaterad: % → % (ingen historik)',
+                        meta_rad.parent_table, tabell_namn;
                 END IF;
             END;
         END LOOP;
@@ -260,7 +243,7 @@ BEGIN
                 FROM hex_metadata
                 WHERE parent_oid = kommando.objid;
 
-                IF NOT FOUND THEN
+                IF NOT FOUND OR meta_rad.history_table IS NULL THEN
                     RAISE NOTICE '[hex_hantera_ny_kolumn] Kolumnnamnbyte i %.% - ingen historiktabell registrerad, inget att synka',
                         schema_namn, tabell_namn;
                     CONTINUE;

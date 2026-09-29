@@ -132,7 +132,7 @@ Följande tabeller bevaras automatiskt vid `--upgrade`.
 
 **Drifttillstånd** — vad Hex redan gjort med dina tabeller. Innehållet går inte
 att härleda ur databasen i efterhand, till skillnad från triggers och funktioner:
-- `hex_metadata` — mappning tabell-OID → historiktabell och QA-trigger
+- `hex_metadata` — register över alla Hex-tabeller (OID → namn), med historiktabell och QA-trigger för tabeller som har historik
 - `hex_dummy_geometrier` — tabeller som fortfarande bär en dummy-rad
 - `hex_afvaktande_geometri` — tabeller mitt i FME:s tvåstegsmönster
 - `hex_avvikande_srid` — granskningslista över fel koordinatsystem

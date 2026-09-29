@@ -123,28 +123,35 @@ Bevaras över `--upgrade` och ominstallation. Efter ändrat `srid`: kör
 ---
 
 ### `hex_metadata`
-Kopplar tabell-OID till historiktabell och QA-triggerfunktion.
+Register över alla Hex-tabeller, nycklat på OID. För tabeller med historik
+kopplas tabellen också till historiktabell och QA-triggerfunktion; för övriga
+är de kolumnerna NULL. En rad betyder "Hex-tabell", inte "har historik" —
+läsare som gäller historik filtrerar på `history_table IS NOT NULL`.
 
 | Kolumn | Syfte |
 |---|---|
 | `parent_oid` | OID från pg_class — stabil vid RENAME TO |
 | `parent_schema` / `parent_table` | Aktuella namn (uppdateras vid rename) |
-| `history_schema` / `history_table` | Historiktabellens schema och namn (namnet kan vara trunkerat till 63 byte) |
-| `trigger_funktion` | Namn på QA-triggerfunktionen — behåller det ursprungliga namnet efter RENAME TO |
+| `history_schema` / `history_table` | Historiktabellens schema och namn (namnet kan vara trunkerat till 63 byte). NULL utan historik |
+| `trigger_funktion` | Namn på QA-triggerfunktionen — behåller det ursprungliga namnet efter RENAME TO. NULL utan historik |
 | `created_at` | När posten registrerades |
-| `created_by` | Inloggningen (`session_user`) som skapade tabellen. `NULL` för poster från före kolumnen |
+| `created_by` | Inloggningen (`session_user`) som skapade tabellen. `NULL` när okänd: poster från före kolumnen och poster som `hex_underhall()` efterregistrerat |
 
-> **Varför OID?** PostgreSQL trunkerar identifierare till 63 byte.
-> Om historiktabellen heter `lång_tabell_h` och originalet döps om,
-> hittar vi den ändå via OID — ett namnbaserat uppslag hade gett fel resultat.
+> **Varför OID?** OID:n är det enda som överlever `RENAME TO`. Raden ger
+> därför det gamla namnet, som behövs för att döpa om historiktabellen och för
+> att flytta raderna i de namnnycklade tabellerna `hex_dummy_geometrier`,
+> `hex_afvaktande_geometri` och `hex_avvikande_srid`. PostgreSQL trunkerar
+> dessutom identifierare till 63 byte, så `lång_tabell_h` går inte alltid att
+> härleda ur tabellnamnet.
 
 **Skrivskydd.** `PUBLIC` får bara läsa. Event-triggrarna körs som den användare
-som gör DDL:en och skriver därför via tre `SECURITY DEFINER`-funktioner, som
+som gör DDL:en och skriver därför via fyra `SECURITY DEFINER`-funktioner, som
 härleder allt de skriver ur systemkatalogen i stället för att ta emot värden:
 
 | Funktion | Anropas av | Gör |
 |---|---|---|
-| `hex_registrera_metadata(schema, tabell)` | `hex_skapa_historik_qa` | INSERT … ON CONFLICT DO UPDATE. `created_by`/`created_at` skrivs bara första gången |
+| `hex_registrera_metadata(schema, tabell)` | `hex_hantera_ny_tabell`, `hex_skapa_historik_qa` | INSERT … ON CONFLICT DO UPDATE. Bara vanliga tabeller i Hex-scheman. Historikkolumnerna fylls i om `_h` finns och skrivs aldrig över med NULL. `created_by`/`created_at` skrivs bara första gången |
+| `hex_komplettera_metadata(schema, tabell)` | `hex_underhall` (steg 0b) | Registrerar en tabell som saknar rad, med `created_by` = NULL. Rör aldrig en befintlig rad |
 | `hex_uppdatera_metadata_namn(oid)` | `hex_hantera_ny_kolumn` (RENAME TO) | Läser nytt schema och namn ur `pg_class` |
 | `hex_rensa_metadata()` | `hex_hantera_borttagen_tabell` | Tar bort rader vars OID inte längre pekar på en tabell |
 
@@ -367,7 +374,7 @@ flowchart TD
         HQC --> |ja| HTAB["Skapa _h-tabell<br/>h_typ · h_tidpunkt · h_av + alla föräldrakolumner"]
         HTAB --> QTRIG["Skapa trg_fn_tabell_qa<br/>UPDATE → historik + andrad_*<br/>DELETE → historik"]
         QTRIG --> TRG["BEFORE UPDATE OR DELETE trigger"]
-        TRG --> META["hex_registrera_metadata<br/>parent_oid → history_table"]
+        TRG --> META["hex_registrera_metadata<br/>historikkolumnerna på raden"]
         META --> DONE2(["klar ✓"])
     end
 
@@ -559,6 +566,11 @@ hex_hantera_ny_tabell()
                     parent_oid, parent_schema, parent_table,
                     history_schema, history_table, trigger_funktion,
                     created_by = session_user
+
+Efter hex_skapa_historik_qa anropar hex_hantera_ny_tabell
+hex_registrera_metadata(schema, tabell) för varje tabell – även utan historik,
+då med historikkolumnerna NULL. Med historik är raden redan skriven och
+anropet ändrar inget.
 ```
 
 > **Ägarskap på `_h` och `trg_fn_*`.** Steg 5.5 för bara över modertabellen och
@@ -725,11 +737,12 @@ flowchart TD
     START --> DET["Detekterar RENAME TO<br/>i frågesträngen"]
     DET --> OID{"Finns i hex_metadata<br/>via OID?"}
     OID --> |ja| GAML["Gamla namnet =<br/>hex_metadata.parent_table"]
-    OID --> |nej| PARSE["Gamla namnet ur satsen<br/>(parse_ident)"]
+    OID --> |nej| WARN["WARNING: kör hex_underhall()<br/>(registerrader flyttas inte)"]
+    WARN --> FLAG
     GAML --> FLYTT["hex_flytta_registerposter<br/>hex_dummy_geometrier · hex_afvaktande_geometri<br/>· hex_avvikande_srid → nytt namn"]
-    PARSE --> FLYTT
-    FLYTT --> HIST{"Har historik?"}
-    HIST --> |nej| FLAG
+    FLYTT --> HIST{"history_table<br/>IS NOT NULL?"}
+    HIST --> |nej| UPD0["hex_uppdatera_metadata_namn(oid)<br/>parent_table = fastigheter_y"]
+    UPD0 --> FLAG
     HIST --> |ja| REN["ALTER TABLE byggnader_y_h<br/>RENAME TO fastigheter_y_h<br/>(trunkeras till 63 byte)"]
     REN --> UPD["hex_uppdatera_metadata_namn(oid)<br/>parent_table = fastigheter_y<br/>history_table = fastigheter_y_h"]
     UPD --> SYNK["hex_synka_historik<br/>QA-triggerns kropp byggs om<br/>med de nya tabellnamnen"]
@@ -747,20 +760,20 @@ ALTER TABLE sk0_kba_bygg.byggnader_y RENAME TO fastigheter_y;
 hex_hantera_ny_kolumn()
   ├── Detekterar RENAME TO i frågesträngen
   │
-  ├── Hoppar över _h-tabeller
+  ├── Hoppar över _h-tabeller och tabeller utanför Hex-scheman
   │
   ├── Slår upp tabellen i hex_metadata via OID (stabilt genom rename)
   │     Hittar: parent_table='byggnader_y', history_table='byggnader_y_h'
-  │
-  ├── Gamla namnet: parent_table ur hex_metadata, annars ur satsen —
-  │     varje "ALTER TABLE <namn> RENAME TO" tolkas med parse_ident() och
-  │     godtas om det ligger i samma schema och inte längre är en relation
+  │     Varje Hex-tabell har en rad, med eller utan historik. Saknas raden
+  │     (skapad förbi event-triggrarna) skrivs en WARNING och inget flyttas
   │
   ├── → hex_flytta_registerposter(schema, 'byggnader_y', 'fastigheter_y')
-  │     Flyttar raderna i hex_dummy_geometrier, hex_afvaktande_geometri och
-  │     hex_avvikande_srid (DELETE ... RETURNING + INSERT, registrerad står kvar)
+  │     Gamla namnet = parent_table ur hex_metadata. Flyttar raderna i
+  │     hex_dummy_geometrier, hex_afvaktande_geometri och hex_avvikande_srid
+  │     (DELETE ... RETURNING + INSERT, registrerad står kvar)
   │
-  │   Utan post i hex_metadata slutar det här — tabellen har ingen historik.
+  │   Utan historik (history_table IS NULL): hex_uppdatera_metadata_namn(oid)
+  │   och klart.
   │
   ├── ALTER TABLE byggnader_y_h RENAME TO fastigheter_y_h
   │     (left(nytt_namn || '_h', 63))
@@ -786,8 +799,9 @@ Triggern och triggerfunktionen behåller sina gamla namn (`trg_byggnader_y_qa`,
 
 > **Namnnycklade tabeller.** `hex_dummy_geometrier`, `hex_afvaktande_geometri`
 > och `hex_avvikande_srid` nycklas på schema- och tabellnamn. Därför flyttas
-> deras rader av `hex_flytta_registerposter()`. Satsen tolkas bara när tabellen
-> saknar historik, och ett namnbyte via `EXECUTE` i en funktion syns inte där.
+> deras rader av `hex_flytta_registerposter()`. Det gamla namnet kommer alltid
+> ur `hex_metadata`, aldrig ur satsen, så det spelar ingen roll hur namnbytet är
+> skrivet eller om det görs via `EXECUTE` i en funktion.
 
 ---
 
@@ -863,7 +877,7 @@ flowchart TD
     LOOP --> SKIP{"Slutar på _h,<br/>public eller pg_*?"}
     SKIP --> |ja| CONT(["hoppar över denna rad"])
     SKIP --> |nej| META{"Hittad i<br/>hex_metadata via OID?"}
-    META --> |ja| FOUND["Använder lagrade namn:<br/>history_table<br/>trigger_funktion"]
+    META --> |ja| FOUND["Använder lagrade namn:<br/>history_table<br/>trigger_funktion<br/>(namnkonvention om NULL)"]
     META --> |nej| FALL["Fallback namnkonvention:<br/>tabell || '_h'"]
     FOUND & FALL --> DT["DROP TABLE _h-tabell om den finns<br/>rekursivt DROP-event stoppas av guard"]
     DT --> DF["DROP FUNCTION trg_fn_tabell_qa()<br/>om den finns"]
@@ -894,6 +908,7 @@ hex_hantera_borttagen_tabell()
         │
         ├── Slår upp i hex_metadata via OID
         │     Hittad  → använder lagrade history_table och trigger_funktion
+        │               (namnkonventionen om de är NULL – tabell utan historik)
         │     Ej hittad → fallback till namnkonvention (tabell || '_h')
         │
         ├── DROP TABLE <historiktabell>        (om den finns)
@@ -1307,7 +1322,8 @@ det utlöser i sin tur nya eventutlösare. Tre flaggor förhindrar oändliga ked
 | `hex_uppdatera_sekvensnamn(schema, tabell, temp_suffix)` | `hex_hantera_ny_tabell` | Döper om IDENTITY-sekvenser |
 | `hex_skapa_historik_qa(schema, tabell)` | `hex_hantera_ny_tabell` | Skapar historiktabell + QA-trigger och registrerar i `hex_metadata` |
 | `hex_synka_historik(schema, tabell)` | `hex_hantera_ny_kolumn` (varje ALTER TABLE), `hex_underhall` (steg 4b) | Håller `_h` i synk med modertabellen och bygger om QA-triggern — se avsnitt 4a |
-| `hex_registrera_metadata(schema, tabell)` | `hex_skapa_historik_qa` | Skriver raden i `hex_metadata` (`SECURITY DEFINER`, värden ur systemkatalogen) |
+| `hex_registrera_metadata(schema, tabell)` | `hex_hantera_ny_tabell`, `hex_skapa_historik_qa` | Skriver raden i `hex_metadata` för varje Hex-tabell, med historikkolumner om historik finns (`SECURITY DEFINER`, värden ur systemkatalogen) |
+| `hex_komplettera_metadata(schema, tabell)` | `hex_underhall` | Efterregistrerar en tabell som saknar rad, `created_by` NULL (`SECURITY DEFINER`) |
 | `hex_uppdatera_metadata_namn(oid)` | `hex_hantera_ny_kolumn` (RENAME TO) | Uppdaterar namnen i `hex_metadata` (`SECURITY DEFINER`) |
 | `hex_rensa_metadata()` | `hex_hantera_borttagen_tabell` | Tar bort `hex_metadata`-rader vars tabell inte finns (`SECURITY DEFINER`) |
 | `hex_flytta_registerposter(schema, gammalt, nytt)` | `hex_hantera_ny_kolumn` (RENAME TO) | Flyttar raderna i `hex_dummy_geometrier`, `hex_afvaktande_geometri` och `hex_avvikande_srid` till tabellens nya namn |
@@ -1361,6 +1377,7 @@ sammanfattas på en rad.
 | Steg | `trigger_namn` | Vad som kontrolleras och repareras |
 |---|---|---|
 | 0 | `ägarskapsöverföring` | Scheman, tabeller, sekvenser, funktioner och vyer i Hex-scheman ägs av `hex_systemagare()` |
+| 0b | `hex_metadata` | Varje Hex-tabell har en rad i `hex_metadata`. Saknade läggs till via `hex_komplettera_metadata()` med `created_by` NULL: `registrerad` eller `redan finns`. Invariant — tabeller kan skapas förbi event-triggrarna igen |
 | 1 | `hex_tvinga_gid` | BEFORE INSERT-trigger på tabeller med `gid` IDENTITY |
 | 1b | `hex_tvinga_anvandarvarden` | BEFORE INSERT-trigger för kolumner med `anvandare_kan_redigera = false` |
 | 1c | `gid_primarnyckel` | `PRIMARY KEY (gid)` via `hex_sakerstall_gid_primarnyckel()`; `dubbletter: N` lämnas orörda |
@@ -1368,7 +1385,7 @@ sammanfattas på en rad.
 | 3 | `hex_ta_bort_dummy` | AFTER INSERT-trigger, bara om dummy-raden står i `hex_dummy_geometrier` |
 | 4 | `trg_<tabell>_qa` | BEFORE UPDATE/DELETE-trigger på tabeller med historik |
 | 4a | `afvaktande_geometri` | Tabeller som har `geom` men står kvar i `hex_afvaktande_geometri`. En `ALTER TABLE ... SET STATISTICS` till oförändrat värde låter `hex_hantera_ny_kolumn()` slutföra tvåsteget |
-| 4b | `historiksynk` | `hex_synka_historik()` på varje tabell med historik. `redan synkad` eller `synkad: N ändringar` |
+| 4b | `historiksynk` | `hex_synka_historik()` på varje tabell med historik (`history_table IS NOT NULL` i `hex_metadata`, eller en `_h`-tabell enligt namnkonventionen). `redan synkad` eller `synkad: N ändringar` |
 | 5 | `rollstruktur` | De fyra rollerna per schema, `r_`/`w_` tvingas till NOLOGIN, ADMIN OPTION för ägarrollen |
 | 6 | `hex_geoserver_roller (rollmedlemskap)` | LOGIN-roller in, NOLOGIN-roller ut |
 | 7 | `schemabehörigheter` | `hex_tilldela_rollrattigheter` för roller utan `arvs_fran` (NOLOGIN-rollerna), `GRANT arvs_fran` för LOGIN-roller med `arvs_fran`. `behörigheter uppdaterade` bara om schemats, relationernas eller standardrättigheternas ACL ändrades, annars `redan finns` |

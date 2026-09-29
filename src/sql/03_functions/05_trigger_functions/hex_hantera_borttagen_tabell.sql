@@ -79,7 +79,9 @@ BEGIN
             WHERE parent_oid = kommando.objid;
 
             IF FOUND THEN
-                historik_tabell  := meta_rad.history_table;
+                -- NULL för tabeller utan historik; namnkonventionen ger då
+                -- ett namn som inte finns och ingenting tas bort
+                historik_tabell  := coalesce(meta_rad.history_table, tabell_namn || '_h');
                 trigger_funktion := COALESCE(meta_rad.trigger_funktion,
                                              'trg_fn_' || tabell_namn || '_qa');
             ELSE

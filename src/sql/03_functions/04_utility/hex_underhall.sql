@@ -18,7 +18,7 @@ AS $BODY$
  * Schemaprefix hämtas dynamiskt från hex_standardiserade_skyddsnivaer, så att
  * egna prefix (t.ex. sc1, sk3) fungerar utan kodändringar.
  *
- * Hanterar sexton åtgärdstyper:
+ * Hanterar sjutton åtgärdstyper:
  *
  *   ägarskapsöverföring  Säkerställer att scheman, tabeller, sekvenser och
  *                        funktioner i Hex-hanterade scheman ägs av
@@ -26,6 +26,12 @@ AS $BODY$
  *                        superusers (t.ex. postgres) innan ägarskapsöverföringen
  *                        lades till i hex_hantera_std_roller och
  *                        hex_hantera_ny_tabell. Körs först.
+ *
+ *   hex_metadata         Registrerar Hex-tabeller som saknar rad i
+ *                        hex_metadata (hex_komplettera_metadata(), created_by
+ *                        NULL). Utan raden flyttas inte registerraderna vid
+ *                        RENAME TO. Returnerar 'registrerad' eller
+ *                        'redan finns'.
  *
  *   hex_tvinga_gid       BEFORE INSERT på alla Hex-tabeller med en gid
  *                        IDENTITY-kolumn. Förhindrar att klienter (t.ex. QGIS)
@@ -249,6 +255,37 @@ BEGIN
         tabell_namn  := r.t;
         trigger_namn := 'ägarskapsöverföring';
         atgard       := 'vy: ägare uppdaterad';
+        RETURN NEXT;
+    END LOOP;
+
+    -- -------------------------------------------------------------------------
+    -- 0b. hex_metadata
+    --     Varje Hex-tabell ska ha en rad i hex_metadata – annars går det gamla
+    --     namnet inte att få fram vid ALTER TABLE ... RENAME TO, och de
+    --     namnnycklade registerraderna flyttas inte. Raden saknas för tabeller
+    --     skapade förbi event-triggrarna (avstängda, Hex avinstallerat) och
+    --     för tabeller utan historik som skapades innan alla tabeller
+    --     registrerades. hex_komplettera_metadata() skriver created_by = NULL.
+    --
+    --     Invariant, inte migrering: en tabell kan skapas förbi triggrarna
+    --     igen när som helst.
+    -- -------------------------------------------------------------------------
+    FOR r IN
+        SELECT n.nspname::text AS s, c.relname::text AS t
+        FROM   pg_class     c
+        JOIN   pg_namespace n ON n.oid = c.relnamespace
+        WHERE  c.relkind = 'r'
+          AND  n.nspname ~ schema_regex
+          AND  c.relname !~ '_h$'
+        ORDER BY 1, 2
+    LOOP
+        schema_namn  := r.s;
+        tabell_namn  := r.t;
+        trigger_namn := 'hex_metadata';
+        atgard := CASE
+            WHEN public.hex_komplettera_metadata(r.s, r.t) THEN 'registrerad'
+            ELSE 'redan finns'
+        END;
         RETURN NEXT;
     END LOOP;
 
@@ -634,7 +671,8 @@ BEGIN
           AND n.nspname ~ schema_regex
           AND c.relname !~ '_h$'
           AND (
-              EXISTS (SELECT 1 FROM public.hex_metadata m WHERE m.parent_oid = c.oid)
+              EXISTS (SELECT 1 FROM public.hex_metadata m
+                      WHERE m.parent_oid = c.oid AND m.history_table IS NOT NULL)
               OR EXISTS (
                   SELECT 1 FROM pg_class h
                   WHERE h.relnamespace = c.relnamespace

@@ -419,6 +419,7 @@ src/sql/03_functions/03_rules/hex_aterskapa_kolumnegenskaper.sql
 src/sql/03_functions/04_utility/hex_byt_ut_tabell.sql
 src/sql/03_functions/04_utility/hex_uppdatera_sekvensnamn.sql
 src/sql/03_functions/04_utility/hex_registrera_metadata.sql
+src/sql/03_functions/04_utility/hex_komplettera_metadata.sql
 src/sql/03_functions/04_utility/hex_uppdatera_metadata_namn.sql
 src/sql/03_functions/04_utility/hex_rensa_metadata.sql
 src/sql/03_functions/04_utility/hex_skapa_historik_qa.sql
@@ -520,17 +521,18 @@ skedd räcker det inte med `hex_underhall()` — rollerna skapas bara vid
 **Praktisk nytta**: Säkerställer att inga hex_kolumnegenskaper förloras när tabeller omstruktureras automatiskt.
 
 #### `hex_metadata`
-**Syfte**: Kopplar varje Hex-hanterad föräldertabell till dess historiktabell och QA-triggerfunktion via OID.
+**Syfte**: Register över alla Hex-tabeller, nycklat på OID. För tabeller med historik kopplar raden också ihop tabellen med historiktabellen och QA-triggerfunktionen; för tabeller utan historik är `history_schema`, `history_table` och `trigger_funktion` NULL. En rad betyder alltså "Hex-tabell", inte "har historik".
 
-**Varför OID?** OID:er är stabila vid `ALTER TABLE RENAME TO`, till skillnad från namnkonventionsuppslag (`tabell_h`) som slutar fungera direkt vid omdöpning. `hex_metadata` är därför den auktoritativa källan för rensning och namnpropagering.
+**Varför OID?** OID:er är stabila vid `ALTER TABLE RENAME TO`, till skillnad från namnkonventionsuppslag (`tabell_h`) som slutar fungera direkt vid omdöpning. `hex_metadata` är därför den auktoritativa källan för rensning och namnpropagering — och det enda stället där en omdöpt tabells gamla namn finns kvar, vilket behövs för att flytta raderna i de namnnycklade registertabellerna.
 
 **Livscykel**:
-- *Registreras* av `hex_skapa_historik_qa()` när en historiktabell skapas, via `hex_registrera_metadata()`
-- *Uppdateras* av `hex_hantera_ny_kolumn()` vid `ALTER TABLE RENAME TO` (historiktabell och parent_table uppdateras), via `hex_uppdatera_metadata_namn()`
+- *Registreras* av `hex_hantera_ny_tabell()` för varje ny tabell, via `hex_registrera_metadata()`. `hex_skapa_historik_qa()` fyller i historikkolumnerna när historiken skapas — direkt, eller när FME-tvåsteget slutförs
+- *Efterregistreras* av `hex_underhall()` för tabeller som saknar rad (skapade förbi event-triggrarna, eller utan historik från före den här versionen), via `hex_komplettera_metadata()`. `created_by` blir då NULL
+- *Uppdateras* av `hex_hantera_ny_kolumn()` vid `ALTER TABLE RENAME TO` (parent_table, och history_table om tabellen har historik), via `hex_uppdatera_metadata_namn()`
 - *Raderas* av `hex_hantera_borttagen_tabell()` vid `DROP TABLE` och `DROP SCHEMA ... CASCADE`, via `hex_rensa_metadata()`
 
 **Rättigheter**: Alla kan läsa, men bara ägaren kan skriva direkt. Event-triggrarna
-körs som den användare som gör DDL:en och skriver därför via de tre `SECURITY
+körs som den användare som gör DDL:en och skriver därför via de fyra `SECURITY
 DEFINER`-funktionerna ovan. De tar inte emot några värden som hamnar i tabellen.
 OID, namn och historiktabell läses ur systemkatalogen, `created_by` är alltid
 `session_user`, och rensningen tar bara rader vars tabell inte längre finns.
@@ -616,7 +618,7 @@ härleda i efterhand, och därför bevaras de över `--upgrade`.
 
 | Tabell | Innehåll | Skrivs av | Rensas av |
 |---|---|---|---|
-| `hex_metadata` | Tabell-OID → historiktabell och QA-triggerfunktion | `hex_registrera_metadata()`, `hex_uppdatera_metadata_namn()` | `hex_rensa_metadata()` |
+| `hex_metadata` | Tabell-OID → namn, och historiktabell och QA-triggerfunktion för tabeller med historik | `hex_registrera_metadata()`, `hex_komplettera_metadata()`, `hex_uppdatera_metadata_namn()` | `hex_rensa_metadata()` |
 | `hex_afvaktande_geometri` | Tabeller mitt i tvåstegsmönstret | `hex_hantera_ny_tabell()` | `hex_hantera_ny_kolumn()` (även via `hex_underhall()`), `hex_hantera_borttagen_tabell()` |
 | `hex_dummy_geometrier` | Tabeller som fortfarande bär en dummy-rad | `hex_lagg_till_dummy_geometri()` | `hex_ta_bort_dummy_rad()`, `hex_hantera_borttagen_tabell()` |
 | `hex_avvikande_srid` | Tabeller med SRID ≠ `hex_srid()` | `hex_hantera_ny_tabell()`, `hex_hantera_ny_kolumn()`, `hex_underhall()` | `hex_hantera_borttagen_tabell()`, `hex_underhall()` |
@@ -778,7 +780,7 @@ härleda i efterhand, och därför bevaras de över `--upgrade`.
 2. Triggerfunktion som loggar UPDATE och DELETE
 3. Trigger som automatiskt uppdaterar QA-kolumner
 4. Index för snabb sökning på gid och tidpunkt
-5. Raden i `hex_metadata`, via `hex_registrera_metadata()`
+5. Historikkolumnerna på tabellens rad i `hex_metadata`, via `hex_registrera_metadata()`
 
 Historiktabellen och triggerfunktionen ägs av rollen som körde `CREATE TABLE`
 tills nästa `hex_underhall()` för över dem till `hex_systemagare()`.
@@ -801,11 +803,12 @@ SELECT * FROM public.hex_underhall();
 `redan finns`, `redan synkad`, `synkad: N ändringar`, `slutförd`,
 `dubbletter: N` eller `fel: <meddelande>`.
 
-**Sexton åtgärdstyper**, i körordning:
+**Sjutton åtgärdstyper**, i körordning:
 
 | Åtgärd | Vad som repareras |
 |---|---|
 | ägarskapsöverföring | Scheman, tabeller, sekvenser, funktioner och vyer i Hex-scheman ägs av `hex_systemagare()` |
+| `hex_metadata` | Rad i `hex_metadata` för varje Hex-tabell, via `hex_komplettera_metadata()` (`created_by` NULL). Utan raden flyttas inte registerraderna vid `RENAME TO` |
 | `hex_tvinga_gid` | BEFORE INSERT som hindrar klienter från att välja eget `gid` med `OVERRIDING SYSTEM VALUE` |
 | `hex_tvinga_anvandarvarden` | BEFORE INSERT för kolumner med `anvandare_kan_redigera = false` |
 | `gid_primarnyckel` | `PRIMARY KEY (gid)` på tabeller som saknar unikt index på `gid`, plus framflyttning av sekvensen till `max(gid)` |
@@ -901,10 +904,11 @@ fortfarande träffar rätt efter `ALTER TABLE ... RENAME TO`. Anropas via
 `hex_afvaktande_geometri` och `hex_avvikande_srid`, som nycklas på namn och inte
 på OID. Anropas av `hex_hantera_ny_kolumn()` vid `ALTER TABLE ... RENAME TO`.
 
-Det gamla namnet tas ur `hex_metadata` för tabeller med historik, och annars ur
-satsen (`parse_ident()`). Namnbyten som görs via `EXECUTE` i en funktion syns inte
-i satsen; för en tabell utan historik flyttas raderna då inte. `hex_underhall()`
-steg 11 bygger om `hex_avvikande_srid` oavsett.
+Det gamla namnet tas ur `hex_metadata` via tabellens OID, oavsett om tabellen
+har historik och oavsett hur satsen är skriven. Saknar tabellen rad (skapad förbi
+event-triggrarna och ännu inte efterregistrerad av `hex_underhall()`) flyttas
+inget och en WARNING skrivs; `hex_underhall()` steg 11 bygger om
+`hex_avvikande_srid` oavsett.
 
 #### `hex_synka_historik(schema, tabell)`
 **Syfte**: Håller historiktabellen i takt med modertabellen. Invarianten är att

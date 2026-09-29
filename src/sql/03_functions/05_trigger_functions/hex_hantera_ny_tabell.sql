@@ -22,7 +22,8 @@ AS $BODY$
  * 7.5. Skapar trigger hex_tvinga_gid (gid sätts alltid av sekvensen, aldrig av klienten)
  * 8. Skapar GiST-index för geometrikolumn (alla scheman)
  * 9. Lägger till geometrivalidering för _kba_-scheman
- * 10. Skapar historiktabell och QA-triggers om behövs
+ * 10. Skapar historiktabell och QA-triggers om behövs, och registrerar
+ *     tabellen i hex_metadata (alltid, även utan historik)
  * 11. Lägger till dummy-geometrirad för QGIS-kompatibilitet (tabeller med geom)
  ******************************************************************************/
 <<hnt>>
@@ -452,6 +453,14 @@ BEGIN
             ELSE
                 RAISE NOTICE '  - Ingen historik/QA behövs';
             END IF;
+
+            -- Registrera tabellen i hex_metadata även utan historik. OID:n är
+            -- det enda som ger tabellens gamla namn vid ALTER TABLE ... RENAME
+            -- TO, och de namnnycklade registertabellerna (dummy, afvaktande,
+            -- avvikande SRID) flyttas med hjälp av det. Med historik är raden
+            -- redan skriven av hex_skapa_historik_qa, och anropet ändrar inget.
+            op_steg := 'registrera i hex_metadata';
+            PERFORM public.hex_registrera_metadata(schema_namn, tabell_namn);
 
             -- Steg 11: Lägg till dummy-geometrirad för QGIS-kompatibilitet
             -- En dummy låter QGIS identifiera geometritypen utan manuell dialog.
