@@ -56,6 +56,17 @@ merge-datum.
 - Tabeller med Z/M-geometri (`PointZ`, `LineStringM`, `PolygonZM` …) fick
   aldrig någon dummy-rad: den byggdes i 2D och PostGIS avvisade den. Dummyn får
   nu kolumnens dimensioner.
+- `ALTER TABLE ... RENAME TO` lämnade raderna i `hex_dummy_geometrier`,
+  `hex_afvaktande_geometri` och `hex_avvikande_srid` på det gamla namnet.
+  Dummy-raden togs då aldrig bort vid första riktiga INSERT, och en omdöpt
+  afvaktande tabell slutfördes aldrig. Ny hjälpfunktion
+  `hex_flytta_registerposter()` flyttar raderna.
+- Installerns utskrift efter `hex_underhall()` listade oförändrade utfall
+  (`redan synkad`, `redan korrekt`, `redan NOLOGIN`, `arvs_fran redan
+  beviljad`) som åtgärder, och schemabehörigheterna rapporterades som
+  `behörigheter uppdaterade` vid varje körning. Nu rapporteras de som
+  `redan finns` när ACL:erna inte ändrades, GeoServer-notifieringarna
+  sammanfattas på en rad, och `Inga åtgärder behövdes` skrivs när inget ändrats.
 
 ---
 

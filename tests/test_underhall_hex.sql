@@ -485,6 +485,39 @@ EXCEPTION WHEN OTHERS THEN
     PERFORM _fail(12, 'underhall_hex idempotency', SQLERRM);
 END $$;
 
+-- TEST 13: schemabehörigheter – oförändrade rättigheter rapporteras som 'redan finns'
+-- hex_tilldela_rollrattigheter() är idempotent men gav alltid 'behörigheter
+-- uppdaterade', så installern listade varje roll som en åtgärd vid varje körning.
+DO $$ DECLARE
+    uppdaterade int;
+    efter_andring int;
+BEGIN
+    PERFORM public.hex_underhall();  -- Stabilt läge
+
+    SELECT count(*) INTO uppdaterade
+    FROM public.hex_underhall()
+    WHERE trigger_namn = 'schemabehörigheter'
+      AND schema_namn = 'sk0_ext_underhall'
+      AND atgard = 'behörigheter uppdaterade';
+
+    -- En borttagen rättighet ska däremot rapporteras
+    EXECUTE 'REVOKE USAGE ON SCHEMA sk0_ext_underhall FROM r_sk0_ext_underhall';
+    SELECT count(*) INTO efter_andring
+    FROM public.hex_underhall()
+    WHERE trigger_namn = 'schemabehörigheter'
+      AND tabell_namn = 'r_sk0_ext_underhall'
+      AND atgard = 'behörigheter uppdaterade';
+
+    IF uppdaterade = 0 AND efter_andring = 1 THEN
+        PERFORM _pass(13, 'schemabehörigheter: redan finns när inget ändras, uppdaterade när något ändras');
+    ELSE
+        PERFORM _fail(13, 'schemabehörigheter: redan finns när inget ändras, uppdaterade när något ändras',
+            format('oförändrat gav %s uppdaterade, ändrat gav %s', uppdaterade, efter_andring));
+    END IF;
+EXCEPTION WHEN OTHERS THEN
+    PERFORM _fail(13, 'schemabehörigheter idempotens', SQLERRM);
+END $$;
+
 -- =============================================================================
 -- TEARDOWN
 -- =============================================================================

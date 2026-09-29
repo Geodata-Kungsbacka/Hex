@@ -133,6 +133,8 @@ DECLARE
     rollnamn_full      text;
     arvs_rollnamn      text;
     schema_regex       text;
+    acl_fore           text;
+    acl_efter          text;
     generated_password text;
     antal_andringar    integer;
 BEGIN
@@ -778,7 +780,9 @@ BEGIN
                     ELSE
                         atgard := 'redan NOLOGIN';
                     END IF;
-                    PERFORM hex_tilldela_rollrattigheter(r.s, rollnamn_full, rol.rolltyp);
+                    -- Rättigheterna för en befintlig roll repareras och
+                    -- rapporteras i steg 7 (schemabehörigheter). Görs det
+                    -- även här syns reparationen aldrig i utfallet.
                 END IF;
 
             ELSE
@@ -787,23 +791,23 @@ BEGIN
                 -- -------------------------------------------------------
                 IF rol.arvs_fran IS NOT NULL THEN
                     arvs_rollnamn := replace(rol.arvs_fran, '{schema}', r.s);
-                ELSE
-                    arvs_rollnamn := NULL;
-                END IF;
+            ELSE
+                arvs_rollnamn := NULL;
+            END IF;
 
-                IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = rollnamn_full) THEN
-                    -- Fall a: saknas helt
-                    generated_password := encode(gen_random_bytes(18), 'base64');
-                    EXECUTE format('CREATE ROLE %I WITH LOGIN PASSWORD %L',
-                        rollnamn_full, generated_password);
-                    EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I',
-                        current_database(), rollnamn_full);
-                    EXECUTE format('GRANT hex_geoserver_roller TO %I', rollnamn_full);
-                    IF arvs_rollnamn IS NOT NULL AND EXISTS (
-                        SELECT 1 FROM pg_roles WHERE rolname = arvs_rollnamn
-                    ) THEN
-                        EXECUTE format('GRANT %I TO %I', arvs_rollnamn, rollnamn_full);
-                    END IF;
+            IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = rollnamn_full) THEN
+                -- Fall a: saknas helt
+                generated_password := encode(gen_random_bytes(18), 'base64');
+                EXECUTE format('CREATE ROLE %I WITH LOGIN PASSWORD %L',
+                    rollnamn_full, generated_password);
+                EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I',
+                    current_database(), rollnamn_full);
+                EXECUTE format('GRANT hex_geoserver_roller TO %I', rollnamn_full);
+                IF arvs_rollnamn IS NOT NULL AND EXISTS (
+                    SELECT 1 FROM pg_roles WHERE rolname = arvs_rollnamn
+                ) THEN
+                    EXECUTE format('GRANT %I TO %I', arvs_rollnamn, rollnamn_full);
+                END IF;
                     INSERT INTO public.hex_rolluppgifter (rollnamn, losenord, kan_logga_in)
                     VALUES (rollnamn_full, generated_password, true)
                     ON CONFLICT (rollnamn) DO UPDATE
@@ -974,30 +978,49 @@ BEGIN
             tabell_namn  := rollnamn_full;
             trigger_namn := 'schemabehörigheter';
 
-            IF NOT rol.kan_logga_in THEN
-                -- NOLOGIN-roll: direkta schemabehörigheter
+            IF NOT rol.kan_logga_in OR rol.arvs_fran IS NULL THEN
+                -- Direkta schemabehörigheter. GRANT är idempotent men säger
+                -- inte om något ändrades, så schemats, relationernas och
+                -- standardrättigheternas ACL jämförs före och efter. Annars
+                -- rapporteras varje roll som uppdaterad vid varje körning.
+                SELECT concat_ws('|',
+                    (SELECT n.nspacl::text FROM pg_namespace n WHERE n.nspname = r.s),
+                    (SELECT string_agg(c.oid::text || '=' || coalesce(c.relacl::text, ''), ',' ORDER BY c.oid)
+                     FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+                     WHERE n.nspname = r.s),
+                    (SELECT string_agg(d.oid::text || '=' || d.defaclacl::text, ',' ORDER BY d.oid)
+                     FROM pg_default_acl d JOIN pg_namespace n ON n.oid = d.defaclnamespace
+                     WHERE n.nspname = r.s))
+                INTO acl_fore;
                 PERFORM hex_tilldela_rollrattigheter(r.s, rollnamn_full, rol.rolltyp);
-                atgard := 'behörigheter uppdaterade';
+                SELECT concat_ws('|',
+                    (SELECT n.nspacl::text FROM pg_namespace n WHERE n.nspname = r.s),
+                    (SELECT string_agg(c.oid::text || '=' || coalesce(c.relacl::text, ''), ',' ORDER BY c.oid)
+                     FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+                     WHERE n.nspname = r.s),
+                    (SELECT string_agg(d.oid::text || '=' || d.defaclacl::text, ',' ORDER BY d.oid)
+                     FROM pg_default_acl d JOIN pg_namespace n ON n.oid = d.defaclnamespace
+                     WHERE n.nspname = r.s))
+                INTO acl_efter;
+                atgard := CASE
+                    WHEN acl_efter IS NOT DISTINCT FROM acl_fore THEN 'redan finns'
+                    ELSE 'behörigheter uppdaterade'
+                END;
             ELSE
                 -- LOGIN-tjänstekonto: säkerställ arvs_fran-grant
-                IF rol.arvs_fran IS NOT NULL THEN
-                    arvs_rollnamn := replace(rol.arvs_fran, '{schema}', r.s);
-                    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = arvs_rollnamn)
-                    AND NOT EXISTS (
-                        SELECT 1 FROM pg_auth_members am
-                        JOIN pg_roles grp ON grp.oid = am.roleid
-                        JOIN pg_roles mem ON mem.oid = am.member
-                        WHERE grp.rolname = arvs_rollnamn
-                          AND mem.rolname = rollnamn_full
-                    ) THEN
-                        EXECUTE format('GRANT %I TO %I', arvs_rollnamn, rollnamn_full);
-                        atgard := 'arvs_fran-grant tillagd';
-                    ELSE
-                        atgard := 'arvs_fran redan beviljad';
-                    END IF;
+                arvs_rollnamn := replace(rol.arvs_fran, '{schema}', r.s);
+                IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = arvs_rollnamn)
+                AND NOT EXISTS (
+                    SELECT 1 FROM pg_auth_members am
+                    JOIN pg_roles grp ON grp.oid = am.roleid
+                    JOIN pg_roles mem ON mem.oid = am.member
+                    WHERE grp.rolname = arvs_rollnamn
+                      AND mem.rolname = rollnamn_full
+                ) THEN
+                    EXECUTE format('GRANT %I TO %I', arvs_rollnamn, rollnamn_full);
+                    atgard := 'arvs_fran-grant tillagd';
                 ELSE
-                    PERFORM hex_tilldela_rollrattigheter(r.s, rollnamn_full, rol.rolltyp);
-                    atgard := 'behörigheter uppdaterade';
+                    atgard := 'arvs_fran redan beviljad';
                 END IF;
             END IF;
 

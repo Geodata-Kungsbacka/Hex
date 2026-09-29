@@ -106,6 +106,8 @@ INSTALL_ORDER = [
     # hex_synka_historik anropar hex_aterskapa_qa_trigger; båda används av
     # hex_hantera_ny_kolumn och hex_underhall
     "src/sql/03_functions/04_utility/hex_synka_historik.sql",
+    # Används av hex_hantera_ny_kolumn vid RENAME TO
+    "src/sql/03_functions/04_utility/hex_flytta_registerposter.sql",
     "src/sql/03_functions/04_utility/hex_tilldela_rollrattigheter.sql",
     "src/sql/03_functions/04_utility/hex_tillampa_grupprattigheter.sql",
     "src/sql/03_functions/04_utility/hex_tvinga_gid_fran_sekvens.sql",
@@ -169,6 +171,7 @@ DROP FUNCTION IF EXISTS public.hex_kontrollera_geometri_trigger() CASCADE;
 -- Hjälpfunktioner
 DROP FUNCTION IF EXISTS public.hex_tillampa_grupprattigheter();
 DROP FUNCTION IF EXISTS public.hex_synka_historik(text, text);
+DROP FUNCTION IF EXISTS public.hex_flytta_registerposter(text, text, text);
 DROP FUNCTION IF EXISTS public.hex_registrera_metadata(text, text);
 DROP FUNCTION IF EXISTS public.hex_uppdatera_metadata_namn(oid);
 DROP FUNCTION IF EXISTS public.hex_rensa_metadata();
@@ -731,6 +734,18 @@ def uninstall(db: dict):
         conn.close()
 
 
+# Utfall från hex_underhall() som betyder att ingenting ändrades. Allt annat
+# skrivs ut som en åtgärd. tests/test_installer.py kontrollerar att varje
+# 'redan ...'-utfall i hex_underhall.sql finns med här.
+UNDERHALL_OFORANDRAD = frozenset({
+    "redan finns",
+    "redan synkad",
+    "redan korrekt",
+    "redan NOLOGIN",
+    "arvs_fran redan beviljad",
+})
+
+
 def kor_underhall(cur, conn) -> str | None:
     """Kör hex_underhall() och skriver ut vad den åtgärdade.
 
@@ -755,7 +770,13 @@ def kor_underhall(cur, conn) -> str | None:
             "Hex är installerat. Kör SELECT * FROM public.hex_underhall() manuellt."
         )
 
-    created = [(s, t, tr, a) for s, t, tr, a in rows if a not in ("redan finns",)]
+    # GeoServer-notifieringen skickas vid varje körning (lyssnaren är
+    # idempotent) och är ingen reparation. Den sammanfattas på en rad.
+    notifierade = [s for s, t, tr, a in rows if tr == "geoserver_notifiering"]
+    created = [
+        (s, t, tr, a) for s, t, tr, a in rows
+        if a not in UNDERHALL_OFORANDRAD and tr != "geoserver_notifiering"
+    ]
     if created:
         for s, t, tr, a in created:
             prefix = f"{s}." if s and s != "-" else ""
@@ -763,6 +784,8 @@ def kor_underhall(cur, conn) -> str | None:
         print(f"  {len(created)} åtgärd(er) genomförda.")
     else:
         print("  Inga åtgärder behövdes.")
+    if notifierade:
+        print(f"  GeoServer-notifiering skickad för {len(notifierade)} schema(n).")
     return None
 
 

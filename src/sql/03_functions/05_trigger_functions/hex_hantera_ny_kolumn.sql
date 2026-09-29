@@ -22,7 +22,9 @@ AS $BODY$
  *    även DROP COLUMN och ALTER COLUMN TYPE, som inte omstruktureras.
  *    Saknade kolumner läggs till, typkonflikter löses utan dataförlust och
  *    QA-triggern byggs om.
- * 4. Speglar RENAME TO och RENAME COLUMN i historiktabellen och hex_metadata
+ * 4. Speglar RENAME TO och RENAME COLUMN i historiktabellen och hex_metadata,
+ *    och flyttar namnnycklade registerrader vid RENAME TO
+ *    (hex_flytta_registerposter)
  * 5. Blockerar ALTER TABLE ... SET SCHEMA för Hex-tabeller
  *
  * Steg 5b/5c: FME-tvåstegsmönster och liknande omvägar
@@ -140,15 +142,56 @@ BEGIN
             schema_namn := replace(split_part(kommando.object_identity, '.', 1), '"', '');
             tabell_namn := replace(split_part(kommando.object_identity, '.', 2), '"', '');
 
+            -- Historiktabeller döps om av grenen nedan och hanteras aldrig direkt
+            CONTINUE WHEN tabell_namn ~ '_h$' OR kommando.object_type <> 'table';
+
             DECLARE
                 meta_rad       record;
                 ny_historik    text;
+                gammalt_namn   text;
+                kandidat       record;
+                delar          text[];
+                har_historik   boolean;
             BEGIN
                 SELECT * INTO meta_rad
                 FROM hex_metadata
                 WHERE parent_oid = kommando.objid;
+                har_historik := FOUND;
 
-                IF FOUND THEN
+                -- Det gamla namnet finns inte kvar i katalogen. hex_metadata har
+                -- det för tabeller med historik. För övriga läses det ur satsen:
+                -- varje "ALTER TABLE <namn> RENAME TO" tolkas med parse_ident(),
+                -- och namnet godtas bara om det ligger i samma schema och inte
+                -- längre är en relation där.
+                IF har_historik THEN
+                    gammalt_namn := meta_rad.parent_table;
+                ELSE
+                    FOR kandidat IN
+                        SELECT (regexp_matches(current_query(),
+                            'alter\s+table\s+(?:if\s+exists\s+)?(?:only\s+)?([^;]+?)\s+rename\s+to\s',
+                            'gi'))[1] AS text
+                    LOOP
+                        BEGIN
+                            delar := parse_ident(btrim(kandidat.text));
+                        EXCEPTION
+                            WHEN OTHERS THEN
+                                CONTINUE;
+                        END;
+                        CONTINUE WHEN array_length(delar, 1) > 1
+                            AND delar[array_length(delar, 1) - 1] <> schema_namn;
+                        CONTINUE WHEN delar[array_length(delar, 1)] = tabell_namn
+                            OR to_regclass(format('%I.%I', schema_namn,
+                                                  delar[array_length(delar, 1)])) IS NOT NULL;
+                        gammalt_namn := delar[array_length(delar, 1)];
+                        EXIT;
+                    END LOOP;
+                END IF;
+
+                -- hex_dummy_geometrier, hex_afvaktande_geometri och
+                -- hex_avvikande_srid nycklas på namn och måste följa med
+                PERFORM hex_flytta_registerposter(schema_namn, gammalt_namn, tabell_namn);
+
+                IF har_historik THEN
                     -- Cap at 63 bytes (PostgreSQL identifier limit)
                     ny_historik := left(tabell_namn || '_h', 63);
 

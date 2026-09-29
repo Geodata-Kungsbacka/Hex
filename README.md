@@ -424,6 +424,7 @@ src/sql/03_functions/04_utility/hex_rensa_metadata.sql
 src/sql/03_functions/04_utility/hex_skapa_historik_qa.sql
 src/sql/03_functions/04_utility/hex_aterskapa_qa_trigger.sql
 src/sql/03_functions/04_utility/hex_synka_historik.sql
+src/sql/03_functions/04_utility/hex_flytta_registerposter.sql
 src/sql/03_functions/04_utility/hex_tilldela_rollrattigheter.sql
 src/sql/03_functions/04_utility/hex_tillampa_grupprattigheter.sql
 src/sql/03_functions/04_utility/hex_tvinga_gid_fran_sekvens.sql
@@ -821,12 +822,14 @@ SELECT * FROM public.hex_underhall();
 | geoserver-notifiering | `pg_notify` för scheman vars skyddsnivå har `publiceras_geoserver = true` och som har uppgifter för läskontot (`hex_geoserver_rollnamn()`) |
 | `avvikande_srid` | Bygger om `hex_avvikande_srid` mot `hex_srid()`: registrerar tabeller med annat SRID, avregistrerar de som nu stämmer eller inte finns kvar |
 
-**Idempotent**: en andra körning ändrar ingenting. Den rapporterar ändå rader:
-installern skriver ut varje rad vars `atgard` inte är exakt `redan finns`, så
-`redan synkad`, `redan korrekt`, `redan NOLOGIN`, `behörigheter uppdaterade`
-(schemabehörigheterna tillämpas om varje gång) och `notifiering skickad` syns
-vid varje körning i en databas med scheman. `Inga åtgärder behövdes` skrivs
-bara ut i en databas utan Hex-scheman.
+**Idempotent**: en andra körning ändrar ingenting och installern skriver då
+`Inga åtgärder behövdes`. Utfall som betyder "oförändrat" (`redan finns`,
+`redan synkad`, `redan korrekt`, `redan NOLOGIN`, `arvs_fran redan beviljad`)
+står i `UNDERHALL_OFORANDRAD` i `install_hex.py` och skrivs inte ut.
+Schemabehörigheterna jämför ACL:erna före och efter och rapporterar
+`behörigheter uppdaterade` bara när något faktiskt ändrades.
+GeoServer-notifieringen skickas vid varje körning och sammanfattas på en egen
+rad (`GeoServer-notifiering skickad för N schema(n).`).
 
 > `hex_underhall()` skapar **inte** roller för ett schema som aldrig fick dem —
 > `gs_r_`/`gs_w_` skapas bara vid `CREATE SCHEMA`. Se *Vanliga fel vid manuell
@@ -892,6 +895,16 @@ SELECT public.hex_sakerstall_gid_primarnyckel('sk1_kba_geo', 'vagar_l');
 kolumnlista. Bygger om den funktion triggern faktiskt anropar, så att den
 fortfarande träffar rätt efter `ALTER TABLE ... RENAME TO`. Anropas via
 `hex_synka_historik()`.
+
+#### `hex_flytta_registerposter(schema, gammalt_namn, nytt_namn)`
+**Syfte**: Flyttar en omdöpt tabells rader i `hex_dummy_geometrier`,
+`hex_afvaktande_geometri` och `hex_avvikande_srid`, som nycklas på namn och inte
+på OID. Anropas av `hex_hantera_ny_kolumn()` vid `ALTER TABLE ... RENAME TO`.
+
+Det gamla namnet tas ur `hex_metadata` för tabeller med historik, och annars ur
+satsen (`parse_ident()`). Namnbyten som görs via `EXECUTE` i en funktion syns inte
+i satsen; för en tabell utan historik flyttas raderna då inte. `hex_underhall()`
+steg 11 bygger om `hex_avvikande_srid` oavsett.
 
 #### `hex_synka_historik(schema, tabell)`
 **Syfte**: Håller historiktabellen i takt med modertabellen. Invarianten är att
@@ -976,7 +989,7 @@ meddelandena följer med när inställningen ändras.
 
 **Process**, beroende på vad satsen gör:
 1. `SET SCHEMA` till ett Hex-schema, eller på en Hex-hanterad tabell → blockeras med `EXCEPTION`
-2. `RENAME TO` → historiktabellen döps om, `hex_metadata` uppdateras, QA-triggern byggs om
+2. `RENAME TO` → historiktabellen döps om, `hex_metadata` uppdateras, QA-triggern byggs om, och raderna i `hex_dummy_geometrier`, `hex_afvaktande_geometri` och `hex_avvikande_srid` flyttas till det nya namnet
 3. `RENAME COLUMN` → kolumnen döps om i historiktabellen, QA-triggern byggs om
 4. Övriga ändringar utom kolumntillägg → `hex_synka_historik()`
 5. `ADD COLUMN`, även via `AddGeometryColumn()` (via `EXECUTE` i en funktion känns tillägget bara igen när en afvaktande tabell får `geom`):

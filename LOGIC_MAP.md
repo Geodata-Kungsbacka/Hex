@@ -724,8 +724,13 @@ flowchart TD
     START(["ALTER TABLE schema.byggnader_y RENAME TO fastigheter_y"])
     START --> DET["Detekterar RENAME TO<br/>i frågesträngen"]
     DET --> OID{"Finns i hex_metadata<br/>via OID?"}
-    OID --> |nej| NOH(["klar – tabellen har ingen historik"])
-    OID --> |ja| REN["ALTER TABLE byggnader_y_h<br/>RENAME TO fastigheter_y_h<br/>(trunkeras till 63 byte)"]
+    OID --> |ja| GAML["Gamla namnet =<br/>hex_metadata.parent_table"]
+    OID --> |nej| PARSE["Gamla namnet ur satsen<br/>(parse_ident)"]
+    GAML --> FLYTT["hex_flytta_registerposter<br/>hex_dummy_geometrier · hex_afvaktande_geometri<br/>· hex_avvikande_srid → nytt namn"]
+    PARSE --> FLYTT
+    FLYTT --> HIST{"Har historik?"}
+    HIST --> |nej| FLAG
+    HIST --> |ja| REN["ALTER TABLE byggnader_y_h<br/>RENAME TO fastigheter_y_h<br/>(trunkeras till 63 byte)"]
     REN --> UPD["hex_uppdatera_metadata_namn(oid)<br/>parent_table = fastigheter_y<br/>history_table = fastigheter_y_h"]
     UPD --> SYNK["hex_synka_historik<br/>QA-triggerns kropp byggs om<br/>med de nya tabellnamnen"]
     SYNK --> FLAG["Nollställer<br/>temp.reorganization_in_progress"]
@@ -742,9 +747,20 @@ ALTER TABLE sk0_kba_bygg.byggnader_y RENAME TO fastigheter_y;
 hex_hantera_ny_kolumn()
   ├── Detekterar RENAME TO i frågesträngen
   │
+  ├── Hoppar över _h-tabeller
+  │
   ├── Slår upp tabellen i hex_metadata via OID (stabilt genom rename)
-  │     Hittar: history_table='byggnader_y_h'
-  │     Ingen post → ingen historik, inget att göra
+  │     Hittar: parent_table='byggnader_y', history_table='byggnader_y_h'
+  │
+  ├── Gamla namnet: parent_table ur hex_metadata, annars ur satsen —
+  │     varje "ALTER TABLE <namn> RENAME TO" tolkas med parse_ident() och
+  │     godtas om det ligger i samma schema och inte längre är en relation
+  │
+  ├── → hex_flytta_registerposter(schema, 'byggnader_y', 'fastigheter_y')
+  │     Flyttar raderna i hex_dummy_geometrier, hex_afvaktande_geometri och
+  │     hex_avvikande_srid (DELETE ... RETURNING + INSERT, registrerad står kvar)
+  │
+  │   Utan post i hex_metadata slutar det här — tabellen har ingen historik.
   │
   ├── ALTER TABLE byggnader_y_h RENAME TO fastigheter_y_h
   │     (left(nytt_namn || '_h', 63))
@@ -768,10 +784,10 @@ Triggern och triggerfunktionen behåller sina gamla namn (`trg_byggnader_y_qa`,
 `trg_fn_byggnader_y_qa`). Det är den funktionen som byggs om, och
 `hex_metadata.trigger_funktion` ändras inte.
 
-> **Namnnycklade tabeller följer inte med.** `hex_dummy_geometrier`,
-> `hex_afvaktande_geometri` och `hex_avvikande_srid` nycklas på schema- och
-> tabellnamn och uppdateras inte vid `RENAME TO`. Döps en tabell om medan den
-> fortfarande bär sin dummy-rad tas raden inte bort vid första riktiga INSERT.
+> **Namnnycklade tabeller.** `hex_dummy_geometrier`, `hex_afvaktande_geometri`
+> och `hex_avvikande_srid` nycklas på schema- och tabellnamn. Därför flyttas
+> deras rader av `hex_flytta_registerposter()`. Satsen tolkas bara när tabellen
+> saknar historik, och ett namnbyte via `EXECUTE` i en funktion syns inte där.
 
 ---
 
@@ -1294,6 +1310,7 @@ det utlöser i sin tur nya eventutlösare. Tre flaggor förhindrar oändliga ked
 | `hex_registrera_metadata(schema, tabell)` | `hex_skapa_historik_qa` | Skriver raden i `hex_metadata` (`SECURITY DEFINER`, värden ur systemkatalogen) |
 | `hex_uppdatera_metadata_namn(oid)` | `hex_hantera_ny_kolumn` (RENAME TO) | Uppdaterar namnen i `hex_metadata` (`SECURITY DEFINER`) |
 | `hex_rensa_metadata()` | `hex_hantera_borttagen_tabell` | Tar bort `hex_metadata`-rader vars tabell inte finns (`SECURITY DEFINER`) |
+| `hex_flytta_registerposter(schema, gammalt, nytt)` | `hex_hantera_ny_kolumn` (RENAME TO) | Flyttar raderna i `hex_dummy_geometrier`, `hex_afvaktande_geometri` och `hex_avvikande_srid` till tabellens nya namn |
 | `hex_tilldela_rollrattigheter(schema, roll, typ)` | `hex_hantera_std_roller` | GRANT USAGE + SELECT (read) eller GRANT ALL (write) på tabeller |
 | `hex_aterskapa_qa_trigger(schema, tabell, historik_tabell)` | `hex_synka_historik` | Bygger om den triggerfunktion triggern faktiskt anropar, med modertabellens aktuella kolumnlista |
 | `hex_lagg_till_dummy_geometri(schema, tabell, hex_geom_info)` | `hex_hantera_ny_tabell`, `hex_hantera_ny_kolumn` | Lägger in dummy-geometriraden och registrerar den i `hex_dummy_geometrier` |
@@ -1336,6 +1353,11 @@ manuellt: `SELECT * FROM public.hex_underhall();`. Returnerar en rad per
 undersökt objekt med `schema_namn`, `tabell_namn`, `trigger_namn` (åtgärdstypen)
 och `atgard` (utfallet). Ingen åtgärd ändrar användardata.
 
+Installern skriver ut rader vars `atgard` inte finns i
+`UNDERHALL_OFORANDRAD` (`redan finns`, `redan synkad`, `redan korrekt`,
+`redan NOLOGIN`, `arvs_fran redan beviljad`). `geoserver_notifiering`
+sammanfattas på en rad.
+
 | Steg | `trigger_namn` | Vad som kontrolleras och repareras |
 |---|---|---|
 | 0 | `ägarskapsöverföring` | Scheman, tabeller, sekvenser, funktioner och vyer i Hex-scheman ägs av `hex_systemagare()` |
@@ -1349,7 +1371,7 @@ och `atgard` (utfallet). Ingen åtgärd ändrar användardata.
 | 4b | `historiksynk` | `hex_synka_historik()` på varje tabell med historik. `redan synkad` eller `synkad: N ändringar` |
 | 5 | `rollstruktur` | De fyra rollerna per schema, `r_`/`w_` tvingas till NOLOGIN, ADMIN OPTION för ägarrollen |
 | 6 | `hex_geoserver_roller (rollmedlemskap)` | LOGIN-roller in, NOLOGIN-roller ut |
-| 7 | `schemabehörigheter` | `hex_tilldela_rollrattigheter` för NOLOGIN-roller, `GRANT arvs_fran` för LOGIN-roller |
+| 7 | `schemabehörigheter` | `hex_tilldela_rollrattigheter` för NOLOGIN-roller, `GRANT arvs_fran` för LOGIN-roller. `behörigheter uppdaterade` bara om schemats, relationernas eller standardrättigheternas ACL ändrades, annars `redan finns` |
 | 8 | `ägarskap_schema` | Schemaägare som inte är `hex_systemagare()` |
 | 9 | `ägarskap_objekt` | Ägare på tabeller, vyer, sekvenser, främmande tabeller och funktioner |
 | 10 | `geoserver_notifiering` | `pg_notify('geoserver_schema', …)` för publicerade scheman med uppgifter för läskontot (`hex_geoserver_rollnamn(schema, 'las')`) |
