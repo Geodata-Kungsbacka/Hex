@@ -73,8 +73,9 @@ GRANT SELECT ON public.hex_installningar TO PUBLIC;
 
 COMMENT ON TABLE public.hex_installningar IS
     'Databasövergripande inställningar för Hex. Exakt en rad; varje inställning är en kolumn.
-Ändra med UPDATE public.hex_installningar SET ... och kör sedan SELECT * FROM hex_underhall()
-så att befintliga tabeller stäms av mot de nya värdena.';
+Ändra med UPDATE public.hex_installningar SET ... Nya värden gäller tabeller och vyer som
+skapas därefter. Efter ändrat srid: kör SELECT * FROM hex_underhall(), som bygger om
+hex_avvikande_srid för befintliga tabeller. Befintliga tabeller döps inte om efter ändrade suffix.';
 
 COMMENT ON COLUMN public.hex_installningar.id IS
     'Alltid true. Primärnyckel och CHECK tillsammans gör att tabellen bara kan ha en rad.';

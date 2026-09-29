@@ -672,14 +672,17 @@ def upgrade(db: dict, base_path="."):
 
         # Underhållet körs först nu, när raderna är tillbaka. Kördes det i
         # install() skulle det se tomma tillståndstabeller och
-        # standardkonfigurationen. Tre saker hänger på det:
+        # standardkonfigurationen. Fyra saker hänger på det:
         #   * triggers som härleds ur hex_dummy_geometrier återkopplas
         #   * steg 10 i hex_underhall() skickar geoserver_schema-notiser utifrån
         #     hex_standardiserade_skyddsnivaer. Före återställningen står den på
         #     INSERT-defaultarna, så ett prefix kunden satt till
-        #     publiceras_geoserver = true (t.ex. skx) hoppades över. Eftersom
-        #     uppgraderingen samtidigt roterar gs_r_/gs_w_-lösenorden blev
-        #     GeoServers datastore kvar med gamla uppgifter för just de schemana.
+        #     publiceras_geoserver = true (t.ex. skx) hoppades över.
+        #   * hex_rolluppgifter: med tom tabell backfyllde underhållet nya
+        #     gs_r_/gs_w_-lösenord (ALTER ROLE ... PASSWORD), och återställningen
+        #     kastade sedan de sparade raderna. Lösenorden roterades och
+        #     GeoServers datastores stod kvar med de gamla. Nu läggs de sparade
+        #     tillbaka och stämmer med rollerna, som uppgraderingen inte rör.
         #   * steg 11 bygger om hex_avvikande_srid mot hex_installningar.srid.
         #     Före återställningen står srid på standardvärdet, och raderna
         #     underhållet lade till skulle få återställningens ON CONFLICT DO

@@ -308,10 +308,10 @@ python install_hex.py --uninstall  # Avinstallera
 installern med ett argumentfel i stället för att välja åt dig. Utan flagga
 installeras Hex.
 
-> **OBS vid `--upgrade`:** konfigurationstabellerna bevaras, men lösenorden i
-> `hex_rolluppgifter` **roteras** — GeoServers datastores behöver de nya
-> uppgifterna. Starta om lyssnartjänsten efter uppgraderingen, se
-> [docs/09](docs/09_installera-uppdatera-hex.md#hex_rolluppgifter-roteras--den-bevaras-inte).
+> **Vid `--upgrade`** bevaras konfigurationstabellerna, drifttillståndet och
+> lösenorden i `hex_rolluppgifter`. GeoServers datastores fortsätter fungera
+> utan omstart av lyssnaren, se
+> [docs/09](docs/09_installera-uppdatera-hex.md#hex_rolluppgifter-bevaras--lösenorden-roteras-inte).
 
 ### Manuell installation
 
@@ -622,9 +622,9 @@ härleda i efterhand, och därför bevaras de över `--upgrade`.
 | `hex_avvikande_srid` | Tabeller med SRID ≠ `hex_srid()` | `hex_hantera_ny_tabell()`, `hex_hantera_ny_kolumn()`, `hex_underhall()` | `hex_hantera_borttagen_tabell()`, `hex_underhall()` |
 | `hex_rolluppgifter` | Rollnamn och autogenererat lösenord för LOGIN-tjänstekonton | `hex_hantera_std_roller()`, `hex_underhall()` | `DROP SCHEMA` via `hex_ta_bort_schemaroller()` |
 
-> `hex_rolluppgifter` är den enda av dem som **inte** bevaras över `--upgrade` —
-> lösenorden roteras. Se
-> [docs/09](docs/09_installera-uppdatera-hex.md#hex_rolluppgifter-roteras--den-bevaras-inte).
+> `hex_rolluppgifter` bevaras också över `--upgrade`, så lösenorden roteras
+> inte. Se
+> [docs/09](docs/09_installera-uppdatera-hex.md#hex_rolluppgifter-bevaras--lösenorden-roteras-inte).
 
 ### Strukturhanteringsfunktioner
 
@@ -796,7 +796,7 @@ SELECT * FROM public.hex_underhall();
 `trigger_namn` och `atgard`. `atgard = 'redan finns'` betyder att inget behövde
 göras.
 
-**Elva åtgärdstyper**, i körordning:
+**Tolv åtgärdstyper**, i körordning:
 
 | Åtgärd | Vad som repareras |
 |---|---|
@@ -810,7 +810,8 @@ göras.
 | rollstruktur | De fyra rollerna per schema, och invarianten att `r_`/`w_` är NOLOGIN |
 | `hex_geoserver_roller` | Gruppmedlemskap för LOGIN-tjänstekonton (pg_hba.conf-matchning) |
 | schemabehörigheter | GRANT om per roll och schema, samt `arvs_fran` |
-| geoserver-notifiering | `pg_notify` för scheman vars skyddsnivå har `publiceras_geoserver = true` |
+| geoserver-notifiering | `pg_notify` för scheman vars skyddsnivå har `publiceras_geoserver = true` och som har uppgifter för läskontot (`hex_geoserver_rollnamn()`) |
+| `avvikande_srid` | Bygger om `hex_avvikande_srid` mot `hex_srid()`: registrerar tabeller med annat SRID, avregistrerar de som nu stämmer eller inte finns kvar |
 
 **Idempotent**: en andra körning direkt efter den första ska rapportera
 `Inga åtgärder behövdes`.

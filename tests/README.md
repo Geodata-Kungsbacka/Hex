@@ -171,7 +171,8 @@ och betyder inte att ett test misslyckats.
 |--------------------------------|---------------------------------------------------------------|
 | `test_reserved_words.sql`      | Kolumnnamn som är reserverade ord i QA-triggers                |
 | `test_stress.sql`              | Namnvalidering, rollhantering, historik, konfigurationsgränser |
-| `test_dummy_srid.sql`          | Dummy-geometrier och registrering av avvikande SRID            |
+| `test_dummy_srid.sql`          | Dummy-geometrier, avvikande SRID och inställningsbart SRID     |
+| `test_geometrisuffix.sql`      | Geometrisuffix och vyprefix enligt `hex_installningar`         |
 | `test_edge_cases.sql`          | CREATE/ALTER TABLE-varianter, schemanamngivning, specialfall   |
 | `test_extended_ab.sql`         | sk2-scheman och vy-validering                                  |
 | `test_extended_cd.sql`         | Klientsimulering (GeoServer, QGIS, FME) och strukturella fall  |

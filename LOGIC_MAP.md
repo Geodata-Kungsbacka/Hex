@@ -94,15 +94,30 @@ Definierar vilka roller som automatiskt skapas för nya scheman.
 | `ta_bort_med_schema` | `true` = rollen tas bort när schemat droppas |
 | `kan_logga_in` | `true` = rollen skapas med LOGIN och autogenererat lösenord (sparas i `hex_rolluppgifter`). `false` = NOLOGIN (ren behörighetsgrupp). |
 | `arvs_fran` | Om satt, ersätts `{schema}` och rollen beviljas `GRANT arvs_fran TO rollnamn` i stället för direkta schemabehörigheter via `hex_tilldela_rollrattigheter`. Används för att hålla `gs_r_`/`gs_w_`-behörigheter synkroniserade med `r_`/`w_`. |
+| `geoserver_konto` | `'las'`/`'skriv'` markerar GeoServers tjänstekonton, högst en rad per värde. `hex_underhall()` och lyssnaren slår upp kontot via `hex_geoserver_rollnamn()`, inte via namnet `gs_r_`/`gs_w_`. |
 
 **Fördefinierade roller:**
 
-| Rollnamn | Typ | Matchar | kan_logga_in | arvs_fran | Tas bort med schema |
-|---|---|---|---|---|---|
-| `r_{schema}` | read | IS NOT NULL (alla) | nej (NOLOGIN) | — | ja |
-| `w_{schema}` | write | IS NOT NULL (alla) | nej (NOLOGIN) | — | ja |
-| `gs_r_{schema}` | read | IS NOT NULL (alla) | ja (LOGIN) | `r_{schema}` | ja |
-| `gs_w_{schema}` | write | IS NOT NULL (alla) | ja (LOGIN) | `w_{schema}` | ja |
+| Rollnamn | Typ | Matchar | kan_logga_in | arvs_fran | geoserver_konto | Tas bort med schema |
+|---|---|---|---|---|---|---|
+| `r_{schema}` | read | IS NOT NULL (alla) | nej (NOLOGIN) | — | — | ja |
+| `w_{schema}` | write | IS NOT NULL (alla) | nej (NOLOGIN) | — | — | ja |
+| `gs_r_{schema}` | read | IS NOT NULL (alla) | ja (LOGIN) | `r_{schema}` | `las` | ja |
+| `gs_w_{schema}` | write | IS NOT NULL (alla) | ja (LOGIN) | `w_{schema}` | `skriv` | ja |
+
+---
+
+### `hex_installningar`
+Databasövergripande inställningar. Exakt en rad; varje inställning är en kolumn.
+
+| Kolumn | Standard | Läses av |
+|---|---|---|
+| `srid` | 3007 | `hex_srid()` → SRID-kontrollen i `hex_hantera_ny_tabell`/`hex_hantera_ny_kolumn`, steg 11 i `hex_underhall` |
+| `dummy_x`, `dummy_y`, `dummy_storlek` | 160000, 6395000, 100 | `hex_lagg_till_dummy_geometri` (transformeras till tabellens SRID vid behov) |
+| `suffix_punkt`, `suffix_linje`, `suffix_yta`, `suffix_ovrigt` | `_p`, `_l`, `_y`, `_g` | `hex_geometrisuffix()`, `hex_tabellsuffix()` → namnkontrollen för tabeller och vyer |
+
+Bevaras över `--upgrade` och ominstallation. Efter ändrat `srid`: kör
+`hex_underhall()`, som bygger om `hex_avvikande_srid`.
 
 ---
 
@@ -373,21 +388,26 @@ hex_hantera_ny_tabell()
   │
   ├── [1] VALIDERA TABELL
   │     → hex_validera_tabell(schema, tabell)
-  │           ├── Utan geometri: tabell får INTE sluta på _p/_l/_y/_g
+  │           ├── Utan geometri: tabell får INTE sluta på ett geometrisuffix
+  │           │     (hex_tabellsuffix(), standard _p/_l/_y/_g)
   │           ├── Med geometri:
   │           │     ├── Exakt 1 geometrikolumn måste finnas
   │           │     ├── Kolumnen MÅSTE heta 'geom'
-  │           │     ├── Suffix måste matcha geometritypen:
+  │           │     ├── Suffix måste matcha geometritypen enligt
+  │           │     │   hex_geometrisuffix() (hex_installningar.suffix_*). Standard:
   │           │     │     _p = POINT/MULTIPOINT
   │           │     │     _l = LINESTRING/MULTILINESTRING
   │           │     │     _y = POLYGON/MULTIPOLYGON
   │           │     │     _g = övriga typer
   │           │     └── → hex_hamta_geometri_definition(schema, tabell)
   │           │               ├── Hämtar typ, SRID, dimensioner från geometry_columns
-  │           │               ├── Beräknar suffix: Z / M / ZM / (inget)
+  │           │               ├── Beräknar dimensionssuffix: Z / M / ZM / (inget)
   │           │               ├── Bygger definition: geometry(PolygonZ, 3007)
   │           │               └── Returnerar hex_geom_info-struct
   │           └── Validering misslyckad → EXCEPTION → rollback
+  │
+  ├── SRID ≠ hex_srid() (hex_installningar.srid, standard 3007)?
+  │     → WARNING + registrering i hex_avvikande_srid (tabellen skapas ändå)
   │
   ├── [2] SPARA TABELLREGLER (innan tabellen rivs)
   │     → hex_spara_tabellregler(schema, tabell)
@@ -592,7 +612,8 @@ hex_hantera_ny_kolumn()
   │     Kontrollerar om tabellen finns i hex_afvaktande_geometri:
   │       Ja:
   │         ├── Verifierar att tabellsuffixet stämmer med faktisk geometrityp
-  │         │     (_l och MULTILINESTRING → ok, annars EXCEPTION)
+  │         │     enligt hex_geometrisuffix() (_l och MULTILINESTRING → ok, annars EXCEPTION)
+  │         ├── SRID ≠ hex_srid()? → WARNING + hex_avvikande_srid
   │         ├── CREATE INDEX … USING gist(geom)  (GiST-index skapas här, inte i hex_hantera_ny_tabell)
   │         └── DELETE FROM hex_afvaktande_geometri WHERE schema = … AND tabell = …
   │       Nej: hoppar över
@@ -663,8 +684,8 @@ flowchart TD
     PRE --> |nej| ERR1(["EXCEPTION: saknar v_-prefix"])
     PRE --> |ja| COUNT["Räkna geometrier<br/>i geometry_columns"]
     COUNT --> |"0 geom"| NOSUF["Inget suffix<br/>t.ex. v_statistik"]
-    COUNT --> |"1 geom"| ONESUF["Suffix baserat på typ:<br/>_p POINT  _l LINE<br/>_y POLYGON  _g övrigt"]
-    COUNT --> |"2+ geom"| GSUF["Suffix: _g"]
+    COUNT --> |"1 geom"| ONESUF["Suffix baserat på typ (hex_installningar):<br/>_p POINT  _l LINE<br/>_y POLYGON  _g övrigt"]
+    COUNT --> |"2+ geom"| GSUF["Suffix: suffix_ovrigt (_g)"]
     NOSUF & ONESUF & GSUF --> SUFCHECK{"Vynamnet slutar<br/>på rätt suffix?"}
     SUFCHECK --> |nej| ERR2(["EXCEPTION: fel suffix"])
     SUFCHECK --> |ja| STCHECK{"Vydefinition innehåller ST_*<br/>OCH returnerar generisk GEOMETRY?"}
@@ -683,18 +704,20 @@ CREATE VIEW sk0_kba_bygg.v_byggnader_aktiva_y AS
 hex_hantera_ny_vy()
   ├── Hoppar över public-schema
   └── → hex_validera_vynamn(schema, vynamn)
-          ├── Kontrollerar prefix: måste börja med v_
+          ├── Kontrollerar prefix: måste börja med exakt v_
+          │     (left(namn, 2) = 'v_' – inte LIKE, där _ är ett jokertecken)
           │
           ├── Räknar geometrier i geometry_columns för vyn
           │     0 geometrier → inget suffix (t.ex. v_statistik)
-          │     1 geometri   → suffix baserat på typ:
+          │     1 geometri   → suffix baserat på typ, hex_geometrisuffix()
+          │                    (hex_installningar.suffix_*). Standard:
           │                    _p = POINT/MULTIPOINT
           │                    _l = LINESTRING/MULTILINESTRING
           │                    _y = POLYGON/MULTIPOLYGON
           │                    _g = övriga
-          │     2+ geometrier → alltid _g
+          │     2+ geometrier → alltid suffix_ovrigt (_g)
           │
-          ├── Kontrollerar att vynamnet slutar med rätt suffix
+          ├── Kontrollerar att vynamnet slutar med rätt suffix (exakt jämförelse)
           │
           ├── Specialfall: ST_*-transformationer med generisk GEOMETRY-typ
           │     Om vydefinitionen innehåller ST_*-anrop OCH
@@ -884,6 +907,8 @@ mot PostgreSQL och väntar på `pg_notify`-meddelanden på **två kanaler**.
 >
 > Åt andra hållet letar avstämningen efter **föräldralösa workspaces**: namn som
 > matchar schemamönstret men vars schema saknas i samtliga övervakade databaser.
+> Mönstret laddas före varje avstämning, även i den periodiska tråden. Kan det
+> inte laddas hoppas kontrollen över med en varning.
 > Ägarskapet avgörs av `hex_standardiserade_skyddsnivaer` (publicerbara prefix),
 > inte av vilka scheman som råkar finnas — annars tystnar kontrollen i en tömd
 > databas. `HEX_ORPHAN_CLEANUP` (`off` | `dry-run` | `on`) styr om de bara
@@ -962,7 +987,12 @@ flowchart TD
 │                              gs_client)                             │
 │    ├── Laddar mönster från hex_standardiserade_skyddsnivaer /           │
 │    │     hex_standardiserade_datakategorier (dynamiskt, utan omstart)  │
-│    ├── Hämtar credentials för gs_r_ och gs_w_ ur hex_rolluppgifter │
+│    │     Inget reservmönster: okänt mönster → ERROR, hoppar över;     │
+│    │     avstämningen publicerar schemat senare                        │
+│    ├── Hämtar credentials för läs- och skrivkontot ur              │
+│    │     hex_rolluppgifter via hex_geoserver_rollnamn(schema, konto)   │
+│    │     (standard gs_r_/gs_w_; gamla fasta namn mot databaser utan    │
+│    │     funktionen)                                                   │
 │    ├── Steg 1: create_workspace('sk0_kba_bygg')       (läs)        │
 │    ├── Steg 2: create_pg_datastore(...gs_r_sk0_kba_bygg)           │
 │    ├── Steg 3: create_workspace('sk0_kba_bygg_w')     (skriv)      │
@@ -1158,7 +1188,7 @@ det utlöser i sin tur nya eventutlösare. Tre flaggor förhindrar oändliga ked
 | `hex_reparera_gid_dubbletter(schema, tabell, utfor)` | Manuellt, när `hex_underhall` rapporterar `dubbletter: N` | Rapporterar och omnumrerar dubbletter i `gid`. Torrkörning som standard. Märkt `HEX-MIGRERING` |
 | `hex_kontrollera_geometri_trigger()` | Radtrigger `hex_kontrollera_geom` (BEFORE INSERT/UPDATE) | Kör `hex_validera_geometri()` och rapporterar via `hex_forklara_geometrifel()` |
 | `hex_forklara_geometrifel(geom)` | `hex_kontrollera_geometri_trigger` | Läsbar förklaring till varför en geometri underkändes |
-| `hex_underhall()` | `install_hex.py`, manuellt | Verifierar och reparerar triggers, roller, behörigheter och ägarskap |
+| `hex_underhall()` | `install_hex.py`, manuellt | Verifierar och reparerar triggers, roller, behörigheter och ägarskap, och bygger om `hex_avvikande_srid` mot `hex_srid()` |
 | `hex_tillampa_grupprattigheter()` | Manuellt efter ändring i `hex_grupprattigheter` | AD-grupproll → medlemskap i Hex-roll (`SECURITY DEFINER`) |
 
 ### Konfigurationsfunktioner
@@ -1166,6 +1196,11 @@ det utlöser i sin tur nya eventutlösare. Tre flaggor förhindrar oändliga ked
 | Funktion | Anropas av | Syfte |
 |---|---|---|
 | `hex_schema_regex()` | `hex_hantera_ny_tabell`, `hex_hantera_ny_kolumn` | Returnerar prefixmönstret `^(sk0\|sk1\|sk2\|skx)_`, byggt ur `hex_standardiserade_skyddsnivaer`. Används för att slippa hårdkodade schemaprefix — inte för namnvalideringen, som `hex_validera_schemanamn` bygger själv ur båda konfigurationstabellerna |
+| `hex_srid()` | `hex_hantera_ny_tabell`, `hex_hantera_ny_kolumn`, `hex_underhall`, `hex_validera_vynamn` | Förväntat SRID ur `hex_installningar.srid` |
+| `hex_srid_namn(srid)` | `hex_hantera_ny_tabell`, `hex_hantera_ny_kolumn` | Koordinatsystemets namn ur `spatial_ref_sys` till meddelanden |
+| `hex_geometrisuffix(typ)` | `hex_validera_tabell`, `hex_validera_vynamn`, `hex_hantera_ny_kolumn` | Namnsuffix för en geometrityp ur `hex_installningar.suffix_*` |
+| `hex_tabellsuffix(namn)` | `hex_validera_tabell`, `hex_validera_vynamn`, `hex_hantera_ny_tabell`, `hex_hantera_ny_kolumn` | Det geometrisuffix ett namn slutar med, eller NULL |
+| `hex_geoserver_rollnamn(schema, konto)` | `hex_underhall` (steg 10), GeoServer-lyssnaren | GeoServers läs-/skrivkonto för schemat via `hex_standardiserade_roller.geoserver_konto` |
 | `hex_systemagare()` | Samtliga SQL-filer som sätter ägarskap | Returnerar ägarrollen. Genereras av installern ur `owner_role` — enda funktionen utan egen fil i `INSTALL_ORDER` |
 
 ### Anpassade typer

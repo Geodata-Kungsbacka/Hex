@@ -1,7 +1,8 @@
 -- TABELL: public.hex_afvaktande_geometri
 --
 -- Håller reda på tabeller som skapats av en känd systemanvändare
--- (se hex_systemanvandare) med ett geometrireserverat suffix (_p, _l, _y, _g)
+-- (se hex_systemanvandare) med ett geometrireserverat suffix
+-- (hex_installningar.suffix_*, standard _p, _l, _y, _g)
 -- men utan någon geometrikolumn. Dessa tabeller väntar på att verktyget ska
 -- lägga till geometrin via ALTER TABLE ... ADD COLUMN geom ...
 --

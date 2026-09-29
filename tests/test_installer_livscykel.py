@@ -571,12 +571,13 @@ class TestUppgraderingNotifierarGeoServer(unittest.TestCase):
     hex_standardiserade_skyddsnivaer på INSERT-defaultarna (sk0/sk1 true,
     sk2/skx false), så ett skx-schema som ska publiceras hoppades över.
 
-    Samma uppgradering roterar dessutom gs_r_/gs_w_-lösenorden. Ett schema som
+    Samma uppgradering roterade dessutom gs_r_/gs_w_-lösenorden. Ett schema som
     aldrig notifierades fick alltså nya lösenord i databasen medan GeoServers
     datastore blev kvar med de gamla — trasigt tills någon körde
     hex_underhall() manuellt eller startade om lyssnaren.
 
-    upgrade() kör numera om underhållet efter återställningen.
+    upgrade() kör numera underhållet först efter återställningen, och
+    lösenorden bevaras (test_losenorden_bevaras).
     """
 
     SCHEMAN = ("sk0_kba_gs", "skx_kba_gs", "sk9_kba_gs")
@@ -620,6 +621,11 @@ class TestUppgraderingNotifierarGeoServer(unittest.TestCase):
         for schema in cls.SCHEMAN:
             cur.execute(f"CREATE SCHEMA {schema}")
         conn.close()
+
+        cls.uppgifter_fore = _fraga(
+            "SELECT rollnamn, losenord FROM public.hex_rolluppgifter"
+            " WHERE rollnamn LIKE 'gs\\_%' ORDER BY rollnamn"
+        )
 
         # Lyssna innan uppgraderingen startar – notiser levereras vid COMMIT.
         lyssnare = _koppla()
@@ -696,11 +702,22 @@ class TestUppgraderingNotifierarGeoServer(unittest.TestCase):
             ],
         )
 
+    def test_losenorden_bevaras(self):
+        """
+        hex_rolluppgifter står i PRESERVE_USER_DATA. Tidigare körde install()
+        underhållet före återställningen, som då backfyllde nya lösenord; de
+        sparade raderna kastades av ON CONFLICT DO NOTHING. Resultatet var en
+        rotation som lämnade GeoServers datastores med gamla lösenord tills
+        lyssnaren startades om. Nu körs underhållet först efter återställningen.
+        """
+        self.assertTrue(self.uppgifter_fore, "inga gs_-uppgifter före uppgraderingen")
+        self.assertEqual(self.uppgifter, self.uppgifter_fore)
+
     def test_lagrade_uppgifter_stammer_med_rollernas_losenord(self):
         """
-        Uppgraderingen roterar gs_-lösenorden. Det som ligger i
-        hex_rolluppgifter måste vara det roller faktiskt autentiserar med,
-        annars sätter lyssnaren upp en datastore som inte kan logga in.
+        Det som ligger i hex_rolluppgifter måste vara det rollerna faktiskt
+        autentiserar med, annars sätter lyssnaren upp en datastore som inte
+        kan logga in.
         """
         self.assertTrue(self.uppgifter, "inga gs_-uppgifter att kontrollera")
         params = {k: v for k, v in _db_config().items() if k != "owner_role"}

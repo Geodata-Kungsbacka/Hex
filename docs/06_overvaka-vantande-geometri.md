@@ -7,7 +7,8 @@
 ## Bakgrund
 
 Verktyg registrerade i `hex_systemanvandare` får skapa tabeller med geometrisuffix
-(`_p`, `_l`, `_y`, `_g`) utan att ha en geometrikolumn vid `CREATE TABLE`.
+(standard `_p`, `_l`, `_y`, `_g`, se `hex_installningar`) utan att ha en
+geometrikolumn vid `CREATE TABLE`.
 Hex registrerar dessa tabeller i `hex_afvaktande_geometri` och väntar på att
 `ALTER TABLE ADD COLUMN geom geometry(...)` ska köras.
 

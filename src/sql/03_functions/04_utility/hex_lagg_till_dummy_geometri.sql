@@ -86,8 +86,16 @@ BEGIN
     END IF;
 
     -- Infoga dummy-raden (INSERT INTO geom-kolumnen, övriga kolumner har defaults).
-    -- Geometrin är 2D; PostGIS lägger automatiskt till Z=0 om kolumntypen kräver
-    -- det (PointZ, PolygonZ etc.).
+    -- Geometrin är byggd i 2D. PostGIS fyller inte på dimensioner själv
+    -- ("Column has Z dimension but geometry does not"), så lägg till Z/M = 0
+    -- efter kolumnens typ. Utan det fick PointZ-, PolygonZ- m.fl. tabeller
+    -- aldrig någon dummy-rad.
+    dummy_geom := CASE p_geometriinfo.suffix
+        WHEN 'Z'  THEN ST_Force3DZ(dummy_geom)
+        WHEN 'M'  THEN ST_Force3DM(dummy_geom)
+        WHEN 'ZM' THEN ST_Force4D(dummy_geom)
+        ELSE dummy_geom
+    END;
     EXECUTE format(
         'INSERT INTO %I.%I (geom) VALUES ($1) RETURNING gid',
         p_schema_namn, p_tabell_namn

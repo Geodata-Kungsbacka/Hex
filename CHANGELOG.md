@@ -11,6 +11,52 @@ merge-datum.
 
 ## [Ej släppt]
 
+> Nya kolumner i `hex_standardiserade_roller` och den nya tabellen
+> `hex_installningar` kräver `install_hex.py --upgrade`. En vanlig
+> ominstallation mot en databas på 2.0.0 avbryts med `column ... does not exist`.
+
+### Tillagt
+
+- **`hex_installningar`** – enradig tabell för databasövergripande
+  inställningar. Bevaras över `--upgrade` och ominstallation.
+  - `srid` (standard 3007): förväntat koordinatsystem, läses via `hex_srid()`.
+    Främmande nyckel mot `spatial_ref_sys`. Meddelandena hämtar namnet ur
+    `spatial_ref_sys` via `hex_srid_namn()`.
+  - `dummy_x`, `dummy_y`, `dummy_storlek`: dummy-geometrins position och
+    storlek. Dummyn transformeras till tabellens SRID när de skiljer sig.
+  - `suffix_punkt`, `suffix_linje`, `suffix_yta`, `suffix_ovrigt` (standard
+    `_p`, `_l`, `_y`, `_g`): geometrisuffix i tabell- och vynamn, läses via
+    `hex_geometrisuffix()` och `hex_tabellsuffix()`.
+- **`hex_underhall()` steg 11 `avvikande_srid`** bygger om
+  `hex_avvikande_srid` mot aktuellt `hex_srid()`.
+- **`hex_standardiserade_roller.geoserver_konto`** (`'las'`/`'skriv'`) och
+  `hex_geoserver_rollnamn(schema, konto)`. GeoServers tjänstekonton hittas via
+  markeringen i stället för namnen `gs_r_`/`gs_w_`, så rollmallarna kan döpas
+  om.
+- Testsviten `tests/test_geometrisuffix.sql`.
+
+### Ändrat
+
+- **`--upgrade` roterar inte längre `gs_r_`/`gs_w_`-lösenorden.**
+  Underhållet körs först efter att inställningar och drifttillstånd lagts
+  tillbaka. GeoServers datastores fortsätter fungera utan omstart av lyssnaren.
+- **GeoServer-lyssnaren har inget hårdkodat reservmönster**
+  (`^sk[01]_(ext|kba|sys)_`). Kan mönstret inte laddas loggas ERROR och
+  notifieringen hoppas över; avstämningen publicerar schemat senare och letar
+  inte föräldralösa workspaces med ett gissat mönster.
+- `gid` i `hex_standardiserade_kolumner` är dokumenterat som hårdkodat.
+
+### Rättat
+
+- `--upgrade` nollställde `registrerad` i `hex_avvikande_srid`.
+- Den periodiska avstämningen i lyssnaren laddade aldrig schemanamnsmönstret
+  och letade föräldralösa workspaces med reservmönstret.
+- Suffix- och prefixkontrollen för tabell- och vynamn använde `LIKE`, där `_`
+  är ett jokertecken: `kartap` godtogs som punkttabell och `vagar_l` som vy.
+- Tabeller med Z/M-geometri (`PointZ`, `LineStringM`, `PolygonZM` …) fick
+  aldrig någon dummy-rad: den byggdes i 2D och PostGIS avvisade den. Dummyn får
+  nu kolumnens dimensioner.
+
 ---
 
 ## [2.0.0] – 2026-09-24

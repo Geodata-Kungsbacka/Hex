@@ -522,6 +522,26 @@ BEGIN
     END IF;
 END $$;
 
+-- 7e2: Dummy i tabeller med Z/M-dimension. PostGIS fyller inte på dimensioner
+-- själv, och tidigare fick sådana tabeller aldrig någon dummy-rad.
+CREATE TABLE sk0_ext_dummy_test.dim_z_p  (namn text, geom geometry(PointZ, 3007));
+CREATE TABLE sk0_ext_dummy_test.dim_m_l  (namn text, geom geometry(LineStringM, 3007));
+CREATE TABLE sk0_ext_dummy_test.dim_zm_y (namn text, geom geometry(PolygonZM, 3007));
+
+DO $$
+DECLARE
+    z  integer; m integer; zm integer;
+BEGIN
+    SELECT count(*) INTO z  FROM sk0_ext_dummy_test.dim_z_p  WHERE ST_Z(geom) = 0;
+    SELECT count(*) INTO m  FROM sk0_ext_dummy_test.dim_m_l  WHERE ST_M(ST_StartPoint(geom)) = 0;
+    SELECT count(*) INTO zm FROM sk0_ext_dummy_test.dim_zm_y WHERE ST_NDims(geom) = 4;
+    IF z = 1 AND m = 1 AND zm = 1 THEN
+        RAISE NOTICE 'TEST 7e2 PASSED: dummy-rad i PointZ-, LineStringM- och PolygonZM-tabell';
+    ELSE
+        RAISE WARNING 'TEST 7e2 FAILED: dummy-rader Z=%, M=%, ZM=%', z, m, zm;
+    END IF;
+END $$;
+
 -- Byt förväntat koordinatsystem till 3006 och flytta referenspunkten dit.
 -- Spara registrerad för 4326-tabellen, som avviker både före och efter.
 CREATE TEMP TABLE tmp_hex_srid_fore AS

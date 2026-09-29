@@ -15,6 +15,9 @@ Processen lyssnar på två PostgreSQL-kanaler och hanterar schema-händelser aut
 
     Autentiseringsuppgifterna hämtas från tabellen hex_rolluppgifter där
     hex_hantera_std_roller() lagrar de autogenererade lösenorden vid CREATE SCHEMA.
+    Vilka roller som är läs- och skrivkonto avgörs av
+    hex_standardiserade_roller.geoserver_konto via hex_geoserver_rollnamn();
+    gs_r_/gs_w_ är standardnamnen.
 
   Kanal 'geoserver_schema_drop'  (utlöses av DROP SCHEMA via SQL-triggern
                                   hex_notifiera_gs_borttagning_trigger):
@@ -24,7 +27,9 @@ Processen lyssnar på två PostgreSQL-kanaler och hanterar schema-händelser aut
 Båda kanalerna hanterar enbart scheman vars skyddsnivå har publiceras_geoserver = true
 i tabellen hex_standardiserade_skyddsnivaer. Standardkonfigurationen publicerar sk0 och sk1;
 övriga prefix (sk2, skx m.fl.) kan aktiveras genom att sätta publiceras_geoserver = true
-för respektive rad. Mönstret laddas om dynamiskt vid varje notifiering.
+för respektive rad. Mönstret laddas om dynamiskt vid varje notifiering och
+avstämning. Det finns inget hårdkodat reservmönster: kan det inte laddas hoppas
+notifieringen över med ett ERROR, och avstämningen tar schemat senare.
 
 Stödjer flera databaser - en lyssnartråd per databas.
 Konfiguration laddas från miljövariabler eller .env-fil.

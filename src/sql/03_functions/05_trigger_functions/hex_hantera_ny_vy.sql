@@ -13,15 +13,17 @@ AS $BODY$
  * Denna funktion validerar namngivningen av nyskapade vyer. Den säkerställer
  * att vyerna följer vår namngivningsstandard:
  *
- * 1. Prefix: schema.schema_v_
- *    Exempel: teknik.teknik_v_ledningar_p
+ * 1. Prefix: v_
+ *    Exempel: sk0_kba_teknik.v_ledningar_l
  *
- * 2. Suffix baserat på geometriinnehåll:
+ * 2. Suffix baserat på geometriinnehåll, enligt hex_installningar.suffix_*
+ *    (standard _p, _l, _y, _g):
  *    - Ingen geometri: Inget suffix
- *    - En geometri: _p, _l eller _y baserat på typ
- *    - Flera geometrier: _g
+ *    - En geometri: suffix_punkt, suffix_linje eller suffix_yta baserat på typ
+ *    - Flera geometrier: suffix_ovrigt
  *    - Vid geometritransformationer krävs typkonvertering
- *      eller _g-suffix
+ *
+ * Själva kontrollen görs av hex_validera_vynamn().
  ******************************************************************************/
 DECLARE
     -- Grundläggande variabler för vyhantering
@@ -77,5 +79,5 @@ $$;
 
 COMMENT ON FUNCTION public.hex_hantera_ny_vy()
     IS 'Triggerfunktion som körs vid CREATE VIEW för att validera vynamn enligt
-standardiserad namngivning. Vyerna måste följa mönstret schema_v_namn
-med suffix baserat på geometriinnehåll (_p, _l, _y eller _g).';
+standardiserad namngivning. Vynamn måste börja med v_ och sluta med ett suffix
+baserat på geometriinnehåll enligt hex_installningar (standard _p, _l, _y eller _g).';
