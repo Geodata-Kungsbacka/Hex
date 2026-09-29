@@ -329,6 +329,24 @@ BEGIN
         RAISE NOTICE '[hex_skapa_historik_qa]   - Inga låsta kolumner med default_varde hittades';
     END IF;
 
+    -- Steg 8.9: Överför ägarskap till hex_systemagare()
+    -- hex_hantera_ny_tabell() är SECURITY DEFINER, så allt som skapas här
+    -- ägs annars av postgres. Modertabellen har redan fått hex_systemagare()
+    -- som ägare (steg 5.5 där). Blir historiktabellen och triggerfunktionerna
+    -- kvar hos postgres kan en icke-superanvändare (t.ex. FME) ändra
+    -- modertabellen men inte synka historiken: hex_synka_historik() körs som
+    -- anroparen och nekas med "must be owner of table <tabell>_h".
+    op_steg := 'överför ägarskap';
+    EXECUTE format('ALTER TABLE %I.%I OWNER TO %I',
+        p_schema_namn, p_tabell_namn || '_h', hex_systemagare());
+    EXECUTE format('ALTER FUNCTION %I.%I() OWNER TO %I',
+        p_schema_namn, trigger_funktionsnamn, hex_systemagare());
+    IF antal_insert_kolumner > 0 THEN
+        EXECUTE format('ALTER FUNCTION %I.%I() OWNER TO %I',
+            p_schema_namn, insert_funktionsnamn, hex_systemagare());
+    END IF;
+    RAISE NOTICE '[hex_skapa_historik_qa]   ✓ Ägarskap överfört till %', hex_systemagare();
+
     -- Steg 9: Dokumentera
     op_steg := 'dokumentera';
     RAISE NOTICE '[hex_skapa_historik_qa] Steg 9: Lägger till dokumentation';
