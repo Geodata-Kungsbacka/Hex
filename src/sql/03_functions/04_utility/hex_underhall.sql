@@ -86,9 +86,13 @@ AS $BODY$
  *   (rollmedlemskap)     hex_rolluppgifter) är i hex_geoserver_roller.
  *                        Tar bort NOLOGIN-roller som felaktigt hamnat där.
  *
- *   schemabehörigheter   Kör hex_tilldela_rollrattigheter för NOLOGIN-roller och
- *                        säkerställer GRANT arvs_fran för gs_*-roller.
- *                        Idempotent.
+ *   schemabehörigheter   Kör hex_tilldela_rollrattigheter för roller utan
+ *                        arvs_fran (NOLOGIN-rollerna) och säkerställer GRANT
+ *                        arvs_fran för gs_*-roller. Schemats, relationernas och
+ *                        standardrättigheternas ACL jämförs före och efter:
+ *                        'behörigheter uppdaterade' bara vid ändring, annars
+ *                        'redan finns'. Idempotent. Steg 5 tillämpar inte
+ *                        rättigheterna på befintliga roller – det görs här.
  *
  *   ägarskap_schema      Korrigerar ägare på Hex-scheman som ägs av fel roll.
  *                        Uppstår t.ex. när en superanvändare skapat schemat
@@ -791,23 +795,23 @@ BEGIN
                 -- -------------------------------------------------------
                 IF rol.arvs_fran IS NOT NULL THEN
                     arvs_rollnamn := replace(rol.arvs_fran, '{schema}', r.s);
-            ELSE
-                arvs_rollnamn := NULL;
-            END IF;
-
-            IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = rollnamn_full) THEN
-                -- Fall a: saknas helt
-                generated_password := encode(gen_random_bytes(18), 'base64');
-                EXECUTE format('CREATE ROLE %I WITH LOGIN PASSWORD %L',
-                    rollnamn_full, generated_password);
-                EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I',
-                    current_database(), rollnamn_full);
-                EXECUTE format('GRANT hex_geoserver_roller TO %I', rollnamn_full);
-                IF arvs_rollnamn IS NOT NULL AND EXISTS (
-                    SELECT 1 FROM pg_roles WHERE rolname = arvs_rollnamn
-                ) THEN
-                    EXECUTE format('GRANT %I TO %I', arvs_rollnamn, rollnamn_full);
+                ELSE
+                    arvs_rollnamn := NULL;
                 END IF;
+
+                IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = rollnamn_full) THEN
+                    -- Fall a: saknas helt
+                    generated_password := encode(gen_random_bytes(18), 'base64');
+                    EXECUTE format('CREATE ROLE %I WITH LOGIN PASSWORD %L',
+                        rollnamn_full, generated_password);
+                    EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I',
+                        current_database(), rollnamn_full);
+                    EXECUTE format('GRANT hex_geoserver_roller TO %I', rollnamn_full);
+                    IF arvs_rollnamn IS NOT NULL AND EXISTS (
+                        SELECT 1 FROM pg_roles WHERE rolname = arvs_rollnamn
+                    ) THEN
+                        EXECUTE format('GRANT %I TO %I', arvs_rollnamn, rollnamn_full);
+                    END IF;
                     INSERT INTO public.hex_rolluppgifter (rollnamn, losenord, kan_logga_in)
                     VALUES (rollnamn_full, generated_password, true)
                     ON CONFLICT (rollnamn) DO UPDATE

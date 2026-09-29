@@ -1371,7 +1371,7 @@ sammanfattas på en rad.
 | 4b | `historiksynk` | `hex_synka_historik()` på varje tabell med historik. `redan synkad` eller `synkad: N ändringar` |
 | 5 | `rollstruktur` | De fyra rollerna per schema, `r_`/`w_` tvingas till NOLOGIN, ADMIN OPTION för ägarrollen |
 | 6 | `hex_geoserver_roller (rollmedlemskap)` | LOGIN-roller in, NOLOGIN-roller ut |
-| 7 | `schemabehörigheter` | `hex_tilldela_rollrattigheter` för NOLOGIN-roller, `GRANT arvs_fran` för LOGIN-roller. `behörigheter uppdaterade` bara om schemats, relationernas eller standardrättigheternas ACL ändrades, annars `redan finns` |
+| 7 | `schemabehörigheter` | `hex_tilldela_rollrattigheter` för roller utan `arvs_fran` (NOLOGIN-rollerna), `GRANT arvs_fran` för LOGIN-roller med `arvs_fran`. `behörigheter uppdaterade` bara om schemats, relationernas eller standardrättigheternas ACL ändrades, annars `redan finns` |
 | 8 | `ägarskap_schema` | Schemaägare som inte är `hex_systemagare()` |
 | 9 | `ägarskap_objekt` | Ägare på tabeller, vyer, sekvenser, främmande tabeller och funktioner |
 | 10 | `geoserver_notifiering` | `pg_notify('geoserver_schema', …)` för publicerade scheman med uppgifter för läskontot (`hex_geoserver_rollnamn(schema, 'las')`) |

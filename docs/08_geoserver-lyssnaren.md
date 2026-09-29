@@ -19,6 +19,14 @@ Varje workspace får en direkt PostGIS-datastore med rätt PostgreSQL-tjänsteko
 Autentiseringsuppgifterna hämtas från tabellen `hex_rolluppgifter` där
 `hex_hantera_std_roller()` lagrar de autogenererade lösenorden vid `CREATE SCHEMA`.
 
+Vilka roller som är läs- och skrivkonto avgörs av
+`hex_standardiserade_roller.geoserver_konto` (`'las'`/`'skriv'`) och slås upp
+med `hex_geoserver_rollnamn(schema, konto)`, så `gs_r_`/`gs_w_` kan döpas om –
+se [docs/04](04_hantera-rollmallar.md#byta-namn-på-geoservers-tjänstekonton).
+Saknar databasen funktionen (den har inte kört `install_hex.py --upgrade` med
+den här versionen) faller lyssnaren tillbaka på de fasta namnen
+`gs_r_{schema}`/`gs_w_{schema}`.
+
 Vilka skyddsnivåer som publiceras styrs av kolumnen `publiceras_geoserver` i
 tabellen `hex_standardiserade_skyddsnivaer` — standard är `sk0` och `sk1`.
 Ändra tabellen för att justera vilka prefix som publiceras:
