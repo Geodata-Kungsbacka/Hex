@@ -1456,18 +1456,22 @@ class GeoServerClient:
 # Läs-workspace: '{schema}',  skriv-workspace: '{schema}{WRITE_WORKSPACE_SUFFIX}'.
 WRITE_WORKSPACE_SUFFIX = "_w"
 
-# Regex som matchar giltiga schemanamn för GeoServer-publicering.
-# Används som fallback om DB-laddningen misslyckas. Varje lyssnartråd håller
-# sitt eget mönster i _thread_local.schema_pattern, laddat från sin egen databas,
-# så att skilda publiceras_geoserver-konfigurationer i olika databaser inte
-# skriver över varandra.
-SCHEMA_PATTERN = re.compile(r"^sk[01]_(ext|kba|sys)_.+$")
+# Regex som matchar giltiga schemanamn för GeoServer-publicering. Varje
+# lyssnartråd håller sitt eget mönster i _thread_local.schema_pattern, laddat
+# från sin egen databas, så att skilda publiceras_geoserver-konfigurationer i
+# olika databaser inte skriver över varandra.
+#
+# Det finns inget hårdkodat reservmönster. Ett sådant (tidigare
+# ^sk[01]_(ext|kba|sys)_) avvisade scheman med egna prefix och kategorier när
+# laddningen misslyckades. Är mönstret okänt hoppar lyssnaren i stället över
+# notifieringen och loggar ett fel – start- och den periodiska avstämningen
+# fångar schemat när databasen svarar igen.
 _thread_local = threading.local()
 
 
 def _get_schema_pattern():
-    """Returnerar det aktuella trådlokala mönstret, eller det globala fallback-mönstret."""
-    return getattr(_thread_local, "schema_pattern", SCHEMA_PATTERN)
+    """Returnerar det aktuella trådlokala mönstret, eller None om det aldrig laddats."""
+    return getattr(_thread_local, "schema_pattern", None)
 
 
 def _load_schema_pattern(cur):
@@ -1479,11 +1483,16 @@ def _load_schema_pattern(cur):
 
     Mönstret sparas i _thread_local.schema_pattern så att varje lyssnartråd
     använder sin egen databas konfiguration utan att påverka övriga trådar.
-    Om tabellerna är tomma eller ett fel uppstår behålls det befintliga mönstret.
-    Anropas i listen_loop efter lyckad DB-anslutning så att mönstret hålls i synk
-    med konfigurationen utan omstart av tjänsten.
+    Om tabellerna är tomma eller ett fel uppstår behålls det befintliga mönstret
+    – som är None om inget mönster laddats tidigare i tråden.
+    Anropas före varje notifiering och i varje avstämning, så att mönstret hålls
+    i synk med konfigurationen utan omstart av tjänsten.
+
+    Returns:
+        Det mönster som gäller efter anropet, eller None.
     """
     current = _get_schema_pattern()
+    nuvarande = current.pattern if current is not None else "(inget)"
     try:
         cur.execute(
             "SELECT prefix FROM public.hex_standardiserade_skyddsnivaer"
@@ -1500,9 +1509,9 @@ def _load_schema_pattern(cur):
             log.warning(
                 "Schemanamnsmönster: konfigurationstabellerna är tomma – "
                 "behåller nuvarande mönster '%s'",
-                current.pattern,
+                nuvarande,
             )
-            return
+            return current
 
         prefix_alts = "|".join(re.escape(p) for p in skyddsnivaer)
         kat_alts    = "|".join(re.escape(k) for k in kategorier)
@@ -1510,13 +1519,15 @@ def _load_schema_pattern(cur):
 
         _thread_local.schema_pattern = pattern
         log.info("Schemanamnsmönster uppdaterat från DB: %s", pattern.pattern)
+        return pattern
 
     except Exception as e:
         log.warning(
             "Kunde inte ladda schemanamnsmönster från DB: %s – "
             "behåller nuvarande mönster '%s'",
-            e, current.pattern,
+            e, nuvarande,
         )
+        return current
 
 # pg_notify-kanalnamn. Måste överensstämma med SQL-funktionerna
 # hex_notifiera_gs() och hex_notifiera_gs_borttagning().
@@ -1609,6 +1620,15 @@ def _validate_schema_name(schema_name, tag):
         True om schemanamnet är giltigt, annars False (efter loggning).
     """
     pattern = _get_schema_pattern()
+    if pattern is None:
+        log.error(
+            "%sSchemanamnsmönstret har inte kunnat laddas från databasen – "
+            "hoppar över schema '%s'. Avstämningen publicerar det när "
+            "databasen svarar igen.",
+            tag,
+            schema_name,
+        )
+        return False
     if not pattern.match(schema_name):
         log.warning(
             "%sOgiltigt schemanamn '%s' - matchar inte mönster '%s'. Ignorerar.",
@@ -1770,7 +1790,7 @@ def handle_schema_removal_notification(schema_name, gs_client, pg_conn=None, db_
     Args:
         schema_name: Schemanamnet från pg_notify-payloaden
         gs_client:   GeoServerClient-instans
-        pg_conn:     Öppen psycopg2-anslutning för att ladda om SCHEMA_PATTERN
+        pg_conn:     Öppen psycopg2-anslutning för att ladda om schemanamnsmönstret
                      från rätt databas. Om None används nuvarande globalt mönster.
         db_label:    Databasnamn för logg-prefix
     """
@@ -2250,9 +2270,17 @@ def _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label="", all_pg_
 
         #    Gruppera per schema: läs-workspacen '<schema>' och skriv-workspacen
         #    '<schema>_w' hör ihop och ska bedömas och städas som en enhet.
+        #    Mönstret laddas av anroparen (listen_loop respektive
+        #    _periodic_reconcile_loop) från samma databas.
         _pattern = _get_schema_pattern()
         orphans = {}
-        for ws in gs_workspaces:
+        if _pattern is None:
+            log.warning(
+                "%sStartavstämning: schemanamnsmönstret är okänt – hoppar över "
+                "kontrollen av workspaces utan PG-schema",
+                tag,
+            )
+        for ws in (gs_workspaces if _pattern is not None else ()):
             if ws in known_schemas:
                 continue                      # workspacen har ett levande schema
             if ws.endswith(WRITE_WORKSPACE_SUFFIX):
@@ -2344,6 +2372,10 @@ def _periodic_reconcile_loop(db_config, gs_client, stop_event, interval_seconds,
             conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
             try:
                 with conn.cursor() as cur:
+                    # Tråden är en annan än lyssnartrådens och har ett eget
+                    # trådlokalt mönster. Utan laddningen här gällde tidigare
+                    # det hårdkodade reservmönstret i varje periodisk körning.
+                    _load_schema_pattern(cur)
                     _reconcile_geoserver_schemas(
                         cur, db_config, gs_client, db_label, all_pg_schemas,
                         all_db_configs=all_db_configs, cleanup_mode=cleanup_mode,

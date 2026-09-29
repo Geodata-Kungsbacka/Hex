@@ -194,6 +194,20 @@ Vid varje avstämning jämförs GeoServers befintliga workspaces mot scheman i P
 Både läs- och skriv-workspaces skapas om de saknas, och avvikande ACL-regler korrigeras.
 Eventuella fel loggas men stoppar inte lyssnaren.
 
+### Schemanamnsmönstret
+
+Vilka scheman som publiceras avgörs av ett mönster som byggs ur
+`hex_standardiserade_skyddsnivaer` (`publiceras_geoserver = true`) och
+`hex_standardiserade_datakategorier`. Mönstret laddas om från databasen före
+varje notifiering och före varje avstämning.
+
+Det finns inget hårdkodat reservmönster. Har mönstret aldrig kunnat laddas —
+typiskt för att databasen inte svarar — hoppar lyssnaren över notifieringen och
+loggar ett **ERROR** med schemanamnet. Schemat publiceras vid nästa avstämning:
+startavstämningen när lyssnaren ansluter igen, annars den periodiska. Samma
+avstämning hoppar då över kontrollen av kvarlämnade workspaces (nedan) och
+loggar en varning i stället, så att inget städas med ett gissat mönster.
+
 ### Kvarlämnade workspaces i GeoServer
 
 Avstämningen tittar också åt andra hållet: workspaces som finns i GeoServer men
