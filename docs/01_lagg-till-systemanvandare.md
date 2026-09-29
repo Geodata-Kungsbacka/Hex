@@ -12,7 +12,8 @@ Vissa verktyg skapar tabeller i två separata steg:
 1. `CREATE TABLE ... (datakolumner)` – utan geometrikolumn
 2. `ALTER TABLE ... ADD COLUMN geom geometry(...)` – geometrin läggs till efteråt
 
-Hex kräver normalt att en tabell med geometrisuffix (`_p`, `_l`, `_y`, `_g`) ska ha
+Hex kräver normalt att en tabell med geometrisuffix (standard `_p`, `_l`, `_y`, `_g`,
+se `hex_installningar`) ska ha
 sin geometrikolumn redan vid `CREATE TABLE`. Utan undantag blockeras dessa verktyg.
 
 Lösningen är att registrera verktygets databasanvändare i `hex_systemanvandare`.

@@ -26,8 +26,9 @@ COMMENT ON TABLE public.hex_rolluppgifter
       gs_r_{schema} – LOGIN GeoServer läs-tjänstekonto, kan_logga_in=true, losenord satt
       gs_w_{schema} – LOGIN GeoServer skriv-tjänstekonto, kan_logga_in=true, losenord satt
     Skrivs av hex_hantera_std_roller() vid CREATE SCHEMA.
-    Läses av hex_listener för att konfigurera direktanslutningar i GeoServer
-    (enbart rader med kan_logga_in=true och rollnamn som matchar gs_r_{schema}).
+    Läses av GeoServer-lyssnaren för att konfigurera direktanslutningar i GeoServer
+    (raderna för läs- och skrivkontot, hex_geoserver_rollnamn(schema, ''las''/''skriv''),
+    standard gs_r_{schema}/gs_w_{schema}).
     Används också av hex_underhall() som källa för rollverifiering.';
 
 COMMENT ON COLUMN public.hex_rolluppgifter.kan_logga_in

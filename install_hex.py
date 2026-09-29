@@ -59,8 +59,16 @@ INSTALL_ORDER = [
     # hex_schema_regex() läser hex_standardiserade_skyddsnivaer – måste skapas efter tabellen
     "src/sql/00_config/hex_schema_regex.sql",
     "src/sql/02_tables/hex_standardiserade_datakategorier.sql",
+    "src/sql/02_tables/hex_installningar.sql",
+    # hex_srid() läser hex_installningar – måste skapas efter tabellen
+    "src/sql/00_config/hex_srid.sql",
+    "src/sql/00_config/hex_srid_namn.sql",
+    "src/sql/00_config/hex_geometrisuffix.sql",
+    "src/sql/00_config/hex_tabellsuffix.sql",
     "src/sql/02_tables/hex_standardiserade_kolumner.sql",
     "src/sql/02_tables/hex_standardiserade_roller.sql",
+    # hex_geoserver_rollnamn() läser hex_standardiserade_roller – måste skapas efter tabellen
+    "src/sql/00_config/hex_geoserver_rollnamn.sql",
     "src/sql/02_tables/hex_metadata.sql",
     "src/sql/02_tables/hex_systemanvandare.sql",
     "src/sql/02_tables/hex_grupprattigheter.sql",
@@ -91,6 +99,8 @@ INSTALL_ORDER = [
     "src/sql/03_functions/04_utility/hex_uppdatera_sekvensnamn.sql",
     # Skrivfunktionerna för hex_metadata (SECURITY DEFINER) före sina anropare
     "src/sql/03_functions/04_utility/hex_registrera_metadata.sql",
+    # hex_komplettera_metadata anropar hex_registrera_metadata
+    "src/sql/03_functions/04_utility/hex_komplettera_metadata.sql",
     "src/sql/03_functions/04_utility/hex_uppdatera_metadata_namn.sql",
     "src/sql/03_functions/04_utility/hex_rensa_metadata.sql",
     "src/sql/03_functions/04_utility/hex_skapa_historik_qa.sql",
@@ -98,6 +108,8 @@ INSTALL_ORDER = [
     # hex_synka_historik anropar hex_aterskapa_qa_trigger; båda används av
     # hex_hantera_ny_kolumn och hex_underhall
     "src/sql/03_functions/04_utility/hex_synka_historik.sql",
+    # Används av hex_hantera_ny_kolumn vid RENAME TO
+    "src/sql/03_functions/04_utility/hex_flytta_registerposter.sql",
     "src/sql/03_functions/04_utility/hex_tilldela_rollrattigheter.sql",
     "src/sql/03_functions/04_utility/hex_tillampa_grupprattigheter.sql",
     "src/sql/03_functions/04_utility/hex_tvinga_gid_fran_sekvens.sql",
@@ -161,7 +173,9 @@ DROP FUNCTION IF EXISTS public.hex_kontrollera_geometri_trigger() CASCADE;
 -- Hjälpfunktioner
 DROP FUNCTION IF EXISTS public.hex_tillampa_grupprattigheter();
 DROP FUNCTION IF EXISTS public.hex_synka_historik(text, text);
+DROP FUNCTION IF EXISTS public.hex_flytta_registerposter(text, text, text);
 DROP FUNCTION IF EXISTS public.hex_registrera_metadata(text, text);
+DROP FUNCTION IF EXISTS public.hex_komplettera_metadata(text, text);
 DROP FUNCTION IF EXISTS public.hex_uppdatera_metadata_namn(oid);
 DROP FUNCTION IF EXISTS public.hex_rensa_metadata();
 DROP FUNCTION IF EXISTS public.hex_aterskapa_qa_trigger(text, text, text);
@@ -197,6 +211,11 @@ DROP FUNCTION IF EXISTS public.hex_hamta_geometri_definition(text, text);
 
 -- Konfigurationsfunktioner
 DROP FUNCTION IF EXISTS public.hex_schema_regex();
+DROP FUNCTION IF EXISTS public.hex_srid_namn(integer);
+DROP FUNCTION IF EXISTS public.hex_tabellsuffix(text);
+DROP FUNCTION IF EXISTS public.hex_geometrisuffix(text);
+DROP FUNCTION IF EXISTS public.hex_srid();
+DROP FUNCTION IF EXISTS public.hex_geoserver_rollnamn(text, text);
 DROP FUNCTION IF EXISTS public.hex_systemagare();
 -- OBS: hex_geoserver_roller tas INTE bort här. Rollen är kluster-nivå och delas
 -- av alla databaser som kör Hex. Om du avinstallerar Hex från alla databaser och
@@ -214,6 +233,7 @@ DROP TABLE IF EXISTS public.hex_standardiserade_roller;
 DROP TABLE IF EXISTS public.hex_standardiserade_kolumner;
 DROP TABLE IF EXISTS public.hex_standardiserade_skyddsnivaer;
 DROP TABLE IF EXISTS public.hex_standardiserade_datakategorier;
+DROP TABLE IF EXISTS public.hex_installningar;
 
 -- Typer (måste tas bort efter funktioner som använder dem)
 DROP TYPE IF EXISTS public.hex_tabellregler;
@@ -242,13 +262,20 @@ PRESERVE_CONFIG = {
         "key": "prefix",
         "restore": ["beskrivning", "hex_validera_geometri"],
     },
+    "hex_installningar": {
+        "key": "id",
+        "restore": [
+            "srid", "dummy_x", "dummy_y", "dummy_storlek",
+            "suffix_punkt", "suffix_linje", "suffix_yta", "suffix_ovrigt",
+        ],
+    },
     "hex_standardiserade_kolumner": {
         "key": "kolumnnamn",
         "restore": ["ordinal_position", "datatyp", "default_varde", "schema_uttryck", "historik_qa", "beskrivning", "anvandare_kan_redigera"],
     },
     "hex_standardiserade_roller": {
         "key": "rollnamn",
-        "restore": ["rolltyp", "schema_uttryck", "ta_bort_med_schema", "kan_logga_in", "arvs_fran", "beskrivning"],
+        "restore": ["rolltyp", "schema_uttryck", "ta_bort_med_schema", "kan_logga_in", "arvs_fran", "beskrivning", "geoserver_konto"],
         # r_/w_ ska vara NOLOGIN och gs_r_/gs_w_ ärva från dem. Blir en
         # behörighetsgrupp LOGIN hamnar den i hex_geoserver_roller och öppnar
         # pg_hba.conf för den — pg_hba-hålet 95ead68 stängde. Invarianten gäller
@@ -275,8 +302,11 @@ PRESERVE_USER_DATA = {
 # av UNINSTALL_SQL och installationen skapar dem tomma igen, och till skillnad
 # från triggers och funktioner kan innehållet inte härledas ur databasen:
 #
-#   hex_metadata            OID -> historiktabell och QA-trigger. Utan den slutar
-#                           historiken följa med vid ALTER TABLE ... RENAME TO.
+#   hex_metadata            OID -> namn för varje Hex-tabell, och historiktabell
+#                           och QA-trigger för dem med historik. Utan den slutar
+#                           historiken och registerraderna följa med vid
+#                           ALTER TABLE ... RENAME TO. hex_underhall() lägger
+#                           till saknade rader, men med created_by NULL.
 #   hex_dummy_geometrier    Vilka tabeller som fortfarande bär en dummy-rad.
 #                           hex_underhall() bygger hex_ta_bort_dummy-triggern ur
 #                           den här tabellen; är den tom återkopplas triggern
@@ -637,7 +667,8 @@ def upgrade(db: dict, base_path="."):
         conn.close()
 
     uninstall(db)
-    install(db, base_path)
+    # Underhållet väntar tills återställningen kört, se nedan.
+    install(db, base_path, underhall=False)
 
     # Restore in a fresh connection
     conn = psycopg2.connect(**_conn_params(db))
@@ -648,16 +679,23 @@ def upgrade(db: dict, base_path="."):
         restore_settings(cur, snapshot)
         conn.commit()
 
-        # Underhållet i install() körde mot tomma tillståndstabeller OCH mot
-        # standardkonfigurationen — restore_settings() hade inte kört än. Kör om
-        # det nu när raderna är tillbaka. Två saker hänger på det:
+        # Underhållet körs först nu, när raderna är tillbaka. Kördes det i
+        # install() skulle det se tomma tillståndstabeller och
+        # standardkonfigurationen. Fyra saker hänger på det:
         #   * triggers som härleds ur hex_dummy_geometrier återkopplas
         #   * steg 10 i hex_underhall() skickar geoserver_schema-notiser utifrån
         #     hex_standardiserade_skyddsnivaer. Före återställningen står den på
         #     INSERT-defaultarna, så ett prefix kunden satt till
-        #     publiceras_geoserver = true (t.ex. skx) hoppades över. Eftersom
-        #     uppgraderingen samtidigt roterar gs_r_/gs_w_-lösenorden blev
-        #     GeoServers datastore kvar med gamla uppgifter för just de schemana.
+        #     publiceras_geoserver = true (t.ex. skx) hoppades över.
+        #   * hex_rolluppgifter: med tom tabell backfyllde underhållet nya
+        #     gs_r_/gs_w_-lösenord (ALTER ROLE ... PASSWORD), och återställningen
+        #     kastade sedan de sparade raderna. Lösenorden roterades och
+        #     GeoServers datastores stod kvar med de gamla. Nu läggs de sparade
+        #     tillbaka och stämmer med rollerna, som uppgraderingen inte rör.
+        #   * steg 11 bygger om hex_avvikande_srid mot hex_installningar.srid.
+        #     Före återställningen står srid på standardvärdet, och raderna
+        #     underhållet lade till skulle få återställningens ON CONFLICT DO
+        #     NOTHING att kasta de sparade raderna – registrerad nollställdes.
         fel = kor_underhall(cur, conn)
         if fel:
             skriv_varning(fel)
@@ -702,6 +740,18 @@ def uninstall(db: dict):
         conn.close()
 
 
+# Utfall från hex_underhall() som betyder att ingenting ändrades. Allt annat
+# skrivs ut som en åtgärd. tests/test_installer.py kontrollerar att varje
+# 'redan ...'-utfall i hex_underhall.sql finns med här.
+UNDERHALL_OFORANDRAD = frozenset({
+    "redan finns",
+    "redan synkad",
+    "redan korrekt",
+    "redan NOLOGIN",
+    "arvs_fran redan beviljad",
+})
+
+
 def kor_underhall(cur, conn) -> str | None:
     """Kör hex_underhall() och skriver ut vad den åtgärdade.
 
@@ -726,7 +776,13 @@ def kor_underhall(cur, conn) -> str | None:
             "Hex är installerat. Kör SELECT * FROM public.hex_underhall() manuellt."
         )
 
-    created = [(s, t, tr, a) for s, t, tr, a in rows if a not in ("redan finns",)]
+    # GeoServer-notifieringen skickas vid varje körning (lyssnaren är
+    # idempotent) och är ingen reparation. Den sammanfattas på en rad.
+    notifierade = [s for s, t, tr, a in rows if tr == "geoserver_notifiering"]
+    created = [
+        (s, t, tr, a) for s, t, tr, a in rows
+        if a not in UNDERHALL_OFORANDRAD and tr != "geoserver_notifiering"
+    ]
     if created:
         for s, t, tr, a in created:
             prefix = f"{s}." if s and s != "-" else ""
@@ -734,11 +790,18 @@ def kor_underhall(cur, conn) -> str | None:
         print(f"  {len(created)} åtgärd(er) genomförda.")
     else:
         print("  Inga åtgärder behövdes.")
+    if notifierade:
+        print(f"  GeoServer-notifiering skickad för {len(notifierade)} schema(n).")
     return None
 
 
-def install(db: dict, base_path="."):
-    """Installerar alla Hex-komponenter till en databas."""
+def install(db: dict, base_path=".", underhall=True):
+    """Installerar alla Hex-komponenter till en databas.
+
+    underhall=False hoppar över hex_underhall() efter installationen. Det
+    används av upgrade(), som kör underhållet först när inställningar och
+    drifttillstånd är återställda.
+    """
     owner_role = db.get("owner_role")
 
     print("=" * 60)
@@ -849,7 +912,7 @@ COMMENT ON FUNCTION public.hex_systemagare()
         # Underhåll: verifiera och reparera triggers, roller och behörigheter
         # på befintliga tabeller och scheman (separat steg så att ett fel här
         # aldrig rullar tillbaka huvudinstallationen).
-        fel = kor_underhall(cur, conn)
+        fel = kor_underhall(cur, conn) if underhall else None
         if fel:
             varningar.append(fel)
             skriv_varning(fel)

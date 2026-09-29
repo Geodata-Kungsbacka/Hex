@@ -69,7 +69,7 @@ BEGIN
     SELECT m.history_table INTO h_tabell
     FROM public.hex_metadata m
     WHERE m.parent_oid = moder_oid
-      AND m.history_schema = p_schema_namn;
+      AND m.history_schema = p_schema_namn;  -- NULL (ingen historik) matchar inte
 
     IF h_tabell IS NULL THEN
         h_tabell := left(p_tabell_namn || '_h', 63);

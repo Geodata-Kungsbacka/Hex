@@ -94,9 +94,9 @@ SVIT                                 PASS  XFAIL   SKIP   FAIL   STATUS
 ...
 test_reserved_words.sql                24      0      0      0   OK
 ...
-test_stress.sql                        28     14      0      0   OK
+test_stress.sql                        34     14      0      0   OK
 ...
-TOTALT                                614     15      0      0
+TOTALT                                749     15      0      0
 ```
 
 Flaggor:
@@ -171,24 +171,25 @@ och betyder inte att ett test misslyckats.
 |--------------------------------|---------------------------------------------------------------|
 | `test_reserved_words.sql`      | Kolumnnamn som är reserverade ord i QA-triggers                |
 | `test_stress.sql`              | Namnvalidering, rollhantering, historik, konfigurationsgränser |
-| `test_dummy_srid.sql`          | Dummy-geometrier och registrering av avvikande SRID            |
-| `test_edge_cases.sql`          | CREATE/ALTER TABLE-varianter, schemanamngivning, specialfall   |
+| `test_dummy_srid.sql`          | Dummy-geometrier, avvikande SRID och inställningsbart SRID     |
+| `test_geometrisuffix.sql`      | Geometrisuffix och vyprefix enligt `hex_installningar`         |
+| `test_edge_cases.sql`          | CREATE/ALTER TABLE-varianter, schemanamngivning, specialfall (bl.a. spärren mot `SET SCHEMA`) |
 | `test_extended_ab.sql`         | sk2-scheman och vy-validering                                  |
 | `test_extended_cd.sql`         | Klientsimulering (GeoServer, QGIS, FME) och strukturella fall  |
 | `test_extended_efg.sql`        | Historiksynk, dataöverlevnad, QA-triggersäkerhet               |
 | `test_fme.sql`                 | FME:s tvåstegsmönster för tabellskapande                       |
 | `test_geometry_validation.sql` | `hex_validera_geometri` och geometrikvalitet                    |
-| `test_regression.sql`          | Regressionsskydd för tidigare rättade buggar                   |
+| `test_regression.sql`          | Regressionsskydd för tidigare rättade buggar, bl.a. historiksynken (`DROP COLUMN`, typbyten, `RENAME TO`/`RENAME COLUMN`, `AddGeometryColumn()`) och skrivskyddet på `hex_metadata`, och att `RENAME TO` flyttar registerraderna via `hex_metadata` även för tabeller utan historik |
 | `test_role_permissions.sql`    | Roller och rättigheter per schema                              |
 | `test_underhall.sql`           | `hex_underhall()` – reparation av triggers, roller, ägarskap    |
-| `test_underhall_hex.sql`       | Ägarskapsreparation och idempotens i underhållet               |
+| `test_underhall_hex.sql`       | Ägarskapsreparation och idempotens i underhållet, även att oförändrade schemabehörigheter rapporteras som `redan finns` och att tabeller utan rad i `hex_metadata` efterregistreras |
 | `test_schema_namnbyte.sql`     | Blockering av `ALTER SCHEMA ... RENAME TO`                     |
 | `test_schema_borttagning.sql`  | `DROP SCHEMA ... CASCADE` rensar `hex_metadata` m.fl.          |
 | `test_grupprattigheter.sql`    | `hex_tillampa_grupprattigheter()` – AD-grupproll → Hex-roll     |
 | `test_gid_primarnyckel.sql`    | `PRIMARY KEY (gid)`: QGIS-villkoren, migrering av äldre tabeller, dubblettreparation |
 | `test_client_encoding.py`      | Att lyssnaren alltid sätter UTF-8 som klientkodning             |
-| `test_installer.py`            | `install_hex.py` – ägarskap, installationsordning och dokumentationens SQL-block |
-| `test_installer_livscykel.py`  | Uppgradering (även från äldre schema), avinstallation, felvägar, `owner_role=None` |
+| `test_installer.py`            | `install_hex.py` – ägarskap, installationsordning, dokumentationens SQL-block och underhållets utskrift |
+| `test_installer_livscykel.py`  | Uppgradering (även från äldre schema och med trasig historik), avinstallation, felvägar, `owner_role=None` |
 | `test_pg_notify_listener.py`   | `pg_notify`-flödet mot GeoServer (GeoServer mockas), `.env`-läsning, e-postlarm |
 | `test_geoserver_service.py`    | Windows-tjänsten: import, `HEX_LOG_DIR`, loggfilsuppsättning     |
 
@@ -222,6 +223,12 @@ tillbaka schemat innan `upgrade()` körs:
 
 Det är maskineriet varje framtida `HEX-MIGRERING` lutar sig mot — se
 [CLAUDE.md](../CLAUDE.md) om att märka, testa och städa bort migreringar.
+De aktuella migreringstesterna är `TestUppgraderingGidPrimarnyckel` och
+`TestUppgraderingCreatedBy`.
+
+`TestUppgraderingSynkarHistorik` är ingen migrering utan testar en invariant:
+att `upgrade()` via `hex_underhall()` rättar historiktabeller som hamnat ur
+synk och slutför FME-tabeller som fastnat som afvaktande.
 
 `TestFelvagar` täcker felvägarna: avbruten installation, trasig
 avinstallation, misslyckat underhåll och misslyckad återställning. README

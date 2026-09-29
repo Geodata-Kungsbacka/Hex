@@ -9,10 +9,12 @@ AS $BODY$
 /******************************************************************************
  * Uppdaterar namnen i hex_metadata efter ALTER TABLE ... RENAME TO.
  *
- * Anropas av hex_hantera_ny_kolumn() efter att historiktabellen döpts om till
- * <nytt namn>_h. Tabellens schema och namn läses ur pg_class via OID:n, och
- * historiktabellen ändras bara om <nytt namn>_h finns och är en
- * historiktabell. Samma säkerhetsmodell som hex_registrera_metadata(): inga
+ * Anropas av hex_hantera_ny_kolumn() vid varje RENAME TO av en registrerad
+ * tabell, för tabeller med historik efter att historiktabellen döpts om till
+ * <nytt namn>_h. Tabellens schema och namn läses ur pg_class via OID:n.
+ * history_table ändras bara om raden redan har en historik och <nytt namn>_h
+ * finns och är en historiktabell – en tabell utan historik får ingen av att
+ * en orelaterad <nytt namn>_h råkar finnas. Samma säkerhetsmodell som hex_registrera_metadata(): inga
  * värden från anroparen hamnar i tabellen.
  *
  * RETURVÄRDE
@@ -47,7 +49,8 @@ BEGIN
     UPDATE public.hex_metadata m
     SET parent_schema = s,
         parent_table  = t,
-        history_table = coalesce(h_tabell, m.history_table)
+        history_table = CASE WHEN m.history_table IS NULL THEN NULL
+                             ELSE coalesce(h_tabell, m.history_table) END
     WHERE m.parent_oid = p_parent_oid;
 
     RETURN FOUND;

@@ -32,16 +32,17 @@ vissa scheman.
 | `ta_bort_med_schema` | `true` = rollen tas bort automatiskt när schemat droppas. |
 | `kan_logga_in` | `true` = rollen skapas med `LOGIN` och ett autogenererat lösenord (sparas i `hex_rolluppgifter`), och läggs i `hex_geoserver_roller`. `false` = `NOLOGIN`-behörighetsgrupp avsedd för AD-användare/AD-grupper. |
 | `arvs_fran` | Om satt: rollen får sina rättigheter genom `GRANT <arvs_fran> TO <rollnamn>` istället för ett direkt anrop till `hex_tilldela_rollrattigheter`. Stödjer `{schema}`-substitution. Används för att låta `gs_r_{schema}`/`gs_w_{schema}` ärva från `r_{schema}`/`w_{schema}` så att behörigheterna hålls synkroniserade. |
+| `geoserver_konto` | `'las'` eller `'skriv'` markerar rollen som GeoServers tjänstekonto för läs- respektive skriv-workspacen. Högst en rad per värde. `hex_underhall()` och GeoServer-lyssnaren hittar kontot via markeringen (`hex_geoserver_rollnamn()`), inte via namnet. Rollen bör ha `kan_logga_in = true`. |
 | `beskrivning` | Fritext för dokumentation. |
 
 **Fördefinierade rader (installeras med Hex):**
 
-| `rollnamn` | `rolltyp` | `schema_uttryck` | `kan_logga_in` | `arvs_fran` |
-|---|---|---|---|---|
-| `r_{schema}` | read | `IS NOT NULL` (alla) | false | — |
-| `w_{schema}` | write | `IS NOT NULL` (alla) | false | — |
-| `gs_r_{schema}` | read | `IS NOT NULL` (alla) | true | `r_{schema}` |
-| `gs_w_{schema}` | write | `IS NOT NULL` (alla) | true | `w_{schema}` |
+| `rollnamn` | `rolltyp` | `schema_uttryck` | `kan_logga_in` | `arvs_fran` | `geoserver_konto` |
+|---|---|---|---|---|---|
+| `r_{schema}` | read | `IS NOT NULL` (alla) | false | — | — |
+| `w_{schema}` | write | `IS NOT NULL` (alla) | false | — | — |
+| `gs_r_{schema}` | read | `IS NOT NULL` (alla) | true | `r_{schema}` | `las` |
+| `gs_w_{schema}` | write | `IS NOT NULL` (alla) | true | `w_{schema}` | `skriv` |
 
 ---
 
@@ -117,6 +118,33 @@ Tar bort mallen, men **inte** roller som redan skapats:
 DELETE FROM hex_standardiserade_roller
 WHERE rollnamn = 'app_r_{schema}';
 ```
+
+---
+
+## Byta namn på GeoServers tjänstekonton
+
+GeoServer-kontona hittas via `geoserver_konto`, så de kan heta något annat än
+`gs_r_`/`gs_w_`. Lägg till en egen mall och flytta markeringen till den. Gör det i
+en transaktion – markeringen är unik men kontrolleras först vid `COMMIT`:
+
+```sql
+BEGIN;
+UPDATE hex_standardiserade_roller SET geoserver_konto = NULL
+WHERE  geoserver_konto = 'las';
+INSERT INTO hex_standardiserade_roller
+    (rollnamn, rolltyp, kan_logga_in, arvs_fran, geoserver_konto, beskrivning)
+VALUES ('geo_r_{schema}', 'read', true, 'r_{schema}', 'las', 'GeoServer läskonto');
+COMMIT;
+```
+
+Standardraden `gs_r_{schema}` ligger kvar och skapar fortfarande roller för nya
+scheman. Den läggs tillbaka vid ominstallation om den tas bort, så sätt hellre
+dess `schema_uttryck` till `'IS NULL'` om den inte ska användas. Markeringen
+lämnas i fred av ominstallation och `--upgrade`.
+
+Lyssnaren kan uppdateras före databaserna: mot en databas som saknar
+`hex_geoserver_rollnamn()` (inte kört `--upgrade`) faller den tillbaka på
+`gs_r_`/`gs_w_`. Ett omdöpt konto fungerar alltså först efter `--upgrade`.
 
 ---
 

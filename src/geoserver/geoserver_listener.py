@@ -15,6 +15,9 @@ Processen lyssnar på två PostgreSQL-kanaler och hanterar schema-händelser aut
 
     Autentiseringsuppgifterna hämtas från tabellen hex_rolluppgifter där
     hex_hantera_std_roller() lagrar de autogenererade lösenorden vid CREATE SCHEMA.
+    Vilka roller som är läs- och skrivkonto avgörs av
+    hex_standardiserade_roller.geoserver_konto via hex_geoserver_rollnamn();
+    gs_r_/gs_w_ är standardnamnen.
 
   Kanal 'geoserver_schema_drop'  (utlöses av DROP SCHEMA via SQL-triggern
                                   hex_notifiera_gs_borttagning_trigger):
@@ -24,7 +27,9 @@ Processen lyssnar på två PostgreSQL-kanaler och hanterar schema-händelser aut
 Båda kanalerna hanterar enbart scheman vars skyddsnivå har publiceras_geoserver = true
 i tabellen hex_standardiserade_skyddsnivaer. Standardkonfigurationen publicerar sk0 och sk1;
 övriga prefix (sk2, skx m.fl.) kan aktiveras genom att sätta publiceras_geoserver = true
-för respektive rad. Mönstret laddas om dynamiskt vid varje notifiering.
+för respektive rad. Mönstret laddas om dynamiskt vid varje notifiering och
+avstämning. Det finns inget hårdkodat reservmönster: kan det inte laddas hoppas
+notifieringen över med ett ERROR, och avstämningen tar schemat senare.
 
 Stödjer flera databaser - en lyssnartråd per databas.
 Konfiguration laddas från miljövariabler eller .env-fil.
@@ -56,6 +61,7 @@ from email.mime.text import MIMEText
 from pathlib import Path
 
 import psycopg2
+import psycopg2.errors
 import psycopg2.extensions
 import requests
 from requests.auth import HTTPBasicAuth
@@ -1455,18 +1461,22 @@ class GeoServerClient:
 # Läs-workspace: '{schema}',  skriv-workspace: '{schema}{WRITE_WORKSPACE_SUFFIX}'.
 WRITE_WORKSPACE_SUFFIX = "_w"
 
-# Regex som matchar giltiga schemanamn för GeoServer-publicering.
-# Används som fallback om DB-laddningen misslyckas. Varje lyssnartråd håller
-# sitt eget mönster i _thread_local.schema_pattern, laddat från sin egen databas,
-# så att skilda publiceras_geoserver-konfigurationer i olika databaser inte
-# skriver över varandra.
-SCHEMA_PATTERN = re.compile(r"^sk[01]_(ext|kba|sys)_.+$")
+# Regex som matchar giltiga schemanamn för GeoServer-publicering. Varje
+# lyssnartråd håller sitt eget mönster i _thread_local.schema_pattern, laddat
+# från sin egen databas, så att skilda publiceras_geoserver-konfigurationer i
+# olika databaser inte skriver över varandra.
+#
+# Det finns inget hårdkodat reservmönster. Ett sådant (tidigare
+# ^sk[01]_(ext|kba|sys)_) avvisade scheman med egna prefix och kategorier när
+# laddningen misslyckades. Är mönstret okänt hoppar lyssnaren i stället över
+# notifieringen och loggar ett fel – start- och den periodiska avstämningen
+# fångar schemat när databasen svarar igen.
 _thread_local = threading.local()
 
 
 def _get_schema_pattern():
-    """Returnerar det aktuella trådlokala mönstret, eller det globala fallback-mönstret."""
-    return getattr(_thread_local, "schema_pattern", SCHEMA_PATTERN)
+    """Returnerar det aktuella trådlokala mönstret, eller None om det aldrig laddats."""
+    return getattr(_thread_local, "schema_pattern", None)
 
 
 def _load_schema_pattern(cur):
@@ -1478,11 +1488,16 @@ def _load_schema_pattern(cur):
 
     Mönstret sparas i _thread_local.schema_pattern så att varje lyssnartråd
     använder sin egen databas konfiguration utan att påverka övriga trådar.
-    Om tabellerna är tomma eller ett fel uppstår behålls det befintliga mönstret.
-    Anropas i listen_loop efter lyckad DB-anslutning så att mönstret hålls i synk
-    med konfigurationen utan omstart av tjänsten.
+    Om tabellerna är tomma eller ett fel uppstår behålls det befintliga mönstret
+    – som är None om inget mönster laddats tidigare i tråden.
+    Anropas före varje notifiering och i varje avstämning, så att mönstret hålls
+    i synk med konfigurationen utan omstart av tjänsten.
+
+    Returns:
+        Det mönster som gäller efter anropet, eller None.
     """
     current = _get_schema_pattern()
+    nuvarande = current.pattern if current is not None else "(inget)"
     try:
         cur.execute(
             "SELECT prefix FROM public.hex_standardiserade_skyddsnivaer"
@@ -1499,9 +1514,9 @@ def _load_schema_pattern(cur):
             log.warning(
                 "Schemanamnsmönster: konfigurationstabellerna är tomma – "
                 "behåller nuvarande mönster '%s'",
-                current.pattern,
+                nuvarande,
             )
-            return
+            return current
 
         prefix_alts = "|".join(re.escape(p) for p in skyddsnivaer)
         kat_alts    = "|".join(re.escape(k) for k in kategorier)
@@ -1509,13 +1524,15 @@ def _load_schema_pattern(cur):
 
         _thread_local.schema_pattern = pattern
         log.info("Schemanamnsmönster uppdaterat från DB: %s", pattern.pattern)
+        return pattern
 
     except Exception as e:
         log.warning(
             "Kunde inte ladda schemanamnsmönster från DB: %s – "
             "behåller nuvarande mönster '%s'",
-            e, current.pattern,
+            e, nuvarande,
         )
+        return current
 
 # pg_notify-kanalnamn. Måste överensstämma med SQL-funktionerna
 # hex_notifiera_gs() och hex_notifiera_gs_borttagning().
@@ -1528,61 +1545,70 @@ def _db_tag(db_label):
     return f"[{db_label}] " if db_label else ""
 
 
-def _fetch_role_credentials(conn, schema_name):
-    """Hämtar autentiseringsuppgifter för läs-tjänstekontot (gs_r_) för ett schema.
+def _fetch_account_credentials(conn, schema_name, konto):
+    """Hämtar autentiseringsuppgifter för GeoServers tjänstekonto för ett schema.
 
-    Slår upp gs_r_{schema_name} i hex_rolluppgifter.
+    Kontot slås upp via hex_geoserver_rollnamn(schema, konto), som läser
+    markeringen hex_standardiserade_roller.geoserver_konto. Namnet (standard
+    gs_r_/gs_w_) är alltså inte hårdkodat här, och en DBA kan döpa om
+    rollmallen utan att publiceringen slutar fungera.
 
     Args:
-        conn:        psycopg2-anslutning till databasen (AUTOCOMMIT OK)
+        conn:        psycopg2-anslutning till databasen (AUTOCOMMIT)
         schema_name: Schemanamn (t.ex. 'sk1_kba_bygg')
+        konto:       'las' eller 'skriv'
 
     Returns:
         (rollnamn, losenord) tuple, eller (None, None) om ej hittad.
     """
-    role_name = f"gs_r_{schema_name}"
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                "SELECT rollnamn, losenord FROM public.hex_rolluppgifter WHERE rollnamn = %s",
-                (role_name,),
-            )
+            try:
+                cur.execute(
+                    "SELECT rollnamn, losenord FROM public.hex_rolluppgifter"
+                    " WHERE rollnamn = public.hex_geoserver_rollnamn(%s, %s)",
+                    (schema_name, konto),
+                )
+            except psycopg2.errors.UndefinedFunction:
+                # HEX-MIGRERING 2026-09: hex_geoserver_rollnamn() finns bara i
+                # databaser som kört --upgrade med den här versionen. Lyssnaren
+                # betjänar flera databaser och kan uppdateras före dem, så faller
+                # den tillbaka på de gamla fasta namnen. Tas bort när samtliga
+                # databaser kört --upgrade med hex_geoserver_rollnamn().
+                # Förutsätter AUTOCOMMIT, annars är transaktionen avbruten här.
+                prefix = {"las": "gs_r_", "skriv": "gs_w_"}[konto]
+                cur.execute(
+                    "SELECT rollnamn, losenord FROM public.hex_rolluppgifter"
+                    " WHERE rollnamn = %s",
+                    (f"{prefix}{schema_name}",),
+                )
             row = cur.fetchone()
         if row:
             return row[0], row[1]
         return None, None
     except Exception as e:
-        log.error("Kunde inte hämta autentiseringsuppgifter för '%s': %s", role_name, e)
+        log.error(
+            "Kunde inte hämta autentiseringsuppgifter för %s-kontot i '%s': %s",
+            konto, schema_name, e,
+        )
         return None, None
+
+
+def _fetch_role_credentials(conn, schema_name):
+    """Hämtar autentiseringsuppgifter för läs-tjänstekontot (standard gs_r_{schema}).
+
+    Se _fetch_account_credentials.
+    """
+    return _fetch_account_credentials(conn, schema_name, "las")
 
 
 def _fetch_write_role_credentials(conn, schema_name):
-    """Hämtar autentiseringsuppgifter för skriv-tjänstekontot (gs_w_) för ett schema.
+    """Hämtar autentiseringsuppgifter för skriv-tjänstekontot (standard gs_w_{schema}).
 
-    Slår upp gs_w_{schema_name} i hex_rolluppgifter. Returnerar (None, None) om
-    raden saknas — t.ex. för äldre scheman skapade innan gs_w_*-stödet lades till.
-
-    Args:
-        conn:        psycopg2-anslutning till databasen (AUTOCOMMIT OK)
-        schema_name: Schemanamn (t.ex. 'sk1_kba_bygg')
-
-    Returns:
-        (rollnamn, losenord) tuple, eller (None, None) om ej hittad.
+    Returnerar (None, None) om raden saknas — t.ex. för äldre scheman skapade
+    innan skrivkontot lades till. Se _fetch_account_credentials.
     """
-    role_name = f"gs_w_{schema_name}"
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT rollnamn, losenord FROM public.hex_rolluppgifter WHERE rollnamn = %s",
-                (role_name,),
-            )
-            row = cur.fetchone()
-        if row:
-            return row[0], row[1]
-        return None, None
-    except Exception as e:
-        log.error("Kunde inte hämta autentiseringsuppgifter för '%s': %s", role_name, e)
-        return None, None
+    return _fetch_account_credentials(conn, schema_name, "skriv")
 
 
 def _validate_schema_name(schema_name, tag):
@@ -1599,6 +1625,15 @@ def _validate_schema_name(schema_name, tag):
         True om schemanamnet är giltigt, annars False (efter loggning).
     """
     pattern = _get_schema_pattern()
+    if pattern is None:
+        log.error(
+            "%sSchemanamnsmönstret har inte kunnat laddas från databasen – "
+            "hoppar över schema '%s'. Avstämningen publicerar det när "
+            "databasen svarar igen.",
+            tag,
+            schema_name,
+        )
+        return False
     if not pattern.match(schema_name):
         log.warning(
             "%sOgiltigt schemanamn '%s' - matchar inte mönster '%s'. Ignorerar.",
@@ -1662,7 +1697,7 @@ def handle_schema_notification(schema_name, db_config, pg_conn, gs_client, db_la
     r_role, r_password = _fetch_role_credentials(pg_conn, schema_name)
     if not r_role:
         log.error(
-            "%sIngen autentiseringsuppgifter hittades för 'gs_r_%s' i hex_rolluppgifter - "
+            "%sIngen autentiseringsuppgifter hittades för läskontot i schema '%s' i hex_rolluppgifter - "
             "hoppar över schema '%s'",
             tag, schema_name, schema_name,
         )
@@ -1672,7 +1707,7 @@ def handle_schema_notification(schema_name, db_config, pg_conn, gs_client, db_la
     w_role, w_password = _fetch_write_role_credentials(pg_conn, schema_name)
     if not w_role:
         log.warning(
-            "%sIngen autentiseringsuppgifter hittades för 'gs_w_%s' i hex_rolluppgifter - "
+            "%sIngen autentiseringsuppgifter hittades för skrivkontot i schema '%s' i hex_rolluppgifter - "
             "skriv-workspace utelämnas för schema '%s'",
             tag, schema_name, schema_name,
         )
@@ -1760,7 +1795,7 @@ def handle_schema_removal_notification(schema_name, gs_client, pg_conn=None, db_
     Args:
         schema_name: Schemanamnet från pg_notify-payloaden
         gs_client:   GeoServerClient-instans
-        pg_conn:     Öppen psycopg2-anslutning för att ladda om SCHEMA_PATTERN
+        pg_conn:     Öppen psycopg2-anslutning för att ladda om schemanamnsmönstret
                      från rätt databas. Om None används nuvarande globalt mönster.
         db_label:    Databasnamn för logg-prefix
     """
@@ -2240,9 +2275,17 @@ def _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label="", all_pg_
 
         #    Gruppera per schema: läs-workspacen '<schema>' och skriv-workspacen
         #    '<schema>_w' hör ihop och ska bedömas och städas som en enhet.
+        #    Mönstret laddas av anroparen (listen_loop respektive
+        #    _periodic_reconcile_loop) från samma databas.
         _pattern = _get_schema_pattern()
         orphans = {}
-        for ws in gs_workspaces:
+        if _pattern is None:
+            log.warning(
+                "%sStartavstämning: schemanamnsmönstret är okänt – hoppar över "
+                "kontrollen av workspaces utan PG-schema",
+                tag,
+            )
+        for ws in (gs_workspaces if _pattern is not None else ()):
             if ws in known_schemas:
                 continue                      # workspacen har ett levande schema
             if ws.endswith(WRITE_WORKSPACE_SUFFIX):
@@ -2334,6 +2377,10 @@ def _periodic_reconcile_loop(db_config, gs_client, stop_event, interval_seconds,
             conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
             try:
                 with conn.cursor() as cur:
+                    # Tråden är en annan än lyssnartrådens och har ett eget
+                    # trådlokalt mönster. Utan laddningen här gällde tidigare
+                    # det hårdkodade reservmönstret i varje periodisk körning.
+                    _load_schema_pattern(cur)
                     _reconcile_geoserver_schemas(
                         cur, db_config, gs_client, db_label, all_pg_schemas,
                         all_db_configs=all_db_configs, cleanup_mode=cleanup_mode,

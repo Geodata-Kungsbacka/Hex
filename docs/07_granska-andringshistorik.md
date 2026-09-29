@@ -75,10 +75,10 @@ För att återskapa den:
 
 ```sql
 INSERT INTO sk1_kba_parkering.p_platser_p (
-    -- Lista kolumner manuellt, exkludera h_typ, h_tidpunkt, h_av
-    gid, namn, kapacitet, geom
+    -- Lista kolumner manuellt. Utelämna h_typ, h_tidpunkt, h_av och gid.
+    namn, kapacitet, geom
 )
-SELECT gid, namn, kapacitet, geom
+SELECT namn, kapacitet, geom
 FROM sk1_kba_parkering.p_platser_p_h
 WHERE gid = 42
   AND h_typ = 'D'
@@ -86,15 +86,20 @@ ORDER BY h_tidpunkt DESC
 LIMIT 1;
 ```
 
-> **OBS:** `gid` använder IDENTITY/sekvens – om du infogar ett specifikt `gid`-värde
-> kan du behöva använda `OVERRIDING SYSTEM VALUE`.
+> **OBS:** Raden får ett **nytt** `gid`. Det ursprungliga går inte att återställa:
+> `gid` är `GENERATED ALWAYS`, och även med `OVERRIDING SYSTEM VALUE` byter
+> triggern `hex_tvinga_gid` ut klientens värde mot nästa sekvensvärde. Samma sak
+> gäller kolumner med `anvandare_kan_redigera = false` (i standardkonfigurationen
+> `skapad_av`, `skapad_tidpunkt`, `andrad_av` och `andrad_tidpunkt`) — de får
+> värdena för den som gör återställningen. Refererar något externt till det
+> gamla `gid` måste den kopplingen uppdateras.
 
 ---
 
 ## Kontrollera om en tabell har historik aktiverat
 
 ```sql
-SELECT parent_table, history_table
+SELECT parent_table, history_table, created_by, created_at
 FROM hex_metadata
 WHERE parent_schema = 'sk1_kba_parkering'
   AND parent_table = 'p_platser_p';
@@ -117,9 +122,9 @@ Historiktabellen följer med automatiskt vid `ALTER TABLE`:
 | Kolumnen läggs tillbaka med samma typ | Den befintliga kolumnen återanvänds |
 | `ALTER COLUMN TYPE`, eller tillbaka med annan typ | Konverteras om inget värde ändras, annars arkiveras den gamla kolumnen som `<kolumn>_arkiv_<ÅÅÅÅMMDD>` |
 | `RENAME COLUMN` | Kolumnen döps om i `_h` |
-
 | `RENAME TO` | `_h` döps om och QA-triggern byggs om |
-| Ändring direkt i `_h` (t.ex. `DROP COLUMN`) | Saknade kolumner läggs tillbaka, triggern byggs om |
+| Ändring direkt i `_h` (t.ex. `DROP COLUMN`) | Saknade kolumner läggs tillbaka, triggern byggs om. Värdena i en borttagen `_h`-kolumn är borta — den läggs tillbaka tom |
+| `SET SCHEMA` | Blockeras. Skapa tabellen i målschemat och flytta datan med `INSERT ... SELECT` |
 
 Historiktabeller som redan hamnat ur synk rättas av `install_hex.py --upgrade`,
 som kör underhållet. Det går också att köra för en tabell eller för alla:

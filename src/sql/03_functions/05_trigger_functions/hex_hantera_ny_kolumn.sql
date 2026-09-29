@@ -18,11 +18,14 @@ AS $BODY$
  * 1. Flyttar standardkolumner med negativ ordinal_position så att de hamnar
  *    efter nyligen tillagda kolumner
  * 2. Flyttar geometrikolumnen sist för korrekt struktur
- * 3. Kontrollerar strukturskillnader mellan modertabeller och historiktabeller
- * 4. UPPDATERAD: Lägger automatiskt till saknade kolumner i historiktabeller
- * 5. Ger användaren instruktioner för manuell synkronisering vid typskillnader
- * 6. Synkar historiken via hex_synka_historik() efter varje ALTER TABLE –
- *    även DROP COLUMN och ALTER COLUMN TYPE, som inte omstruktureras
+ * 3. Synkar historiken via hex_synka_historik() efter varje ALTER TABLE –
+ *    även DROP COLUMN och ALTER COLUMN TYPE, som inte omstruktureras.
+ *    Saknade kolumner läggs till, typkonflikter löses utan dataförlust och
+ *    QA-triggern byggs om.
+ * 4. Speglar RENAME TO och RENAME COLUMN i historiktabellen och hex_metadata,
+ *    och flyttar namnnycklade registerrader vid RENAME TO
+ *    (hex_flytta_registerposter)
+ * 5. Blockerar ALTER TABLE ... SET SCHEMA för Hex-tabeller
  *
  * Steg 5b/5c: FME-tvåstegsmönster och liknande omvägar
  * - 5b: tabell var afvaktande (skapades utan geom, geom anländer via ALTER TABLE)
@@ -129,8 +132,9 @@ BEGIN
 
     -- ----------------------------------------------------------------
     -- Specialfall: ALTER TABLE ... RENAME TO
-    -- Använd OID (stabilt genom rename) för att hitta och döpa om
-    -- tillhörande historiktabell via hex_metadata.
+    -- Använd OID (stabilt genom rename) för att slå upp det gamla namnet i
+    -- hex_metadata, flytta de namnnycklade registerraderna och – om tabellen
+    -- har historik – döpa om historiktabellen.
     -- ----------------------------------------------------------------
     IF current_query() ~* '\mRENAME\s+TO\M' THEN
         FOR kommando IN SELECT * FROM pg_event_trigger_ddl_commands()
@@ -139,15 +143,37 @@ BEGIN
             schema_namn := replace(split_part(kommando.object_identity, '.', 1), '"', '');
             tabell_namn := replace(split_part(kommando.object_identity, '.', 2), '"', '');
 
+            -- Historiktabeller döps om av grenen nedan och hanteras aldrig direkt
+            CONTINUE WHEN tabell_namn ~ '_h$' OR kommando.object_type <> 'table';
+            -- Tabeller utanför Hex-scheman registreras aldrig och berörs inte
+            CONTINUE WHEN schema_namn !~ public.hex_schema_regex();
+
             DECLARE
                 meta_rad       record;
                 ny_historik    text;
             BEGIN
+                -- Det gamla namnet finns inte kvar i katalogen, men hex_metadata
+                -- har det: varje Hex-tabell registreras där på sin OID när den
+                -- skapas, oavsett om den har historik.
                 SELECT * INTO meta_rad
                 FROM hex_metadata
                 WHERE parent_oid = kommando.objid;
 
-                IF FOUND THEN
+                IF NOT FOUND THEN
+                    -- Skapad förbi event-triggrarna och ännu inte registrerad
+                    -- av hex_underhall(). Det gamla namnet går inte att få
+                    -- fram; registerraderna blir kvar på det och rensas av
+                    -- underhållet (avvikande SRID) eller får flyttas för hand.
+                    RAISE WARNING '[hex_hantera_ny_kolumn] %.% saknas i hex_metadata – registerrader flyttas inte. Kör SELECT * FROM public.hex_underhall().',
+                        schema_namn, tabell_namn;
+                    CONTINUE;
+                END IF;
+
+                -- hex_dummy_geometrier, hex_afvaktande_geometri och
+                -- hex_avvikande_srid nycklas på namn och måste följa med
+                PERFORM hex_flytta_registerposter(schema_namn, meta_rad.parent_table, tabell_namn);
+
+                IF meta_rad.history_table IS NOT NULL THEN
                     -- Cap at 63 bytes (PostgreSQL identifier limit)
                     ny_historik := left(tabell_namn || '_h', 63);
 
@@ -168,8 +194,9 @@ BEGIN
                     -- exist".
                     PERFORM hex_synka_historik(schema_namn, tabell_namn);
                 ELSE
-                    RAISE NOTICE '[hex_hantera_ny_kolumn] Ingen historiktabell registrerad för OID % (tabell %, har troligen ingen historik)',
-                        kommando.objid, tabell_namn;
+                    PERFORM hex_uppdatera_metadata_namn(kommando.objid);
+                    RAISE NOTICE '[hex_hantera_ny_kolumn] ✓ hex_metadata uppdaterad: % → % (ingen historik)',
+                        meta_rad.parent_table, tabell_namn;
                 END IF;
             END;
         END LOOP;
@@ -216,7 +243,7 @@ BEGIN
                 FROM hex_metadata
                 WHERE parent_oid = kommando.objid;
 
-                IF NOT FOUND THEN
+                IF NOT FOUND OR meta_rad.history_table IS NULL THEN
                     RAISE NOTICE '[hex_hantera_ny_kolumn] Kolumnnamnbyte i %.% - ingen historiktabell registrerad, inget att synka',
                         schema_namn, tabell_namn;
                     CONTINUE;
@@ -676,19 +703,9 @@ BEGIN
                     forvantat_suffix text;
                     faktiskt_suffix   text;
                 BEGIN
-                    forvantat_suffix := CASE
-                        WHEN geometriinfo.typ_basal IN ('POINT', 'MULTIPOINT')           THEN '_p'
-                        WHEN geometriinfo.typ_basal IN ('LINESTRING', 'MULTILINESTRING') THEN '_l'
-                        WHEN geometriinfo.typ_basal IN ('POLYGON', 'MULTIPOLYGON')       THEN '_y'
-                        ELSE '_g'
-                    END;
-                    faktiskt_suffix := CASE
-                        WHEN tabell_namn ~ '_p$' THEN '_p'
-                        WHEN tabell_namn ~ '_l$' THEN '_l'
-                        WHEN tabell_namn ~ '_y$' THEN '_y'
-                        WHEN tabell_namn ~ '_g$' THEN '_g'
-                        ELSE NULL
-                    END;
+                    -- Suffixen läses från hex_installningar (suffix_*)
+                    forvantat_suffix := public.hex_geometrisuffix(geometriinfo.typ_basal);
+                    faktiskt_suffix  := public.hex_tabellsuffix(tabell_namn);
 
                     IF faktiskt_suffix IS NOT NULL AND faktiskt_suffix <> forvantat_suffix THEN
                         RAISE EXCEPTION
@@ -702,15 +719,16 @@ BEGIN
                 END;
             END IF;
 
-            -- Steg 5b.2: Kontrollera SRID (EPSG 3007 krävs)
+            -- Steg 5b.2: Kontrollera SRID mot hex_srid() (hex_installningar.srid)
             IF geometriinfo IS NOT NULL AND geometriinfo.srid IS NOT NULL
-               AND geometriinfo.srid <> 3007
+               AND geometriinfo.srid <> public.hex_srid()
             THEN
                 RAISE WARNING
-                    '[hex_hantera_ny_kolumn] Tabell %.% har SRID % – förväntar 3007 (SWEREF99 12 00). '
+                    '[hex_hantera_ny_kolumn] Tabell %.% har SRID % – förväntar % (%). '
                     'Data i fel koordinatsystem måste transformeras innan produktionsbruk. '
                     'Tabellen registreras i hex_avvikande_srid för granskning.',
-                    schema_namn, tabell_namn, geometriinfo.srid;
+                    schema_namn, tabell_namn, geometriinfo.srid,
+                    public.hex_srid(), public.hex_srid_namn(public.hex_srid());
 
                 INSERT INTO public.hex_avvikande_srid (schema_namn, tabell_namn, srid)
                 VALUES (hkt.schema_namn, hkt.tabell_namn, geometriinfo.srid)
@@ -820,7 +838,7 @@ BEGIN
             -- NOT tabell_namn ~ '_h$': historiktabeller undantas helt. De har alltid
             -- en geom-kolumn (kopierad från modertabellen för historik) men får
             -- aldrig ett GiST-index (behövs inte för historik) och följer aldrig
-            -- p/l/y/g-suffixkonventionen (de heter alltid <modertabell>_h). Utan
+            -- geometrisuffixkonventionen (de heter alltid <modertabell>_h). Utan
             -- detta undantag tolkas "geom utan GiST-index" felaktigt som "ny,
             -- obehandlad geometrikolumn" och RAISE EXCEPTION nedan avvisar
             -- historiktabellens namn – vilket kraschar VARJE ALTER TABLE på en
@@ -837,14 +855,11 @@ BEGIN
             DECLARE
                 forvantat_suffix text;
             BEGIN
-                forvantat_suffix := CASE
-                    WHEN geometriinfo.typ_basal IN ('POINT', 'MULTIPOINT')           THEN '_p'
-                    WHEN geometriinfo.typ_basal IN ('LINESTRING', 'MULTILINESTRING') THEN '_l'
-                    WHEN geometriinfo.typ_basal IN ('POLYGON', 'MULTIPOLYGON')       THEN '_y'
-                    ELSE '_g'
-                END;
+                -- Suffixen läses från hex_installningar (suffix_*). Jämförelsen är
+                -- exakt: i LIKE är _ ett jokertecken, så '%_p' godtog t.ex. "kartap".
+                forvantat_suffix := public.hex_geometrisuffix(geometriinfo.typ_basal);
 
-                IF NOT tabell_namn LIKE '%' || forvantat_suffix THEN
+                IF public.hex_tabellsuffix(tabell_namn) IS DISTINCT FROM forvantat_suffix THEN
                     RAISE EXCEPTION
                         E'[hex_hantera_ny_kolumn] Tabellen %.% innehåller geometri (%) men saknar korrekt suffix.\n'
                         '[hex_hantera_ny_kolumn] Kräver suffix: %\n'
@@ -856,18 +871,21 @@ BEGIN
                         schema_namn, tabell_namn,
                         geometriinfo.typ_basal,
                         forvantat_suffix,
-                        regexp_replace(tabell_namn, '_[plyg]$', '') || forvantat_suffix;
+                        left(tabell_namn,
+                             length(tabell_namn) - length(coalesce(public.hex_tabellsuffix(tabell_namn), '')))
+                            || forvantat_suffix;
                 END IF;
 
                 RAISE NOTICE '[hex_hantera_ny_kolumn]   ✓ Suffix % stämmer med geometrityp %',
                     forvantat_suffix, geometriinfo.typ_basal;
 
-                -- SRID-kontroll
-                IF geometriinfo.srid IS NOT NULL AND geometriinfo.srid <> 3007 THEN
+                -- SRID-kontroll mot hex_srid() (hex_installningar.srid)
+                IF geometriinfo.srid IS NOT NULL AND geometriinfo.srid <> public.hex_srid() THEN
                     RAISE WARNING
-                        '[hex_hantera_ny_kolumn] Tabell %.% har SRID % – förväntar 3007 (SWEREF99 12 00). '
+                        '[hex_hantera_ny_kolumn] Tabell %.% har SRID % – förväntar % (%). '
                         'Tabellen registreras i hex_avvikande_srid.',
-                        schema_namn, tabell_namn, geometriinfo.srid;
+                        schema_namn, tabell_namn, geometriinfo.srid,
+                        public.hex_srid(), public.hex_srid_namn(public.hex_srid());
                     INSERT INTO public.hex_avvikande_srid (schema_namn, tabell_namn, srid)
                     VALUES (hkt.schema_namn, hkt.tabell_namn, geometriinfo.srid)
                     ON CONFLICT ON CONSTRAINT hex_avvikande_srid_pkey

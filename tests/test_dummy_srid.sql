@@ -8,6 +8,8 @@
 --   4  hex_ta_bort_dummy_rad() (automatisk dummy-borttagning vid INSERT)
 --   5  hex_avvikande_srid registrering vid SRID ≠ 3007
 --   6  Rensning vid DROP TABLE (hex_hantera_borttagen_tabell)
+--   7  hex_installningar: inställningsbart SRID, dummy-position och
+--      hex_underhall():s ombyggnad av hex_avvikande_srid
 --
 -- Konvention: NOTICE = PASSED/INFO, WARNING = FAILED
 -- ============================================================
@@ -444,6 +446,207 @@ BEGIN
         RAISE NOTICE 'TEST 6d PASSED: hex_dummy_geometrier-posten borttagen efter DROP TABLE omraden_y';
     ELSE
         RAISE WARNING 'TEST 6d FAILED: hex_dummy_geometrier-posten inte städad efter DROP TABLE';
+    END IF;
+END $$;
+
+-- ============================================================
+-- 7: hex_installningar — inställningsbart SRID och dummy-position
+-- ============================================================
+\echo ''
+\echo '--- GRUPP 7: hex_installningar (srid, dummy_x/dummy_y) ---'
+
+-- 7a: Standardvärden
+DO $$
+DECLARE antal integer;
+BEGIN
+    SELECT count(*) INTO antal FROM public.hex_installningar;
+    IF antal = 1 AND public.hex_srid() = 3007
+       AND public.hex_srid_namn(3007) = 'SWEREF99 12 00' THEN
+        RAISE NOTICE 'TEST 7a PASSED: en rad, hex_srid() = 3007 (SWEREF99 12 00)';
+    ELSE
+        RAISE WARNING 'TEST 7a FAILED: antal=%, hex_srid()=%, namn=%',
+            antal, public.hex_srid(), public.hex_srid_namn(3007);
+    END IF;
+END $$;
+
+-- 7b–7c: Bara en rad, och bara SRID som finns i spatial_ref_sys
+DO $$
+BEGIN
+    BEGIN
+        INSERT INTO public.hex_installningar (id) VALUES (false);
+        RAISE WARNING 'TEST 7b FAILED: en andra rad (id = false) accepterades';
+    EXCEPTION WHEN check_violation THEN
+        RAISE NOTICE 'TEST 7b PASSED: en andra rad avvisas';
+    END;
+    BEGIN
+        UPDATE public.hex_installningar SET srid = 999999;
+        RAISE WARNING 'TEST 7c FAILED: SRID som saknas i spatial_ref_sys accepterades';
+    EXCEPTION WHEN foreign_key_violation THEN
+        RAISE NOTICE 'TEST 7c PASSED: SRID som saknas i spatial_ref_sys avvisas';
+    END;
+END $$;
+
+-- 7d: Dummy i en 3007-tabell hamnar på (dummy_x, dummy_y)
+CREATE TABLE sk0_ext_dummy_test.pos_sweref1200_p (namn text, geom geometry(Point, 3007));
+-- 7e: Dummy i en 3006-tabell transformeras till samma plats
+CREATE TABLE sk0_ext_dummy_test.pos_sweref99tm_p (namn text, geom geometry(Point, 3006));
+
+DO $$
+DECLARE
+    g3007 geometry;
+    g3006 geometry;
+    ref   geometry := ST_SetSRID(ST_MakePoint(160000, 6395000), 3007);
+BEGIN
+    SELECT t.geom INTO g3007
+    FROM   sk0_ext_dummy_test.pos_sweref1200_p t
+    JOIN   public.hex_dummy_geometrier d
+           ON d.schema_namn = 'sk0_ext_dummy_test' AND d.tabell_namn = 'pos_sweref1200_p'
+          AND d.gid = t.gid;
+    SELECT t.geom INTO g3006
+    FROM   sk0_ext_dummy_test.pos_sweref99tm_p t
+    JOIN   public.hex_dummy_geometrier d
+           ON d.schema_namn = 'sk0_ext_dummy_test' AND d.tabell_namn = 'pos_sweref99tm_p'
+          AND d.gid = t.gid;
+
+    IF g3007 IS NOT NULL AND ST_Equals(g3007, ref) THEN
+        RAISE NOTICE 'TEST 7d PASSED: dummy i 3007-tabell ligger på (160000, 6395000)';
+    ELSE
+        RAISE WARNING 'TEST 7d FAILED: dummy i 3007-tabell: %', ST_AsEWKT(g3007);
+    END IF;
+
+    IF g3006 IS NOT NULL AND ST_SRID(g3006) = 3006
+       AND ST_Distance(ST_Transform(g3006, 3007), ref) < 0.01 THEN
+        RAISE NOTICE 'TEST 7e PASSED: dummy i 3006-tabell transformerad till samma plats';
+    ELSE
+        RAISE WARNING 'TEST 7e FAILED: dummy i 3006-tabell: %', ST_AsEWKT(g3006);
+    END IF;
+END $$;
+
+-- 7e2: Dummy i tabeller med Z/M-dimension. PostGIS fyller inte på dimensioner
+-- själv, och tidigare fick sådana tabeller aldrig någon dummy-rad.
+CREATE TABLE sk0_ext_dummy_test.dim_z_p  (namn text, geom geometry(PointZ, 3007));
+CREATE TABLE sk0_ext_dummy_test.dim_m_l  (namn text, geom geometry(LineStringM, 3007));
+CREATE TABLE sk0_ext_dummy_test.dim_zm_y (namn text, geom geometry(PolygonZM, 3007));
+
+DO $$
+DECLARE
+    z  integer; m integer; zm integer;
+BEGIN
+    SELECT count(*) INTO z  FROM sk0_ext_dummy_test.dim_z_p  WHERE ST_Z(geom) = 0;
+    SELECT count(*) INTO m  FROM sk0_ext_dummy_test.dim_m_l  WHERE ST_M(ST_StartPoint(geom)) = 0;
+    SELECT count(*) INTO zm FROM sk0_ext_dummy_test.dim_zm_y WHERE ST_NDims(geom) = 4;
+    IF z = 1 AND m = 1 AND zm = 1 THEN
+        RAISE NOTICE 'TEST 7e2 PASSED: dummy-rad i PointZ-, LineStringM- och PolygonZM-tabell';
+    ELSE
+        RAISE WARNING 'TEST 7e2 FAILED: dummy-rader Z=%, M=%, ZM=%', z, m, zm;
+    END IF;
+END $$;
+
+-- Byt förväntat koordinatsystem till 3006 och flytta referenspunkten dit.
+-- Spara registrerad för 4326-tabellen, som avviker både före och efter.
+CREATE TEMP TABLE tmp_hex_srid_fore AS
+SELECT registrerad FROM public.hex_avvikande_srid
+WHERE schema_namn = 'sk0_ext_dummy_test' AND tabell_namn = 'annan_srid_y';
+
+UPDATE public.hex_installningar
+SET    srid    = 3006,
+       dummy_x = ST_X(p.g),
+       dummy_y = ST_Y(p.g)
+FROM   (SELECT ST_Transform(ST_SetSRID(ST_MakePoint(160000, 6395000), 3007), 3006) AS g) p;
+
+CREATE TEMP TABLE tmp_hex_underhall AS
+SELECT * FROM public.hex_underhall() u WHERE u.trigger_namn = 'avvikande_srid';
+
+-- 7f–7h: hex_underhall() bygger om hex_avvikande_srid mot det nya SRID:t
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM public.hex_avvikande_srid
+               WHERE schema_namn = 'sk0_ext_dummy_test' AND tabell_namn = 'pos_sweref1200_p'
+                 AND srid = 3007)
+       AND EXISTS (SELECT 1 FROM tmp_hex_underhall
+                   WHERE tabell_namn = 'pos_sweref1200_p' AND atgard = 'registrerad: SRID 3007') THEN
+        RAISE NOTICE 'TEST 7f PASSED: 3007-tabell registrerad som avvikande efter byte till 3006';
+    ELSE
+        RAISE WARNING 'TEST 7f FAILED: 3007-tabell inte registrerad efter byte till 3006';
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM public.hex_avvikande_srid
+                   WHERE schema_namn = 'sk0_ext_dummy_test' AND tabell_namn = 'pos_sweref99tm_p')
+       AND EXISTS (SELECT 1 FROM tmp_hex_underhall
+                   WHERE tabell_namn = 'pos_sweref99tm_p' AND atgard = 'avregistrerad') THEN
+        RAISE NOTICE 'TEST 7g PASSED: 3006-tabell avregistrerad efter byte till 3006';
+    ELSE
+        RAISE WARNING 'TEST 7g FAILED: 3006-tabell ligger kvar som avvikande';
+    END IF;
+
+    IF (SELECT registrerad FROM public.hex_avvikande_srid
+        WHERE schema_namn = 'sk0_ext_dummy_test' AND tabell_namn = 'annan_srid_y')
+       = (SELECT registrerad FROM tmp_hex_srid_fore)
+       AND EXISTS (SELECT 1 FROM tmp_hex_underhall
+                   WHERE tabell_namn = 'annan_srid_y' AND atgard = 'redan finns') THEN
+        RAISE NOTICE 'TEST 7h PASSED: 4326-tabell orörd (registrerad står kvar)';
+    ELSE
+        RAISE WARNING 'TEST 7h FAILED: 4326-tabellens rad skrevs om eller försvann';
+    END IF;
+END $$;
+
+-- 7i–7k: Triggrarna och dummyn följer den nya inställningen
+CREATE TABLE sk0_ext_dummy_test.ny_sweref99tm_p (namn text, geom geometry(Point, 3006));
+CREATE TABLE sk0_ext_dummy_test.ny_sweref1200_p (namn text, geom geometry(Point, 3007));
+
+DO $$
+DECLARE
+    g   geometry;
+    ref geometry := ST_SetSRID(ST_MakePoint(160000, 6395000), 3007);
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM public.hex_avvikande_srid
+                   WHERE schema_namn = 'sk0_ext_dummy_test' AND tabell_namn = 'ny_sweref99tm_p') THEN
+        RAISE NOTICE 'TEST 7i PASSED: ny 3006-tabell inte avvikande när hex_srid() = 3006';
+    ELSE
+        RAISE WARNING 'TEST 7i FAILED: ny 3006-tabell registrerad som avvikande';
+    END IF;
+
+    IF EXISTS (SELECT 1 FROM public.hex_avvikande_srid
+               WHERE schema_namn = 'sk0_ext_dummy_test' AND tabell_namn = 'ny_sweref1200_p'
+                 AND srid = 3007) THEN
+        RAISE NOTICE 'TEST 7j PASSED: ny 3007-tabell avvikande när hex_srid() = 3006';
+    ELSE
+        RAISE WARNING 'TEST 7j FAILED: ny 3007-tabell inte registrerad som avvikande';
+    END IF;
+
+    SELECT t.geom INTO g
+    FROM   sk0_ext_dummy_test.ny_sweref99tm_p t
+    JOIN   public.hex_dummy_geometrier d
+           ON d.schema_namn = 'sk0_ext_dummy_test' AND d.tabell_namn = 'ny_sweref99tm_p'
+          AND d.gid = t.gid;
+    IF g IS NOT NULL AND ST_Distance(ST_Transform(g, 3007), ref) < 0.01 THEN
+        RAISE NOTICE 'TEST 7k PASSED: dummy byggd från 3006-inställningen ligger på samma plats';
+    ELSE
+        RAISE WARNING 'TEST 7k FAILED: dummy i ny 3006-tabell: %', ST_AsEWKT(g);
+    END IF;
+END $$;
+
+-- Återställ standardvärdena. Körs oavsett utfall ovan.
+UPDATE public.hex_installningar
+SET    srid = 3007, dummy_x = 160000, dummy_y = 6395000, dummy_storlek = 100;
+SELECT count(*) AS avvikande_srid_atgarder
+FROM   public.hex_underhall() u WHERE u.trigger_namn = 'avvikande_srid';
+
+-- 7l: Efter återställning är 3007-tabellerna inte längre avvikande, 3006 är det
+DO $$
+DECLARE antal_3006 integer;
+BEGIN
+    SELECT count(*) INTO antal_3006 FROM public.hex_avvikande_srid
+    WHERE schema_namn = 'sk0_ext_dummy_test'
+      AND tabell_namn IN ('pos_sweref99tm_p', 'ny_sweref99tm_p');
+    IF NOT EXISTS (SELECT 1 FROM public.hex_avvikande_srid
+                   WHERE schema_namn = 'sk0_ext_dummy_test'
+                     AND tabell_namn IN ('pos_sweref1200_p', 'ny_sweref1200_p'))
+       AND antal_3006 = 2 THEN
+        RAISE NOTICE 'TEST 7l PASSED: återställning till 3007 byggde om hex_avvikande_srid';
+    ELSE
+        RAISE WARNING 'TEST 7l FAILED: hex_avvikande_srid stämmer inte efter återställning (3006-rader: %)',
+            antal_3006;
     END IF;
 END $$;
 

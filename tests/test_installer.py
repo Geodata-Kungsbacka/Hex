@@ -519,5 +519,77 @@ class TestKommandorad(unittest.TestCase):
         self.assertEqual(kod, 0)
 
 
+# ---------------------------------------------------------------------------
+# Underhållets utskrift i installern
+# ---------------------------------------------------------------------------
+
+class TestUnderhallUtskrift(unittest.TestCase):
+    """kor_underhall() skriver ut det hex_underhall() faktiskt ändrade.
+
+    Tidigare filtrerades bara 'redan finns' bort, så 'redan synkad',
+    'redan korrekt' m.fl. listades som åtgärder vid varje körning och
+    "Inga åtgärder behövdes" skrevs i praktiken aldrig ut.
+    """
+
+    UNDERHALL_SQL = (PROJECT_ROOT / "src/sql/03_functions/04_utility/hex_underhall.sql")
+
+    class _Markor:
+        def __init__(self, rader):
+            self._rader = rader
+
+        def execute(self, sql):
+            pass
+
+        def fetchall(self):
+            return self._rader
+
+    class _Anslutning:
+        def commit(self):
+            pass
+
+        def rollback(self):
+            pass
+
+    def _kor(self, rader):
+        utskrift = io.StringIO()
+        with redirect_stdout(utskrift):
+            fel = install_hex.kor_underhall(self._Markor(rader), self._Anslutning())
+        self.assertIsNone(fel)
+        return utskrift.getvalue()
+
+    def test_varje_redan_utfall_raknas_som_oforandrat(self):
+        """Ett nytt 'redan ...'-utfall i SQL:en måste läggas till i installern."""
+        kod = _strip_sql_comments(self.UNDERHALL_SQL.read_text(encoding="utf-8"))
+        # Enradiga strängliteraler – COMMENT ON-texten är flerradig och nämner
+        # "redan" i löptext.
+        utfall = set(re.findall(r"'([^'\n]*\bredan\b[^'\n]*)'", kod))
+        self.assertTrue(utfall, "hittade inga 'redan ...'-utfall – har regexen slutat matcha?")
+        self.assertEqual(utfall - install_hex.UNDERHALL_OFORANDRAD, set())
+
+    def test_oforandrat_ger_inga_atgarder(self):
+        rader = [
+            ("sk1_kba_x", "vag_l", "historiksynk", "redan synkad"),
+            ("sk1_kba_x", "r_sk1_kba_x", "rollstruktur", "redan NOLOGIN"),
+            ("sk1_kba_x", "gs_r_sk1_kba_x", "rollstruktur", "redan korrekt"),
+            ("sk1_kba_x", "r_sk1_kba_x", "schemabehörigheter", "redan finns"),
+            ("sk1_kba_x", "gs_r_sk1_kba_x", "schemabehörigheter", "arvs_fran redan beviljad"),
+            ("sk1_kba_x", "-", "geoserver_notifiering", "notifiering skickad"),
+        ]
+        utskrift = self._kor(rader)
+        self.assertIn("Inga åtgärder behövdes.", utskrift)
+        self.assertIn("GeoServer-notifiering skickad för 1 schema(n).", utskrift)
+        self.assertNotIn("✓", utskrift)
+
+    def test_verklig_atgard_skrivs_ut(self):
+        rader = [
+            ("sk1_kba_x", "vag_l", "historiksynk", "synkad: 2 ändringar"),
+            ("sk1_kba_x", "vag_l", "hex_tvinga_gid", "redan finns"),
+        ]
+        utskrift = self._kor(rader)
+        self.assertIn("✓ sk1_kba_x.vag_l → historiksynk (synkad: 2 ändringar)", utskrift)
+        self.assertIn("1 åtgärd(er) genomförda.", utskrift)
+        self.assertNotIn("Inga åtgärder", utskrift)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

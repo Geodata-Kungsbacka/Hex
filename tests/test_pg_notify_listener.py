@@ -23,6 +23,7 @@ Användning:
 
 import getpass
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -137,6 +138,29 @@ def run_listener_once(listen_conn, timeout=3.0):
 # Tester
 # ===========================================================================
 
+class _Standardmonster:
+    """Sätter standardkonfigurationens schemanamnsmönster trådlokalt.
+
+    Lyssnaren har inget hårdkodat reservmönster längre: är mönstret okänt
+    avvisas notifieringar och föräldralösa workspaces letas inte upp. Testerna
+    mockar databasen, så mönstret som _load_schema_pattern annars hade laddat
+    sätts här – sk0/sk1 publiceras i standardkonfigurationen.
+    """
+
+    STANDARDMONSTER = r"^(sk0|sk1)_(ext|kba|sys)_.+$"
+
+    def setUp(self):
+        super().setUp()
+        self._sparat_monster = gl._thread_local.__dict__.pop("schema_pattern", None)
+        gl._thread_local.schema_pattern = re.compile(self.STANDARDMONSTER)
+
+    def tearDown(self):
+        gl._thread_local.__dict__.pop("schema_pattern", None)
+        if self._sparat_monster is not None:
+            gl._thread_local.schema_pattern = self._sparat_monster
+        super().tearDown()
+
+
 class TestRolluppgifterMotRiktigTabell(unittest.TestCase):
     """
     _fetch_role_credentials() mot en riktig public.hex_rolluppgifter.
@@ -214,6 +238,127 @@ class TestRolluppgifterMotRiktigTabell(unittest.TestCase):
         )
 
 
+class TestOmdoptLaskonto(unittest.TestCase):
+    """
+    Läskontot slås upp via hex_standardiserade_roller.geoserver_konto, inte via
+    namnet gs_r_. En DBA som flyttar markeringen till en egen rollmall ska få
+    den rollens uppgifter. Tidigare letade lyssnaren alltid efter
+    f"gs_r_{schema}" och hittade ingenting.
+    """
+
+    SCHEMA = "sk0_kba_omdopt"
+    MALL = "geo_r_{schema}"
+    ROLL = "geo_r_sk0_kba_omdopt"
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            cls.conn = make_conn()
+        except Exception as e:
+            raise unittest.SkipTest(f"ingen databasanslutning: {e}")
+        cls.conn.autocommit = True
+        with cls.conn.cursor() as cur:
+            cur.execute("SELECT to_regproc('public.hex_geoserver_rollnamn') IS NOT NULL")
+            if not cur.fetchone()[0]:
+                cls.conn.close()
+                raise unittest.SkipTest("Hex med hex_geoserver_rollnamn() är inte installerat")
+            cur.execute(
+                "SELECT rollnamn FROM public.hex_standardiserade_roller"
+                " WHERE geoserver_konto = 'las'"
+            )
+            rad = cur.fetchone()
+            cls.ursprunglig = rad[0] if rad else None
+            cur.execute(
+                "UPDATE public.hex_standardiserade_roller SET geoserver_konto = NULL"
+                " WHERE geoserver_konto = 'las'"
+            )
+            # schema_uttryck 'IS NULL' matchar inget schema, så mallen skapar
+            # inga roller medan testet kör.
+            cur.execute(
+                "INSERT INTO public.hex_standardiserade_roller"
+                " (rollnamn, rolltyp, schema_uttryck, kan_logga_in, geoserver_konto)"
+                " VALUES (%s, 'read', 'IS NULL', true, 'las')",
+                (cls.MALL,),
+            )
+            cur.execute(
+                "INSERT INTO public.hex_rolluppgifter (rollnamn, losenord, kan_logga_in)"
+                " VALUES (%s, 'omdopt_hemligt', true)",
+                (cls.ROLL,),
+            )
+
+    @classmethod
+    def tearDownClass(cls):
+        if getattr(cls, "conn", None) is None:
+            return
+        with cls.conn.cursor() as cur:
+            cur.execute("DELETE FROM public.hex_rolluppgifter WHERE rollnamn = %s", (cls.ROLL,))
+            cur.execute("DELETE FROM public.hex_standardiserade_roller WHERE rollnamn = %s", (cls.MALL,))
+            if cls.ursprunglig:
+                cur.execute(
+                    "UPDATE public.hex_standardiserade_roller SET geoserver_konto = 'las'"
+                    " WHERE rollnamn = %s",
+                    (cls.ursprunglig,),
+                )
+        cls.conn.close()
+
+    def test_omdopt_laskonto_hittas(self):
+        self.assertEqual(
+            gl._fetch_role_credentials(self.conn, self.SCHEMA),
+            (self.ROLL, "omdopt_hemligt"),
+        )
+
+    def test_sql_funktionen_foljer_markeringen(self):
+        with self.conn.cursor() as cur:
+            cur.execute("SELECT public.hex_geoserver_rollnamn(%s, 'las')", (self.SCHEMA,))
+            self.assertEqual(cur.fetchone()[0], self.ROLL)
+
+
+class TestLaskontoUtanSqlFunktion(unittest.TestCase):
+    """
+    HEX-MIGRERING 2026-09: en databas som inte kört --upgrade saknar
+    hex_geoserver_rollnamn(). Lyssnaren ska då falla tillbaka på gs_r_/gs_w_.
+    Tas bort tillsammans med fallbacken i _fetch_account_credentials.
+    """
+
+    class _Cursor:
+        def __init__(self, fraga):
+            self.fraga = fraga
+            self.params = None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def execute(self, sql, params):
+            if "hex_geoserver_rollnamn" in sql:
+                raise psycopg2.errors.UndefinedFunction("finns inte")
+            self.fraga.append(params)
+
+        def fetchone(self):
+            return (self.fraga[-1][0], "pw")
+
+    def _conn(self, fraga):
+        conn = MagicMock()
+        conn.cursor.side_effect = lambda: self._Cursor(fraga)
+        return conn
+
+    def test_faller_tillbaka_pa_gs_r(self):
+        fraga = []
+        self.assertEqual(
+            gl._fetch_role_credentials(self._conn(fraga), "sk0_kba_x"),
+            ("gs_r_sk0_kba_x", "pw"),
+        )
+
+    def test_faller_tillbaka_pa_gs_w(self):
+        fraga = []
+        self.assertEqual(
+            gl._fetch_write_role_credentials(self._conn(fraga), "sk0_kba_x"),
+            ("gs_w_sk0_kba_x", "pw"),
+        )
+
+
 class TestPgNotifyRoundTrip(unittest.TestCase):
     """End-to-end LISTEN/NOTIFY-runda via en riktig PostgreSQL-anslutning."""
 
@@ -286,7 +431,7 @@ class TestPgNotifyRoundTrip(unittest.TestCase):
         mock_gs.create_workspace.assert_not_called()
 
 
-class TestHandlerLogicWithMockGeoServer(unittest.TestCase):
+class TestHandlerLogicWithMockGeoServer(_Standardmonster, unittest.TestCase):
     """
     Enhetstester för handle_schema_notification och
     handle_schema_removal_notification med en mockad GeoServerClient.
@@ -1539,7 +1684,7 @@ class TestCreatePgDatastore(unittest.TestCase):
         mock_put.assert_called_once()
 
 
-class TestReconcileGeoServerSchemas(unittest.TestCase):
+class TestReconcileGeoServerSchemas(_Standardmonster, unittest.TestCase):
     """
     Enhetstester för _reconcile_geoserver_schemas – startavstämningen som körs
     en gång per uppstart och skapar saknade GeoServer-workspaces.
@@ -1792,25 +1937,25 @@ class TestReconcileGeoServerSchemas(unittest.TestCase):
         gs.create_workspace.assert_not_called()
 
     # ------------------------------------------------------------------
-    # 7. Sk2/skx-scheman publiceras inte om SCHEMA_PATTERN så säger
+    # 7. Sk2/skx-scheman publiceras inte om mönstret så säger
     # ------------------------------------------------------------------
 
 
     def test_sk2_schema_blocked_by_schema_pattern(self):
         """
         sk2 är inte publicerbart i standardkonfigurationen (publiceras_geoserver = false).
-        SCHEMA_PATTERN laddas från DB via _load_schema_pattern; i det här testet
-        mockas det till fallback-värdet (sk0/sk1 only) för att verifiera att
-        handle_schema_notification avvisar sk2 via _validate_schema_name.
+        Mönstret laddas från DB via _load_schema_pattern; i det här testet
+        är det standardmönstret (sk0/sk1, se _Standardmonster) för att verifiera
+        att handle_schema_notification avvisar sk2 via _validate_schema_name.
 
         Om sk2 skulle läggas till i hex_standardiserade_skyddsnivaer med
         publiceras_geoserver = true OCH _load_schema_pattern körs, uppdateras
-        SCHEMA_PATTERN och sk2-scheman publiceras. Det är avsiktligt beteende.
+        mönstret och sk2-scheman publiceras. Det är avsiktligt beteende.
         """
         cur = self._make_cur_mock(["sk2_kba_hemlig"])
         gs  = self._make_gs_mock(existing_workspaces=[])
 
-        # SCHEMA_PATTERN är fallback-värdet (sk0/sk1 only) – sk2 avvisas
+        # Standardmönstret (sk0/sk1) – sk2 avvisas
         with patch.object(gl, "_fetch_role_credentials",
                           return_value=("r_sk2_kba_hemlig", "pw")):
             gl._reconcile_geoserver_schemas(cur, self.DB_CONFIG, gs)
@@ -1822,7 +1967,7 @@ class TestLoadSchemaPattern(unittest.TestCase):
     """
     Enhetstester för _load_schema_pattern – verifierar att det trådlokala
     schemanamnsmönstret byggs korrekt från konfigurationstabellerna och att
-    fallback till SCHEMA_PATTERN fungerar när tabellerna är tomma eller vid fel.
+    det befintliga mönstret behålls när tabellerna är tomma eller vid fel.
     """
 
     def _make_cur_mock(self, skyddsnivaer_prefixes, datakategori_prefixes):
@@ -1886,6 +2031,53 @@ class TestLoadSchemaPattern(unittest.TestCase):
         self.assertIs(gl._get_schema_pattern(), before)
 
 
+class TestOkantSchemamonster(unittest.TestCase):
+    """
+    Utan hårdkodat reservmönster: när mönstret aldrig kunnat laddas ska
+    notifieringar hoppas över med ett ERROR (avstämningen tar dem senare), och
+    avstämningen ska inte leta föräldralösa workspaces med ett gissat mönster.
+    Tidigare gällde ^sk[01]_(ext|kba|sys)_, som avvisade egna prefix.
+    """
+
+    def setUp(self):
+        self._sparat = gl._thread_local.__dict__.pop("schema_pattern", None)
+
+    def tearDown(self):
+        gl._thread_local.__dict__.pop("schema_pattern", None)
+        if self._sparat is not None:
+            gl._thread_local.schema_pattern = self._sparat
+
+    def test_validering_utan_monster_avvisar_och_loggar_fel(self):
+        with self.assertLogs("geoserver_listener", level="ERROR") as cm:
+            self.assertFalse(gl._validate_schema_name("skx_kba_egen", ""))
+        self.assertTrue([rad for rad in cm.output if "skx_kba_egen" in rad])
+
+    def test_notifiering_nar_laddningen_misslyckas(self):
+        """DB-fel vid laddning och inget tidigare mönster → inget skapas i GeoServer."""
+        cur = MagicMock()
+        cur.execute.side_effect = Exception("connection lost")
+        conn = MagicMock()
+        conn.cursor.return_value.__enter__.return_value = cur
+        gs = MagicMock()
+        with self.assertLogs("geoserver_listener", level="ERROR"):
+            resultat = gl.handle_schema_notification("sk0_kba_x", {"dbname": "t"}, conn, gs)
+        self.assertFalse(resultat)
+        gs.create_workspace.assert_not_called()
+
+    def test_avstamning_hoppar_over_foraldralosa_utan_monster(self):
+        """Saknade workspaces skapas ändå; kvarlämnade letas inte upp."""
+        cur = _FakeCursor(schemas=["sk0_kba_ny"], prefixes=["sk0"])
+        gs = _FakeGeoServer(["sk0_kba_gamla"])
+        with patch.object(gl, "handle_schema_notification", return_value=True) as h:
+            with self.assertLogs("geoserver_listener", level="WARNING") as cm:
+                gl._reconcile_geoserver_schemas(cur, DB_A, gs, "geodata_sk0",
+                                                all_pg_schemas=set(), all_db_configs=[DB_A],
+                                                cleanup_mode=gl.CLEANUP_ON)
+        h.assert_any_call("sk0_kba_ny", DB_A, cur.connection, gs, db_label="geodata_sk0")
+        self.assertTrue([rad for rad in cm.output if "mönstret är okänt" in rad])
+        gs.delete_workspace.assert_not_called()
+
+
 class TestPeriodicReconcileLoop(unittest.TestCase):
     """
     Enhetstester för _periodic_reconcile_loop – verifierar att periodisk
@@ -1905,6 +2097,34 @@ class TestPeriodicReconcileLoop(unittest.TestCase):
         conn = MagicMock()
         conn.cursor.return_value.__enter__.return_value = MagicMock()
         return conn
+
+    def test_laddar_monstret_fore_avstamningen(self):
+        """Den periodiska tråden har ett eget trådlokalt mönster och måste ladda det."""
+        called = threading.Event()
+        ordning = []
+
+        def fake_load(cur):
+            ordning.append("load")
+
+        def fake_reconcile(*args, **kwargs):
+            ordning.append("reconcile")
+            called.set()
+
+        with patch.object(gl, "_load_schema_pattern", side_effect=fake_load):
+            with patch.object(gl, "_reconcile_geoserver_schemas", side_effect=fake_reconcile):
+                with patch("psycopg2.connect", return_value=self._make_conn_mock()):
+                    stop = threading.Event()
+                    t = threading.Thread(
+                        target=gl._periodic_reconcile_loop,
+                        args=({"host": "h", "port": 5432, "dbname": "d", "user": "u",
+                               "password": "p"}, MagicMock(), stop, 0.01),
+                        daemon=True,
+                    )
+                    t.start()
+                    called.wait(timeout=2)
+                    stop.set()
+                    t.join(timeout=2)
+        self.assertEqual(ordning[:2], ["load", "reconcile"])
 
     def test_calls_reconcile_after_interval(self):
         """Anropar _reconcile_geoserver_schemas efter interval_seconds."""
@@ -2497,7 +2717,7 @@ def _hex_workspace_stores(ws_names):
     return {ws: {"datastores": [ws]} for ws in ws_names}
 
 
-class TestOrphanWorkspaceDetection(unittest.TestCase):
+class TestOrphanWorkspaceDetection(_Standardmonster, unittest.TestCase):
     """
     Upptäckt av workspaces vars PG-schema är borta.
 
@@ -2572,7 +2792,7 @@ class TestOrphanWorkspaceDetection(unittest.TestCase):
         self.assertTrue([rad for rad in cm.output if "i synk" in rad])
 
 
-class TestOrphanWorkspaceCleanup(unittest.TestCase):
+class TestOrphanWorkspaceCleanup(_Standardmonster, unittest.TestCase):
     """Uppstädning av föräldralösa workspaces – lägena off, dry-run och on."""
 
     SCHEMA = "sk0_kba_gamla"

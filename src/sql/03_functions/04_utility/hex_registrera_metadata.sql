@@ -8,7 +8,8 @@ CREATE OR REPLACE FUNCTION public.hex_registrera_metadata(
     SET search_path = public, pg_temp
 AS $BODY$
 /******************************************************************************
- * Registrerar en tabell och dess historiktabell i hex_metadata.
+ * Registrerar en Hex-tabell i hex_metadata, med historiktabell och
+ * QA-triggerfunktion om tabellen har historik.
  *
  * SÄKERHET
  * hex_metadata är inte skrivbar för PUBLIC. Skrivningar går via den här
@@ -18,12 +19,18 @@ AS $BODY$
  * triggerfunktion härleds ur systemkatalogen, och created_by är alltid
  * session_user. Den som anropar kan alltså bara registrera det som är sant.
  *
- * Historiktabellen måste finnas och ha h_typ, h_tidpunkt och h_av – annars
- * registreras inget. Vid omregistrering uppdateras namnen men created_by och
- * created_at står kvar.
+ * Bara vanliga tabeller i scheman som matchar hex_schema_regex() registreras,
+ * och aldrig en tabell med _h-suffix. Historikkolumnerna fylls i bara om
+ * <tabell>_h finns och har h_typ, h_tidpunkt och h_av – annars lämnas de
+ * NULL. Anropas av hex_hantera_ny_tabell() för varje ny tabell och av
+ * hex_skapa_historik_qa() när historiken skapas, som då fyller i
+ * historikkolumnerna på den befintliga raden.
+ *
+ * Vid omregistrering uppdateras namnen men created_by och created_at står
+ * kvar, och en redan registrerad historik skrivs inte över med NULL.
  *
  * RETURVÄRDE
- * true om tabellen registrerades, false om tabell eller historiktabell saknas.
+ * true om tabellen registrerades, false om den inte är en Hex-tabell.
  ******************************************************************************/
 DECLARE
     moder_oid   oid;
@@ -32,37 +39,46 @@ DECLARE
     trigger_fn  text;
 BEGIN
     moder_oid := to_regclass(format('%I.%I', p_schema_namn, p_tabell_namn));
-    h_oid     := to_regclass(format('%I.%I', p_schema_namn, h_tabell));
 
-    IF moder_oid IS NULL OR h_oid IS NULL OR (
+    IF moder_oid IS NULL
+       OR p_tabell_namn ~ '_h$'
+       OR p_schema_namn !~ public.hex_schema_regex()
+       OR (SELECT c.relkind FROM pg_catalog.pg_class c WHERE c.oid = moder_oid) <> 'r'
+    THEN
+        RETURN false;
+    END IF;
+
+    h_oid := to_regclass(format('%I.%I', p_schema_namn, h_tabell));
+    IF h_oid IS NULL OR (
         SELECT count(*) FROM pg_catalog.pg_attribute a
         WHERE a.attrelid = h_oid
           AND a.attname IN ('h_typ', 'h_tidpunkt', 'h_av')
           AND NOT a.attisdropped) <> 3
     THEN
-        RETURN false;
+        h_tabell := NULL;  -- Ingen historik (ännu)
+    ELSE
+        -- Triggerfunktionen skapas före registreringen men triggern efter, så
+        -- namnet hämtas ur pg_proc och inte ur pg_trigger.
+        SELECT p.proname INTO trigger_fn
+        FROM pg_catalog.pg_proc p
+        JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = p_schema_namn
+          AND p.proname = 'trg_fn_' || p_tabell_namn || '_qa';
     END IF;
 
-    -- Triggerfunktionen skapas före registreringen men triggern efter, så
-    -- namnet hämtas ur pg_proc och inte ur pg_trigger.
-    SELECT p.proname INTO trigger_fn
-    FROM pg_catalog.pg_proc p
-    JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
-    WHERE n.nspname = p_schema_namn
-      AND p.proname = 'trg_fn_' || p_tabell_namn || '_qa';
-
-    INSERT INTO public.hex_metadata
+    INSERT INTO public.hex_metadata AS m
         (parent_oid, parent_schema, parent_table,
          history_schema, history_table, trigger_funktion, created_by)
     VALUES
         (moder_oid, p_schema_namn, p_tabell_namn,
-         p_schema_namn, h_tabell, trigger_fn, session_user)
+         CASE WHEN h_tabell IS NOT NULL THEN p_schema_namn END,
+         h_tabell, trigger_fn, session_user)
     ON CONFLICT (parent_oid) DO UPDATE SET
         parent_schema    = EXCLUDED.parent_schema,
         parent_table     = EXCLUDED.parent_table,
-        history_schema   = EXCLUDED.history_schema,
-        history_table    = EXCLUDED.history_table,
-        trigger_funktion = EXCLUDED.trigger_funktion;
+        history_schema   = coalesce(EXCLUDED.history_schema, m.history_schema),
+        history_table    = coalesce(EXCLUDED.history_table, m.history_table),
+        trigger_funktion = coalesce(EXCLUDED.trigger_funktion, m.trigger_funktion);
 
     RETURN true;
 END;
@@ -80,5 +96,5 @@ END;
 $$;
 
 COMMENT ON FUNCTION public.hex_registrera_metadata(text, text)
-    IS 'Registrerar tabell och historiktabell i hex_metadata. SECURITY DEFINER; alla
+    IS 'Registrerar en Hex-tabell i hex_metadata, med historiktabell om den finns. SECURITY DEFINER; alla
 värden härleds ur systemkatalogen, så anroparen kan bara registrera det som är sant.';

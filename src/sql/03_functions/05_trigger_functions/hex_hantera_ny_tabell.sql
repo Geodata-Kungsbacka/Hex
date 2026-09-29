@@ -22,7 +22,8 @@ AS $BODY$
  * 7.5. Skapar trigger hex_tvinga_gid (gid sätts alltid av sekvensen, aldrig av klienten)
  * 8. Skapar GiST-index för geometrikolumn (alla scheman)
  * 9. Lägger till geometrivalidering för _kba_-scheman
- * 10. Skapar historiktabell och QA-triggers om behövs
+ * 10. Skapar historiktabell och QA-triggers om behövs, och registrerar
+ *     tabellen i hex_metadata (alltid, även utan historik)
  * 11. Lägger till dummy-geometrirad för QGIS-kompatibilitet (tabeller med geom)
  ******************************************************************************/
 <<hnt>>
@@ -146,7 +147,7 @@ BEGIN
             RAISE NOTICE 'Steg 1/11: Validerar tabell';
 
             IF ar_systemanvandare
-               AND tabell_namn ~ '_[plyg]$'
+               AND public.hex_tabellsuffix(tabell_namn) IS NOT NULL
                AND NOT EXISTS (
                    SELECT 1 FROM geometry_columns
                    WHERE f_table_schema = schema_namn
@@ -166,15 +167,17 @@ BEGIN
             ELSE
                 geometriinfo := hex_validera_tabell(schema_namn, tabell_namn);
 
-                -- Kontrollera SRID: alla geometritabeller ska använda EPSG 3007 (SWEREF99 12 00)
+                -- Kontrollera SRID: alla geometritabeller ska använda hex_srid()
+                -- (hex_installningar.srid, standard 3007 SWEREF99 12 00)
                 IF geometriinfo IS NOT NULL AND geometriinfo.srid IS NOT NULL
-                   AND geometriinfo.srid <> 3007
+                   AND geometriinfo.srid <> public.hex_srid()
                 THEN
                     RAISE WARNING
-                        '[hex_hantera_ny_tabell] Tabell %.% har SRID % – förväntar 3007 (SWEREF99 12 00). '
+                        '[hex_hantera_ny_tabell] Tabell %.% har SRID % – förväntar % (%). '
                         'Data i fel koordinatsystem måste transformeras innan produktionsbruk. '
                         'Tabellen registreras i hex_avvikande_srid för granskning.',
-                        schema_namn, tabell_namn, geometriinfo.srid;
+                        schema_namn, tabell_namn, geometriinfo.srid,
+                        public.hex_srid(), public.hex_srid_namn(public.hex_srid());
 
                     INSERT INTO public.hex_avvikande_srid (schema_namn, tabell_namn, srid)
                     VALUES (hnt.schema_namn, hnt.tabell_namn, geometriinfo.srid)
@@ -450,6 +453,14 @@ BEGIN
             ELSE
                 RAISE NOTICE '  - Ingen historik/QA behövs';
             END IF;
+
+            -- Registrera tabellen i hex_metadata även utan historik. OID:n är
+            -- det enda som ger tabellens gamla namn vid ALTER TABLE ... RENAME
+            -- TO, och de namnnycklade registertabellerna (dummy, afvaktande,
+            -- avvikande SRID) flyttas med hjälp av det. Med historik är raden
+            -- redan skriven av hex_skapa_historik_qa, och anropet ändrar inget.
+            op_steg := 'registrera i hex_metadata';
+            PERFORM public.hex_registrera_metadata(schema_namn, tabell_namn);
 
             -- Steg 11: Lägg till dummy-geometrirad för QGIS-kompatibilitet
             -- En dummy låter QGIS identifiera geometritypen utan manuell dialog.

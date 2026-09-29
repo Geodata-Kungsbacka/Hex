@@ -138,6 +138,30 @@ def tearDownModule():
         print(f"VARNING: kunde inte städa bort {AGARROLL}: {e}", file=sys.stderr)
 
 
+EGEN_LASMALL = "geo_r_{schema}"
+
+
+def _flytta_laskonto(cur):
+    """Flyttar geoserver_konto = 'las' från gs_r_{schema} till en egen rollmall."""
+    cur.execute(
+        "UPDATE public.hex_standardiserade_roller SET geoserver_konto = NULL"
+        " WHERE geoserver_konto = 'las'"
+    )
+    cur.execute(
+        "INSERT INTO public.hex_standardiserade_roller"
+        " (rollnamn, rolltyp, schema_uttryck, kan_logga_in, arvs_fran, geoserver_konto)"
+        " VALUES (%s, 'read', 'IS NOT NULL', true, 'r_{schema}', 'las')",
+        (EGEN_LASMALL,),
+    )
+
+
+def _laskonto():
+    return _fraga(
+        "SELECT rollnamn FROM public.hex_standardiserade_roller"
+        " WHERE geoserver_konto = 'las'"
+    )
+
+
 @unittest.skipUnless(KAN_KORA, "kräver superuser-anslutning till PostgreSQL")
 class TestUppgradering(unittest.TestCase):
     """
@@ -177,6 +201,24 @@ class TestUppgradering(unittest.TestCase):
             "INSERT INTO public.hex_grupprattigheter (ad_grupproll, hex_roll, beskrivning)"
             " VALUES ('ad_livscykel', 'r_sk0_ext_livscykel', 'Tillagd av DBA')"
         )
+        # 4. Enradig inställningstabell (PRESERVE_CONFIG med nyckel id). Tabellen
+        #    i 3007 skapas före bytet och är därför inte registrerad som
+        #    avvikande. Den kommer bara in om underhållet efter återställningen
+        #    ser det återställda SRID:t.
+        cur.execute("CREATE SCHEMA sk0_kba_installning")
+        cur.execute(
+            "CREATE TABLE sk0_kba_installning.gammal_srid_p"
+            " (namn text, geom geometry(Point, 3007))"
+        )
+        cur.execute(
+            "UPDATE public.hex_installningar"
+            " SET srid = 3006, dummy_x = 330000, dummy_y = 6380000, dummy_storlek = 50,"
+            "     suffix_punkt = '_pkt'"
+        )
+        # 5. GeoServers läskonto flyttat till en egen rollmall. Återställningen
+        #    skriver tillbaka raderna en i taget, så den unika markeringen finns
+        #    tillfälligt på två rader (DEFERRABLE-constrainten).
+        _flytta_laskonto(cur)
         conn.close()
 
         install_hex.upgrade(_db_config(), base_path=str(PROJECT_ROOT))
@@ -192,6 +234,25 @@ class TestUppgradering(unittest.TestCase):
             " WHERE kolumnnamn = 'skapad_tidpunkt'"
         )
         self.assertEqual(rader, [("CURRENT_TIMESTAMP",)])
+
+    def test_installningar_bevaras(self):
+        """hex_installningar har en rad; alla dess värden ska överleva."""
+        rader = _fraga(
+            "SELECT srid, dummy_x, dummy_y, dummy_storlek, suffix_punkt, suffix_yta"
+            " FROM public.hex_installningar"
+        )
+        self.assertEqual(rader, [(3006, 330000.0, 6380000.0, 50.0, "_pkt", "_y")])
+
+    def test_flyttat_laskonto_bevaras(self):
+        self.assertEqual(_laskonto(), [(EGEN_LASMALL,)])
+
+    def test_avvikande_srid_byggs_mot_aterstallt_srid(self):
+        """Underhållet efter återställningen ska se srid = 3006, inte standardvärdet."""
+        rader = _fraga(
+            "SELECT srid FROM public.hex_avvikande_srid"
+            " WHERE schema_namn = 'sk0_kba_installning' AND tabell_namn = 'gammal_srid_p'"
+        )
+        self.assertEqual(rader, [(3007,)])
 
     def test_egen_tillagd_rad_bevaras(self):
         """En rad DBA lagt till ska finnas kvar efter uppgradering."""
@@ -301,6 +362,12 @@ class TestUppgraderingBevararDrifttillstand(unittest.TestCase):
             "CREATE TABLE sk0_kba_drift.fel_srid_p"
             " (namn text, geom geometry(Point, 3006))"
         )
+        # Ett känt registreringsdatum, så att det går att se om raden lades
+        # tillbaka eller skapades på nytt under uppgraderingen.
+        cur.execute(
+            "UPDATE public.hex_avvikande_srid SET registrerad = '2020-01-01 00:00+00'"
+            " WHERE schema_namn = 'sk0_kba_drift'"
+        )
         conn.close()
 
         cls.fore = {
@@ -321,6 +388,10 @@ class TestUppgraderingBevararDrifttillstand(unittest.TestCase):
             tabell: _fraga(f"SELECT count(*) FROM public.{tabell}")[0][0]
             for tabell in cls.fore
         }
+        cls.avvikande_registrerad = _fraga(
+            "SELECT registrerad::date::text FROM public.hex_avvikande_srid"
+            " WHERE schema_namn = 'sk0_kba_drift'"
+        )
         cls.metadata_hus_p = _fraga(
             "SELECT parent_schema, parent_table, history_table FROM public.hex_metadata"
             " WHERE parent_table = 'hus_p'"
@@ -343,6 +414,12 @@ class TestUppgraderingBevararDrifttillstand(unittest.TestCase):
                     self.efter[tabell], antal,
                     f"{tabell} tappade rader vid uppgradering",
                 )
+
+    def test_avvikande_srid_behaller_registrerad(self):
+        """REGRESSION: underhållet i install() körde före återställningen och
+        lade in raden på nytt med registrerad = now(). Återställningens ON
+        CONFLICT DO NOTHING kastade sedan den sparade raden."""
+        self.assertEqual(self.avvikande_registrerad, [("2020-01-01",)])
 
     def test_metadata_pekar_pa_ratt_tabell(self):
         self.assertEqual(
@@ -425,6 +502,8 @@ class TestOminstallationBevararKonfig(unittest.TestCase):
             " SET beskrivning = 'DBA-anpassad', rolltyp = 'write'"
             " WHERE rollnamn = 'gs_r_{schema}'"
         )
+        cur.execute("UPDATE public.hex_installningar SET srid = 3006")
+        _flytta_laskonto(cur)
         # Det Hex äger: r_ ska tvingas tillbaka till NOLOGIN.
         cur.execute(
             "UPDATE public.hex_standardiserade_roller"
@@ -446,6 +525,15 @@ class TestOminstallationBevararKonfig(unittest.TestCase):
             " WHERE kolumnnamn = 'skapad_tidpunkt'"
         )
         self.assertEqual(rader, [("CURRENT_TIMESTAMP", True, True)])
+
+    def test_flyttat_laskonto_bevaras(self):
+        """INSERT:en i hex_standardiserade_roller.sql får inte ta tillbaka
+        markeringen till gs_r_{schema}, och får inte krocka med DBA:ns rad."""
+        self.assertEqual(_laskonto(), [(EGEN_LASMALL,)])
+
+    def test_installningar_bevaras(self):
+        """INSERT:en i hex_installningar.sql får inte skriva över DBA:ns SRID."""
+        self.assertEqual(_fraga("SELECT srid FROM public.hex_installningar"), [(3006,)])
 
     def test_avstangd_anonym_lasning_bevaras(self):
         """Engångsmigreringen av sk0 får inte avfyras vid varje installation."""
@@ -483,12 +571,13 @@ class TestUppgraderingNotifierarGeoServer(unittest.TestCase):
     hex_standardiserade_skyddsnivaer på INSERT-defaultarna (sk0/sk1 true,
     sk2/skx false), så ett skx-schema som ska publiceras hoppades över.
 
-    Samma uppgradering roterar dessutom gs_r_/gs_w_-lösenorden. Ett schema som
+    Samma uppgradering roterade dessutom gs_r_/gs_w_-lösenorden. Ett schema som
     aldrig notifierades fick alltså nya lösenord i databasen medan GeoServers
     datastore blev kvar med de gamla — trasigt tills någon körde
     hex_underhall() manuellt eller startade om lyssnaren.
 
-    upgrade() kör numera om underhållet efter återställningen.
+    upgrade() kör numera underhållet först efter återställningen, och
+    lösenorden bevaras (test_losenorden_bevaras).
     """
 
     SCHEMAN = ("sk0_kba_gs", "skx_kba_gs", "sk9_kba_gs")
@@ -532,6 +621,11 @@ class TestUppgraderingNotifierarGeoServer(unittest.TestCase):
         for schema in cls.SCHEMAN:
             cur.execute(f"CREATE SCHEMA {schema}")
         conn.close()
+
+        cls.uppgifter_fore = _fraga(
+            "SELECT rollnamn, losenord FROM public.hex_rolluppgifter"
+            " WHERE rollnamn LIKE 'gs\\_%' ORDER BY rollnamn"
+        )
 
         # Lyssna innan uppgraderingen startar – notiser levereras vid COMMIT.
         lyssnare = _koppla()
@@ -608,11 +702,22 @@ class TestUppgraderingNotifierarGeoServer(unittest.TestCase):
             ],
         )
 
+    def test_losenorden_bevaras(self):
+        """
+        hex_rolluppgifter står i PRESERVE_USER_DATA. Tidigare körde install()
+        underhållet före återställningen, som då backfyllde nya lösenord; de
+        sparade raderna kastades av ON CONFLICT DO NOTHING. Resultatet var en
+        rotation som lämnade GeoServers datastores med gamla lösenord tills
+        lyssnaren startades om. Nu körs underhållet först efter återställningen.
+        """
+        self.assertTrue(self.uppgifter_fore, "inga gs_-uppgifter före uppgraderingen")
+        self.assertEqual(self.uppgifter, self.uppgifter_fore)
+
     def test_lagrade_uppgifter_stammer_med_rollernas_losenord(self):
         """
-        Uppgraderingen roterar gs_-lösenorden. Det som ligger i
-        hex_rolluppgifter måste vara det roller faktiskt autentiserar med,
-        annars sätter lyssnaren upp en datastore som inte kan logga in.
+        Det som ligger i hex_rolluppgifter måste vara det rollerna faktiskt
+        autentiserar med, annars sätter lyssnaren upp en datastore som inte
+        kan logga in.
         """
         self.assertTrue(self.uppgifter, "inga gs_-uppgifter att kontrollera")
         params = {k: v for k, v in _db_config().items() if k != "owner_role"}

@@ -485,6 +485,113 @@ EXCEPTION WHEN OTHERS THEN
     PERFORM _fail(12, 'underhall_hex idempotency', SQLERRM);
 END $$;
 
+-- TEST 13: schemabehörigheter – oförändrade rättigheter rapporteras som 'redan finns'
+-- hex_tilldela_rollrattigheter() är idempotent men gav alltid 'behörigheter
+-- uppdaterade', så installern listade varje roll som en åtgärd vid varje körning.
+DO $$ DECLARE
+    uppdaterade int;
+    efter_andring int;
+BEGIN
+    PERFORM public.hex_underhall();  -- Stabilt läge
+
+    SELECT count(*) INTO uppdaterade
+    FROM public.hex_underhall()
+    WHERE trigger_namn = 'schemabehörigheter'
+      AND schema_namn = 'sk0_ext_underhall'
+      AND atgard = 'behörigheter uppdaterade';
+
+    -- En borttagen rättighet ska däremot rapporteras
+    EXECUTE 'REVOKE USAGE ON SCHEMA sk0_ext_underhall FROM r_sk0_ext_underhall';
+    SELECT count(*) INTO efter_andring
+    FROM public.hex_underhall()
+    WHERE trigger_namn = 'schemabehörigheter'
+      AND tabell_namn = 'r_sk0_ext_underhall'
+      AND atgard = 'behörigheter uppdaterade';
+
+    IF uppdaterade = 0 AND efter_andring = 1 THEN
+        PERFORM _pass(13, 'schemabehörigheter: redan finns när inget ändras, uppdaterade när något ändras');
+    ELSE
+        PERFORM _fail(13, 'schemabehörigheter: redan finns när inget ändras, uppdaterade när något ändras',
+            format('oförändrat gav %s uppdaterade, ändrat gav %s', uppdaterade, efter_andring));
+    END IF;
+EXCEPTION WHEN OTHERS THEN
+    PERFORM _fail(13, 'schemabehörigheter idempotens', SQLERRM);
+END $$;
+
+-- TEST 14: hex_metadata – tabeller utan rad registreras i efterhand
+-- Varje Hex-tabell ska ha en rad, annars flyttas inte registerraderna vid
+-- RENAME TO. Raden saknas för tabeller skapade förbi event-triggrarna och för
+-- tabeller utan historik från före den här versionen. created_by blir NULL
+-- (okänd), och en tabell med historik får historikkolumnerna ifyllda.
+CREATE TABLE sk0_ext_underhall.meta_utan_p (namn text, geom geometry(Point, 3007));
+CREATE TABLE sk0_kba_underhall.meta_med_y (namn text, geom geometry(Polygon, 3007));
+DO $$ DECLARE
+    utan_oid  oid := 'sk0_ext_underhall.meta_utan_p'::regclass;
+    med_oid   oid := 'sk0_kba_underhall.meta_med_y'::regclass;
+    har_h     boolean := to_regclass('sk0_kba_underhall.meta_med_y_h') IS NOT NULL;
+    registrerade int;
+    andra_varvet int;
+    utan_rad  record;
+    med_rad   record;
+BEGIN
+    DELETE FROM public.hex_metadata WHERE parent_oid IN (utan_oid, med_oid);
+
+    SELECT count(*) INTO registrerade
+    FROM public.hex_underhall()
+    WHERE trigger_namn = 'hex_metadata' AND atgard = 'registrerad'
+      AND tabell_namn IN ('meta_utan_p', 'meta_med_y');
+
+    SELECT count(*) INTO andra_varvet
+    FROM public.hex_underhall()
+    WHERE trigger_namn = 'hex_metadata' AND atgard <> 'redan finns'
+      AND tabell_namn IN ('meta_utan_p', 'meta_med_y');
+
+    SELECT * INTO utan_rad FROM public.hex_metadata WHERE parent_oid = utan_oid;
+    SELECT * INTO med_rad  FROM public.hex_metadata WHERE parent_oid = med_oid;
+
+    IF registrerade = 2 AND andra_varvet = 0
+       AND utan_rad.parent_table = 'meta_utan_p'
+       AND utan_rad.history_table IS NULL AND utan_rad.created_by IS NULL
+       AND med_rad.parent_table = 'meta_med_y' AND med_rad.created_by IS NULL
+       AND (med_rad.history_table = 'meta_med_y_h') = har_h
+    THEN
+        PERFORM _pass(14, 'hex_metadata: saknade rader registreras med created_by NULL, idempotent');
+    ELSE
+        PERFORM _fail(14, 'hex_metadata: saknade rader registreras med created_by NULL, idempotent',
+            format('registrerade=%s andra=%s utan=%s/%s/%s med=%s/%s har_h=%s',
+                registrerade, andra_varvet,
+                utan_rad.parent_table, utan_rad.history_table, utan_rad.created_by,
+                med_rad.history_table, med_rad.created_by, har_h));
+    END IF;
+EXCEPTION WHEN OTHERS THEN
+    PERFORM _fail(14, 'hex_metadata: saknade rader registreras', SQLERRM);
+END $$;
+
+-- TEST 15: RENAME TO efter efterregistrering flyttar registerraderna
+ALTER TABLE sk0_ext_underhall.meta_utan_p RENAME TO meta_utan2_p;
+DO $$ DECLARE
+    gamla int;
+    nya   int;
+BEGIN
+    SELECT count(*) INTO gamla FROM public.hex_dummy_geometrier
+    WHERE schema_namn = 'sk0_ext_underhall' AND tabell_namn = 'meta_utan_p';
+    SELECT count(*) INTO nya FROM public.hex_dummy_geometrier
+    WHERE schema_namn = 'sk0_ext_underhall' AND tabell_namn = 'meta_utan2_p';
+
+    IF gamla = 0 AND nya = 1 AND EXISTS (
+        SELECT 1 FROM public.hex_metadata
+        WHERE parent_oid = 'sk0_ext_underhall.meta_utan2_p'::regclass
+          AND parent_table = 'meta_utan2_p')
+    THEN
+        PERFORM _pass(15, 'hex_metadata: efterregistrerad tabell följer med RENAME TO');
+    ELSE
+        PERFORM _fail(15, 'hex_metadata: efterregistrerad tabell följer med RENAME TO',
+            format('dummy gamla=%s nya=%s', gamla, nya));
+    END IF;
+EXCEPTION WHEN OTHERS THEN
+    PERFORM _fail(15, 'hex_metadata: efterregistrerad tabell följer med RENAME TO', SQLERRM);
+END $$;
+
 -- =============================================================================
 -- TEARDOWN
 -- =============================================================================

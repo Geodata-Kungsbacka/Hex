@@ -18,7 +18,7 @@ AS $BODY$
  * Schemaprefix hämtas dynamiskt från hex_standardiserade_skyddsnivaer, så att
  * egna prefix (t.ex. sc1, sk3) fungerar utan kodändringar.
  *
- * Hanterar femton åtgärdstyper:
+ * Hanterar sjutton åtgärdstyper:
  *
  *   ägarskapsöverföring  Säkerställer att scheman, tabeller, sekvenser och
  *                        funktioner i Hex-hanterade scheman ägs av
@@ -26,6 +26,12 @@ AS $BODY$
  *                        superusers (t.ex. postgres) innan ägarskapsöverföringen
  *                        lades till i hex_hantera_std_roller och
  *                        hex_hantera_ny_tabell. Körs först.
+ *
+ *   hex_metadata         Registrerar Hex-tabeller som saknar rad i
+ *                        hex_metadata (hex_komplettera_metadata(), created_by
+ *                        NULL). Utan raden flyttas inte registerraderna vid
+ *                        RENAME TO. Returnerar 'registrerad' eller
+ *                        'redan finns'.
  *
  *   hex_tvinga_gid       BEFORE INSERT på alla Hex-tabeller med en gid
  *                        IDENTITY-kolumn. Förhindrar att klienter (t.ex. QGIS)
@@ -86,9 +92,13 @@ AS $BODY$
  *   (rollmedlemskap)     hex_rolluppgifter) är i hex_geoserver_roller.
  *                        Tar bort NOLOGIN-roller som felaktigt hamnat där.
  *
- *   schemabehörigheter   Kör hex_tilldela_rollrattigheter för NOLOGIN-roller och
- *                        säkerställer GRANT arvs_fran för gs_*-roller.
- *                        Idempotent.
+ *   schemabehörigheter   Kör hex_tilldela_rollrattigheter för roller utan
+ *                        arvs_fran (NOLOGIN-rollerna) och säkerställer GRANT
+ *                        arvs_fran för gs_*-roller. Schemats, relationernas och
+ *                        standardrättigheternas ACL jämförs före och efter:
+ *                        'behörigheter uppdaterade' bara vid ändring, annars
+ *                        'redan finns'. Idempotent. Steg 5 tillämpar inte
+ *                        rättigheterna på befintliga roller – det görs här.
  *
  *   ägarskap_schema      Korrigerar ägare på Hex-scheman som ägs av fel roll.
  *                        Uppstår t.ex. när en superanvändare skapat schemat
@@ -103,15 +113,24 @@ AS $BODY$
  *
  *   geoserver_notifiering Skickar pg_notify('geoserver_schema', schema) för
  *                        scheman vars prefix har publiceras_geoserver = true
- *                        och som har gs_r_-uppgifter i hex_rolluppgifter.
+ *                        och som har uppgifter för läskontot
+ *                        (hex_geoserver_rollnamn()) i hex_rolluppgifter.
  *                        Lyssnaren är idempotent, så det är säkert att alltid
  *                        skicka notifieringen.
  *
+ *   avvikande_srid       Bygger om hex_avvikande_srid mot hex_srid(): tabeller
+ *                        med annat SRID registreras, rader för tabeller som nu
+ *                        har rätt SRID eller inte finns kvar tas bort. Behövs
+ *                        när hex_installningar.srid ändras. Returnerar
+ *                        'registrerad: SRID N', 'avregistrerad' eller
+ *                        'redan finns'.
+ *
  * Funktionen är idempotent – befintliga triggers och rättigheter rörs inte
- * i onödan. Returnerar en rad per undersökt åtgärd med resultatet
+ * i onödan. Returnerar en rad per undersökt åtgärd med resultatet, t.ex.
  * 'skapad'/'beviljad'/'uppdaterade' eller 'redan finns'. Åtgärden
  * gid_primarnyckel kan därutöver returnera 'unik skapad', 'dubbletter: N'
- * eller 'fel: <meddelande>'.
+ * eller 'fel: <meddelande>', historiksynk 'redan synkad' eller
+ * 'synkad: N ändringar', och afvaktande_geometri 'slutförd'.
  *
  * Ingen åtgärd ändrar användardata.
  ******************************************************************************/
@@ -124,6 +143,8 @@ DECLARE
     rollnamn_full      text;
     arvs_rollnamn      text;
     schema_regex       text;
+    acl_fore           text;
+    acl_efter          text;
     generated_password text;
     antal_andringar    integer;
 BEGIN
@@ -234,6 +255,37 @@ BEGIN
         tabell_namn  := r.t;
         trigger_namn := 'ägarskapsöverföring';
         atgard       := 'vy: ägare uppdaterad';
+        RETURN NEXT;
+    END LOOP;
+
+    -- -------------------------------------------------------------------------
+    -- 0b. hex_metadata
+    --     Varje Hex-tabell ska ha en rad i hex_metadata – annars går det gamla
+    --     namnet inte att få fram vid ALTER TABLE ... RENAME TO, och de
+    --     namnnycklade registerraderna flyttas inte. Raden saknas för tabeller
+    --     skapade förbi event-triggrarna (avstängda, Hex avinstallerat) och
+    --     för tabeller utan historik som skapades innan alla tabeller
+    --     registrerades. hex_komplettera_metadata() skriver created_by = NULL.
+    --
+    --     Invariant, inte migrering: en tabell kan skapas förbi triggrarna
+    --     igen när som helst.
+    -- -------------------------------------------------------------------------
+    FOR r IN
+        SELECT n.nspname::text AS s, c.relname::text AS t
+        FROM   pg_class     c
+        JOIN   pg_namespace n ON n.oid = c.relnamespace
+        WHERE  c.relkind = 'r'
+          AND  n.nspname ~ schema_regex
+          AND  c.relname !~ '_h$'
+        ORDER BY 1, 2
+    LOOP
+        schema_namn  := r.s;
+        tabell_namn  := r.t;
+        trigger_namn := 'hex_metadata';
+        atgard := CASE
+            WHEN public.hex_komplettera_metadata(r.s, r.t) THEN 'registrerad'
+            ELSE 'redan finns'
+        END;
         RETURN NEXT;
     END LOOP;
 
@@ -619,7 +671,8 @@ BEGIN
           AND n.nspname ~ schema_regex
           AND c.relname !~ '_h$'
           AND (
-              EXISTS (SELECT 1 FROM public.hex_metadata m WHERE m.parent_oid = c.oid)
+              EXISTS (SELECT 1 FROM public.hex_metadata m
+                      WHERE m.parent_oid = c.oid AND m.history_table IS NOT NULL)
               OR EXISTS (
                   SELECT 1 FROM pg_class h
                   WHERE h.relnamespace = c.relnamespace
@@ -769,7 +822,9 @@ BEGIN
                     ELSE
                         atgard := 'redan NOLOGIN';
                     END IF;
-                    PERFORM hex_tilldela_rollrattigheter(r.s, rollnamn_full, rol.rolltyp);
+                    -- Rättigheterna för en befintlig roll repareras och
+                    -- rapporteras i steg 7 (schemabehörigheter). Görs det
+                    -- även här syns reparationen aldrig i utfallet.
                 END IF;
 
             ELSE
@@ -965,30 +1020,49 @@ BEGIN
             tabell_namn  := rollnamn_full;
             trigger_namn := 'schemabehörigheter';
 
-            IF NOT rol.kan_logga_in THEN
-                -- NOLOGIN-roll: direkta schemabehörigheter
+            IF NOT rol.kan_logga_in OR rol.arvs_fran IS NULL THEN
+                -- Direkta schemabehörigheter. GRANT är idempotent men säger
+                -- inte om något ändrades, så schemats, relationernas och
+                -- standardrättigheternas ACL jämförs före och efter. Annars
+                -- rapporteras varje roll som uppdaterad vid varje körning.
+                SELECT concat_ws('|',
+                    (SELECT n.nspacl::text FROM pg_namespace n WHERE n.nspname = r.s),
+                    (SELECT string_agg(c.oid::text || '=' || coalesce(c.relacl::text, ''), ',' ORDER BY c.oid)
+                     FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+                     WHERE n.nspname = r.s),
+                    (SELECT string_agg(d.oid::text || '=' || d.defaclacl::text, ',' ORDER BY d.oid)
+                     FROM pg_default_acl d JOIN pg_namespace n ON n.oid = d.defaclnamespace
+                     WHERE n.nspname = r.s))
+                INTO acl_fore;
                 PERFORM hex_tilldela_rollrattigheter(r.s, rollnamn_full, rol.rolltyp);
-                atgard := 'behörigheter uppdaterade';
+                SELECT concat_ws('|',
+                    (SELECT n.nspacl::text FROM pg_namespace n WHERE n.nspname = r.s),
+                    (SELECT string_agg(c.oid::text || '=' || coalesce(c.relacl::text, ''), ',' ORDER BY c.oid)
+                     FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+                     WHERE n.nspname = r.s),
+                    (SELECT string_agg(d.oid::text || '=' || d.defaclacl::text, ',' ORDER BY d.oid)
+                     FROM pg_default_acl d JOIN pg_namespace n ON n.oid = d.defaclnamespace
+                     WHERE n.nspname = r.s))
+                INTO acl_efter;
+                atgard := CASE
+                    WHEN acl_efter IS NOT DISTINCT FROM acl_fore THEN 'redan finns'
+                    ELSE 'behörigheter uppdaterade'
+                END;
             ELSE
                 -- LOGIN-tjänstekonto: säkerställ arvs_fran-grant
-                IF rol.arvs_fran IS NOT NULL THEN
-                    arvs_rollnamn := replace(rol.arvs_fran, '{schema}', r.s);
-                    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = arvs_rollnamn)
-                    AND NOT EXISTS (
-                        SELECT 1 FROM pg_auth_members am
-                        JOIN pg_roles grp ON grp.oid = am.roleid
-                        JOIN pg_roles mem ON mem.oid = am.member
-                        WHERE grp.rolname = arvs_rollnamn
-                          AND mem.rolname = rollnamn_full
-                    ) THEN
-                        EXECUTE format('GRANT %I TO %I', arvs_rollnamn, rollnamn_full);
-                        atgard := 'arvs_fran-grant tillagd';
-                    ELSE
-                        atgard := 'arvs_fran redan beviljad';
-                    END IF;
+                arvs_rollnamn := replace(rol.arvs_fran, '{schema}', r.s);
+                IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = arvs_rollnamn)
+                AND NOT EXISTS (
+                    SELECT 1 FROM pg_auth_members am
+                    JOIN pg_roles grp ON grp.oid = am.roleid
+                    JOIN pg_roles mem ON mem.oid = am.member
+                    WHERE grp.rolname = arvs_rollnamn
+                      AND mem.rolname = rollnamn_full
+                ) THEN
+                    EXECUTE format('GRANT %I TO %I', arvs_rollnamn, rollnamn_full);
+                    atgard := 'arvs_fran-grant tillagd';
                 ELSE
-                    PERFORM hex_tilldela_rollrattigheter(r.s, rollnamn_full, rol.rolltyp);
-                    atgard := 'behörigheter uppdaterade';
+                    atgard := 'arvs_fran redan beviljad';
                 END IF;
             END IF;
 
@@ -1097,8 +1171,9 @@ BEGIN
     -- -------------------------------------------------------------------------
     -- 10. geoserver_notifiering
     --    Skickar pg_notify('geoserver_schema', schema) för alla Hex-scheman
-    --    vars prefix har publiceras_geoserver = true och som har gs_r_-uppgifter
-    --    i hex_rolluppgifter (dvs. lyssnaren kan sätta upp datastore).
+    --    vars prefix har publiceras_geoserver = true och som har uppgifter för
+    --    läskontot (hex_geoserver_rollnamn(schema, 'las'), standard gs_r_) i
+    --    hex_rolluppgifter (dvs. lyssnaren kan sätta upp datastore).
     --
     --    Täcker tre scenarier:
     --      a) Schema skapades med äldre config – notifiering skickades aldrig
@@ -1115,7 +1190,7 @@ BEGIN
               AND ssn.publiceras_geoserver = true
         WHERE  EXISTS (
                    SELECT 1 FROM public.hex_rolluppgifter
-                   WHERE  rollnamn     = 'gs_r_' || n.nspname
+                   WHERE  rollnamn     = public.hex_geoserver_rollnamn(n.nspname, 'las')
                      AND  kan_logga_in = true
                )
         ORDER BY n.nspname
@@ -1126,6 +1201,84 @@ BEGIN
         tabell_namn  := '-';
         trigger_namn := 'geoserver_notifiering';
         atgard       := 'notifiering skickad';
+        RETURN NEXT;
+    END LOOP;
+
+    -- -------------------------------------------------------------------------
+    -- 11. avvikande_srid
+    --    Bygger om hex_avvikande_srid mot aktuellt hex_srid(). Triggrarna
+    --    registrerar bara när en tabell skapas eller får sin geometrikolumn, så
+    --    tre fall fångas bara här:
+    --      a) hex_installningar.srid har ändrats – befintliga tabeller i det
+    --         gamla koordinatsystemet ska in, tabeller i det nya ska ut
+    --      b) en tabell har transformerats till rätt SRID i efterhand
+    --      c) en tabell skapades förbi event-triggern
+    --    Rader för tabeller som inte längre finns tas också bort.
+    --    Historiktabeller (h_typ) undantas, precis som i triggrarna.
+    --    En rad vars SRID redan stämmer lämnas orörd, så att registrerad och
+    --    registrerad_av står kvar från när avvikelsen upptäcktes.
+    -- -------------------------------------------------------------------------
+    FOR r IN
+        SELECT gc.f_table_schema::text AS s,
+               gc.f_table_name::text   AS t,
+               gc.srid                 AS srid,
+               a.srid                  AS registrerat_srid
+        FROM   public.geometry_columns gc
+        JOIN   pg_namespace n ON n.nspname = gc.f_table_schema
+        JOIN   pg_class     c ON c.relnamespace = n.oid
+                             AND c.relname      = gc.f_table_name
+                             AND c.relkind      = 'r'
+        LEFT JOIN public.hex_avvikande_srid a
+               ON a.schema_namn = gc.f_table_schema
+              AND a.tabell_namn = gc.f_table_name
+        WHERE  gc.f_geometry_column = 'geom'
+          AND  gc.f_table_schema ~ schema_regex
+          AND  gc.srid <> public.hex_srid()
+          AND  NOT EXISTS (
+                   SELECT 1
+                   FROM   pg_attribute h
+                   WHERE  h.attrelid = c.oid
+                     AND  h.attname  = 'h_typ'
+                     AND  NOT h.attisdropped
+               )
+        ORDER BY 1, 2
+    LOOP
+        schema_namn  := r.s;
+        tabell_namn  := r.t;
+        trigger_namn := 'avvikande_srid';
+
+        IF r.registrerat_srid IS NOT DISTINCT FROM r.srid THEN
+            atgard := 'redan finns';
+        ELSE
+            INSERT INTO public.hex_avvikande_srid (schema_namn, tabell_namn, srid)
+            VALUES (r.s, r.t, r.srid)
+            ON CONFLICT ON CONSTRAINT hex_avvikande_srid_pkey
+                DO UPDATE SET srid           = EXCLUDED.srid,
+                              registrerad    = now(),
+                              registrerad_av = current_user;
+            atgard := format('registrerad: SRID %s', r.srid);
+        END IF;
+        RETURN NEXT;
+    END LOOP;
+
+    -- Rader som inte längre avviker: tabellen finns inte, har inte längre en
+    -- geom-kolumn, eller har nu rätt SRID.
+    FOR r IN
+        DELETE FROM public.hex_avvikande_srid a
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM   public.geometry_columns gc
+            WHERE  gc.f_table_schema    = a.schema_namn
+              AND  gc.f_table_name      = a.tabell_namn
+              AND  gc.f_geometry_column = 'geom'
+              AND  gc.srid <> public.hex_srid()
+        )
+        RETURNING a.schema_namn AS s, a.tabell_namn AS t
+    LOOP
+        schema_namn  := r.s;
+        tabell_namn  := r.t;
+        trigger_namn := 'avvikande_srid';
+        atgard       := 'avregistrerad';
         RETURN NEXT;
     END LOOP;
 END;
@@ -1149,6 +1302,9 @@ COMMENT ON FUNCTION public.hex_underhall()
   hex_hantera_std_roller/hex_hantera_ny_tabell.
 Återkopplar saknade rad-nivå-triggers (hex_tvinga_gid, hex_tvinga_anvandarvarden, hex_kontrollera_geom,
 hex_ta_bort_dummy, trg_<tabell>_qa).
+Lägger PRIMARY KEY (gid) på tabeller som saknar den (dubbletter rapporteras, rörs inte).
+Slutför afvaktande FME-tabeller som redan har geom, och synkar varje
+historiktabell med sin modertabell via hex_synka_historik().
 Verifierar och reparerar alla fyra roller per schema:
   r_{schema}/w_{schema}       NOLOGIN behörighetsgrupper – tilldelas AD-användare
   gs_r_{schema}/gs_w_{schema} LOGIN GeoServer-tjänstekonton – i hex_geoserver_roller
@@ -1163,7 +1319,9 @@ Korrigerar schemaägare som inte är hex_systemagare() – täcker scheman skapa
 superanvändare som förbigick event-triggern.
 Korrigerar objektägare (tabeller, vyer, materialiserade vyer, sekvenser,
 fremmande tabeller, funktioner) i Hex-scheman vars ägare inte är hex_systemagare().
-Skickar pg_notify för GeoServer-publicering (gs_r_-uppgifter krävs).
+Skickar pg_notify för GeoServer-publicering (uppgifter för läskontot krävs,
+se hex_geoserver_rollnamn()).
+Bygger om hex_avvikande_srid mot hex_srid() (hex_installningar.srid).
 Schemaprefix hämtas från hex_standardiserade_skyddsnivaer – egna prefix fungerar
 utan kodändringar. Idempotent. Anropas av installeraren efter varje
 installation/uppgradering.';

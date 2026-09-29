@@ -10,6 +10,16 @@ Avinstallation tar bort alla event-triggers, funktioner, konfigurationstabeller
 och anpassade datatyper som Hex installerade. Tabeller och scheman i databasen
 **berörs inte** – data raderas inte.
 
+Det som försvinner från dina tabeller är det som hänger på Hex-funktionerna i
+`public`: `CASCADE` tar med radtriggrarna `hex_tvinga_gid`,
+`hex_kontrollera_geom` och `hex_ta_bort_dummy` samt `CHECK`-villkoren som
+anropar `hex_validera_geometri()`. QA-triggrarna (`trg_<tabell>_qa`) och
+`hex_tvinga_anvandarvarden` ligger kvar — deras funktioner finns i respektive
+schema. `hex_underhall()` kopplar tillbaka radtriggrarna vid en senare
+ominstallation. `CHECK`-villkoren återskapas inte, men geometrivalideringen
+finns kvar via triggern `hex_kontrollera_geom`, som gör samma kontroll. Samma
+sak händer vid `--upgrade`, som avinstallerar före ominstallationen.
+
 **Obs:** Så länge Hex är installerat tas historiktabeller (`_h`) och
 QA-triggerfunktioner (`trg_fn_*_qa`) bort automatiskt när föräldratabellen
 droppas. Efter avinstallation är den event-triggern borta – kvarvarande `_h`-tabeller
@@ -63,7 +73,9 @@ DROP FUNCTION IF EXISTS public.hex_kontrollera_geometri_trigger() CASCADE;
 -- 3. Hjälpfunktioner
 DROP FUNCTION IF EXISTS public.hex_tillampa_grupprattigheter();
 DROP FUNCTION IF EXISTS public.hex_synka_historik(text, text);
+DROP FUNCTION IF EXISTS public.hex_flytta_registerposter(text, text, text);
 DROP FUNCTION IF EXISTS public.hex_registrera_metadata(text, text);
+DROP FUNCTION IF EXISTS public.hex_komplettera_metadata(text, text);
 DROP FUNCTION IF EXISTS public.hex_uppdatera_metadata_namn(oid);
 DROP FUNCTION IF EXISTS public.hex_rensa_metadata();
 DROP FUNCTION IF EXISTS public.hex_aterskapa_qa_trigger(text, text, text);
@@ -99,6 +111,11 @@ DROP FUNCTION IF EXISTS public.hex_hamta_geometri_definition(text, text);
 
 -- 7. Konfigurationsfunktioner
 DROP FUNCTION IF EXISTS public.hex_schema_regex();
+DROP FUNCTION IF EXISTS public.hex_srid_namn(integer);
+DROP FUNCTION IF EXISTS public.hex_tabellsuffix(text);
+DROP FUNCTION IF EXISTS public.hex_geometrisuffix(text);
+DROP FUNCTION IF EXISTS public.hex_srid();
+DROP FUNCTION IF EXISTS public.hex_geoserver_rollnamn(text, text);
 DROP FUNCTION IF EXISTS public.hex_systemagare();
 -- OBS: hex_geoserver_roller tas INTE bort här – se avsnittet nedan.
 
@@ -114,6 +131,7 @@ DROP TABLE IF EXISTS public.hex_standardiserade_roller;
 DROP TABLE IF EXISTS public.hex_standardiserade_kolumner;
 DROP TABLE IF EXISTS public.hex_standardiserade_skyddsnivaer;
 DROP TABLE IF EXISTS public.hex_standardiserade_datakategorier;
+DROP TABLE IF EXISTS public.hex_installningar;
 
 -- 9. Anpassade datatyper (sist)
 DROP TYPE IF EXISTS public.hex_tabellregler;
@@ -121,8 +139,6 @@ DROP TYPE IF EXISTS public.hex_kolumnegenskaper;
 DROP TYPE IF EXISTS public.hex_kolumnkonfig;
 DROP TYPE IF EXISTS public.hex_geom_info;
 ```
-
----
 
 ---
 

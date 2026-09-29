@@ -2021,6 +2021,175 @@ END $$;
 DROP ROLE IF EXISTS hex_test_meta_vanlig;
 
 ------------------------------------------------------------------------
+-- TEST 15: RENAME TO flyttar namnnycklade registerrader
+--
+-- hex_dummy_geometrier, hex_afvaktande_geometri och hex_avvikande_srid
+-- nycklas på (schema_namn, tabell_namn). Efter RENAME TO pekade raderna på
+-- det gamla namnet: dummy-raden togs aldrig bort vid första riktiga INSERT,
+-- och en afvaktande tabell som döptes om slutfördes aldrig.
+------------------------------------------------------------------------
+\echo ''
+\echo '--- TEST 15: RENAME TO och namnnycklade registertabeller ---'
+
+-- 15a: Tabell med historik (gamla namnet hämtas ur hex_metadata)
+CREATE TABLE sk1_kba_test.namnbyte_hist_y (namn text, geom geometry(Polygon, 3007));
+ALTER TABLE sk1_kba_test.namnbyte_hist_y RENAME TO namnbyte_hist2_y;
+INSERT INTO sk1_kba_test.namnbyte_hist2_y (namn, geom)
+VALUES ('riktig', ST_GeomFromText('POLYGON((160000 6395000,160010 6395000,160010 6395010,160000 6395000))', 3007));
+DO $$
+DECLARE
+    rader    integer;
+    register integer;
+BEGIN
+    SELECT count(*) INTO rader FROM sk1_kba_test.namnbyte_hist2_y;
+    SELECT count(*) INTO register FROM public.hex_dummy_geometrier
+    WHERE schema_namn = 'sk1_kba_test'
+      AND tabell_namn IN ('namnbyte_hist_y', 'namnbyte_hist2_y');
+
+    IF rader = 1 AND register = 0 THEN
+        RAISE NOTICE 'TEST 15a PASSED: dummy-raden togs bort vid första INSERT efter RENAME TO';
+    ELSE
+        RAISE WARNING 'TEST 15a FAILED: % rader i tabellen, % i hex_dummy_geometrier', rader, register;
+    END IF;
+END $$;
+
+-- 15b: Tabell utan historik, okvalificerat namn via search_path och IF EXISTS.
+-- Avvikande SRID ger en rad i hex_avvikande_srid som ska följa med.
+CREATE TABLE sk0_ext_test.namnbyte_srid_p (namn text, geom geometry(Point, 3006));
+SET search_path = sk0_ext_test, public;
+ALTER TABLE IF EXISTS namnbyte_srid_p RENAME TO namnbyte_srid2_p;
+RESET search_path;
+DO $$
+DECLARE
+    gamla  integer;
+    srid_n integer;
+    dummy_n integer;
+BEGIN
+    SELECT count(*) INTO gamla FROM (
+        SELECT 1 FROM public.hex_avvikande_srid
+        WHERE schema_namn = 'sk0_ext_test' AND tabell_namn = 'namnbyte_srid_p'
+        UNION ALL
+        SELECT 1 FROM public.hex_dummy_geometrier
+        WHERE schema_namn = 'sk0_ext_test' AND tabell_namn = 'namnbyte_srid_p'
+    ) g;
+    SELECT count(*) INTO srid_n FROM public.hex_avvikande_srid
+    WHERE schema_namn = 'sk0_ext_test' AND tabell_namn = 'namnbyte_srid2_p' AND srid = 3006;
+    SELECT count(*) INTO dummy_n FROM public.hex_dummy_geometrier
+    WHERE schema_namn = 'sk0_ext_test' AND tabell_namn = 'namnbyte_srid2_p';
+
+    IF gamla = 0 AND srid_n = 1 AND dummy_n = 1 THEN
+        RAISE NOTICE 'TEST 15b PASSED: hex_avvikande_srid och hex_dummy_geometrier följde med (utan historik, okvalificerat namn)';
+    ELSE
+        RAISE WARNING 'TEST 15b FAILED: gamla=% srid=% dummy=%', gamla, srid_n, dummy_n;
+    END IF;
+END $$;
+
+-- 15c: Afvaktande FME-tabell som döps om innan geometrin anländer
+SET application_name = 'fme';
+CREATE TABLE sk0_ext_test.namnbyte_fme_p (namn text);
+ALTER TABLE sk0_ext_test.namnbyte_fme_p RENAME TO namnbyte_fme2_p;
+ALTER TABLE sk0_ext_test.namnbyte_fme2_p ADD COLUMN geom geometry(Point, 3007);
+RESET application_name;
+DO $$
+DECLARE
+    kvar  integer;
+    gist  boolean;
+BEGIN
+    SELECT count(*) INTO kvar FROM public.hex_afvaktande_geometri
+    WHERE schema_namn = 'sk0_ext_test'
+      AND tabell_namn IN ('namnbyte_fme_p', 'namnbyte_fme2_p');
+    SELECT EXISTS (
+        SELECT 1 FROM pg_index i
+        JOIN pg_class ic ON ic.oid = i.indexrelid
+        JOIN pg_am am ON am.oid = ic.relam
+        WHERE i.indrelid = 'sk0_ext_test.namnbyte_fme2_p'::regclass AND am.amname = 'gist'
+    ) INTO gist;
+
+    IF kvar = 0 AND gist THEN
+        RAISE NOTICE 'TEST 15c PASSED: omdöpt afvaktande tabell slutförs när geom anländer';
+    ELSE
+        RAISE WARNING 'TEST 15c FAILED: % afvaktande rader kvar, GiST-index=%', kvar, gist;
+    END IF;
+END $$;
+
+-- 15d: Tabeller utan historik registreras i hex_metadata när de skapas,
+-- med historikkolumnerna NULL, och raden följer med RENAME TO.
+DO $$
+DECLARE
+    rad record;
+BEGIN
+    SELECT * INTO rad FROM public.hex_metadata
+    WHERE parent_oid = 'sk0_ext_test.namnbyte_srid2_p'::regclass;
+
+    IF rad.parent_table = 'namnbyte_srid2_p'
+       AND rad.history_schema IS NULL AND rad.history_table IS NULL
+       AND rad.trigger_funktion IS NULL AND rad.created_by = session_user
+       AND to_regclass('sk0_ext_test.namnbyte_srid2_p_h') IS NULL
+    THEN
+        RAISE NOTICE 'TEST 15d PASSED: tabell utan historik registrerad i hex_metadata och följde med RENAME TO';
+    ELSE
+        RAISE WARNING 'TEST 15d FAILED: rad=%', rad;
+    END IF;
+END $$;
+
+-- 15e: Namnbytet hittas via OID oavsett hur satsen är skriven. Tidigare
+-- lästes det gamla namnet ur satsen för tabeller utan historik, och
+-- "RENAME TO" direkt följt av ett citerat namn missades.
+CREATE TABLE sk0_ext_test.namnbyte_syntax_p (namn text, geom geometry(Point, 3006));
+ALTER TABLE sk0_ext_test.namnbyte_syntax_p RENAME TO"namnbyte_syntax2_p";
+DO $$
+DECLARE
+    gamla integer;
+    nya   integer;
+BEGIN
+    SELECT count(*) INTO gamla FROM (
+        SELECT 1 FROM public.hex_avvikande_srid
+        WHERE schema_namn = 'sk0_ext_test' AND tabell_namn = 'namnbyte_syntax_p'
+        UNION ALL
+        SELECT 1 FROM public.hex_dummy_geometrier
+        WHERE schema_namn = 'sk0_ext_test' AND tabell_namn = 'namnbyte_syntax_p'
+    ) g;
+    SELECT count(*) INTO nya FROM (
+        SELECT 1 FROM public.hex_avvikande_srid
+        WHERE schema_namn = 'sk0_ext_test' AND tabell_namn = 'namnbyte_syntax2_p'
+        UNION ALL
+        SELECT 1 FROM public.hex_dummy_geometrier
+        WHERE schema_namn = 'sk0_ext_test' AND tabell_namn = 'namnbyte_syntax2_p'
+    ) g;
+
+    IF gamla = 0 AND nya = 2 THEN
+        RAISE NOTICE 'TEST 15e PASSED: registerraderna följde med RENAME TO"namn" (utan blanksteg)';
+    ELSE
+        RAISE WARNING 'TEST 15e FAILED: gamla=% nya=%', gamla, nya;
+    END IF;
+END $$;
+
+-- 15f: En afvaktande tabell har ingen historik men registreras ändå, och
+-- raden får historikkolumnerna ifyllda när tvåsteget slutförs.
+DO $$
+DECLARE
+    rad record;
+BEGIN
+    SELECT * INTO rad FROM public.hex_metadata
+    WHERE parent_oid = 'sk0_ext_test.namnbyte_fme2_p'::regclass;
+
+    IF rad.parent_table = 'namnbyte_fme2_p'
+       AND (rad.history_table IS NOT NULL)
+           = (to_regclass('sk0_ext_test.namnbyte_fme2_p_h') IS NOT NULL)
+    THEN
+        RAISE NOTICE 'TEST 15f PASSED: omdöpt afvaktande tabell registrerad i hex_metadata (historik=%)',
+            rad.history_table;
+    ELSE
+        RAISE WARNING 'TEST 15f FAILED: rad=%', rad;
+    END IF;
+END $$;
+
+DROP TABLE IF EXISTS sk1_kba_test.namnbyte_hist2_y;
+DROP TABLE IF EXISTS sk0_ext_test.namnbyte_srid2_p;
+DROP TABLE IF EXISTS sk0_ext_test.namnbyte_fme2_p;
+DROP TABLE IF EXISTS sk0_ext_test.namnbyte_syntax2_p;
+
+------------------------------------------------------------------------
 -- SLUTLIG STÄDNING
 ------------------------------------------------------------------------
 \echo ''

@@ -6,7 +6,8 @@
 --
 -- När en session matchar en post här (via session_user, current_user eller
 -- application_name) tillåter händelsetriggern hex_hantera_ny_tabell att tabeller
--- med geometrisuffix (_p, _l, _y, _g) skapas utan geometrikolumn. Tabellen
+-- med geometrisuffix (hex_installningar.suffix_*, standard _p, _l, _y, _g)
+-- skapas utan geometrikolumn. Tabellen
 -- registreras istället i hex_afvaktande_geometri i stället för att ett fel
 -- kastas. Geometrispecifik efterbehandling (GiST-index, valideringsbegränsning)
 -- slutförs av hex_hantera_ny_kolumn när geometrikolumnen anländer.

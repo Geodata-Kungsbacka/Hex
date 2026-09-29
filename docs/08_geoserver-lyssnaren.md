@@ -19,6 +19,14 @@ Varje workspace får en direkt PostGIS-datastore med rätt PostgreSQL-tjänsteko
 Autentiseringsuppgifterna hämtas från tabellen `hex_rolluppgifter` där
 `hex_hantera_std_roller()` lagrar de autogenererade lösenorden vid `CREATE SCHEMA`.
 
+Vilka roller som är läs- och skrivkonto avgörs av
+`hex_standardiserade_roller.geoserver_konto` (`'las'`/`'skriv'`) och slås upp
+med `hex_geoserver_rollnamn(schema, konto)`, så `gs_r_`/`gs_w_` kan döpas om –
+se [docs/04](04_hantera-rollmallar.md#byta-namn-på-geoservers-tjänstekonton).
+Saknar databasen funktionen (den har inte kört `install_hex.py --upgrade` med
+den här versionen) faller lyssnaren tillbaka på de fasta namnen
+`gs_r_{schema}`/`gs_w_{schema}`.
+
 Vilka skyddsnivåer som publiceras styrs av kolumnen `publiceras_geoserver` i
 tabellen `hex_standardiserade_skyddsnivaer` — standard är `sk0` och `sk1`.
 Ändra tabellen för att justera vilka prefix som publiceras:
@@ -194,6 +202,20 @@ Vid varje avstämning jämförs GeoServers befintliga workspaces mot scheman i P
 Både läs- och skriv-workspaces skapas om de saknas, och avvikande ACL-regler korrigeras.
 Eventuella fel loggas men stoppar inte lyssnaren.
 
+### Schemanamnsmönstret
+
+Vilka scheman som publiceras avgörs av ett mönster som byggs ur
+`hex_standardiserade_skyddsnivaer` (`publiceras_geoserver = true`) och
+`hex_standardiserade_datakategorier`. Mönstret laddas om från databasen före
+varje notifiering och före varje avstämning.
+
+Det finns inget hårdkodat reservmönster. Har mönstret aldrig kunnat laddas —
+typiskt för att databasen inte svarar — hoppar lyssnaren över notifieringen och
+loggar ett **ERROR** med schemanamnet. Schemat publiceras vid nästa avstämning:
+startavstämningen när lyssnaren ansluter igen, annars den periodiska. Samma
+avstämning hoppar då över kontrollen av kvarlämnade workspaces (nedan) och
+loggar en varning i stället, så att inget städas med ett gissat mönster.
+
 ### Kvarlämnade workspaces i GeoServer
 
 Avstämningen tittar också åt andra hållet: workspaces som finns i GeoServer men
@@ -271,6 +293,27 @@ fil tjänsten faktiskt läste.
    HEX_DB_3_DBNAME=geodata_ny
    ```
 4. Starta om tjänsten.
+
+---
+
+## Datastorernas anslutningspool
+
+Lyssnaren sätter samma poolinställningar på varje datastore den skapar eller
+skriver om. Ändras de för hand i GeoServers gränssnitt skrivs de tillbaka vid
+nästa avstämning.
+
+| Parameter | Värde | Effekt |
+|---|---|---|
+| `max connections` | 10 | Tak per datastore |
+| `min connections` | 0 | Inga anslutningar hålls öppna när lagret inte används |
+| `Max connection idle time` | 300 s | Oanvända anslutningar stängs efter fem minuter |
+| `Evictor run periodicity` | 60 s | Hur ofta poolen gallras |
+| `Evictor tests per run` | 10 | Anslutningar som prövas per gallring |
+| `Connection timeout` | 10 s | Väntan på en ledig anslutning |
+| `validate connections`, `Test while idle` | `true` | Döda anslutningar upptäcks innan de lämnas ut |
+
+Varje publicerat schema har två datastores (läs och skriv), så taket per schema
+är 20 anslutningar. Räkna med det mot `max_connections` i PostgreSQL.
 
 ---
 

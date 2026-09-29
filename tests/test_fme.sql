@@ -24,6 +24,7 @@
  *   F9  FME-tabell utan geometrisuffix (ingen uppskjutning förväntad)
  *   F10 Partiellt application_name utlöser inte uppskjuten väg
  *   F11 DROP TABLE på väntande tabell rensar hex_afvaktande_geometri
+ *   F14 Icke-superanvändare kan slutföra tvåsteg på tabell med historik
  *
  * Konvention: NOTICE = GODKÄNT/INFO,  WARNING = MISSLYCKAT/BUG BEKRÄFTAD
  *
@@ -1238,6 +1239,78 @@ BEGIN
 END $$;
 
 DROP TABLE sk0_ext_fmetest.dup_gist_p;
+
+------------------------------------------------------------------------
+-- F14: ÄGARSKAP – historiktabellen ägs av hex_systemagare()
+--
+-- hex_hantera_ny_tabell() är SECURITY DEFINER. Historiktabellen och
+-- QA-funktionerna skapades därför som postgres, medan modertabellen fick
+-- hex_systemagare() som ägare. FME (icke-superanvändare) kunde skapa
+-- tabellen men AddGeometryColumn i steg B föll på
+-- "must be owner of table <tabell>_h" i hex_synka_historik().
+-- SET ROLE till systemägaren återskapar FME:s rättigheter.
+------------------------------------------------------------------------
+\echo ''
+\echo '--- GRUPP F14: Ägarskap för historik vid tvåsteg som icke-superanvändare ---'
+
+SELECT set_config('role', public.hex_systemagare(), false);
+SET application_name = 'fme';
+CREATE TABLE sk1_kba_fmetest.agare_y (namn text);
+
+DO $$
+BEGIN
+    PERFORM AddGeometryColumn('sk1_kba_fmetest', 'agare_y', 'geom', 3007, 'MULTIPOLYGON', 2);
+    RAISE NOTICE 'TEST F14a GODKÄNT:AddGeometryColumn lyckades som %', current_user;
+EXCEPTION WHEN OTHERS THEN
+    RAISE WARNING 'TEST F14a MISSLYCKAT:AddGeometryColumn som % gav: %', current_user, SQLERRM;
+END $$;
+
+RESET application_name;
+RESET ROLE;
+
+-- F14b: historiktabell och triggerfunktioner ägs av hex_systemagare()
+DO $$
+DECLARE
+    fel text;
+BEGIN
+    SELECT string_agg(namn || ' (' || agare || ')', ', ') INTO fel
+    FROM (
+        SELECT c.relname::text AS namn, pg_get_userbyid(c.relowner)::text AS agare
+        FROM pg_class c
+        WHERE c.relnamespace = 'sk1_kba_fmetest'::regnamespace
+          AND c.relname IN ('agare_y', 'agare_y_h')
+        UNION ALL
+        SELECT p.proname::text, pg_get_userbyid(p.proowner)::text
+        FROM pg_proc p
+        WHERE p.pronamespace = 'sk1_kba_fmetest'::regnamespace
+          AND p.proname LIKE 'trg_fn_agare_y_%'
+    ) o
+    WHERE agare <> public.hex_systemagare();
+
+    IF to_regclass('sk1_kba_fmetest.agare_y_h') IS NULL THEN
+        RAISE WARNING 'TEST F14b MISSLYCKAT:historiktabellen agare_y_h skapades inte';
+    ELSIF fel IS NULL THEN
+        RAISE NOTICE 'TEST F14b GODKÄNT:tabell, historiktabell och triggerfunktioner ägs av %', public.hex_systemagare();
+    ELSE
+        RAISE WARNING 'TEST F14b MISSLYCKAT:fel ägare: %', fel;
+    END IF;
+END $$;
+
+-- F14c: geom har synkats till historiktabellen
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_attribute
+        WHERE attrelid = to_regclass('sk1_kba_fmetest.agare_y_h')
+          AND attname = 'geom' AND NOT attisdropped
+    ) THEN
+        RAISE NOTICE 'TEST F14c GODKÄNT:geom finns i agare_y_h';
+    ELSE
+        RAISE WARNING 'TEST F14c MISSLYCKAT:geom saknas i agare_y_h';
+    END IF;
+END $$;
+
+DROP TABLE IF EXISTS sk1_kba_fmetest.agare_y;
 
 ------------------------------------------------------------------------
 -- SLUTLIG RENSNING

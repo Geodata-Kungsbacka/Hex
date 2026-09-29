@@ -979,7 +979,9 @@ Autentiseringsuppgifter för GeoServer-datastores hanteras automatiskt av Hex:
   med LOGIN och autogenererade lösenord vid varje CREATE SCHEMA
 - Lösenorden sparas i `hex_rolluppgifter` och läses av lyssnaren vid
   datastore-skapandet — `gs_r_{schema}` för läs-workspacet och `gs_w_{schema}` för
-  skriv-workspacet
+  skriv-workspacet. Vilka rollmallar som är läs- och skrivkonto styrs av
+  `hex_standardiserade_roller.geoserver_konto`, så namnen kan ändras – se
+  [docs/04](../../docs/04_hantera-rollmallar.md#byta-namn-på-geoservers-tjänstekonton)
 
 Det finns normalt inget att konfigurera manuellt. Om du behöver återskapa
 datastores för ett befintligt schema, skicka en manuell notifiering:

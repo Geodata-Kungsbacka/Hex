@@ -126,15 +126,17 @@ Följande tabeller bevaras automatiskt vid `--upgrade`.
 - `hex_standardiserade_roller` — anpassade rollmallar
 - `hex_standardiserade_datakategorier` — anpassade datakategorier
 - `hex_standardiserade_skyddsnivaer` — anpassade skyddsnivåer
+- `hex_installningar` — SRID, dummy-geometrins position och geometrisuffix
 - `hex_systemanvandare` — registrerade systemanvändare
 - `hex_grupprattigheter` — AD-grupp-till-Hex-roll-mappningar
 
 **Drifttillstånd** — vad Hex redan gjort med dina tabeller. Innehållet går inte
 att härleda ur databasen i efterhand, till skillnad från triggers och funktioner:
-- `hex_metadata` — mappning tabell-OID → historiktabell och QA-trigger
+- `hex_metadata` — register över alla Hex-tabeller (OID → namn), med historiktabell och QA-trigger för tabeller som har historik
 - `hex_dummy_geometrier` — tabeller som fortfarande bär en dummy-rad
 - `hex_afvaktande_geometri` — tabeller mitt i FME:s tvåstegsmönster
 - `hex_avvikande_srid` — granskningslista över fel koordinatsystem
+- `hex_rolluppgifter` — tjänstekontonas lösenord (se nedan)
 
 > **Undantag:** `kan_logga_in` och `arvs_fran` på de fyra standardrollerna
 > (`r_`, `w_`, `gs_r_`, `gs_w_`) återställs *inte* — dem äger Hex. `r_`/`w_`
@@ -145,6 +147,21 @@ att härleda ur databasen i efterhand, till skillnad från triggers och funktion
 > **OBS:** `--upgrade` bevarar konfigurationsdata men tar bort och återskapar
 > alla Hex-funktioner, triggers och typer. Kör gärna en manuell säkerhetskopia
 > av databasen innan uppgradering i produktionsmiljö.
+
+Efter återställningen kör installern `hex_underhall()`, som för befintliga
+tabeller bland annat:
+
+- kopplar tillbaka radtriggrarna som avinstallationen tog med sig,
+- synkar varje historiktabell med sin modertabell och bygger om QA-triggern
+  (`historiksynk` i utskriften) — det rättar historiktabeller som hamnat ur
+  synk efter `DROP COLUMN`, `ALTER COLUMN TYPE` eller `RENAME TO` i äldre
+  versioner,
+- slutför FME-tabeller som fått `geom` men står kvar i
+  `hex_afvaktande_geometri` (`afvaktande_geometri`).
+
+`hex_metadata.created_by` är `NULL` för tabeller som registrerades innan
+kolumnen fanns. Uppgraderingen fyller inte i något värde, eftersom den som kör
+`--upgrade` inte är den som skapade tabellerna.
 
 ### Uppgradering från 1.0.0
 
@@ -185,31 +202,37 @@ konfigurationstabellerna ligger kvar: `default_varde`, `historik_qa`,
 Det enda undantaget är samma som ovan: `kan_logga_in` och `arvs_fran` på de fyra
 standardrollerna rättas vid varje körning.
 
-### `hex_rolluppgifter` roteras — den bevaras inte
+Ominstallationen förutsätter att tabellerna har samma kolumner som SQL-filerna
+skapar, dvs. samma Hex-version. `CREATE TABLE IF NOT EXISTS` lägger inte till
+kolumner i en befintlig tabell. Har den nya versionen nya kolumner – t.ex.
+`hex_standardiserade_roller.geoserver_konto` – avbryts ominstallationen med
+`column ... does not exist`. Använd `--upgrade` när du byter version.
 
-Lösenorden för `gs_r_`/`gs_w_`-rollerna **byts ut** vid varje `--upgrade`.
-Avinstallationen droppar `hex_rolluppgifter`, och när installationen därefter
-kör `hex_underhall()` ser den inloggningsroller utan sparade uppgifter och
-backfyller dem: nytt lösenord via `gen_random_bytes()`, `ALTER ROLE ... PASSWORD`
-och en ny rad i tabellen. Det sker innan de sparade raderna återställs, så de
-gamla lösenorden skrivs aldrig tillbaka.
+### `hex_rolluppgifter` bevaras – lösenorden roteras inte
 
-Databasen är konsekvent efteråt — rollen, tabellen och gruppmedlemskapen
-(`hex_geoserver_roller` samt `arvs_fran`) stämmer överens, och de nya
-uppgifterna fungerar direkt för inloggning.
+Lösenorden för GeoServers tjänstekonton (standard `gs_r_`/`gs_w_`) är
+**oförändrade** efter `--upgrade`. Avinstallationen droppar
+`hex_rolluppgifter` men rör inte rollerna, och de sparade raderna läggs
+tillbaka innan `hex_underhall()` körs. Underhållet ser då uppgifter för varje
+inloggningsroll och har inget att backfylla. Rollerna, tabellen och GeoServers
+datastores stämmer alltså fortfarande överens, och lyssnaren behöver inte
+startas om för att GeoServer ska kunna ansluta.
 
-Det som däremot inte hänger med automatiskt är **GeoServers datastores**, som
-har sitt eget sparade lösenord. Lyssnaren skriver om dem från
-`hex_rolluppgifter` vid varje avstämning, men det sker först vid uppstart eller
-efter `HEX_RECONCILE_INTERVAL` (standard 43200 s = 12 h). Fram till dess misslyckas
-GeoServers anslutningar för de berörda schemana.
-
-**Åtgärd:** starta om lyssnartjänsten direkt efter en uppgradering i stället för
-att vänta ut avstämningsintervallet:
+Saknas en rad efter återställningen – t.ex. för ett schema vars roll skapades
+utan att raden sparades – backfyller `hex_underhall()` den som tidigare: nytt
+lösenord via `gen_random_bytes()`, `ALTER ROLE ... PASSWORD` och en ny rad.
+GeoServers datastore för just det schemat får då de nya uppgifterna vid nästa
+avstämning (uppstart eller efter `HEX_RECONCILE_INTERVAL`, standard 12 h), eller
+direkt om lyssnaren startas om:
 
 ```cmd
 py geoserver_service.py restart
 ```
+
+> **Tidigare versioner roterade lösenorden** vid varje `--upgrade`, eftersom
+> underhållet körde innan de sparade raderna lagts tillbaka. Uppgraderar du
+> *från* en sådan version gäller fortfarande det nya beteendet: det är den nya
+> `install_hex.py` som styr ordningen.
 
 ---
 
@@ -307,10 +330,9 @@ GeoServer-URL, konfigurationsfilens sökväg, antal databaser, uppstädningsläg
 att avstämningen körts.
 
 > **Uppgraderas både databasen och tjänsten:** kör `python install_hex.py --upgrade`
-> medan tjänsten är stoppad och starta tjänsten efteråt. `hex_rolluppgifter` är då
-> redan omroterad när lyssnaren startar och skriver om GeoServers datastores vid
-> uppstartsavstämningen. Se
-> [`hex_rolluppgifter` roteras](#hex_rolluppgifter-roteras--den-bevaras-inte).
+> medan tjänsten är stoppad och starta tjänsten efteråt. Lyssnaren skriver då om
+> GeoServers datastores från `hex_rolluppgifter` vid uppstartsavstämningen. Se
+> [`hex_rolluppgifter` bevaras](#hex_rolluppgifter-bevaras--lösenorden-roteras-inte).
 
 ### Tjänstkommandon
 
