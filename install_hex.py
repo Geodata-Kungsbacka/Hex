@@ -59,6 +59,10 @@ INSTALL_ORDER = [
     # hex_schema_regex() läser hex_standardiserade_skyddsnivaer – måste skapas efter tabellen
     "src/sql/00_config/hex_schema_regex.sql",
     "src/sql/02_tables/hex_standardiserade_datakategorier.sql",
+    "src/sql/02_tables/hex_installningar.sql",
+    # hex_srid() läser hex_installningar – måste skapas efter tabellen
+    "src/sql/00_config/hex_srid.sql",
+    "src/sql/00_config/hex_srid_namn.sql",
     "src/sql/02_tables/hex_standardiserade_kolumner.sql",
     "src/sql/02_tables/hex_standardiserade_roller.sql",
     "src/sql/02_tables/hex_metadata.sql",
@@ -197,6 +201,8 @@ DROP FUNCTION IF EXISTS public.hex_hamta_geometri_definition(text, text);
 
 -- Konfigurationsfunktioner
 DROP FUNCTION IF EXISTS public.hex_schema_regex();
+DROP FUNCTION IF EXISTS public.hex_srid_namn(integer);
+DROP FUNCTION IF EXISTS public.hex_srid();
 DROP FUNCTION IF EXISTS public.hex_systemagare();
 -- OBS: hex_geoserver_roller tas INTE bort här. Rollen är kluster-nivå och delas
 -- av alla databaser som kör Hex. Om du avinstallerar Hex från alla databaser och
@@ -214,6 +220,7 @@ DROP TABLE IF EXISTS public.hex_standardiserade_roller;
 DROP TABLE IF EXISTS public.hex_standardiserade_kolumner;
 DROP TABLE IF EXISTS public.hex_standardiserade_skyddsnivaer;
 DROP TABLE IF EXISTS public.hex_standardiserade_datakategorier;
+DROP TABLE IF EXISTS public.hex_installningar;
 
 -- Typer (måste tas bort efter funktioner som använder dem)
 DROP TYPE IF EXISTS public.hex_tabellregler;
@@ -241,6 +248,10 @@ PRESERVE_CONFIG = {
     "hex_standardiserade_datakategorier": {
         "key": "prefix",
         "restore": ["beskrivning", "hex_validera_geometri"],
+    },
+    "hex_installningar": {
+        "key": "id",
+        "restore": ["srid", "dummy_x", "dummy_y", "dummy_storlek"],
     },
     "hex_standardiserade_kolumner": {
         "key": "kolumnnamn",

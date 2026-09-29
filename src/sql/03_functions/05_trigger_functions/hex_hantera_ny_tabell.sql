@@ -166,15 +166,17 @@ BEGIN
             ELSE
                 geometriinfo := hex_validera_tabell(schema_namn, tabell_namn);
 
-                -- Kontrollera SRID: alla geometritabeller ska använda EPSG 3007 (SWEREF99 12 00)
+                -- Kontrollera SRID: alla geometritabeller ska använda hex_srid()
+                -- (hex_installningar.srid, standard 3007 SWEREF99 12 00)
                 IF geometriinfo IS NOT NULL AND geometriinfo.srid IS NOT NULL
-                   AND geometriinfo.srid <> 3007
+                   AND geometriinfo.srid <> public.hex_srid()
                 THEN
                     RAISE WARNING
-                        '[hex_hantera_ny_tabell] Tabell %.% har SRID % – förväntar 3007 (SWEREF99 12 00). '
+                        '[hex_hantera_ny_tabell] Tabell %.% har SRID % – förväntar % (%). '
                         'Data i fel koordinatsystem måste transformeras innan produktionsbruk. '
                         'Tabellen registreras i hex_avvikande_srid för granskning.',
-                        schema_namn, tabell_namn, geometriinfo.srid;
+                        schema_namn, tabell_namn, geometriinfo.srid,
+                        public.hex_srid(), public.hex_srid_namn(public.hex_srid());
 
                     INSERT INTO public.hex_avvikande_srid (schema_namn, tabell_namn, srid)
                     VALUES (hnt.schema_namn, hnt.tabell_namn, geometriinfo.srid)

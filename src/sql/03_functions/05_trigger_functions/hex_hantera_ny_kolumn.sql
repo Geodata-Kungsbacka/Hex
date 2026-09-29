@@ -702,15 +702,16 @@ BEGIN
                 END;
             END IF;
 
-            -- Steg 5b.2: Kontrollera SRID (EPSG 3007 krävs)
+            -- Steg 5b.2: Kontrollera SRID mot hex_srid() (hex_installningar.srid)
             IF geometriinfo IS NOT NULL AND geometriinfo.srid IS NOT NULL
-               AND geometriinfo.srid <> 3007
+               AND geometriinfo.srid <> public.hex_srid()
             THEN
                 RAISE WARNING
-                    '[hex_hantera_ny_kolumn] Tabell %.% har SRID % – förväntar 3007 (SWEREF99 12 00). '
+                    '[hex_hantera_ny_kolumn] Tabell %.% har SRID % – förväntar % (%). '
                     'Data i fel koordinatsystem måste transformeras innan produktionsbruk. '
                     'Tabellen registreras i hex_avvikande_srid för granskning.',
-                    schema_namn, tabell_namn, geometriinfo.srid;
+                    schema_namn, tabell_namn, geometriinfo.srid,
+                    public.hex_srid(), public.hex_srid_namn(public.hex_srid());
 
                 INSERT INTO public.hex_avvikande_srid (schema_namn, tabell_namn, srid)
                 VALUES (hkt.schema_namn, hkt.tabell_namn, geometriinfo.srid)
@@ -862,12 +863,13 @@ BEGIN
                 RAISE NOTICE '[hex_hantera_ny_kolumn]   ✓ Suffix % stämmer med geometrityp %',
                     forvantat_suffix, geometriinfo.typ_basal;
 
-                -- SRID-kontroll
-                IF geometriinfo.srid IS NOT NULL AND geometriinfo.srid <> 3007 THEN
+                -- SRID-kontroll mot hex_srid() (hex_installningar.srid)
+                IF geometriinfo.srid IS NOT NULL AND geometriinfo.srid <> public.hex_srid() THEN
                     RAISE WARNING
-                        '[hex_hantera_ny_kolumn] Tabell %.% har SRID % – förväntar 3007 (SWEREF99 12 00). '
+                        '[hex_hantera_ny_kolumn] Tabell %.% har SRID % – förväntar % (%). '
                         'Tabellen registreras i hex_avvikande_srid.',
-                        schema_namn, tabell_namn, geometriinfo.srid;
+                        schema_namn, tabell_namn, geometriinfo.srid,
+                        public.hex_srid(), public.hex_srid_namn(public.hex_srid());
                     INSERT INTO public.hex_avvikande_srid (schema_namn, tabell_namn, srid)
                     VALUES (hkt.schema_namn, hkt.tabell_namn, geometriinfo.srid)
                     ON CONFLICT ON CONSTRAINT hex_avvikande_srid_pkey

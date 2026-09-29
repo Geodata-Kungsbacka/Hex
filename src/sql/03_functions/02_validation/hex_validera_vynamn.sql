@@ -86,10 +86,11 @@ BEGIN
                'Vyn innehåller geometritransformationer (ST_-funktioner).\n'
                'Vid geometritransformationer måste resultatet explicit typkonverteras\n'
                'för att tydliggöra vilken geometrityp som skapas, t.ex:\n'
-               '  ST_Buffer(geom, 100)::geometry(Polygon,3007)  -- För suffix _y\n'
-               '  ST_Union(geom)::geometry(LineString,3007)     -- För suffix _l\n'
+               '  ST_Buffer(geom, 100)::geometry(Polygon,%)  -- För suffix _y\n'
+               '  ST_Union(geom)::geometry(LineString,%)     -- För suffix _l\n'
                'Suffix ska sedan matcha den typkonverterade geometritypen (%)',
                p_schema_namn, p_vy_namn,
+               public.hex_srid(), public.hex_srid(),
                begart_suffix;
        ELSE
            RAISE EXCEPTION E'Ogiltigt vynamn "%.%".\n'

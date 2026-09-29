@@ -149,8 +149,10 @@ rad med en påhittad geometri** och registrerar den i `hex_dummy_geometrier`.
 `NULL`, och QGIS öppnar då en dialogruta där användaren måste ange
 geometrikolumn och SRID för hand. Dummy-raden gör att typen går att läsa direkt.
 
-**Geometrin:** 100 × 100 m kring (160000, 6395000) i EPSG 3007, vald så att den
-klarar `hex_validera_geometri()` — giltig, icke-tom, utan dubblerade punkter och
+**Geometrin:** 100 × 100 m från (160000, 6395000) i EPSG 3007 som standard.
+Position, storlek och koordinatsystem läses från `hex_installningar`
+(`dummy_x`, `dummy_y`, `dummy_storlek`, `srid`); har tabellen ett annat SRID
+transformeras geometrin dit. Geometrin är vald så att den klarar `hex_validera_geometri()` — giltig, icke-tom, utan dubblerade punkter och
 utan kurvsegment.
 
 **Livscykel:** en `AFTER INSERT`-trigger (`hex_ta_bort_dummy`) på tabellen tar
@@ -168,12 +170,12 @@ tidpunkt.
   tabeller som fortfarande står i `hex_dummy_geometrier`. Töms den tabellen
   för hand blir dummy-raden kvar för alltid.
 
-### 8. **EPSG 3007 är enda tillåtna koordinatsystem**
+### 8. **Ett koordinatsystem per databas – inställningsbart**
 
 `hex_hantera_ny_tabell()` och `hex_hantera_ny_kolumn()` jämför geometrikolumnens
-SRID mot **3007** (SWEREF99 12 00). En tabell med avvikande SRID **blockeras
-inte** — den skapas, med en `WARNING`, och registreras i granskningstabellen
-`hex_avvikande_srid`:
+SRID mot `hex_srid()`, som läser `hex_installningar.srid` (standard **3007**,
+SWEREF99 12 00). En tabell med avvikande SRID **blockeras inte** — den skapas,
+med en `WARNING`, och registreras i granskningstabellen `hex_avvikande_srid`:
 
 ```sql
 SELECT schema_namn, tabell_namn, srid, registrerad, registrerad_av
@@ -185,6 +187,22 @@ En kvarliggande rad betyder att tabellen fortfarande finns i databasen med fel
 koordinatsystem. Data i fel koordinatsystem ska transformeras och skrivas om
 innan det används i produktion. Raden tas bort automatiskt av
 `hex_hantera_borttagen_tabell()` när tabellen droppas.
+
+**Byta koordinatsystem.** Ändra inställningen och flytta dummy-geometrins
+referenspunkt till samma koordinatsystem, och kör sedan `hex_underhall()`, som
+bygger om `hex_avvikande_srid` mot det nya värdet — befintliga tabeller i det
+gamla koordinatsystemet registreras, tabeller i det nya avregistreras:
+
+```sql
+UPDATE public.hex_installningar
+SET    srid = 3006, dummy_x = 330000, dummy_y = 6380000;  -- SWEREF99 TM
+SELECT * FROM public.hex_underhall() WHERE trigger_namn = 'avvikande_srid';
+```
+
+`srid` måste finnas i `spatial_ref_sys`. Dummy-geometrin (se 7) byggs i
+`hex_installningar.srid` och transformeras till tabellens SRID om de skiljer
+sig. För ett geografiskt koordinatsystem, sätt också `dummy_storlek` till ett
+litet värde i grader. Inställningen bevaras över `--upgrade` och ominstallation.
 
 ## Installation
 
@@ -343,6 +361,10 @@ src/sql/02_tables/hex_standardiserade_skyddsnivaer.sql
 -- hex_schema_regex() läser hex_standardiserade_skyddsnivaer – måste köras efter tabellen
 src/sql/00_config/hex_schema_regex.sql
 src/sql/02_tables/hex_standardiserade_datakategorier.sql
+src/sql/02_tables/hex_installningar.sql
+-- hex_srid() läser hex_installningar – måste köras efter tabellen
+src/sql/00_config/hex_srid.sql
+src/sql/00_config/hex_srid_namn.sql
 src/sql/02_tables/hex_standardiserade_kolumner.sql
 src/sql/02_tables/hex_standardiserade_roller.sql
 src/sql/02_tables/hex_metadata.sql
@@ -561,6 +583,7 @@ för samtliga kolumner i tabellen och för standarduppsättningen.
 |---|---|
 | `hex_standardiserade_skyddsnivaer` | Giltiga skyddsnivåprefix, och per prefix `publiceras_geoserver` och `anonym_las` |
 | `hex_standardiserade_datakategorier` | Giltiga datakategoriprefix, och per prefix `hex_validera_geometri` |
+| `hex_installningar` | Databasövergripande inställningar (en rad): förväntat `srid` och dummy-geometrins position (`dummy_x`, `dummy_y`, `dummy_storlek`) |
 | `hex_standardiserade_roller` | Rollmallar per schema — se [docs/04_hantera-rollmallar.md](docs/04_hantera-rollmallar.md) |
 | `hex_systemanvandare` | Tvåstegsverktyg som FME — se [docs/01_lagg-till-systemanvandare.md](docs/01_lagg-till-systemanvandare.md) |
 | `hex_grupprattigheter` | AD-grupproll → Hex-roll, tillämpas av `hex_tillampa_grupprattigheter()` — se [docs/02_lagg-till-databasanvandare.md](docs/02_lagg-till-databasanvandare.md) |
@@ -576,7 +599,7 @@ härleda i efterhand, och därför bevaras de över `--upgrade`.
 | `hex_metadata` | Tabell-OID → historiktabell och QA-triggerfunktion | `hex_skapa_historik_qa()`, `hex_hantera_ny_kolumn()` | `hex_hantera_borttagen_tabell()` |
 | `hex_afvaktande_geometri` | Tabeller mitt i tvåstegsmönstret | `hex_hantera_ny_tabell()` | `hex_hantera_ny_kolumn()`, `hex_hantera_borttagen_tabell()` |
 | `hex_dummy_geometrier` | Tabeller som fortfarande bär en dummy-rad | `hex_lagg_till_dummy_geometri()` | `hex_ta_bort_dummy_rad()` |
-| `hex_avvikande_srid` | Tabeller med SRID ≠ 3007 | `hex_hantera_ny_tabell()`, `hex_hantera_ny_kolumn()` | `hex_hantera_borttagen_tabell()` |
+| `hex_avvikande_srid` | Tabeller med SRID ≠ `hex_srid()` | `hex_hantera_ny_tabell()`, `hex_hantera_ny_kolumn()`, `hex_underhall()` | `hex_hantera_borttagen_tabell()`, `hex_underhall()` |
 | `hex_rolluppgifter` | Rollnamn och autogenererat lösenord för LOGIN-tjänstekonton | `hex_hantera_std_roller()`, `hex_underhall()` | `DROP SCHEMA` via `hex_ta_bort_schemaroller()` |
 
 > `hex_rolluppgifter` är den enda av dem som **inte** bevaras över `--upgrade` —
@@ -875,6 +898,12 @@ som namnvalideringen använder — `hex_validera_schemanamn()` bygger sitt eget
 `hex_systemagare()` returnerar ägarrollen och genereras av installern ur
 `owner_role` — det är den enda funktionen som inte har en egen fil i
 `INSTALL_ORDER`.
+
+#### `hex_srid()` och `hex_srid_namn(srid)`
+**Syfte**: `hex_srid()` returnerar förväntat koordinatsystem ur
+`hex_installningar.srid` (standard 3007). `hex_srid_namn()` slår upp
+koordinatsystemets namn i `spatial_ref_sys`, t.ex. `SWEREF99 12 00`, så att
+meddelandena följer med när inställningen ändras.
 
 ### Triggerfunktioner
 

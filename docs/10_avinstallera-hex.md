@@ -99,6 +99,8 @@ DROP FUNCTION IF EXISTS public.hex_hamta_geometri_definition(text, text);
 
 -- 7. Konfigurationsfunktioner
 DROP FUNCTION IF EXISTS public.hex_schema_regex();
+DROP FUNCTION IF EXISTS public.hex_srid_namn(integer);
+DROP FUNCTION IF EXISTS public.hex_srid();
 DROP FUNCTION IF EXISTS public.hex_systemagare();
 -- OBS: hex_geoserver_roller tas INTE bort här – se avsnittet nedan.
 
@@ -114,6 +116,7 @@ DROP TABLE IF EXISTS public.hex_standardiserade_roller;
 DROP TABLE IF EXISTS public.hex_standardiserade_kolumner;
 DROP TABLE IF EXISTS public.hex_standardiserade_skyddsnivaer;
 DROP TABLE IF EXISTS public.hex_standardiserade_datakategorier;
+DROP TABLE IF EXISTS public.hex_installningar;
 
 -- 9. Anpassade datatyper (sist)
 DROP TYPE IF EXISTS public.hex_tabellregler;

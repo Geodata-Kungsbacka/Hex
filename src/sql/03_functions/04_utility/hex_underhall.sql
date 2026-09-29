@@ -18,7 +18,7 @@ AS $BODY$
  * Schemaprefix hämtas dynamiskt från hex_standardiserade_skyddsnivaer, så att
  * egna prefix (t.ex. sc1, sk3) fungerar utan kodändringar.
  *
- * Hanterar femton åtgärdstyper:
+ * Hanterar sexton åtgärdstyper:
  *
  *   ägarskapsöverföring  Säkerställer att scheman, tabeller, sekvenser och
  *                        funktioner i Hex-hanterade scheman ägs av
@@ -106,6 +106,13 @@ AS $BODY$
  *                        och som har gs_r_-uppgifter i hex_rolluppgifter.
  *                        Lyssnaren är idempotent, så det är säkert att alltid
  *                        skicka notifieringen.
+ *
+ *   avvikande_srid       Bygger om hex_avvikande_srid mot hex_srid(): tabeller
+ *                        med annat SRID registreras, rader för tabeller som nu
+ *                        har rätt SRID eller inte finns kvar tas bort. Behövs
+ *                        när hex_installningar.srid ändras. Returnerar
+ *                        'registrerad: SRID N', 'avregistrerad' eller
+ *                        'redan finns'.
  *
  * Funktionen är idempotent – befintliga triggers och rättigheter rörs inte
  * i onödan. Returnerar en rad per undersökt åtgärd med resultatet
@@ -1128,6 +1135,84 @@ BEGIN
         atgard       := 'notifiering skickad';
         RETURN NEXT;
     END LOOP;
+
+    -- -------------------------------------------------------------------------
+    -- 11. avvikande_srid
+    --    Bygger om hex_avvikande_srid mot aktuellt hex_srid(). Triggrarna
+    --    registrerar bara när en tabell skapas eller får sin geometrikolumn, så
+    --    tre fall fångas bara här:
+    --      a) hex_installningar.srid har ändrats – befintliga tabeller i det
+    --         gamla koordinatsystemet ska in, tabeller i det nya ska ut
+    --      b) en tabell har transformerats till rätt SRID i efterhand
+    --      c) en tabell skapades förbi event-triggern
+    --    Rader för tabeller som inte längre finns tas också bort.
+    --    Historiktabeller (h_typ) undantas, precis som i triggrarna.
+    --    En rad vars SRID redan stämmer lämnas orörd, så att registrerad och
+    --    registrerad_av står kvar från när avvikelsen upptäcktes.
+    -- -------------------------------------------------------------------------
+    FOR r IN
+        SELECT gc.f_table_schema::text AS s,
+               gc.f_table_name::text   AS t,
+               gc.srid                 AS srid,
+               a.srid                  AS registrerat_srid
+        FROM   public.geometry_columns gc
+        JOIN   pg_namespace n ON n.nspname = gc.f_table_schema
+        JOIN   pg_class     c ON c.relnamespace = n.oid
+                             AND c.relname      = gc.f_table_name
+                             AND c.relkind      = 'r'
+        LEFT JOIN public.hex_avvikande_srid a
+               ON a.schema_namn = gc.f_table_schema
+              AND a.tabell_namn = gc.f_table_name
+        WHERE  gc.f_geometry_column = 'geom'
+          AND  gc.f_table_schema ~ schema_regex
+          AND  gc.srid <> public.hex_srid()
+          AND  NOT EXISTS (
+                   SELECT 1
+                   FROM   pg_attribute h
+                   WHERE  h.attrelid = c.oid
+                     AND  h.attname  = 'h_typ'
+                     AND  NOT h.attisdropped
+               )
+        ORDER BY 1, 2
+    LOOP
+        schema_namn  := r.s;
+        tabell_namn  := r.t;
+        trigger_namn := 'avvikande_srid';
+
+        IF r.registrerat_srid IS NOT DISTINCT FROM r.srid THEN
+            atgard := 'redan finns';
+        ELSE
+            INSERT INTO public.hex_avvikande_srid (schema_namn, tabell_namn, srid)
+            VALUES (r.s, r.t, r.srid)
+            ON CONFLICT ON CONSTRAINT hex_avvikande_srid_pkey
+                DO UPDATE SET srid           = EXCLUDED.srid,
+                              registrerad    = now(),
+                              registrerad_av = current_user;
+            atgard := format('registrerad: SRID %s', r.srid);
+        END IF;
+        RETURN NEXT;
+    END LOOP;
+
+    -- Rader som inte längre avviker: tabellen finns inte, har inte längre en
+    -- geom-kolumn, eller har nu rätt SRID.
+    FOR r IN
+        DELETE FROM public.hex_avvikande_srid a
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM   public.geometry_columns gc
+            WHERE  gc.f_table_schema    = a.schema_namn
+              AND  gc.f_table_name      = a.tabell_namn
+              AND  gc.f_geometry_column = 'geom'
+              AND  gc.srid <> public.hex_srid()
+        )
+        RETURNING a.schema_namn AS s, a.tabell_namn AS t
+    LOOP
+        schema_namn  := r.s;
+        tabell_namn  := r.t;
+        trigger_namn := 'avvikande_srid';
+        atgard       := 'avregistrerad';
+        RETURN NEXT;
+    END LOOP;
 END;
 $BODY$;
 
@@ -1164,6 +1249,7 @@ superanvändare som förbigick event-triggern.
 Korrigerar objektägare (tabeller, vyer, materialiserade vyer, sekvenser,
 fremmande tabeller, funktioner) i Hex-scheman vars ägare inte är hex_systemagare().
 Skickar pg_notify för GeoServer-publicering (gs_r_-uppgifter krävs).
+Bygger om hex_avvikande_srid mot hex_srid() (hex_installningar.srid).
 Schemaprefix hämtas från hex_standardiserade_skyddsnivaer – egna prefix fungerar
 utan kodändringar. Idempotent. Anropas av installeraren efter varje
 installation/uppgradering.';

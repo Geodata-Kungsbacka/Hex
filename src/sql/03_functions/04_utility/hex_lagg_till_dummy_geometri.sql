@@ -20,11 +20,15 @@ AS $BODY$
  * En tom tabell ger NULL → QGIS visar en manuell dialogruta där användaren
  * måste ange geometrikolumn och SRID. En dummy-rad löser detta.
  *
- * Dummy-koordinater (EPSG 3007, SWEREF99 12 00, Kungsbacka-området):
- *   Punkt/linje/polygon centrerad kring (160000, 6395000).
- *   Geometrin är 100 × 100 m och uppfyller hex_validera_geometri()-kravet
- *   på _kba_-tabeller (giltig, ej tom, inga duplicerade punkter,
- *   inga kurvsegment).
+ * Dummy-koordinater läses från hex_installningar:
+ *   Punkt/linje/polygon med nedre vänstra hörnet i (dummy_x, dummy_y), i
+ *   koordinatsystemet hex_installningar.srid. Linjen och polygonen spänner
+ *   dummy_storlek enheter i x och y. Standard är (160000, 6395000) och 100 i
+ *   EPSG 3007 (SWEREF99 12 00, Kungsbacka-området), dvs. 100 × 100 m.
+ *   Har tabellen ett annat SRID transformeras geometrin dit, så att dummyn
+ *   hamnar på samma plats. SRID 0 (okänt) får koordinaterna som de är.
+ *   Geometrin uppfyller hex_validera_geometri()-kravet på _kba_-tabeller
+ *   (giltig, ej tom, inga duplicerade punkter, inga kurvsegment).
  *
  * LIVSCYKEL
  *   Dummy-raden registreras i hex_dummy_geometrier.
@@ -37,36 +41,57 @@ AS $BODY$
  * stoppar inte tabellskapandet.
  ******************************************************************************/
 DECLARE
-    dummy_wkt text;
-    dummy_gid bigint;
+    inst       public.hex_installningar;
+    x0         double precision;
+    y0         double precision;
+    x1         double precision;
+    y1         double precision;
+    dummy_geom geometry;
+    dummy_gid  bigint;
 BEGIN
-    -- Välj WKT baserat på geometrityp (typ_basal är utan dimensionssuffix)
-    dummy_wkt := CASE p_geometriinfo.typ_basal
+    SELECT * INTO STRICT inst FROM public.hex_installningar;
+    x0 := inst.dummy_x;
+    y0 := inst.dummy_y;
+    x1 := inst.dummy_x + inst.dummy_storlek;
+    y1 := inst.dummy_y + inst.dummy_storlek;
+
+    -- Välj geometri baserat på geometrityp (typ_basal är utan dimensionssuffix).
+    -- Byggs i inställningarnas koordinatsystem och transformeras nedan.
+    dummy_geom := CASE p_geometriinfo.typ_basal
         WHEN 'POINT'
-            THEN 'POINT(160000 6395000)'
+            THEN ST_SetSRID(ST_MakePoint(x0, y0), inst.srid)
         WHEN 'MULTIPOINT'
-            THEN 'MULTIPOINT((160000 6395000))'
+            THEN ST_Multi(ST_SetSRID(ST_MakePoint(x0, y0), inst.srid))
         WHEN 'LINESTRING'
-            THEN 'LINESTRING(160000 6395000, 160100 6395100)'
+            THEN ST_SetSRID(ST_MakeLine(ST_MakePoint(x0, y0), ST_MakePoint(x1, y1)), inst.srid)
         WHEN 'MULTILINESTRING'
-            THEN 'MULTILINESTRING((160000 6395000, 160100 6395100))'
+            THEN ST_Multi(ST_SetSRID(ST_MakeLine(ST_MakePoint(x0, y0), ST_MakePoint(x1, y1)), inst.srid))
         WHEN 'POLYGON'
-            THEN 'POLYGON((160000 6395000, 160100 6395000, 160100 6395100, 160000 6395100, 160000 6395000))'
+            THEN ST_MakeEnvelope(x0, y0, x1, y1, inst.srid)
         WHEN 'MULTIPOLYGON'
-            THEN 'MULTIPOLYGON(((160000 6395000, 160100 6395000, 160100 6395100, 160000 6395100, 160000 6395000)))'
+            THEN ST_Multi(ST_MakeEnvelope(x0, y0, x1, y1, inst.srid))
         ELSE
             -- Fallback för GEOMETRY och okända typer – ta polygon som är mest
             -- "universell" i termer av visualisering i QGIS
-            'POLYGON((160000 6395000, 160100 6395000, 160100 6395100, 160000 6395100, 160000 6395000))'
+            ST_MakeEnvelope(x0, y0, x1, y1, inst.srid)
     END;
 
+    -- Tabell i annat koordinatsystem än inställningen: flytta dummyn dit, så
+    -- att den hamnar på samma plats. SRID 0 går inte att transformera till –
+    -- koordinaterna behålls då som de är.
+    IF p_geometriinfo.srid = 0 THEN
+        dummy_geom := ST_SetSRID(dummy_geom, 0);
+    ELSIF p_geometriinfo.srid <> inst.srid THEN
+        dummy_geom := ST_Transform(dummy_geom, p_geometriinfo.srid);
+    END IF;
+
     -- Infoga dummy-raden (INSERT INTO geom-kolumnen, övriga kolumner har defaults).
-    -- ST_GeomFromText skapar 2D-geometri; PostGIS lägger automatiskt till Z=0
-    -- om kolumntypen kräver det (PointZ, PolygonZ etc.).
+    -- Geometrin är 2D; PostGIS lägger automatiskt till Z=0 om kolumntypen kräver
+    -- det (PointZ, PolygonZ etc.).
     EXECUTE format(
-        'INSERT INTO %I.%I (geom) VALUES (ST_GeomFromText($1, $2)) RETURNING gid',
+        'INSERT INTO %I.%I (geom) VALUES ($1) RETURNING gid',
         p_schema_namn, p_tabell_namn
-    ) INTO dummy_gid USING dummy_wkt, p_geometriinfo.srid;
+    ) INTO dummy_gid USING dummy_geom;
 
     -- Registrera dummy-gid för framtida städning
     INSERT INTO public.hex_dummy_geometrier (schema_namn, tabell_namn, gid)
@@ -110,7 +135,8 @@ $$;
 COMMENT ON FUNCTION public.hex_lagg_till_dummy_geometri(text, text, hex_geom_info)
     IS 'Lägger till en minimal dummy-geometrirad i en geometritabell för att QGIS
 ska kunna identifiera geometritypen via normal DB-anslutning (utan manuell dialog).
-Dummy-koordinaterna ligger i Kungsbacka-området (EPSG 3007, ~160000 6395000) och
+Dummy-koordinaterna läses från hex_installningar (dummy_x, dummy_y, dummy_storlek i
+hex_installningar.srid) och transformeras till tabellens SRID vid behov. Geometrin
 uppfyller alla hex_validera_geometri()-krav. Dummy-gid registreras i hex_dummy_geometrier
 och en AFTER INSERT-trigger (hex_ta_bort_dummy) läggs till för att automatiskt
 städa bort dummyn när den första riktiga raden infogats. Fel loggas som NOTICE

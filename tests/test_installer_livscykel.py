@@ -177,6 +177,19 @@ class TestUppgradering(unittest.TestCase):
             "INSERT INTO public.hex_grupprattigheter (ad_grupproll, hex_roll, beskrivning)"
             " VALUES ('ad_livscykel', 'r_sk0_ext_livscykel', 'Tillagd av DBA')"
         )
+        # 4. Enradig inställningstabell (PRESERVE_CONFIG med nyckel id). Tabellen
+        #    i 3007 skapas före bytet och är därför inte registrerad som
+        #    avvikande. Den kommer bara in om underhållet efter återställningen
+        #    ser det återställda SRID:t.
+        cur.execute("CREATE SCHEMA sk0_kba_installning")
+        cur.execute(
+            "CREATE TABLE sk0_kba_installning.gammal_srid_p"
+            " (namn text, geom geometry(Point, 3007))"
+        )
+        cur.execute(
+            "UPDATE public.hex_installningar"
+            " SET srid = 3006, dummy_x = 330000, dummy_y = 6380000, dummy_storlek = 50"
+        )
         conn.close()
 
         install_hex.upgrade(_db_config(), base_path=str(PROJECT_ROOT))
@@ -192,6 +205,21 @@ class TestUppgradering(unittest.TestCase):
             " WHERE kolumnnamn = 'skapad_tidpunkt'"
         )
         self.assertEqual(rader, [("CURRENT_TIMESTAMP",)])
+
+    def test_installningar_bevaras(self):
+        """hex_installningar har en rad; alla dess värden ska överleva."""
+        rader = _fraga(
+            "SELECT srid, dummy_x, dummy_y, dummy_storlek FROM public.hex_installningar"
+        )
+        self.assertEqual(rader, [(3006, 330000.0, 6380000.0, 50.0)])
+
+    def test_avvikande_srid_byggs_mot_aterstallt_srid(self):
+        """Underhållet efter återställningen ska se srid = 3006, inte standardvärdet."""
+        rader = _fraga(
+            "SELECT srid FROM public.hex_avvikande_srid"
+            " WHERE schema_namn = 'sk0_kba_installning' AND tabell_namn = 'gammal_srid_p'"
+        )
+        self.assertEqual(rader, [(3007,)])
 
     def test_egen_tillagd_rad_bevaras(self):
         """En rad DBA lagt till ska finnas kvar efter uppgradering."""
@@ -425,6 +453,7 @@ class TestOminstallationBevararKonfig(unittest.TestCase):
             " SET beskrivning = 'DBA-anpassad', rolltyp = 'write'"
             " WHERE rollnamn = 'gs_r_{schema}'"
         )
+        cur.execute("UPDATE public.hex_installningar SET srid = 3006")
         # Det Hex äger: r_ ska tvingas tillbaka till NOLOGIN.
         cur.execute(
             "UPDATE public.hex_standardiserade_roller"
@@ -446,6 +475,10 @@ class TestOminstallationBevararKonfig(unittest.TestCase):
             " WHERE kolumnnamn = 'skapad_tidpunkt'"
         )
         self.assertEqual(rader, [("CURRENT_TIMESTAMP", True, True)])
+
+    def test_installningar_bevaras(self):
+        """INSERT:en i hex_installningar.sql får inte skriva över DBA:ns SRID."""
+        self.assertEqual(_fraga("SELECT srid FROM public.hex_installningar"), [(3006,)])
 
     def test_avstangd_anonym_lasning_bevaras(self):
         """Engångsmigreringen av sk0 får inte avfyras vid varje installation."""
