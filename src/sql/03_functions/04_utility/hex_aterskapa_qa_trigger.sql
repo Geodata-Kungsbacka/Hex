@@ -30,7 +30,9 @@ AS $BODY$
  *
  * RETURVÄRDE:
  * - true om triggerfunktionen återskapades, annars false (fel loggas som WARNING
- *   men kastas inte vidare - anroparen ska inte rulla tillbaka DDL:en för detta)
+ *   men kastas inte vidare). Anroparen avgör vad false betyder:
+ *   hex_synka_historik() avbryter hela ALTER TABLE, eftersom en trigger som
+ *   inte speglar tabellen tappar historik tyst.
  ******************************************************************************/
 DECLARE
     kolumn_lista          text;

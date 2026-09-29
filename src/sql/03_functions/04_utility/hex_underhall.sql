@@ -116,10 +116,11 @@ AS $BODY$
  *                        'redan finns'.
  *
  * Funktionen är idempotent – befintliga triggers och rättigheter rörs inte
- * i onödan. Returnerar en rad per undersökt åtgärd med resultatet
+ * i onödan. Returnerar en rad per undersökt åtgärd med resultatet, t.ex.
  * 'skapad'/'beviljad'/'uppdaterade' eller 'redan finns'. Åtgärden
  * gid_primarnyckel kan därutöver returnera 'unik skapad', 'dubbletter: N'
- * eller 'fel: <meddelande>'.
+ * eller 'fel: <meddelande>', historiksynk 'redan synkad' eller
+ * 'synkad: N ändringar', och afvaktande_geometri 'slutförd'.
  *
  * Ingen åtgärd ändrar användardata.
  ******************************************************************************/
@@ -1236,6 +1237,9 @@ COMMENT ON FUNCTION public.hex_underhall()
   hex_hantera_std_roller/hex_hantera_ny_tabell.
 Återkopplar saknade rad-nivå-triggers (hex_tvinga_gid, hex_tvinga_anvandarvarden, hex_kontrollera_geom,
 hex_ta_bort_dummy, trg_<tabell>_qa).
+Lägger PRIMARY KEY (gid) på tabeller som saknar den (dubbletter rapporteras, rörs inte).
+Slutför afvaktande FME-tabeller som redan har geom, och synkar varje
+historiktabell med sin modertabell via hex_synka_historik().
 Verifierar och reparerar alla fyra roller per schema:
   r_{schema}/w_{schema}       NOLOGIN behörighetsgrupper – tilldelas AD-användare
   gs_r_{schema}/gs_w_{schema} LOGIN GeoServer-tjänstekonton – i hex_geoserver_roller

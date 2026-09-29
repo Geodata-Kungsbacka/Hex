@@ -70,4 +70,4 @@ COMMENT ON COLUMN public.hex_metadata.created_at IS
 COMMENT ON COLUMN public.hex_metadata.created_by IS
     'Inloggningsrollen (session_user) som skapade tabellen. NULL för poster
      registrerade innan kolumnen fanns. Ändras inte vid ON CONFLICT DO UPDATE i
-     hex_skapa_historik_qa(), så den som skapade tabellen först står kvar.';
+     hex_registrera_metadata(), så den som skapade tabellen först står kvar.';

@@ -288,6 +288,27 @@ fil tjänsten faktiskt läste.
 
 ---
 
+## Datastorernas anslutningspool
+
+Lyssnaren sätter samma poolinställningar på varje datastore den skapar eller
+skriver om. Ändras de för hand i GeoServers gränssnitt skrivs de tillbaka vid
+nästa avstämning.
+
+| Parameter | Värde | Effekt |
+|---|---|---|
+| `max connections` | 10 | Tak per datastore |
+| `min connections` | 0 | Inga anslutningar hålls öppna när lagret inte används |
+| `Max connection idle time` | 300 s | Oanvända anslutningar stängs efter fem minuter |
+| `Evictor run periodicity` | 60 s | Hur ofta poolen gallras |
+| `Evictor tests per run` | 10 | Anslutningar som prövas per gallring |
+| `Connection timeout` | 10 s | Väntan på en ledig anslutning |
+| `validate connections`, `Test while idle` | `true` | Döda anslutningar upptäcks innan de lämnas ut |
+
+Varje publicerat schema har två datastores (läs och skriv), så taket per schema
+är 20 anslutningar. Räkna med det mot `max_connections` i PostgreSQL.
+
+---
+
 ## Datastore-autentisering
 
 GeoServer ansluter till PostgreSQL via direkta PostGIS-datastores (inte JNDI).
