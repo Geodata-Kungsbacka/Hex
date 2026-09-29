@@ -73,9 +73,9 @@ BEGIN
            forvantat_suffix := public.hex_geometrisuffix('GEOMETRY');
    END CASE;
 
-   -- Validera v-prefix och suffix. Suffixet jämförs exakt: i LIKE är _ ett
-   -- jokertecken, så '%_p' godtog även t.ex. "v_kartap".
-   IF NOT (p_vy_namn LIKE 'v_%' AND
+   -- Validera v-prefix och suffix. Båda jämförs exakt: i LIKE är _ ett
+   -- jokertecken, så 'v_%' godtog t.ex. "vagar_l" och '%_p' "v_kartap".
+   IF NOT (left(p_vy_namn, 2) = 'v_' AND
           (forvantat_suffix = '' OR begart_suffix IS NOT DISTINCT FROM forvantat_suffix)) THEN
        
        -- Om geometritransformation OCH generisk geometri, ge hjälpsamt meddelande

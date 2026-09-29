@@ -5,7 +5,7 @@
 -- (suffix_punkt, suffix_linje, suffix_yta, suffix_ovrigt):
 --   1  hex_geometrisuffix() och hex_tabellsuffix() med standardvärden
 --   2  CHECK-villkoren på suffixkolumnerna
---   3  Exakt suffixjämförelse (_ är inte ett jokertecken)
+--   3  Exakt jämförelse av suffix och vyprefixet v_ (_ är inte ett jokertecken)
 --   4  Egna suffix: tabeller, vyer och tvåstegsmönstret följer inställningen
 --
 -- Konvention: NOTICE = PASSED/INFO, WARNING = FAILED
@@ -112,6 +112,19 @@ BEGIN
         RAISE NOTICE 'TEST 3b PASSED: punkttabellen "kartor_p" accepteras';
     EXCEPTION WHEN OTHERS THEN
         RAISE WARNING 'TEST 3b FAILED: kartor_p avvisades: %', SQLERRM;
+    END;
+    -- Prefixet v_: LIKE 'v_%' godtog tidigare "vagar_p" (_ matchade "a")
+    BEGIN
+        EXECUTE 'CREATE VIEW sk0_ext_suffixtest.vagar_p AS SELECT gid, geom FROM sk0_ext_suffixtest.kartor_p';
+        RAISE WARNING 'TEST 3c FAILED: vyn "vagar_p" (utan v_) accepterades';
+    EXCEPTION WHEN OTHERS THEN
+        RAISE NOTICE 'TEST 3c PASSED: vyn "vagar_p" avvisas';
+    END;
+    BEGIN
+        EXECUTE 'CREATE VIEW sk0_ext_suffixtest.v_kartor_p AS SELECT gid, geom FROM sk0_ext_suffixtest.kartor_p';
+        RAISE NOTICE 'TEST 3d PASSED: vyn "v_kartor_p" accepteras';
+    EXCEPTION WHEN OTHERS THEN
+        RAISE WARNING 'TEST 3d FAILED: v_kartor_p avvisades: %', SQLERRM;
     END;
 END $$;
 
