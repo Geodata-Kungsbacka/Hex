@@ -329,6 +329,12 @@ class TestUppgraderingBevararDrifttillstand(unittest.TestCase):
             "CREATE TABLE sk0_kba_drift.fel_srid_p"
             " (namn text, geom geometry(Point, 3006))"
         )
+        # Ett känt registreringsdatum, så att det går att se om raden lades
+        # tillbaka eller skapades på nytt under uppgraderingen.
+        cur.execute(
+            "UPDATE public.hex_avvikande_srid SET registrerad = '2020-01-01 00:00+00'"
+            " WHERE schema_namn = 'sk0_kba_drift'"
+        )
         conn.close()
 
         cls.fore = {
@@ -349,6 +355,10 @@ class TestUppgraderingBevararDrifttillstand(unittest.TestCase):
             tabell: _fraga(f"SELECT count(*) FROM public.{tabell}")[0][0]
             for tabell in cls.fore
         }
+        cls.avvikande_registrerad = _fraga(
+            "SELECT registrerad::date::text FROM public.hex_avvikande_srid"
+            " WHERE schema_namn = 'sk0_kba_drift'"
+        )
         cls.metadata_hus_p = _fraga(
             "SELECT parent_schema, parent_table, history_table FROM public.hex_metadata"
             " WHERE parent_table = 'hus_p'"
@@ -371,6 +381,12 @@ class TestUppgraderingBevararDrifttillstand(unittest.TestCase):
                     self.efter[tabell], antal,
                     f"{tabell} tappade rader vid uppgradering",
                 )
+
+    def test_avvikande_srid_behaller_registrerad(self):
+        """REGRESSION: underhållet i install() körde före återställningen och
+        lade in raden på nytt med registrerad = now(). Återställningens ON
+        CONFLICT DO NOTHING kastade sedan den sparade raden."""
+        self.assertEqual(self.avvikande_registrerad, [("2020-01-01",)])
 
     def test_metadata_pekar_pa_ratt_tabell(self):
         self.assertEqual(

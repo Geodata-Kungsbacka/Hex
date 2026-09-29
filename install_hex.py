@@ -648,7 +648,8 @@ def upgrade(db: dict, base_path="."):
         conn.close()
 
     uninstall(db)
-    install(db, base_path)
+    # Underhållet väntar tills återställningen kört, se nedan.
+    install(db, base_path, underhall=False)
 
     # Restore in a fresh connection
     conn = psycopg2.connect(**_conn_params(db))
@@ -659,9 +660,9 @@ def upgrade(db: dict, base_path="."):
         restore_settings(cur, snapshot)
         conn.commit()
 
-        # Underhållet i install() körde mot tomma tillståndstabeller OCH mot
-        # standardkonfigurationen — restore_settings() hade inte kört än. Kör om
-        # det nu när raderna är tillbaka. Två saker hänger på det:
+        # Underhållet körs först nu, när raderna är tillbaka. Kördes det i
+        # install() skulle det se tomma tillståndstabeller och
+        # standardkonfigurationen. Tre saker hänger på det:
         #   * triggers som härleds ur hex_dummy_geometrier återkopplas
         #   * steg 10 i hex_underhall() skickar geoserver_schema-notiser utifrån
         #     hex_standardiserade_skyddsnivaer. Före återställningen står den på
@@ -669,6 +670,10 @@ def upgrade(db: dict, base_path="."):
         #     publiceras_geoserver = true (t.ex. skx) hoppades över. Eftersom
         #     uppgraderingen samtidigt roterar gs_r_/gs_w_-lösenorden blev
         #     GeoServers datastore kvar med gamla uppgifter för just de schemana.
+        #   * steg 11 bygger om hex_avvikande_srid mot hex_installningar.srid.
+        #     Före återställningen står srid på standardvärdet, och raderna
+        #     underhållet lade till skulle få återställningens ON CONFLICT DO
+        #     NOTHING att kasta de sparade raderna – registrerad nollställdes.
         fel = kor_underhall(cur, conn)
         if fel:
             skriv_varning(fel)
@@ -748,8 +753,13 @@ def kor_underhall(cur, conn) -> str | None:
     return None
 
 
-def install(db: dict, base_path="."):
-    """Installerar alla Hex-komponenter till en databas."""
+def install(db: dict, base_path=".", underhall=True):
+    """Installerar alla Hex-komponenter till en databas.
+
+    underhall=False hoppar över hex_underhall() efter installationen. Det
+    används av upgrade(), som kör underhållet först när inställningar och
+    drifttillstånd är återställda.
+    """
     owner_role = db.get("owner_role")
 
     print("=" * 60)
@@ -860,7 +870,7 @@ COMMENT ON FUNCTION public.hex_systemagare()
         # Underhåll: verifiera och reparera triggers, roller och behörigheter
         # på befintliga tabeller och scheman (separat steg så att ett fel här
         # aldrig rullar tillbaka huvudinstallationen).
-        fel = kor_underhall(cur, conn)
+        fel = kor_underhall(cur, conn) if underhall else None
         if fel:
             varningar.append(fel)
             skriv_varning(fel)
