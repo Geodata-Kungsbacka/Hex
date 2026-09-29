@@ -146,7 +146,7 @@ BEGIN
             RAISE NOTICE 'Steg 1/11: Validerar tabell';
 
             IF ar_systemanvandare
-               AND tabell_namn ~ '_[plyg]$'
+               AND public.hex_tabellsuffix(tabell_namn) IS NOT NULL
                AND NOT EXISTS (
                    SELECT 1 FROM geometry_columns
                    WHERE f_table_schema = schema_namn

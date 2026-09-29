@@ -63,6 +63,8 @@ INSTALL_ORDER = [
     # hex_srid() läser hex_installningar – måste skapas efter tabellen
     "src/sql/00_config/hex_srid.sql",
     "src/sql/00_config/hex_srid_namn.sql",
+    "src/sql/00_config/hex_geometrisuffix.sql",
+    "src/sql/00_config/hex_tabellsuffix.sql",
     "src/sql/02_tables/hex_standardiserade_kolumner.sql",
     "src/sql/02_tables/hex_standardiserade_roller.sql",
     # hex_geoserver_rollnamn() läser hex_standardiserade_roller – måste skapas efter tabellen
@@ -204,6 +206,8 @@ DROP FUNCTION IF EXISTS public.hex_hamta_geometri_definition(text, text);
 -- Konfigurationsfunktioner
 DROP FUNCTION IF EXISTS public.hex_schema_regex();
 DROP FUNCTION IF EXISTS public.hex_srid_namn(integer);
+DROP FUNCTION IF EXISTS public.hex_tabellsuffix(text);
+DROP FUNCTION IF EXISTS public.hex_geometrisuffix(text);
 DROP FUNCTION IF EXISTS public.hex_srid();
 DROP FUNCTION IF EXISTS public.hex_geoserver_rollnamn(text, text);
 DROP FUNCTION IF EXISTS public.hex_systemagare();
@@ -254,7 +258,10 @@ PRESERVE_CONFIG = {
     },
     "hex_installningar": {
         "key": "id",
-        "restore": ["srid", "dummy_x", "dummy_y", "dummy_storlek"],
+        "restore": [
+            "srid", "dummy_x", "dummy_y", "dummy_storlek",
+            "suffix_punkt", "suffix_linje", "suffix_yta", "suffix_ovrigt",
+        ],
     },
     "hex_standardiserade_kolumner": {
         "key": "kolumnnamn",

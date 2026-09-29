@@ -212,7 +212,8 @@ class TestUppgradering(unittest.TestCase):
         )
         cur.execute(
             "UPDATE public.hex_installningar"
-            " SET srid = 3006, dummy_x = 330000, dummy_y = 6380000, dummy_storlek = 50"
+            " SET srid = 3006, dummy_x = 330000, dummy_y = 6380000, dummy_storlek = 50,"
+            "     suffix_punkt = '_pkt'"
         )
         # 5. GeoServers läskonto flyttat till en egen rollmall. Återställningen
         #    skriver tillbaka raderna en i taget, så den unika markeringen finns
@@ -237,9 +238,10 @@ class TestUppgradering(unittest.TestCase):
     def test_installningar_bevaras(self):
         """hex_installningar har en rad; alla dess värden ska överleva."""
         rader = _fraga(
-            "SELECT srid, dummy_x, dummy_y, dummy_storlek FROM public.hex_installningar"
+            "SELECT srid, dummy_x, dummy_y, dummy_storlek, suffix_punkt, suffix_yta"
+            " FROM public.hex_installningar"
         )
-        self.assertEqual(rader, [(3006, 330000.0, 6380000.0, 50.0)])
+        self.assertEqual(rader, [(3006, 330000.0, 6380000.0, 50.0, "_pkt", "_y")])
 
     def test_flyttat_laskonto_bevaras(self):
         self.assertEqual(_laskonto(), [(EGEN_LASMALL,)])

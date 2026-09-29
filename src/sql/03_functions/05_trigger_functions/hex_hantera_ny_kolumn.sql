@@ -676,19 +676,9 @@ BEGIN
                     forvantat_suffix text;
                     faktiskt_suffix   text;
                 BEGIN
-                    forvantat_suffix := CASE
-                        WHEN geometriinfo.typ_basal IN ('POINT', 'MULTIPOINT')           THEN '_p'
-                        WHEN geometriinfo.typ_basal IN ('LINESTRING', 'MULTILINESTRING') THEN '_l'
-                        WHEN geometriinfo.typ_basal IN ('POLYGON', 'MULTIPOLYGON')       THEN '_y'
-                        ELSE '_g'
-                    END;
-                    faktiskt_suffix := CASE
-                        WHEN tabell_namn ~ '_p$' THEN '_p'
-                        WHEN tabell_namn ~ '_l$' THEN '_l'
-                        WHEN tabell_namn ~ '_y$' THEN '_y'
-                        WHEN tabell_namn ~ '_g$' THEN '_g'
-                        ELSE NULL
-                    END;
+                    -- Suffixen läses från hex_installningar (suffix_*)
+                    forvantat_suffix := public.hex_geometrisuffix(geometriinfo.typ_basal);
+                    faktiskt_suffix  := public.hex_tabellsuffix(tabell_namn);
 
                     IF faktiskt_suffix IS NOT NULL AND faktiskt_suffix <> forvantat_suffix THEN
                         RAISE EXCEPTION
@@ -821,7 +811,7 @@ BEGIN
             -- NOT tabell_namn ~ '_h$': historiktabeller undantas helt. De har alltid
             -- en geom-kolumn (kopierad från modertabellen för historik) men får
             -- aldrig ett GiST-index (behövs inte för historik) och följer aldrig
-            -- p/l/y/g-suffixkonventionen (de heter alltid <modertabell>_h). Utan
+            -- geometrisuffixkonventionen (de heter alltid <modertabell>_h). Utan
             -- detta undantag tolkas "geom utan GiST-index" felaktigt som "ny,
             -- obehandlad geometrikolumn" och RAISE EXCEPTION nedan avvisar
             -- historiktabellens namn – vilket kraschar VARJE ALTER TABLE på en
@@ -838,14 +828,11 @@ BEGIN
             DECLARE
                 forvantat_suffix text;
             BEGIN
-                forvantat_suffix := CASE
-                    WHEN geometriinfo.typ_basal IN ('POINT', 'MULTIPOINT')           THEN '_p'
-                    WHEN geometriinfo.typ_basal IN ('LINESTRING', 'MULTILINESTRING') THEN '_l'
-                    WHEN geometriinfo.typ_basal IN ('POLYGON', 'MULTIPOLYGON')       THEN '_y'
-                    ELSE '_g'
-                END;
+                -- Suffixen läses från hex_installningar (suffix_*). Jämförelsen är
+                -- exakt: i LIKE är _ ett jokertecken, så '%_p' godtog t.ex. "kartap".
+                forvantat_suffix := public.hex_geometrisuffix(geometriinfo.typ_basal);
 
-                IF NOT tabell_namn LIKE '%' || forvantat_suffix THEN
+                IF public.hex_tabellsuffix(tabell_namn) IS DISTINCT FROM forvantat_suffix THEN
                     RAISE EXCEPTION
                         E'[hex_hantera_ny_kolumn] Tabellen %.% innehåller geometri (%) men saknar korrekt suffix.\n'
                         '[hex_hantera_ny_kolumn] Kräver suffix: %\n'
@@ -857,7 +844,9 @@ BEGIN
                         schema_namn, tabell_namn,
                         geometriinfo.typ_basal,
                         forvantat_suffix,
-                        regexp_replace(tabell_namn, '_[plyg]$', '') || forvantat_suffix;
+                        left(tabell_namn,
+                             length(tabell_namn) - length(coalesce(public.hex_tabellsuffix(tabell_namn), '')))
+                            || forvantat_suffix;
                 END IF;
 
                 RAISE NOTICE '[hex_hantera_ny_kolumn]   ✓ Suffix % stämmer med geometrityp %',

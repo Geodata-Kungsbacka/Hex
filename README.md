@@ -47,6 +47,22 @@ Systemet kräver specifika suffix baserat på geometrityp:
 - `_g` för generiska eller blandade geometrier
 - Tabeller utan geometri får inte använda dessa suffix
 
+Suffixen ovan är standardvärden och ställs in i `hex_installningar`
+(`suffix_punkt`, `suffix_linje`, `suffix_yta`, `suffix_ovrigt`). Samma suffix
+gäller vyer. Ett suffix måste vara ett understreck följt av gemena bokstäver
+eller siffror, de fyra måste skilja sig åt och `_h` är reserverat för
+historiktabeller:
+
+```sql
+UPDATE public.hex_installningar
+SET    suffix_punkt = '_pkt', suffix_linje = '_lin', suffix_yta = '_yta', suffix_ovrigt = '_geo';
+```
+
+Ändringen gäller tabeller och vyer som skapas därefter. Befintliga döps inte om,
+men de godtas fortfarande av triggrarna så länge geometrikolumnen inte byts ut.
+En vy som återskapas med `CREATE OR REPLACE VIEW` valideras dock mot de nya
+suffixen. Inställningen bevaras över `--upgrade` och ominstallation.
+
 ### 3. **Automatisk rollhantering**
 Vilka roller som skapas för ett nytt schema styrs av rollmallarna i `hex_standardiserade_roller`. I standardkonfigurationen finns fyra mallar, som alla matchar samtliga scheman (`schema_uttryck = 'IS NOT NULL'`):
 - `r_schemanamn` — NOLOGIN behörighetsgrupp med läsrättigheter (tilldelas AD-användare och AD-grupper)
@@ -365,6 +381,8 @@ src/sql/02_tables/hex_installningar.sql
 -- hex_srid() läser hex_installningar – måste köras efter tabellen
 src/sql/00_config/hex_srid.sql
 src/sql/00_config/hex_srid_namn.sql
+src/sql/00_config/hex_geometrisuffix.sql
+src/sql/00_config/hex_tabellsuffix.sql
 src/sql/02_tables/hex_standardiserade_kolumner.sql
 src/sql/02_tables/hex_standardiserade_roller.sql
 -- hex_geoserver_rollnamn() läser hex_standardiserade_roller – måste köras efter tabellen
@@ -585,7 +603,7 @@ för samtliga kolumner i tabellen och för standarduppsättningen.
 |---|---|
 | `hex_standardiserade_skyddsnivaer` | Giltiga skyddsnivåprefix, och per prefix `publiceras_geoserver` och `anonym_las` |
 | `hex_standardiserade_datakategorier` | Giltiga datakategoriprefix, och per prefix `hex_validera_geometri` |
-| `hex_installningar` | Databasövergripande inställningar (en rad): förväntat `srid` och dummy-geometrins position (`dummy_x`, `dummy_y`, `dummy_storlek`) |
+| `hex_installningar` | Databasövergripande inställningar (en rad): förväntat `srid`, dummy-geometrins position (`dummy_x`, `dummy_y`, `dummy_storlek`) och geometrisuffixen i tabell- och vynamn (`suffix_punkt`, `suffix_linje`, `suffix_yta`, `suffix_ovrigt`) |
 | `hex_standardiserade_roller` | Rollmallar per schema — se [docs/04_hantera-rollmallar.md](docs/04_hantera-rollmallar.md) |
 | `hex_systemanvandare` | Tvåstegsverktyg som FME — se [docs/01_lagg-till-systemanvandare.md](docs/01_lagg-till-systemanvandare.md) |
 | `hex_grupprattigheter` | AD-grupproll → Hex-roll, tillämpas av `hex_tillampa_grupprattigheter()` — se [docs/02_lagg-till-databasanvandare.md](docs/02_lagg-till-databasanvandare.md) |
@@ -666,7 +684,7 @@ härleda i efterhand, och därför bevaras de över `--upgrade`.
 **Syfte**: Säkerställer att tabeller följer namngivningsstandarden.
 
 **Validering omfattar**:
-- Kontroll av geometrisuffix (_p, _l, _y, _g)
+- Kontroll av geometrisuffix enligt `hex_installningar` (standard _p, _l, _y, _g)
 - Verifiering att endast en geometrikolumn finns
 - Kontroll att geometrikolumnen heter 'geom'
 
@@ -900,6 +918,13 @@ som namnvalideringen använder — `hex_validera_schemanamn()` bygger sitt eget
 `hex_systemagare()` returnerar ägarrollen och genereras av installern ur
 `owner_role` — det är den enda funktionen som inte har en egen fil i
 `INSTALL_ORDER`.
+
+#### `hex_geometrisuffix(typ)` och `hex_tabellsuffix(namn)`
+**Syfte**: `hex_geometrisuffix()` returnerar det suffix en geometrityp ska ha
+enligt `hex_installningar` (t.ex. `_p` för `POINT` och `MULTIPOINTZ`).
+`hex_tabellsuffix()` returnerar det geometrisuffix ett namn slutar med, eller
+`NULL`. Jämförelsen är exakt – tidigare användes `LIKE '%_p'`, där `_` är ett
+jokertecken, så att t.ex. `kartap` godtogs som punkttabell.
 
 #### `hex_srid()` och `hex_srid_namn(srid)`
 **Syfte**: `hex_srid()` returnerar förväntat koordinatsystem ur

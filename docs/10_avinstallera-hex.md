@@ -100,6 +100,8 @@ DROP FUNCTION IF EXISTS public.hex_hamta_geometri_definition(text, text);
 -- 7. Konfigurationsfunktioner
 DROP FUNCTION IF EXISTS public.hex_schema_regex();
 DROP FUNCTION IF EXISTS public.hex_srid_namn(integer);
+DROP FUNCTION IF EXISTS public.hex_tabellsuffix(text);
+DROP FUNCTION IF EXISTS public.hex_geometrisuffix(text);
 DROP FUNCTION IF EXISTS public.hex_srid();
 DROP FUNCTION IF EXISTS public.hex_geoserver_rollnamn(text, text);
 DROP FUNCTION IF EXISTS public.hex_systemagare();

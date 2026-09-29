@@ -11,6 +11,8 @@
 --
 -- Läses av:  hex_srid()                      – förväntat koordinatsystem
 --            hex_lagg_till_dummy_geometri()  – referenspunkt för dummy-rader
+--            hex_geometrisuffix(),
+--            hex_tabellsuffix()              – geometrisuffix i tabell- och vynamn
 
 CREATE TABLE IF NOT EXISTS public.hex_installningar (
     id             boolean          NOT NULL DEFAULT true,
@@ -18,12 +20,32 @@ CREATE TABLE IF NOT EXISTS public.hex_installningar (
     dummy_x        double precision NOT NULL DEFAULT 160000,
     dummy_y        double precision NOT NULL DEFAULT 6395000,
     dummy_storlek  double precision NOT NULL DEFAULT 100,
+    suffix_punkt   text             NOT NULL DEFAULT '_p',
+    suffix_linje   text             NOT NULL DEFAULT '_l',
+    suffix_yta     text             NOT NULL DEFAULT '_y',
+    suffix_ovrigt  text             NOT NULL DEFAULT '_g',
 
     CONSTRAINT hex_installningar_pkey PRIMARY KEY (id),
     CONSTRAINT hex_installningar_en_rad CHECK (id),
     CONSTRAINT hex_installningar_srid_fkey
         FOREIGN KEY (srid) REFERENCES public.spatial_ref_sys (srid),
-    CONSTRAINT hex_installningar_dummy_storlek_positiv CHECK (dummy_storlek > 0)
+    CONSTRAINT hex_installningar_dummy_storlek_positiv CHECK (dummy_storlek > 0),
+    -- Ett understreck följt av gemena bokstäver/siffror. Eftersom inget suffix
+    -- innehåller ett andra understreck kan inget av dem vara slutet på ett
+    -- annat, och hex_tabellsuffix() blir entydig.
+    CONSTRAINT hex_installningar_suffix_format CHECK (
+        suffix_punkt  ~ '^_[a-z0-9]+$' AND suffix_linje  ~ '^_[a-z0-9]+$' AND
+        suffix_yta    ~ '^_[a-z0-9]+$' AND suffix_ovrigt ~ '^_[a-z0-9]+$'
+    ),
+    CONSTRAINT hex_installningar_suffix_unika CHECK (
+        suffix_punkt <> suffix_linje  AND suffix_punkt <> suffix_yta AND
+        suffix_punkt <> suffix_ovrigt AND suffix_linje <> suffix_yta AND
+        suffix_linje <> suffix_ovrigt AND suffix_yta   <> suffix_ovrigt
+    ),
+    -- _h är reserverat för historiktabeller (hex_hantera_ny_tabell)
+    CONSTRAINT hex_installningar_suffix_ej_h CHECK (
+        '_h' NOT IN (suffix_punkt, suffix_linje, suffix_yta, suffix_ovrigt)
+    )
 );
 
 -- Ägaren sätts via hex_systemagare() i stället för ett hårdkodat rollnamn,
@@ -67,3 +89,13 @@ COMMENT ON COLUMN public.hex_installningar.dummy_y IS
 COMMENT ON COLUMN public.hex_installningar.dummy_storlek IS
     'Sidlängd (i srid:s enheter) för dummy-geometrier. Standard 100, dvs. 100 × 100 m i ett
 metriskt system. Sätt ett mindre värde, t.ex. 0.001, för ett geografiskt koordinatsystem.';
+COMMENT ON COLUMN public.hex_installningar.suffix_punkt IS
+    'Namnsuffix för tabeller och vyer med punktgeometri (POINT, MULTIPOINT). Standard _p.
+Gäller nya tabeller och vyer; befintliga döps inte om.';
+COMMENT ON COLUMN public.hex_installningar.suffix_linje IS
+    'Namnsuffix för linjegeometri (LINESTRING, MULTILINESTRING). Standard _l.';
+COMMENT ON COLUMN public.hex_installningar.suffix_yta IS
+    'Namnsuffix för ytgeometri (POLYGON, MULTIPOLYGON). Standard _y.';
+COMMENT ON COLUMN public.hex_installningar.suffix_ovrigt IS
+    'Namnsuffix för övrig geometri (GEOMETRY, GEOMETRYCOLLECTION m.fl.) och för vyer med
+flera geometrikolumner. Standard _g.';

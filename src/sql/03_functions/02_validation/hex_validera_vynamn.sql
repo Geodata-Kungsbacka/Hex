@@ -14,10 +14,12 @@ AS $BODY$
 * 1. Måste börja med v_
 *    Exempel: v_ledningar_p
 *
-* 2. Suffix baserat på vyns geometriinnehåll enligt geometry_columns:
+* 2. Suffix baserat på vyns geometriinnehåll enligt geometry_columns, med
+*    suffixen från hex_installningar (hex_geometrisuffix()):
 *    - Ingen geometri: Inget suffix
-*    - En geometri: _p, _l eller _y baserat på geometrityp
-*    - Flera geometrier: _g
+*    - En geometri: suffix_punkt, suffix_linje eller suffix_yta
+*      (standard _p, _l, _y) baserat på geometrityp
+*    - Flera geometrier: suffix_ovrigt (standard _g)
 *
 * Vid geometritransformationer (ST_-funktioner) måste resultatet
 * explicit typkonverteras för att tydliggöra vilken geometrityp som
@@ -35,8 +37,8 @@ BEGIN
    RAISE NOTICE E'\n=== START hex_validera_vynamn() ===';
    RAISE NOTICE 'Validerar vy %.%', p_schema_namn, p_vy_namn;
 
-   -- Extrahera önskat suffix från vynamnet (sista två tecknen)
-   begart_suffix := right(p_vy_namn, 2);
+   -- Geometrisuffixet vynamnet slutar med, om något
+   begart_suffix := public.hex_tabellsuffix(p_vy_namn);
 
    -- Kontrollera om vyn innehåller geometritransformationer
    SELECT definition ~* 'ST_[A-Za-z]+\s*\(' INTO har_transformation
@@ -64,21 +66,17 @@ BEGIN
            AND f_table_name = p_vy_namn
            LIMIT 1;
            
-           forvantat_suffix := CASE 
-               WHEN geom_typ IN ('POINT', 'MULTIPOINT') THEN '_p'
-               WHEN geom_typ IN ('LINESTRING', 'MULTILINESTRING') THEN '_l'
-               WHEN geom_typ IN ('POLYGON', 'MULTIPOLYGON') THEN '_y'
-               ELSE '_g'
-           END;
-           
-       -- Flera geometrier - alltid _g
+           forvantat_suffix := public.hex_geometrisuffix(geom_typ);
+
+       -- Flera geometrier - alltid suffix_ovrigt (standard _g)
        ELSE
-           forvantat_suffix := '_g';
+           forvantat_suffix := public.hex_geometrisuffix('GEOMETRY');
    END CASE;
 
-   -- Validera v-prefix och suffix
-   IF NOT (p_vy_namn LIKE 'v_%' AND 
-          (forvantat_suffix = '' OR p_vy_namn LIKE '%' || forvantat_suffix)) THEN
+   -- Validera v-prefix och suffix. Suffixet jämförs exakt: i LIKE är _ ett
+   -- jokertecken, så '%_p' godtog även t.ex. "v_kartap".
+   IF NOT (p_vy_namn LIKE 'v_%' AND
+          (forvantat_suffix = '' OR begart_suffix IS NOT DISTINCT FROM forvantat_suffix)) THEN
        
        -- Om geometritransformation OCH generisk geometri, ge hjälpsamt meddelande
        IF har_transformation AND geom_typ = 'GEOMETRY' THEN
@@ -86,12 +84,13 @@ BEGIN
                'Vyn innehåller geometritransformationer (ST_-funktioner).\n'
                'Vid geometritransformationer måste resultatet explicit typkonverteras\n'
                'för att tydliggöra vilken geometrityp som skapas, t.ex:\n'
-               '  ST_Buffer(geom, 100)::geometry(Polygon,%)  -- För suffix _y\n'
-               '  ST_Union(geom)::geometry(LineString,%)     -- För suffix _l\n'
+               '  ST_Buffer(geom, 100)::geometry(Polygon,%)  -- För suffix %\n'
+               '  ST_Union(geom)::geometry(LineString,%)     -- För suffix %\n'
                'Suffix ska sedan matcha den typkonverterade geometritypen (%)',
                p_schema_namn, p_vy_namn,
-               public.hex_srid(), public.hex_srid(),
-               begart_suffix;
+               public.hex_srid(), public.hex_geometrisuffix('POLYGON'),
+               public.hex_srid(), public.hex_geometrisuffix('LINESTRING'),
+               coalesce(begart_suffix, '(inget suffix)');
        ELSE
            RAISE EXCEPTION E'Ogiltigt vynamn "%.%".\n'
                'Vynamn måste börja med v_\n'

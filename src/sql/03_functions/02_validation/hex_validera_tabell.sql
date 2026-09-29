@@ -15,13 +15,14 @@ AS $BODY$
  * geometrikolumner och suffixnamn.
  *
  * För tabeller utan geometri valideras:
- * - Att tabellnamnet INTE slutar med något av de reserverade suffixen
- *   (_p, _l, _y, _g) som är vikta för tabeller med geometri
+ * - Att tabellnamnet INTE slutar med något av de reserverade
+ *   geometrisuffixen (hex_tabellsuffix(), standard _p, _l, _y, _g)
  *
  * För tabeller med geometri valideras:
  * - Att tabellen har exakt en geometrikolumn
  * - Att geometrikolumnen heter 'geom'
- * - Att tabellnamnet har korrekt suffix baserat på geometrityp:
+ * - Att tabellnamnet har korrekt suffix baserat på geometrityp enligt
+ *   hex_geometrisuffix() (hex_installningar.suffix_*). Standard:
  *   _p för (MULTI)POINT
  *   _l för (MULTI)LINESTRING
  *   _y för (MULTI)POLYGON
@@ -71,12 +72,12 @@ BEGIN
 
         -- Kontrollera att inget geometrisuffix används
         -- FIX: Ändrat från RAISE NOTICE till RAISE EXCEPTION
-        IF p_tabell_namn ~ '_[plyg]$' THEN
+        IF public.hex_tabellsuffix(p_tabell_namn) IS NOT NULL THEN
             RAISE EXCEPTION E'[hex_validera_tabell] Ogiltigt tabellnamn "%.%".\n'
-                '[hex_validera_tabell] Tabeller utan geometri får inte använda suffixen _p, _l, _y '
-                'eller _g då dessa är reserverade för tabeller med '
-                'geometrikolumner.',
-                p_schema_namn, p_tabell_namn;
+                '[hex_validera_tabell] Tabeller utan geometri får inte använda suffixet % '
+                'då det är reserverat för tabeller med geometrikolumner '
+                '(hex_installningar.suffix_*).',
+                p_schema_namn, p_tabell_namn, public.hex_tabellsuffix(p_tabell_namn);
         END IF;
         RAISE NOTICE '[hex_validera_tabell]   ✓ Tabellnamn använder inte reserverade geometrisuffix';
 
@@ -133,17 +134,14 @@ BEGIN
     valideringssteg := 'validering av tabellnamnsuffix';
     RAISE NOTICE '[hex_validera_tabell] Steg 6: Validerar tabellnamnets suffix';
     
-    forvantat_suffix := CASE 
-        WHEN p_geometriinfo.typ_basal IN ('POINT', 'MULTIPOINT') THEN '_p'
-        WHEN p_geometriinfo.typ_basal IN ('LINESTRING', 'MULTILINESTRING') THEN '_l'
-        WHEN p_geometriinfo.typ_basal IN ('POLYGON', 'MULTIPOLYGON') THEN '_y'
-        ELSE '_g'
-    END;
-    RAISE NOTICE '[hex_validera_tabell]   » Förväntat suffix för %: %', 
+    forvantat_suffix := public.hex_geometrisuffix(p_geometriinfo.typ_basal);
+    RAISE NOTICE '[hex_validera_tabell]   » Förväntat suffix för %: %',
         p_geometriinfo.typ_basal, forvantat_suffix;
 
-    -- Validera suffix (inga krav på prefix längre)
-    IF NOT p_tabell_namn LIKE '%' || forvantat_suffix THEN
+    -- Validera suffix (inga krav på prefix längre). hex_tabellsuffix() i
+    -- stället för LIKE: i LIKE är _ ett jokertecken, så '%_p' godtog t.ex.
+    -- "kartap" som punkttabell.
+    IF public.hex_tabellsuffix(p_tabell_namn) IS DISTINCT FROM forvantat_suffix THEN
         RAISE EXCEPTION E'[hex_validera_tabell] Ogiltigt tabellnamn "%.%".\n'
             '[hex_validera_tabell] Tabellnamn med geometri måste:\n'
             '[hex_validera_tabell] Sluta med suffix för geometrityp (%)\n'
@@ -184,5 +182,6 @@ $$;
 
 COMMENT ON FUNCTION public.hex_validera_tabell(text, text)
     IS 'Validerar att en tabell följer systemets krav på geometrikolumner och suffixnamn.
-Tabeller utan geometri får INTE använda reserverade suffix (_p, _l, _y, _g).
-Tabeller med geometri MÅSTE ha korrekt suffix baserat på geometrityp.';
+Tabeller utan geometri får INTE använda reserverade suffix (hex_installningar.suffix_*,
+standard _p, _l, _y, _g). Tabeller med geometri MÅSTE ha korrekt suffix baserat på
+geometrityp (hex_geometrisuffix()).';
