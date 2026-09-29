@@ -138,6 +138,30 @@ def tearDownModule():
         print(f"VARNING: kunde inte städa bort {AGARROLL}: {e}", file=sys.stderr)
 
 
+EGEN_LASMALL = "geo_r_{schema}"
+
+
+def _flytta_laskonto(cur):
+    """Flyttar geoserver_konto = 'las' från gs_r_{schema} till en egen rollmall."""
+    cur.execute(
+        "UPDATE public.hex_standardiserade_roller SET geoserver_konto = NULL"
+        " WHERE geoserver_konto = 'las'"
+    )
+    cur.execute(
+        "INSERT INTO public.hex_standardiserade_roller"
+        " (rollnamn, rolltyp, schema_uttryck, kan_logga_in, arvs_fran, geoserver_konto)"
+        " VALUES (%s, 'read', 'IS NOT NULL', true, 'r_{schema}', 'las')",
+        (EGEN_LASMALL,),
+    )
+
+
+def _laskonto():
+    return _fraga(
+        "SELECT rollnamn FROM public.hex_standardiserade_roller"
+        " WHERE geoserver_konto = 'las'"
+    )
+
+
 @unittest.skipUnless(KAN_KORA, "kräver superuser-anslutning till PostgreSQL")
 class TestUppgradering(unittest.TestCase):
     """
@@ -190,6 +214,10 @@ class TestUppgradering(unittest.TestCase):
             "UPDATE public.hex_installningar"
             " SET srid = 3006, dummy_x = 330000, dummy_y = 6380000, dummy_storlek = 50"
         )
+        # 5. GeoServers läskonto flyttat till en egen rollmall. Återställningen
+        #    skriver tillbaka raderna en i taget, så den unika markeringen finns
+        #    tillfälligt på två rader (DEFERRABLE-constrainten).
+        _flytta_laskonto(cur)
         conn.close()
 
         install_hex.upgrade(_db_config(), base_path=str(PROJECT_ROOT))
@@ -212,6 +240,9 @@ class TestUppgradering(unittest.TestCase):
             "SELECT srid, dummy_x, dummy_y, dummy_storlek FROM public.hex_installningar"
         )
         self.assertEqual(rader, [(3006, 330000.0, 6380000.0, 50.0)])
+
+    def test_flyttat_laskonto_bevaras(self):
+        self.assertEqual(_laskonto(), [(EGEN_LASMALL,)])
 
     def test_avvikande_srid_byggs_mot_aterstallt_srid(self):
         """Underhållet efter återställningen ska se srid = 3006, inte standardvärdet."""
@@ -470,6 +501,7 @@ class TestOminstallationBevararKonfig(unittest.TestCase):
             " WHERE rollnamn = 'gs_r_{schema}'"
         )
         cur.execute("UPDATE public.hex_installningar SET srid = 3006")
+        _flytta_laskonto(cur)
         # Det Hex äger: r_ ska tvingas tillbaka till NOLOGIN.
         cur.execute(
             "UPDATE public.hex_standardiserade_roller"
@@ -491,6 +523,11 @@ class TestOminstallationBevararKonfig(unittest.TestCase):
             " WHERE kolumnnamn = 'skapad_tidpunkt'"
         )
         self.assertEqual(rader, [("CURRENT_TIMESTAMP", True, True)])
+
+    def test_flyttat_laskonto_bevaras(self):
+        """INSERT:en i hex_standardiserade_roller.sql får inte ta tillbaka
+        markeringen till gs_r_{schema}, och får inte krocka med DBA:ns rad."""
+        self.assertEqual(_laskonto(), [(EGEN_LASMALL,)])
 
     def test_installningar_bevaras(self):
         """INSERT:en i hex_installningar.sql får inte skriva över DBA:ns SRID."""

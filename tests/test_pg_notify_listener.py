@@ -214,6 +214,127 @@ class TestRolluppgifterMotRiktigTabell(unittest.TestCase):
         )
 
 
+class TestOmdoptLaskonto(unittest.TestCase):
+    """
+    Läskontot slås upp via hex_standardiserade_roller.geoserver_konto, inte via
+    namnet gs_r_. En DBA som flyttar markeringen till en egen rollmall ska få
+    den rollens uppgifter. Tidigare letade lyssnaren alltid efter
+    f"gs_r_{schema}" och hittade ingenting.
+    """
+
+    SCHEMA = "sk0_kba_omdopt"
+    MALL = "geo_r_{schema}"
+    ROLL = "geo_r_sk0_kba_omdopt"
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            cls.conn = make_conn()
+        except Exception as e:
+            raise unittest.SkipTest(f"ingen databasanslutning: {e}")
+        cls.conn.autocommit = True
+        with cls.conn.cursor() as cur:
+            cur.execute("SELECT to_regproc('public.hex_geoserver_rollnamn') IS NOT NULL")
+            if not cur.fetchone()[0]:
+                cls.conn.close()
+                raise unittest.SkipTest("Hex med hex_geoserver_rollnamn() är inte installerat")
+            cur.execute(
+                "SELECT rollnamn FROM public.hex_standardiserade_roller"
+                " WHERE geoserver_konto = 'las'"
+            )
+            rad = cur.fetchone()
+            cls.ursprunglig = rad[0] if rad else None
+            cur.execute(
+                "UPDATE public.hex_standardiserade_roller SET geoserver_konto = NULL"
+                " WHERE geoserver_konto = 'las'"
+            )
+            # schema_uttryck 'IS NULL' matchar inget schema, så mallen skapar
+            # inga roller medan testet kör.
+            cur.execute(
+                "INSERT INTO public.hex_standardiserade_roller"
+                " (rollnamn, rolltyp, schema_uttryck, kan_logga_in, geoserver_konto)"
+                " VALUES (%s, 'read', 'IS NULL', true, 'las')",
+                (cls.MALL,),
+            )
+            cur.execute(
+                "INSERT INTO public.hex_rolluppgifter (rollnamn, losenord, kan_logga_in)"
+                " VALUES (%s, 'omdopt_hemligt', true)",
+                (cls.ROLL,),
+            )
+
+    @classmethod
+    def tearDownClass(cls):
+        if getattr(cls, "conn", None) is None:
+            return
+        with cls.conn.cursor() as cur:
+            cur.execute("DELETE FROM public.hex_rolluppgifter WHERE rollnamn = %s", (cls.ROLL,))
+            cur.execute("DELETE FROM public.hex_standardiserade_roller WHERE rollnamn = %s", (cls.MALL,))
+            if cls.ursprunglig:
+                cur.execute(
+                    "UPDATE public.hex_standardiserade_roller SET geoserver_konto = 'las'"
+                    " WHERE rollnamn = %s",
+                    (cls.ursprunglig,),
+                )
+        cls.conn.close()
+
+    def test_omdopt_laskonto_hittas(self):
+        self.assertEqual(
+            gl._fetch_role_credentials(self.conn, self.SCHEMA),
+            (self.ROLL, "omdopt_hemligt"),
+        )
+
+    def test_sql_funktionen_foljer_markeringen(self):
+        with self.conn.cursor() as cur:
+            cur.execute("SELECT public.hex_geoserver_rollnamn(%s, 'las')", (self.SCHEMA,))
+            self.assertEqual(cur.fetchone()[0], self.ROLL)
+
+
+class TestLaskontoUtanSqlFunktion(unittest.TestCase):
+    """
+    HEX-MIGRERING 2026-09: en databas som inte kört --upgrade saknar
+    hex_geoserver_rollnamn(). Lyssnaren ska då falla tillbaka på gs_r_/gs_w_.
+    Tas bort tillsammans med fallbacken i _fetch_account_credentials.
+    """
+
+    class _Cursor:
+        def __init__(self, fraga):
+            self.fraga = fraga
+            self.params = None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def execute(self, sql, params):
+            if "hex_geoserver_rollnamn" in sql:
+                raise psycopg2.errors.UndefinedFunction("finns inte")
+            self.fraga.append(params)
+
+        def fetchone(self):
+            return (self.fraga[-1][0], "pw")
+
+    def _conn(self, fraga):
+        conn = MagicMock()
+        conn.cursor.side_effect = lambda: self._Cursor(fraga)
+        return conn
+
+    def test_faller_tillbaka_pa_gs_r(self):
+        fraga = []
+        self.assertEqual(
+            gl._fetch_role_credentials(self._conn(fraga), "sk0_kba_x"),
+            ("gs_r_sk0_kba_x", "pw"),
+        )
+
+    def test_faller_tillbaka_pa_gs_w(self):
+        fraga = []
+        self.assertEqual(
+            gl._fetch_write_role_credentials(self._conn(fraga), "sk0_kba_x"),
+            ("gs_w_sk0_kba_x", "pw"),
+        )
+
+
 class TestPgNotifyRoundTrip(unittest.TestCase):
     """End-to-end LISTEN/NOTIFY-runda via en riktig PostgreSQL-anslutning."""
 

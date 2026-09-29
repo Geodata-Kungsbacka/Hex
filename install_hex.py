@@ -65,6 +65,8 @@ INSTALL_ORDER = [
     "src/sql/00_config/hex_srid_namn.sql",
     "src/sql/02_tables/hex_standardiserade_kolumner.sql",
     "src/sql/02_tables/hex_standardiserade_roller.sql",
+    # hex_geoserver_rollnamn() läser hex_standardiserade_roller – måste skapas efter tabellen
+    "src/sql/00_config/hex_geoserver_rollnamn.sql",
     "src/sql/02_tables/hex_metadata.sql",
     "src/sql/02_tables/hex_systemanvandare.sql",
     "src/sql/02_tables/hex_grupprattigheter.sql",
@@ -203,6 +205,7 @@ DROP FUNCTION IF EXISTS public.hex_hamta_geometri_definition(text, text);
 DROP FUNCTION IF EXISTS public.hex_schema_regex();
 DROP FUNCTION IF EXISTS public.hex_srid_namn(integer);
 DROP FUNCTION IF EXISTS public.hex_srid();
+DROP FUNCTION IF EXISTS public.hex_geoserver_rollnamn(text, text);
 DROP FUNCTION IF EXISTS public.hex_systemagare();
 -- OBS: hex_geoserver_roller tas INTE bort här. Rollen är kluster-nivå och delas
 -- av alla databaser som kör Hex. Om du avinstallerar Hex från alla databaser och
@@ -259,7 +262,7 @@ PRESERVE_CONFIG = {
     },
     "hex_standardiserade_roller": {
         "key": "rollnamn",
-        "restore": ["rolltyp", "schema_uttryck", "ta_bort_med_schema", "kan_logga_in", "arvs_fran", "beskrivning"],
+        "restore": ["rolltyp", "schema_uttryck", "ta_bort_med_schema", "kan_logga_in", "arvs_fran", "beskrivning", "geoserver_konto"],
         # r_/w_ ska vara NOLOGIN och gs_r_/gs_w_ ärva från dem. Blir en
         # behörighetsgrupp LOGIN hamnar den i hex_geoserver_roller och öppnar
         # pg_hba.conf för den — pg_hba-hålet 95ead68 stängde. Invarianten gäller

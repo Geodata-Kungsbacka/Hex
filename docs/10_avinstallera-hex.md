@@ -101,6 +101,7 @@ DROP FUNCTION IF EXISTS public.hex_hamta_geometri_definition(text, text);
 DROP FUNCTION IF EXISTS public.hex_schema_regex();
 DROP FUNCTION IF EXISTS public.hex_srid_namn(integer);
 DROP FUNCTION IF EXISTS public.hex_srid();
+DROP FUNCTION IF EXISTS public.hex_geoserver_rollnamn(text, text);
 DROP FUNCTION IF EXISTS public.hex_systemagare();
 -- OBS: hex_geoserver_roller tas INTE bort här – se avsnittet nedan.
 

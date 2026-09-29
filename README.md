@@ -367,6 +367,8 @@ src/sql/00_config/hex_srid.sql
 src/sql/00_config/hex_srid_namn.sql
 src/sql/02_tables/hex_standardiserade_kolumner.sql
 src/sql/02_tables/hex_standardiserade_roller.sql
+-- hex_geoserver_rollnamn() läser hex_standardiserade_roller – måste köras efter tabellen
+src/sql/00_config/hex_geoserver_rollnamn.sql
 src/sql/02_tables/hex_metadata.sql
 src/sql/02_tables/hex_systemanvandare.sql
 src/sql/02_tables/hex_grupprattigheter.sql

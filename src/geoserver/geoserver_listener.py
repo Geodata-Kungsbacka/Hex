@@ -56,6 +56,7 @@ from email.mime.text import MIMEText
 from pathlib import Path
 
 import psycopg2
+import psycopg2.errors
 import psycopg2.extensions
 import requests
 from requests.auth import HTTPBasicAuth
@@ -1528,61 +1529,70 @@ def _db_tag(db_label):
     return f"[{db_label}] " if db_label else ""
 
 
-def _fetch_role_credentials(conn, schema_name):
-    """Hämtar autentiseringsuppgifter för läs-tjänstekontot (gs_r_) för ett schema.
+def _fetch_account_credentials(conn, schema_name, konto):
+    """Hämtar autentiseringsuppgifter för GeoServers tjänstekonto för ett schema.
 
-    Slår upp gs_r_{schema_name} i hex_rolluppgifter.
+    Kontot slås upp via hex_geoserver_rollnamn(schema, konto), som läser
+    markeringen hex_standardiserade_roller.geoserver_konto. Namnet (standard
+    gs_r_/gs_w_) är alltså inte hårdkodat här, och en DBA kan döpa om
+    rollmallen utan att publiceringen slutar fungera.
 
     Args:
-        conn:        psycopg2-anslutning till databasen (AUTOCOMMIT OK)
+        conn:        psycopg2-anslutning till databasen (AUTOCOMMIT)
         schema_name: Schemanamn (t.ex. 'sk1_kba_bygg')
+        konto:       'las' eller 'skriv'
 
     Returns:
         (rollnamn, losenord) tuple, eller (None, None) om ej hittad.
     """
-    role_name = f"gs_r_{schema_name}"
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                "SELECT rollnamn, losenord FROM public.hex_rolluppgifter WHERE rollnamn = %s",
-                (role_name,),
-            )
+            try:
+                cur.execute(
+                    "SELECT rollnamn, losenord FROM public.hex_rolluppgifter"
+                    " WHERE rollnamn = public.hex_geoserver_rollnamn(%s, %s)",
+                    (schema_name, konto),
+                )
+            except psycopg2.errors.UndefinedFunction:
+                # HEX-MIGRERING 2026-09: hex_geoserver_rollnamn() finns bara i
+                # databaser som kört --upgrade med den här versionen. Lyssnaren
+                # betjänar flera databaser och kan uppdateras före dem, så faller
+                # den tillbaka på de gamla fasta namnen. Tas bort när samtliga
+                # databaser kört --upgrade med hex_geoserver_rollnamn().
+                # Förutsätter AUTOCOMMIT, annars är transaktionen avbruten här.
+                prefix = {"las": "gs_r_", "skriv": "gs_w_"}[konto]
+                cur.execute(
+                    "SELECT rollnamn, losenord FROM public.hex_rolluppgifter"
+                    " WHERE rollnamn = %s",
+                    (f"{prefix}{schema_name}",),
+                )
             row = cur.fetchone()
         if row:
             return row[0], row[1]
         return None, None
     except Exception as e:
-        log.error("Kunde inte hämta autentiseringsuppgifter för '%s': %s", role_name, e)
+        log.error(
+            "Kunde inte hämta autentiseringsuppgifter för %s-kontot i '%s': %s",
+            konto, schema_name, e,
+        )
         return None, None
+
+
+def _fetch_role_credentials(conn, schema_name):
+    """Hämtar autentiseringsuppgifter för läs-tjänstekontot (standard gs_r_{schema}).
+
+    Se _fetch_account_credentials.
+    """
+    return _fetch_account_credentials(conn, schema_name, "las")
 
 
 def _fetch_write_role_credentials(conn, schema_name):
-    """Hämtar autentiseringsuppgifter för skriv-tjänstekontot (gs_w_) för ett schema.
+    """Hämtar autentiseringsuppgifter för skriv-tjänstekontot (standard gs_w_{schema}).
 
-    Slår upp gs_w_{schema_name} i hex_rolluppgifter. Returnerar (None, None) om
-    raden saknas — t.ex. för äldre scheman skapade innan gs_w_*-stödet lades till.
-
-    Args:
-        conn:        psycopg2-anslutning till databasen (AUTOCOMMIT OK)
-        schema_name: Schemanamn (t.ex. 'sk1_kba_bygg')
-
-    Returns:
-        (rollnamn, losenord) tuple, eller (None, None) om ej hittad.
+    Returnerar (None, None) om raden saknas — t.ex. för äldre scheman skapade
+    innan skrivkontot lades till. Se _fetch_account_credentials.
     """
-    role_name = f"gs_w_{schema_name}"
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT rollnamn, losenord FROM public.hex_rolluppgifter WHERE rollnamn = %s",
-                (role_name,),
-            )
-            row = cur.fetchone()
-        if row:
-            return row[0], row[1]
-        return None, None
-    except Exception as e:
-        log.error("Kunde inte hämta autentiseringsuppgifter för '%s': %s", role_name, e)
-        return None, None
+    return _fetch_account_credentials(conn, schema_name, "skriv")
 
 
 def _validate_schema_name(schema_name, tag):
@@ -1662,7 +1672,7 @@ def handle_schema_notification(schema_name, db_config, pg_conn, gs_client, db_la
     r_role, r_password = _fetch_role_credentials(pg_conn, schema_name)
     if not r_role:
         log.error(
-            "%sIngen autentiseringsuppgifter hittades för 'gs_r_%s' i hex_rolluppgifter - "
+            "%sIngen autentiseringsuppgifter hittades för läskontot i schema '%s' i hex_rolluppgifter - "
             "hoppar över schema '%s'",
             tag, schema_name, schema_name,
         )
@@ -1672,7 +1682,7 @@ def handle_schema_notification(schema_name, db_config, pg_conn, gs_client, db_la
     w_role, w_password = _fetch_write_role_credentials(pg_conn, schema_name)
     if not w_role:
         log.warning(
-            "%sIngen autentiseringsuppgifter hittades för 'gs_w_%s' i hex_rolluppgifter - "
+            "%sIngen autentiseringsuppgifter hittades för skrivkontot i schema '%s' i hex_rolluppgifter - "
             "skriv-workspace utelämnas för schema '%s'",
             tag, schema_name, schema_name,
         )

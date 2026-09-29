@@ -103,7 +103,8 @@ AS $BODY$
  *
  *   geoserver_notifiering Skickar pg_notify('geoserver_schema', schema) för
  *                        scheman vars prefix har publiceras_geoserver = true
- *                        och som har gs_r_-uppgifter i hex_rolluppgifter.
+ *                        och som har uppgifter för läskontot
+ *                        (hex_geoserver_rollnamn()) i hex_rolluppgifter.
  *                        Lyssnaren är idempotent, så det är säkert att alltid
  *                        skicka notifieringen.
  *
@@ -1104,8 +1105,9 @@ BEGIN
     -- -------------------------------------------------------------------------
     -- 10. geoserver_notifiering
     --    Skickar pg_notify('geoserver_schema', schema) för alla Hex-scheman
-    --    vars prefix har publiceras_geoserver = true och som har gs_r_-uppgifter
-    --    i hex_rolluppgifter (dvs. lyssnaren kan sätta upp datastore).
+    --    vars prefix har publiceras_geoserver = true och som har uppgifter för
+    --    läskontot (hex_geoserver_rollnamn(schema, 'las'), standard gs_r_) i
+    --    hex_rolluppgifter (dvs. lyssnaren kan sätta upp datastore).
     --
     --    Täcker tre scenarier:
     --      a) Schema skapades med äldre config – notifiering skickades aldrig
@@ -1122,7 +1124,7 @@ BEGIN
               AND ssn.publiceras_geoserver = true
         WHERE  EXISTS (
                    SELECT 1 FROM public.hex_rolluppgifter
-                   WHERE  rollnamn     = 'gs_r_' || n.nspname
+                   WHERE  rollnamn     = public.hex_geoserver_rollnamn(n.nspname, 'las')
                      AND  kan_logga_in = true
                )
         ORDER BY n.nspname
@@ -1248,7 +1250,8 @@ Korrigerar schemaägare som inte är hex_systemagare() – täcker scheman skapa
 superanvändare som förbigick event-triggern.
 Korrigerar objektägare (tabeller, vyer, materialiserade vyer, sekvenser,
 fremmande tabeller, funktioner) i Hex-scheman vars ägare inte är hex_systemagare().
-Skickar pg_notify för GeoServer-publicering (gs_r_-uppgifter krävs).
+Skickar pg_notify för GeoServer-publicering (uppgifter för läskontot krävs,
+se hex_geoserver_rollnamn()).
 Bygger om hex_avvikande_srid mot hex_srid() (hex_installningar.srid).
 Schemaprefix hämtas från hex_standardiserade_skyddsnivaer – egna prefix fungerar
 utan kodändringar. Idempotent. Anropas av installeraren efter varje
