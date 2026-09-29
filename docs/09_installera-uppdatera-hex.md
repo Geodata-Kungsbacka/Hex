@@ -146,6 +146,21 @@ att härleda ur databasen i efterhand, till skillnad från triggers och funktion
 > alla Hex-funktioner, triggers och typer. Kör gärna en manuell säkerhetskopia
 > av databasen innan uppgradering i produktionsmiljö.
 
+Efter återställningen kör installern `hex_underhall()`, som för befintliga
+tabeller bland annat:
+
+- kopplar tillbaka radtriggrarna som avinstallationen tog med sig,
+- synkar varje historiktabell med sin modertabell och bygger om QA-triggern
+  (`historiksynk` i utskriften) — det rättar historiktabeller som hamnat ur
+  synk efter `DROP COLUMN`, `ALTER COLUMN TYPE` eller `RENAME TO` i äldre
+  versioner,
+- slutför FME-tabeller som fått `geom` men står kvar i
+  `hex_afvaktande_geometri` (`afvaktande_geometri`).
+
+`hex_metadata.created_by` är `NULL` för tabeller som registrerades innan
+kolumnen fanns. Uppgraderingen fyller inte i något värde, eftersom den som kör
+`--upgrade` inte är den som skapade tabellerna.
+
 ### Uppgradering från 1.0.0
 
 Från och med 2.0.0 saknar installern stöd för namnen före `hex_`-prefixet

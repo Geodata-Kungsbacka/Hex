@@ -482,17 +482,16 @@ skedd räcker det inte med `hex_underhall()` — rollerna skapas bara vid
 **Varför OID?** OID:er är stabila vid `ALTER TABLE RENAME TO`, till skillnad från namnkonventionsuppslag (`tabell_h`) som slutar fungera direkt vid omdöpning. `hex_metadata` är därför den auktoritativa källan för rensning och namnpropagering.
 
 **Livscykel**:
-- *Registreras* av `hex_skapa_historik_qa()` när en historiktabell skapas
-- *Uppdateras* av `hex_hantera_ny_kolumn()` vid `ALTER TABLE RENAME TO` (historiktabell och parent_table uppdateras)
+- *Registreras* av `hex_skapa_historik_qa()` när en historiktabell skapas, via `hex_registrera_metadata()`
+- *Uppdateras* av `hex_hantera_ny_kolumn()` vid `ALTER TABLE RENAME TO` (historiktabell och parent_table uppdateras), via `hex_uppdatera_metadata_namn()`
+- *Raderas* av `hex_hantera_borttagen_tabell()` vid `DROP TABLE` och `DROP SCHEMA ... CASCADE`, via `hex_rensa_metadata()`
 
 **Rättigheter**: Alla kan läsa, men bara ägaren kan skriva direkt. Event-triggrarna
-körs som den användare som gör DDL:en och skriver därför via tre `SECURITY
-DEFINER`-funktioner: `hex_registrera_metadata(schema, tabell)`,
-`hex_uppdatera_metadata_namn(oid)` och `hex_rensa_metadata()`. De tar inte emot
-några värden som hamnar i tabellen. OID, namn och historiktabell läses ur
-systemkatalogen, `created_by` är alltid `session_user`, och rensningen tar bara
-rader vars tabell inte längre finns. EXECUTE är därför öppet för alla.
-- *Raderas* av `hex_hantera_borttagen_tabell()` vid `DROP TABLE` och `DROP SCHEMA ... CASCADE`
+körs som den användare som gör DDL:en och skriver därför via de tre `SECURITY
+DEFINER`-funktionerna ovan. De tar inte emot några värden som hamnar i tabellen.
+OID, namn och historiktabell läses ur systemkatalogen, `created_by` är alltid
+`session_user`, och rensningen tar bara rader vars tabell inte längre finns.
+EXECUTE är därför öppet för alla.
 
 `created_by` är inloggningsrollen (`session_user`) som skapade tabellen. Den
 ändras inte om historiken skapas om, och är `NULL` för poster registrerade
@@ -573,9 +572,9 @@ härleda i efterhand, och därför bevaras de över `--upgrade`.
 
 | Tabell | Innehåll | Skrivs av | Rensas av |
 |---|---|---|---|
-| `hex_metadata` | Tabell-OID → historiktabell och QA-triggerfunktion | `hex_skapa_historik_qa()`, `hex_hantera_ny_kolumn()` | `hex_hantera_borttagen_tabell()` |
-| `hex_afvaktande_geometri` | Tabeller mitt i tvåstegsmönstret | `hex_hantera_ny_tabell()` | `hex_hantera_ny_kolumn()`, `hex_hantera_borttagen_tabell()` |
-| `hex_dummy_geometrier` | Tabeller som fortfarande bär en dummy-rad | `hex_lagg_till_dummy_geometri()` | `hex_ta_bort_dummy_rad()` |
+| `hex_metadata` | Tabell-OID → historiktabell och QA-triggerfunktion | `hex_registrera_metadata()`, `hex_uppdatera_metadata_namn()` | `hex_rensa_metadata()` |
+| `hex_afvaktande_geometri` | Tabeller mitt i tvåstegsmönstret | `hex_hantera_ny_tabell()` | `hex_hantera_ny_kolumn()` (även via `hex_underhall()`), `hex_hantera_borttagen_tabell()` |
+| `hex_dummy_geometrier` | Tabeller som fortfarande bär en dummy-rad | `hex_lagg_till_dummy_geometri()` | `hex_ta_bort_dummy_rad()`, `hex_hantera_borttagen_tabell()` |
 | `hex_avvikande_srid` | Tabeller med SRID ≠ 3007 | `hex_hantera_ny_tabell()`, `hex_hantera_ny_kolumn()` | `hex_hantera_borttagen_tabell()` |
 | `hex_rolluppgifter` | Rollnamn och autogenererat lösenord för LOGIN-tjänstekonton | `hex_hantera_std_roller()`, `hex_underhall()` | `DROP SCHEMA` via `hex_ta_bort_schemaroller()` |
 
@@ -597,7 +596,7 @@ härleda i efterhand, och därför bevaras de över `--upgrade`.
 #### `hex_kolumntyp(schema, tabell, kolumn)`
 **Syfte**: Returnerar en kolumns datatyp så som den ska skrivas i `CREATE TABLE` eller `ALTER TABLE ... ADD COLUMN`.
 
-**Användning**: Gemensam källa för de tre ställen som återskapar kolumner — `hex_hamta_kolumnstandard` (omstrukturering), `hex_skapa_historik_qa` (historiktabellen) och `hex_hantera_ny_kolumn` (synk av nya kolumner till historiken). Tidigare rekonstruerade var och en typen med en egen `CASE` över `information_schema.columns`, med olika luckor.
+**Användning**: Anropas av `hex_skapa_historik_qa` (historiktabellen) och `hex_hantera_ny_kolumn` (flytt av standardkolumner i historiktabellen). `hex_hamta_kolumnstandard` tillämpar samma regel inline, och `hex_synka_historik` läser typerna direkt med `format_type()`. Tidigare rekonstruerade varje ställe typen med en egen `CASE` över `information_schema.columns`, med olika luckor.
 
 **Bevarar**: Typmodifierare (`numeric(10,2)`, `character varying(50)`, `geometry(PolygonZ,3007)`) och arrayers skrivbara form (`text[]`, inte `_text`). Bygger på `format_type()`.
 
@@ -735,6 +734,10 @@ härleda i efterhand, och därför bevaras de över `--upgrade`.
 2. Triggerfunktion som loggar UPDATE och DELETE
 3. Trigger som automatiskt uppdaterar QA-kolumner
 4. Index för snabb sökning på gid och tidpunkt
+5. Raden i `hex_metadata`, via `hex_registrera_metadata()`
+
+Historiktabellen och triggerfunktionen ägs av rollen som körde `CREATE TABLE`
+tills nästa `hex_underhall()` för över dem till `hex_systemagare()`.
 
 **Returvärde**: true om historik skapades, false om inte behövs.
 
@@ -749,28 +752,37 @@ uppgradering, och går att köra manuellt när som helst.
 SELECT * FROM public.hex_underhall();
 ```
 
-**Returvärde**: en rad per åtgärd med `schema_namn`, `tabell_namn`,
-`trigger_namn` och `atgard`. `atgard = 'redan finns'` betyder att inget behövde
-göras.
+**Returvärde**: en rad per undersökt objekt med `schema_namn`, `tabell_namn`,
+`trigger_namn` (åtgärdstypen) och `atgard` (utfallet), t.ex. `skapad`,
+`redan finns`, `redan synkad`, `synkad: N ändringar`, `slutförd`,
+`dubbletter: N` eller `fel: <meddelande>`.
 
-**Elva åtgärdstyper**, i körordning:
+**Femton åtgärdstyper**, i körordning:
 
 | Åtgärd | Vad som repareras |
 |---|---|
-| ägarskapsöverföring | Scheman, tabeller, sekvenser och funktioner i Hex-scheman ägs av `hex_systemagare()` |
+| ägarskapsöverföring | Scheman, tabeller, sekvenser, funktioner och vyer i Hex-scheman ägs av `hex_systemagare()` |
 | `hex_tvinga_gid` | BEFORE INSERT som hindrar klienter från att välja eget `gid` med `OVERRIDING SYSTEM VALUE` |
 | `hex_tvinga_anvandarvarden` | BEFORE INSERT för kolumner med `anvandare_kan_redigera = false` |
 | `gid_primarnyckel` | `PRIMARY KEY (gid)` på tabeller som saknar unikt index på `gid`, plus framflyttning av sekvensen till `max(gid)` |
 | `hex_kontrollera_geom` | BEFORE INSERT/UPDATE med OGC-validering på tabeller i datakategorier med `hex_validera_geometri = true` |
 | `hex_ta_bort_dummy` | AFTER INSERT som tar bort dummy-raden — återkopplas bara om raden står i `hex_dummy_geometrier` |
 | `trg_<tabell>_qa` | BEFORE UPDATE/DELETE på tabeller med historik |
+| `afvaktande_geometri` | Slutför FME-tvåsteget för tabeller som har `geom` men står kvar i `hex_afvaktande_geometri` (GiST-index, geometrivalidering, historik) |
+| `historiksynk` | `hex_synka_historik()` på varje tabell med historik — saknade kolumner, typkonflikter och QA-triggern |
 | rollstruktur | De fyra rollerna per schema, och invarianten att `r_`/`w_` är NOLOGIN |
 | `hex_geoserver_roller` | Gruppmedlemskap för LOGIN-tjänstekonton (pg_hba.conf-matchning) |
 | schemabehörigheter | GRANT om per roll och schema, samt `arvs_fran` |
+| `ägarskap_schema` | Hex-scheman som ägs av fel roll |
+| `ägarskap_objekt` | Tabeller, vyer, sekvenser, främmande tabeller och funktioner som ägs av fel roll |
 | geoserver-notifiering | `pg_notify` för scheman vars skyddsnivå har `publiceras_geoserver = true` |
 
-**Idempotent**: en andra körning direkt efter den första ska rapportera
-`Inga åtgärder behövdes`.
+**Idempotent**: en andra körning ändrar ingenting. Den rapporterar ändå rader:
+installern skriver ut varje rad vars `atgard` inte är exakt `redan finns`, så
+`redan synkad`, `redan korrekt`, `redan NOLOGIN`, `behörigheter uppdaterade`
+(schemabehörigheterna tillämpas om varje gång) och `notifiering skickad` syns
+vid varje körning i en databas med scheman. `Inga åtgärder behövdes` skrivs
+bara ut i en databas utan Hex-scheman.
 
 > `hex_underhall()` skapar **inte** roller för ett schema som aldrig fick dem —
 > `gs_r_`/`gs_w_` skapas bara vid `CREATE SCHEMA`. Se *Vanliga fel vid manuell
@@ -901,17 +913,23 @@ som namnvalideringen använder — `hex_validera_schemanamn()` bygger sitt eget
 **Undantag**: Hoppar över public-schema och historiktabeller.
 
 #### `hex_hantera_ny_kolumn()`
-**Syfte**: Omorganiserar kolumner när nya läggs till.
+**Syfte**: Tar emot varje `ALTER TABLE` — omorganiserar kolumner när nya läggs till och håller historiken i synk vid alla andra ändringar.
 
-**Problem som löses**: När ALTER TABLE ADD COLUMN körs hamnar nya kolumner sist, vilket bryter standardstrukturen.
+**Problem som löses**: När ALTER TABLE ADD COLUMN körs hamnar nya kolumner sist, vilket bryter standardstrukturen. Andra ändringar (`DROP COLUMN`, `ALTER COLUMN TYPE`, namnbyten) gör QA-triggerns kolumnlista inaktuell.
 
-**Process**:
-1. Flyttar standardkolumner med negativ position till slutet
-2. Flyttar geometrikolumn allra sist
+**Process**, beroende på vad satsen gör:
+1. `SET SCHEMA` till ett Hex-schema, eller på en Hex-hanterad tabell → blockeras med `EXCEPTION`
+2. `RENAME TO` → historiktabellen döps om, `hex_metadata` uppdateras, QA-triggern byggs om
+3. `RENAME COLUMN` → kolumnen döps om i historiktabellen, QA-triggern byggs om
+4. Övriga ändringar utom kolumntillägg → `hex_synka_historik()`
+5. `ADD COLUMN`, även via `AddGeometryColumn()` (via `EXECUTE` i en funktion känns tillägget bara igen när en afvaktande tabell får `geom`):
+   - flyttar standardkolumner med negativ position till slutet och geometrikolumnen allra sist
+   - slutför geometrihanteringen om `geom` anlänt i efterhand (suffix, SRID, GiST-index, geometrivalidering, dummy-rad) och tar bort tabellen ur `hex_afvaktande_geometri`
+   - kör `hex_synka_historik()` och flyttar standardkolumner och `geom` sist även i historiktabellen
 
 **Trigger**: Körs vid ALTER TABLE.
 
-**Rekursionsskydd**: Använder flagga för att undvika oändliga loopar.
+**Rekursionsskydd**: Använder flagga för att undvika oändliga loopar. Se [LOGIC_MAP.md avsnitt 4](LOGIC_MAP.md#4-alter-table--add-column-och-övriga-ändringar).
 
 #### `hex_hantera_ny_vy()`
 **Syfte**: Validerar att nyskapade vyer följer namnstandarden.
@@ -956,8 +974,8 @@ som namnvalideringen använder — `hex_validera_schemanamn()` bygger sitt eget
 
 **Process**: Identifierar borttagna tabeller och tar bort:
 - Motsvarande historiktabell (`_h`) och QA-triggerfunktion (om tabellen hade historik)
-- Raden i `hex_afvaktande_geometri` (om tabellen droppades innan geometrin hann läggas till)
-- Raden i `hex_metadata` (om tabellen var registrerad där)
+- Raderna i `hex_afvaktande_geometri`, `hex_avvikande_srid` och `hex_dummy_geometrier`
+- Raden i `hex_metadata`, via `hex_rensa_metadata()` (som tar bort varje rad vars tabell inte längre finns)
 
 **Trigger**: Körs vid DROP TABLE och DROP SCHEMA (SQL_DROP-event). Vid `DROP SCHEMA ... CASCADE` rensas dessutom alla rader för schemat i `hex_metadata`, `hex_afvaktande_geometri`, `hex_avvikande_srid` och `hex_dummy_geometrier`.
 

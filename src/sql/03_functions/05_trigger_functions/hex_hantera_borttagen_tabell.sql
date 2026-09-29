@@ -15,6 +15,8 @@ AS $BODY$
  *   3. Eventuell afvaktande geometripost i hex_afvaktande_geometri
  *      (uppstår om en systemanvändare, t.ex. FME, droppade tabellen innan
  *      geometrikolumnen hann läggas till via ALTER TABLE)
+ *   4. Eventuella rader i hex_avvikande_srid och hex_dummy_geometrier
+ *   5. Raden i hex_metadata, via hex_rensa_metadata() efter loopen
  *
  * DROP SCHEMA ... CASCADE:
  *   Triggern lyssnar även på DROP SCHEMA. Schemats tabeller rapporteras då av

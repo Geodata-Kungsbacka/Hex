@@ -13,9 +13,9 @@ merge-datum.
 
 ---
 
-## [2.0.0] – 2026-09-24
+## [2.0.0] – 2026-09-28
 
-Tagg `v2.0.0` (PR #131–#171, grenen `naming-convention/hex-prefix`).
+Tagg `v2.0.0` (PR #131–#173, grenen `naming-convention/hex-prefix`).
 
 > **Uppgradera inte en databas på `v.1.0.0` direkt till 2.0.0.** Migreringen
 > av namnen före `hex_`-prefixet togs bort ur installern före releasen (se
@@ -68,8 +68,21 @@ Tagg `v2.0.0` (PR #131–#171, grenen `naming-convention/hex-prefix`).
 - **Ägarskapsreparation i `hex_underhall()`**: schema, tabeller, sekvenser,
   vyer och funktioner förs över till `hex_systemagare()` (identitetssekvenser
   hoppas över).
-- `hex_aterskapa_qa_trigger()` – gemensam regenerering av QA-triggern för
-  `ADD COLUMN` och `RENAME COLUMN`.
+- **`hex_synka_historik()`** – håller historiktabellen i synk med
+  modertabellen efter varje `ALTER TABLE`: saknade kolumner läggs till,
+  borttagna kolumner behålls med sina värden, typkonflikter konverteras bara
+  om inget värde ändras (annars arkiveras den gamla kolumnen som
+  `<kolumn>_arkiv_<ÅÅÅÅMMDD>`) och QA-triggern byggs om. Kan triggern inte
+  byggas om avbryts `ALTER TABLE`. Körs även av `hex_underhall()` (steg 4b,
+  `historiksynk`).
+- `hex_aterskapa_qa_trigger()` – gemensam regenerering av QA-triggern, anropad
+  via `hex_synka_historik()`.
+- `hex_metadata.created_by` – inloggningen som skapade tabellen.
+- `hex_underhall()` steg 4a (`afvaktande_geometri`) slutför tabeller som fått
+  `geom` men står kvar som afvaktande.
+- `hex_hantera_borttagen_tabell` lyssnar även på `DROP SCHEMA`, så
+  `DROP SCHEMA ... CASCADE` rensar `hex_metadata`, `hex_afvaktande_geometri`,
+  `hex_avvikande_srid` och `hex_dummy_geometrier`.
 - `hex_kolumntyp()` – samlat uppslag av kolumntyp, som tidigare
   rekonstruerades för hand på tre ställen.
 - Upptäckt och städning av föräldralösa GeoServer-workspaces.
@@ -107,6 +120,8 @@ Tagg `v2.0.0` (PR #131–#171, grenen `naming-convention/hex-prefix`).
   typmodifierare.
 - Ominstallation utan `--upgrade` skriver inte längre över DBA:ns
   konfiguration (`ON CONFLICT DO NOTHING`).
+- `ALTER TABLE ... SET SCHEMA` blockeras för Hex-tabeller och in i
+  Hex-scheman. Historiktabellen och triggerfunktionerna följde inte med.
 
 ### Rättat
 
@@ -118,6 +133,16 @@ Tagg `v2.0.0` (PR #131–#171, grenen `naming-convention/hex-prefix`).
 - QA-triggern använde `OLD.*`, som inte matchade historiktabellen efter
   `ADD COLUMN`. Explicita kolumnlistor används nu.
 - `RENAME COLUMN` speglades inte i historiktabellen.
+- Efter `DROP COLUMN` kraschade varje UPDATE/DELETE (`record "old" has no
+  field ...`); efter `ALTER COLUMN TYPE` likaså.
+- `RENAME TO` byggde aldrig om QA-triggern, så varje UPDATE/DELETE efter ett
+  tabellnamnbyte kraschade. Rekursionsflaggan lämnades dessutom satt, så
+  senare `ALTER TABLE` i samma transaktion hoppades över.
+- En kolumn som togs bort och lades tillbaka loggades tyst aldrig igen.
+- `AddGeometryColumn()` (FME/QGIS tvåsteg) gav historiktabell och trigger
+  utan `geom`, inget GiST-index, och tabellen blev kvar som afvaktande.
+- Historiktabellen hittades inte för modertabeller med 62+ tecken i namnet.
+- Ändringar direkt i `_h` (t.ex. `DROP COLUMN`) lämnade QA-triggern trasig.
 - Användarkolumner togs bort tyst om namnet krockade med en standardkolumn
   som inte gällde schemat.
 - `CREATE TABLE` föll på `GENERATED ALWAYS AS (...)` med funktionsanrop och
@@ -144,6 +169,11 @@ Tagg `v2.0.0` (PR #131–#171, grenen `naming-convention/hex-prefix`).
 
 - `SECURITY DEFINER`-funktioner låser `search_path` till `public, pg_temp`
   (tidigare bara `public`), vilket stänger skuggning via temporära tabeller.
+- `hex_metadata` var skrivbar för `PUBLIC`, så vilken inloggning som helst
+  kunde skriva om kopplingen tabell → historik. Nu får `PUBLIC` bara läsa;
+  event-triggrarna skriver via `hex_registrera_metadata()`,
+  `hex_uppdatera_metadata_namn()` och `hex_rensa_metadata()` (`SECURITY
+  DEFINER`, värden härledda ur systemkatalogen).
 
 ### Borttaget
 

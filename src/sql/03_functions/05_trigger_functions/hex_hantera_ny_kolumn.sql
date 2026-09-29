@@ -18,11 +18,12 @@ AS $BODY$
  * 1. Flyttar standardkolumner med negativ ordinal_position så att de hamnar
  *    efter nyligen tillagda kolumner
  * 2. Flyttar geometrikolumnen sist för korrekt struktur
- * 3. Kontrollerar strukturskillnader mellan modertabeller och historiktabeller
- * 4. UPPDATERAD: Lägger automatiskt till saknade kolumner i historiktabeller
- * 5. Ger användaren instruktioner för manuell synkronisering vid typskillnader
- * 6. Synkar historiken via hex_synka_historik() efter varje ALTER TABLE –
- *    även DROP COLUMN och ALTER COLUMN TYPE, som inte omstruktureras
+ * 3. Synkar historiken via hex_synka_historik() efter varje ALTER TABLE –
+ *    även DROP COLUMN och ALTER COLUMN TYPE, som inte omstruktureras.
+ *    Saknade kolumner läggs till, typkonflikter löses utan dataförlust och
+ *    QA-triggern byggs om.
+ * 4. Speglar RENAME TO och RENAME COLUMN i historiktabellen och hex_metadata
+ * 5. Blockerar ALTER TABLE ... SET SCHEMA för Hex-tabeller
  *
  * Steg 5b/5c: FME-tvåstegsmönster och liknande omvägar
  * - 5b: tabell var afvaktande (skapades utan geom, geom anländer via ALTER TABLE)
