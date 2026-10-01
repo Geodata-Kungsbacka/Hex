@@ -1051,11 +1051,12 @@ class GeoServerClient:
     def _datastore_avvikelser(befintlig, payload, pg_password):
         """Jämför en befintlig datastore mot den payload Hex skulle skriva.
 
-        Varje PUT får GeoServer att kasta datastorens anslutningspool och öppna
-        en ny, och de gamla anslutningarna ligger kvar i PostgreSQL tills de
-        stängs. Avstämningen skrev tidigare om varje datastore varje gång, vilket
-        räckte för att fylla max_connections. Därför skrivs datastoren bara om
-        när något faktiskt skiljer.
+        Varje PUT får GeoServer att stänga datastorens anslutningspool (mätt
+        med log_connections: PUT och disconnect i samma sekund). Pågående
+        frågor bryts, och nästa förfrågan får betala för en ny anslutning.
+        Avstämningen skrev tidigare om varje datastore varje gång och
+        återställde därmed samtliga pooler i onödan. Därför skrivs datastoren
+        bara om när något faktiskt skiljer.
 
         Alla parametrar Hex sätter jämförs utom lösenordet, som GeoServer
         returnerar krypterat. Lösenordet räknas som lika om GeoServer ändå
@@ -2304,8 +2305,8 @@ def _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label="", all_pg_
         # c) Alla scheman: skapa det som saknas och rätta det som avviker.
         #    handle_schema_notification är idempotent: en datastore som redan
         #    stämmer med hex_rolluppgifter skrivs inte om. En PUT får GeoServer
-        #    att kasta datastorens anslutningspool, så att skriva om allt vid
-        #    varje avstämning kostade ett par PostgreSQL-anslutningar per schema.
+        #    att stänga datastorens anslutningspool, så att skriva om allt vid
+        #    varje avstämning återställde samtliga pooler i onödan.
         missing_in_gs = pg_schemas - gs_workspaces
         for schema_name in sorted(pg_schemas):
             try:

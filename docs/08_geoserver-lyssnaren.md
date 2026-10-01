@@ -200,10 +200,11 @@ lyssnaren varit både uppe och ansluten, vilket är sällsynt.
 Avstämningen kör om hela publiceringen för *samtliga* scheman, men skriver
 bara när något avviker. En datastore jämförs mot det Hex skulle skriva – värd,
 port, databas, schema, användare, poolparametrar och lösenord – och får en PUT
-bara om något skiljer. Det spelar roll: GeoServer kastar datastorens
-anslutningspool vid varje PUT, och de gamla anslutningarna ligger kvar i
-PostgreSQL tills de stängs. När varje datastore skrevs om vid varje avstämning
-räckte det för att fylla `max_connections` i en miljö med ett 40-tal scheman.
+bara om något skiljer. Det spelar roll: GeoServer stänger datastorens
+anslutningspool vid varje PUT (PUT och disconnect syns i samma sekund med
+`log_connections`). Pågående frågor bryts och nästa förfrågan får öppna en ny
+anslutning. När varje datastore skrevs om vid varje avstämning återställdes
+samtliga pooler i onödan.
 
 GeoServer returnerar lösenordet krypterat (`crypt1:`/`crypt2:`), så det går
 inte att jämföra direkt. Hex skriver därför ett avtryck – sha256 av användare

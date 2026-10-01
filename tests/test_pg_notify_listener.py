@@ -1524,8 +1524,8 @@ class TestCreatePgDatastore(unittest.TestCase):
     Enhetstester för GeoServerClient.create_pg_datastore.
 
     En befintlig datastore skrivs bara om (PUT) när något skiljer. Varje PUT
-    får GeoServer att kasta datastorens anslutningspool, och när avstämningen
-    skrev om allt varje gång fyllde det max_connections i dev.
+    får GeoServer att stänga datastorens anslutningspool, och avstämningen
+    återställde tidigare samtliga pooler vid varje körning.
 
     Regressionsfallet från ominstallation finns kvar: samma pg_user men ett
     förnyat lösenord (hex_underhall 'lösenord backfyllt') ska ge en PUT.
@@ -2177,9 +2177,8 @@ class TestAvstamningISynkSkriverInget(_Standardmonster, unittest.TestCase):
     ändrar inga lösenord.
 
     Bakgrund: avstämningen skrev om varje datastore varje gång. GeoServer
-    kastar datastorens anslutningspool vid varje PUT, och i dev kostade det
-    ett par PostgreSQL-anslutningar per schema och avstämning – nog för att
-    fylla max_connections.
+    stänger datastorens anslutningspool vid varje PUT, så varje avstämning
+    bröt samtliga pooler i onödan.
 
     Körs mot en riktig databas med Hex installerat: schemat skapas på riktigt,
     så att tjänstekontona och hex_rolluppgifter kommer från Hex egna triggers.

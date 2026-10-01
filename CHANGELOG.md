@@ -48,9 +48,9 @@ merge-datum.
 
 - **Avstämningen skriver bara om datastores som avviker.** Tidigare fick varje
   befintlig datastore en PUT vid varje avstämning, även när inget ändrats.
-  GeoServer kastar datastorens anslutningspool vid varje PUT, och i dev kostade
-  det ett par PostgreSQL-anslutningar per schema och avstämning – nog för att
-  fylla `max_connections`. Nu jämförs värd, port, databas, schema, användare,
+  GeoServer stänger datastorens anslutningspool vid varje PUT, så varje
+  avstämning bröt samtliga pooler i onödan: pågående frågor avbröts och nästa
+  förfrågan fick öppna en ny anslutning. Nu jämförs värd, port, databas, schema, användare,
   poolparametrar och lösenord först. GeoServer returnerar lösenordet krypterat,
   så Hex skriver ett avtryck (sha256 av användare och lösenord) i datastorens
   `description` och jämför det. Datastores skapade före ändringen saknar
