@@ -48,6 +48,8 @@ Krav:
 """
 
 import argparse
+import datetime
+import hashlib
 import json
 import logging
 import os
@@ -146,6 +148,52 @@ def _read_cleanup_mode():
     return mode
 
 
+def _read_reconcile_schedule():
+    """Läser schemat för den periodiska avstämningen ur miljön.
+
+    Antingen HEX_RECONCILE_INTERVAL (sekunder) eller HEX_RECONCILE_TIME
+    (HH:MM, lokal tid) – inte båda. Båda satta, eller ett ogiltigt klockslag,
+    avbryter uppstarten: att tyst välja det ena skulle dölja ett
+    konfigurationsfel som annars bara märks som uteblivna körningar.
+
+    Standard när ingen är satt är intervallet 43200 (12 h). Avstämningen
+    fångar bara notifieringar som missats medan lyssnaren varit uppe OCH
+    ansluten, vilket är sällsynt – avstämningen vid varje (åter)anslutning
+    täcker nedtidsfallet. Intervallet räknas från senaste avstämning, så
+    klockslaget glider; HEX_RECONCILE_TIME håller körningen på natten.
+
+    Returns:
+        {"reconcile_interval": int, "reconcile_time": datetime.time | None}
+    """
+    raw_tid = os.environ.get("HEX_RECONCILE_TIME", "").strip()
+    raw_intervall = os.environ.get("HEX_RECONCILE_INTERVAL", "").strip()
+
+    if not raw_tid:
+        return {
+            "reconcile_interval": int(raw_intervall or "43200"),
+            "reconcile_time": None,
+        }
+
+    if raw_intervall:
+        log.error(
+            "Både HEX_RECONCILE_INTERVAL och HEX_RECONCILE_TIME är satta. "
+            "Ange antingen ett intervall eller ett klockslag – ta bort den ena."
+        )
+        sys.exit(1)
+
+    m = re.fullmatch(r"([01]?\d|2[0-3]):([0-5]\d)", raw_tid)
+    if not m:
+        log.error(
+            "HEX_RECONCILE_TIME='%s' är inte ett giltigt klockslag – ange HH:MM, t.ex. 03:00.",
+            raw_tid,
+        )
+        sys.exit(1)
+    return {
+        "reconcile_interval": 0,
+        "reconcile_time": datetime.time(int(m.group(1)), int(m.group(2))),
+    }
+
+
 def load_config():
     """Laddar konfiguration från miljövariabler.
 
@@ -181,14 +229,10 @@ def load_config():
         "gs_namespace_base": os.environ.get("HEX_GS_NAMESPACE_BASE", ""),
         # Reconnect
         "reconnect_delay": int(os.environ.get("HEX_RECONNECT_DELAY", "5")),
-        # Periodisk avstämning – intervall i sekunder (0 = avaktiverad).
-        # Standard 43200 (12 h): avstämningen fångar bara notifieringar som
-        # missats medan lyssnaren varit uppe OCH ansluten, vilket är sällsynt –
-        # startavstämningen vid varje (åter)anslutning täcker nedtidsfallet.
-        # Två körningar per dygn gör att minst en alltid hamnar utanför
-        # kontorstid oavsett när tjänsten senast startades om (intervallet
-        # räknas från tjänstestart, inte från klockslag).
-        "reconcile_interval": int(os.environ.get("HEX_RECONCILE_INTERVAL", "43200")),
+        # Periodisk avstämning: ANTINGEN ett intervall i sekunder
+        # (HEX_RECONCILE_INTERVAL, 0 = avaktiverad) ELLER ett dagligt klockslag
+        # (HEX_RECONCILE_TIME, t.ex. 03:00). Se _read_reconcile_schedule.
+        **_read_reconcile_schedule(),
         # Uppstädning av föräldralösa workspaces: off | dry-run | on
         "orphan_cleanup": _read_cleanup_mode(),
         # Databaser
@@ -902,31 +946,34 @@ class GeoServerClient:
                 name, resp.status_code, resp.text,
             )
 
-    def _get_datastore_user(self, workspace, store_name):
-        """Hämtar nuvarande pg_user från en befintlig datastore, eller None om ej hittad."""
-        resp = self._request_with_retry(
-            "GET", f"{self.rest_url}/workspaces/{workspace}/datastores/{store_name}.json"
-        )
-        if resp.status_code != 200:
-            return None
-        entries = (
-            resp.json()
-            .get("dataStore", {})
-            .get("connectionParameters", {})
-            .get("entry", [])
-        )
-        for entry in entries:
-            if entry.get("@key") == "user":
-                return entry.get("$")
-        return None
+    # Prefix för lösenordsavtrycket i datastorens description. Se
+    # _losenordsavtryck och _datastore_avvikelser.
+    AVTRYCK_PREFIX = "Hex-lösenordsavtryck"
 
-    def _update_pg_datastore(self, workspace, store_name, host, port, dbname, schema_name, pg_user, pg_password):
-        """Uppdaterar en befintlig PostGIS-datastore med nya autentiseringsuppgifter (PUT)."""
-        payload = {
+    @staticmethod
+    def _losenordsavtryck(pg_user, pg_password):
+        """Returnerar ett avtryck (sha256) av användare och lösenord.
+
+        GeoServer lagrar datastorens lösenord krypterat (crypt1:/crypt2:) och
+        returnerar det så via REST, så det går inte att jämföra med lösenordet
+        i hex_rolluppgifter. Avtrycket skrivs därför i datastorens description
+        när Hex skapar eller skriver om den, och jämförs vid nästa avstämning.
+
+        Avtrycket röjer inte lösenordet: tjänstekontonas lösenord är 18
+        slumpade byte (144 bitar), vilket inte går att gissa fram ur en hash.
+        """
+        data = f"{pg_user}\n{pg_password}".encode("utf-8")
+        return f"{GeoServerClient.AVTRYCK_PREFIX} sha256:{hashlib.sha256(data).hexdigest()}"
+
+    def _datastore_payload(self, workspace, store_name, host, port, dbname, schema_name,
+                           pg_user, pg_password):
+        """Bygger payloaden för en PostGIS-datastore (samma för POST och PUT)."""
+        return {
             "dataStore": {
                 "name": store_name,
                 "type": "PostGIS",
                 "enabled": True,
+                "description": self._losenordsavtryck(pg_user, pg_password),
                 "connectionParameters": {
                     # Poolinställningarna gäller per datastore och lever i
                     # GeoServers JVM, inte i lyssnaren. min connections = 0
@@ -981,10 +1028,86 @@ class GeoServerClient:
             }
         }
 
+    def _get_datastore(self, workspace, store_name):
+        """Hämtar en befintlig datastore som dict (innehållet under 'dataStore').
+
+        Returns:
+            Dict, eller None om datastoren inte finns eller inte kunde läsas.
+            None leder till POST; finns datastoren ändå faller
+            create_pg_datastore tillbaka på PUT (se 'already exists' nedan).
+        """
+        resp = self._request_with_retry(
+            "GET", f"{self.rest_url}/workspaces/{workspace}/datastores/{store_name}.json"
+        )
+        if resp.status_code != 200:
+            return None
+        try:
+            ds = resp.json().get("dataStore")
+        except ValueError:
+            return None
+        return ds if isinstance(ds, dict) else None
+
+    @staticmethod
+    def _datastore_avvikelser(befintlig, payload, pg_password):
+        """Jämför en befintlig datastore mot den payload Hex skulle skriva.
+
+        Varje PUT får GeoServer att kasta datastorens anslutningspool och öppna
+        en ny, och de gamla anslutningarna ligger kvar i PostgreSQL tills de
+        stängs. Avstämningen skrev tidigare om varje datastore varje gång, vilket
+        räckte för att fylla max_connections. Därför skrivs datastoren bara om
+        när något faktiskt skiljer.
+
+        Alla parametrar Hex sätter jämförs utom lösenordet, som GeoServer
+        returnerar krypterat. Lösenordet räknas som lika om GeoServer ändå
+        returnerar det i klartext, eller om description bär avtrycket av
+        aktuell användare och lösenord. En datastore skapad innan avtrycket
+        infördes saknar det och skrivs om en gång.
+
+        Parametrar som GeoServer själv lagt till ignoreras.
+
+        Returns:
+            Lista med namnen på det som skiljer (tom lista = i synk). Värdena
+            loggas aldrig, eftersom ett av dem kan vara lösenordet.
+        """
+        forvantad = payload["dataStore"]
+        entries = (befintlig.get("connectionParameters") or {}).get("entry") or []
+        if isinstance(entries, dict):
+            entries = [entries]
+        nuvarande = {e.get("@key"): e.get("$") for e in entries if isinstance(e, dict)}
+
+        avvikelser = []
+        if str(befintlig.get("enabled", True)).lower() != "true":
+            avvikelser.append("enabled")
+        for entry in forvantad["connectionParameters"]["entry"]:
+            nyckel = entry["@key"]
+            if nyckel == "passwd":
+                continue
+            if nuvarande.get(nyckel) != entry["$"]:
+                avvikelser.append(nyckel)
+
+        lagrat = nuvarande.get("passwd")
+        losenord_lika = (
+            lagrat in (pg_password, f"plain:{pg_password}")
+            or befintlig.get("description") == forvantad["description"]
+        )
+        if not losenord_lika:
+            avvikelser.append("passwd")
+        return avvikelser
+
+    def _update_pg_datastore(self, workspace, store_name, host, port, dbname, schema_name, pg_user, pg_password):
+        """Skriver om en befintlig PostGIS-datastore (PUT).
+
+        Anropas bara när något skiljer (se create_pg_datastore). En PUT får
+        GeoServer att kasta datastorens anslutningspool.
+        """
+        payload = self._datastore_payload(
+            workspace, store_name, host, port, dbname, schema_name, pg_user, pg_password
+        )
+
         if self.dry_run:
             log.info("  [DRY-RUN] Skulle uppdatera PG-datastore: %s", store_name)
             log.info("  [DRY-RUN] PUT %s/workspaces/%s/datastores/%s.json", self.rest_url, workspace, store_name)
-            log.info("  [DRY-RUN] Ny användare: %s", pg_user)
+            log.info("  [DRY-RUN] Användare: %s", pg_user)
             return True
 
         resp = self._request_with_retry(
@@ -993,7 +1116,7 @@ class GeoServerClient:
             json=payload,
         )
         if resp.status_code in (200, 201):
-            log.info("  Datastore '%s' uppdaterad (ny användare: %s)", store_name, pg_user)
+            log.info("  Datastore '%s' uppdaterad (användare: %s)", store_name, pg_user)
             return True
         else:
             log.error(
@@ -1005,11 +1128,13 @@ class GeoServerClient:
             return False
 
     def create_pg_datastore(self, workspace, store_name, host, port, dbname, schema_name, pg_user, pg_password):
-        """Skapar eller uppdaterar en PostGIS-datastore i GeoServer.
+        """Skapar en PostGIS-datastore, eller skriver om en befintlig som avviker.
 
-        Skapar en ny datastore om den inte finns. Om datastore redan existerar
-        uppdateras den alltid via PUT med aktuella uppgifter från hex_rolluppgifter,
-        så att lösenordsändringar (t.ex. efter ominstallation) slår igenom.
+        Finns datastoren jämförs den mot det Hex skulle skriva (se
+        _datastore_avvikelser). Bara om något skiljer – värd, port, databas,
+        schema, användare, lösenord eller poolparametrar – skickas en PUT.
+        En datastore som redan är i synk lämnas orörd, så att GeoServer inte
+        kastar dess anslutningspool vid varje avstämning.
 
         Args:
             workspace:   Workspace-namn
@@ -1021,79 +1146,21 @@ class GeoServerClient:
             pg_user:     PostgreSQL-användare (gs_r_-rollen för schemat)
             pg_password: Lösenord för pg_user
         """
-        existing_user = self._get_datastore_user(workspace, store_name)
+        payload = self._datastore_payload(
+            workspace, store_name, host, port, dbname, schema_name, pg_user, pg_password
+        )
+        befintlig = self._get_datastore(workspace, store_name)
 
-        if existing_user is not None:
-            if existing_user != pg_user:
-                log.info(
-                    "  Datastore '%s' använder gammal användare '%s', uppdaterar till '%s'",
-                    store_name, existing_user, pg_user,
-                )
-            else:
-                log.info(
-                    "  Datastore '%s' finns redan i workspace '%s' - uppdaterar autentiseringsuppgifter",
-                    store_name, workspace,
-                )
+        if befintlig is not None:
+            avvikelser = self._datastore_avvikelser(befintlig, payload, pg_password)
+            if not avvikelser:
+                log.info("  Datastore '%s' är i synk – lämnas orörd", store_name)
+                return True
+            log.info(
+                "  Datastore '%s' avviker (%s) – uppdaterar",
+                store_name, ", ".join(avvikelser),
+            )
             return self._update_pg_datastore(workspace, store_name, host, port, dbname, schema_name, pg_user, pg_password)
-
-        payload = {
-            "dataStore": {
-                "name": store_name,
-                "type": "PostGIS",
-                "enabled": True,
-                "connectionParameters": {
-                    # Poolinställningarna gäller per datastore och lever i
-                    # GeoServers JVM, inte i lyssnaren. min connections = 0
-                    # gör att en oanvänd datastore inte håller kvar någon
-                    # anslutning; evictor-raderna styr hur snabbt den töms.
-                    # Evictor tests per run måste vara minst max connections
-                    # för att en körning ska hinna gå igenom hela poolen.
-                    #
-                    # Max connection idle time är 300 s, inte 60. Att öppna en
-                    # ny anslutning mättes till ~33 ms serverarbete mot
-                    # PostgreSQL på Windows (backend-start ~27 ms plus SCRAM
-                    # ~6 ms), med enstaka utfall på flera hundra ms. Med 60 s
-                    # blev den kostnaden normalfallet för varje lager som ses
-                    # mer sällan än en gång i minuten. 300 s är GeoTools
-                    # standard och håller poolen varm genom vanliga pauser i
-                    # kartbläddring; golvet på 0 är kvar, så en datastore som
-                    # står helt oanvänd släpper ändå alla sina anslutningar.
-                    # Evictor run periodicity ligger kvar på 60 s så att
-                    # gallringen sker inom 300-360 s i stället för 300-600 s.
-                    #
-                    # max connections är 10, inte 8. Det var golvet som fick
-                    # beståndet att äta max_connections oberoende av last, och
-                    # det är borta med min connections = 0. Taket styr bara hur
-                    # många samtidiga frågor en enskild datastore klarar, så
-                    # att sänka det köper nästan ingenting mot max_connections
-                    # men gör att en kakelskur lättare slår i Connection
-                    # timeout.
-                    "entry": [
-                        {"@key": "dbtype",                   "$": "postgis"},
-                        {"@key": "namespace",                "$": f"{self.namespace_uri_base}/{workspace}"},
-                        {"@key": "host",                     "$": host},
-                        {"@key": "port",                     "$": str(port)},
-                        {"@key": "database",                 "$": dbname},
-                        {"@key": "schema",                   "$": schema_name},
-                        {"@key": "user",                     "$": pg_user},
-                        {"@key": "passwd",                   "$": pg_password},
-                        {"@key": "Expose primary keys",      "$": "true"},
-                        {"@key": "fetch size",               "$": "1000"},
-                        {"@key": "Loose bbox",               "$": "true"},
-                        {"@key": "Estimated extends",        "$": "true"},
-                        {"@key": "encode functions",         "$": "true"},
-                        {"@key": "validate connections",     "$": "true"},
-                        {"@key": "max connections",          "$": "10"},
-                        {"@key": "min connections",          "$": "0"},
-                        {"@key": "Connection timeout",       "$": "10"},
-                        {"@key": "Test while idle",          "$": "true"},
-                        {"@key": "Evictor run periodicity",  "$": "60"},
-                        {"@key": "Max connection idle time", "$": "300"},
-                        {"@key": "Evictor tests per run",    "$": "10"},
-                    ]
-                },
-            }
-        }
 
         if self.dry_run:
             log.info("  [DRY-RUN] Skulle skapa PG-datastore: %s", store_name)
@@ -2145,8 +2212,9 @@ def _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label="", all_pg_
                                  all_db_configs=None, cleanup_mode=CLEANUP_OFF):
     """Avstämning: skapar saknade GeoServer-workspaces och datastores för befintliga PG-scheman.
 
-    Körs vid uppstart och periodiskt (se _periodic_reconcile_loop). Använder den
-    anropandes cursor/anslutning så att ingen extra PG-anslutning öppnas.
+    Körs vid varje (åter)anslutning och periodiskt (se Avstamningsschema), båda
+    gångerna i lyssnartråden på LISTEN-anslutningens cursor, så att ingen extra
+    PG-anslutning öppnas för den egna databasen.
 
     Args:
         cur:            Öppen psycopg2-cursor (autocommit OK)
@@ -2168,14 +2236,19 @@ def _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label="", all_pg_
       a) Hämtar publicerbara scheman från denna databas (pg_namespace).
       b) Hämtar befintliga workspaces via GeoServer REST GET /rest/workspaces.json.
       c) Kör handle_schema_notification för ALLA PG-scheman (inte bara saknade).
-         Saknade workspaces skapas; befintliga datastores uppdateras alltid med
-         aktuella autentiseringsuppgifter från hex_rolluppgifter (så att
-         lösenordsändringar efter ominstallation slår igenom vid omstart).
+         Saknade workspaces och datastores skapas. Befintliga datastores
+         skrivs om bara om de avviker från hex_rolluppgifter och Hex
+         standardparametrar (se GeoServerClient._datastore_avvikelser).
       d) Loggar INFO för varje nyskapad workspace.
       e) Varnar för varje GeoServer-workspace som saknar PG-schema i SAMTLIGA
          övervakade databaser, och tar bort den om cleanup_mode tillåter det
          OCH workspacen bevisligen är skapad av Hex (se _classify_workspace).
       f) Alla fel loggas; funktionen avbryter aldrig LISTEN-loopen.
+
+    Returns:
+        True om avstämningen gick igenom, False om den avbröts (GeoServer eller
+        databasen svarade inte). Vid False försöker Avstamningsschema igen
+        inom några minuter i stället för att vänta ett helt intervall.
     """
     tag = _db_tag(db_label)
     log.info("%sStartavstämning: kontrollerar GeoServer mot PostgreSQL-scheman...", tag)
@@ -2211,7 +2284,7 @@ def _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label="", all_pg_
                 "hoppar över startavstämning och fortsätter till LISTEN-loopen",
                 tag, e,
             )
-            return
+            return False
 
         if resp.status_code != 200:
             log.error(
@@ -2219,7 +2292,7 @@ def _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label="", all_pg_
                 "hoppar över startavstämning",
                 tag, resp.status_code,
             )
-            return
+            return False
 
         ws_data = resp.json().get("workspaces") or {}
         gs_workspaces = {ws["name"] for ws in ws_data.get("workspace", [])}
@@ -2228,11 +2301,11 @@ def _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label="", all_pg_
             tag, len(gs_workspaces),
         )
 
-        # c) Alla scheman: skapa saknade workspaces och uppdatera autentiseringsuppgifter
-        #    för befintliga. handle_schema_notification är idempotent (skapar bara om
-        #    något saknas, PUT:ar alltid nya credentials till befintliga datastores).
-        #    Detta säkerställer att lösenordsändringar (t.ex. 'lösenord backfyllt' efter
-        #    ominstallation) slår igenom automatiskt vid omstart av tjänsten.
+        # c) Alla scheman: skapa det som saknas och rätta det som avviker.
+        #    handle_schema_notification är idempotent: en datastore som redan
+        #    stämmer med hex_rolluppgifter skrivs inte om. En PUT får GeoServer
+        #    att kasta datastorens anslutningspool, så att skriva om allt vid
+        #    varje avstämning kostade ett par PostgreSQL-anslutningar per schema.
         missing_in_gs = pg_schemas - gs_workspaces
         for schema_name in sorted(pg_schemas):
             try:
@@ -2275,8 +2348,7 @@ def _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label="", all_pg_
 
         #    Gruppera per schema: läs-workspacen '<schema>' och skriv-workspacen
         #    '<schema>_w' hör ihop och ska bedömas och städas som en enhet.
-        #    Mönstret laddas av anroparen (listen_loop respektive
-        #    _periodic_reconcile_loop) från samma databas.
+        #    Mönstret laddas av anroparen (listen_loop) från samma databas.
         _pattern = _get_schema_pattern()
         orphans = {}
         if _pattern is None:
@@ -2325,6 +2397,7 @@ def _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label="", all_pg_
 
         if not missing_in_gs and not orphans:
             log.info("%sStartavstämning: GeoServer och PostgreSQL är i synk", tag)
+        return True
 
     except Exception as e:
         # f) Startavstämning får aldrig avbryta uppstarten
@@ -2333,73 +2406,95 @@ def _reconcile_geoserver_schemas(cur, db_config, gs_client, db_label="", all_pg_
             "fortsätter till LISTEN-loopen",
             tag, e,
         )
+        return False
 
 
 # =============================================================================
 # POSTGRESQL LISTENER
 # =============================================================================
 
-def _periodic_reconcile_loop(db_config, gs_client, stop_event, interval_seconds, db_label="",
-                            all_pg_schemas=None, all_db_configs=None, cleanup_mode=CLEANUP_OFF):
-    """Periodisk avstämning som kör _reconcile_geoserver_schemas på ett fast intervall.
+# Hur länge listen_loop väntar på en notifiering innan den skickar keepalive
+# och kontrollerar stop_event och avstämningsschemat.
+LISTEN_TIMEOUT_SEKUNDER = 5
 
-    Öppnar en egen kortlivad PG-anslutning per körning, oberoende av
-    LISTEN-looopens anslutning. Avbryter omedelbart när stop_event sätts.
+class Avstamningsschema:
+    """Avgör när den periodiska avstämningen ska köras.
 
-    Args:
-        db_config:        Databaskonfiguration.
-        gs_client:        GeoServerClient-instans.
-        stop_event:       threading.Event – sätts vid graceful shutdown.
-        interval_seconds: Sekunder mellan körningar.
-        db_label:         Logg-prefix.
-        all_pg_schemas:   Samlad schema-mängd från alla övervakade databaser (se run_all_listeners).
-        all_db_configs:   Samtliga övervakade databaser (se _reconcile_geoserver_schemas).
-        cleanup_mode:     Uppstädningsläge för föräldralösa workspaces.
+    Två lägen, varav högst ett är aktivt:
+
+      - Intervall (HEX_RECONCILE_INTERVAL): nästa körning ligger ett intervall
+        efter den senaste, inklusive avstämningen vid (åter)anslutning.
+      - Klockslag (HEX_RECONCILE_TIME): en körning per dygn vid det lokala
+        klockslaget. Tiden räknas om mot väggklockan inför varje körning, så
+        den glider inte med körningarnas längd eller tjänstens starttid, och
+        sommartidsbyten hanteras av operativsystemets tidszon.
+
+    Avstämningen körs i lyssnartråden på LISTEN-anslutningen (se listen_loop).
+    Den behöver alltså ingen egen anslutning och fungerar även när PostgreSQL
+    har fyllt max_connections. Misslyckas en körning ändå (t.ex. GeoServer
+    svarar inte) görs ett nytt försök efter OMFORSOK_SEKUNDER i stället för
+    att vänta ett helt intervall eller dygn.
     """
-    tag = _db_tag(db_label)
-    log.info(
-        "%sPeriodisk avstämning aktiv – körs var %d sekunder (%.0f min).",
-        tag, interval_seconds, interval_seconds / 60,
-    )
 
-    while not stop_event.wait(interval_seconds):
-        log.info("%sPeriodisk avstämning: startar kontroll...", tag)
-        try:
-            conn = psycopg2.connect(
-                host=db_config["host"],
-                port=db_config["port"],
-                dbname=db_config["dbname"],
-                user=db_config["user"],
-                password=db_config["password"],
-                connect_timeout=10,
-                client_encoding="utf8",
-            )
-            conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
-            try:
-                with conn.cursor() as cur:
-                    # Tråden är en annan än lyssnartrådens och har ett eget
-                    # trådlokalt mönster. Utan laddningen här gällde tidigare
-                    # det hårdkodade reservmönstret i varje periodisk körning.
-                    _load_schema_pattern(cur)
-                    _reconcile_geoserver_schemas(
-                        cur, db_config, gs_client, db_label, all_pg_schemas,
-                        all_db_configs=all_db_configs, cleanup_mode=cleanup_mode,
-                    )
-            finally:
-                conn.close()
-        except psycopg2.OperationalError as e:
-            log.warning(
-                "%sPeriodisk avstämning: kan inte ansluta till PostgreSQL (%s)"
-                " – försöker igen om %d sekunder.",
-                tag, e, interval_seconds,
-            )
-        except Exception as e:
-            log.error(
-                "%sPeriodisk avstämning: oväntat fel: %s – försöker igen om %d sekunder.",
-                tag, e, interval_seconds,
-            )
+    OMFORSOK_SEKUNDER = 300
 
-    log.info("%sPeriodisk avstämning avslutad.", tag)
+    def __init__(self, intervall=0, klockslag=None, klocka=None):
+        """
+        Args:
+            intervall: Sekunder mellan körningar (0 = intervalläget av).
+            klockslag: datetime.time för daglig körning, eller None.
+                       Har företräde framför intervall.
+            klocka:    Funktion som returnerar aktuell tid som tidszonsmedveten
+                       datetime. Bara för tester.
+        """
+        self.klockslag = klockslag
+        self.intervall = 0 if klockslag is not None else max(0, intervall or 0)
+        self._klocka = klocka or (lambda: datetime.datetime.now().astimezone())
+        self._nasta = None
+
+    @property
+    def aktiv(self):
+        return self.klockslag is not None or self.intervall > 0
+
+    def beskrivning(self):
+        if self.klockslag is not None:
+            return f"dagligen kl. {self.klockslag.strftime('%H:%M')} (lokal tid)"
+        if self.intervall > 0:
+            return f"var {self.intervall:g} sekund ({self.intervall / 60:.0f} min)"
+        return "avaktiverad"
+
+    def _nasta_klockslag(self, nu):
+        """Nästa tillfälle för klockslaget, strikt efter nu, i lokal tid."""
+        dag = nu.date()
+        while True:
+            # astimezone() på en naiv datetime tolkar den som lokal tid med
+            # den förskjutning som gäller just den dagen (sommar/vinter).
+            kandidat = datetime.datetime.combine(dag, self.klockslag).astimezone()
+            if kandidat > nu:
+                return kandidat
+            dag += datetime.timedelta(days=1)
+
+    def efter_korning(self, lyckad):
+        """Planerar nästa körning efter en avstämning (lyckad eller inte)."""
+        if not self.aktiv:
+            return
+        nu = self._klocka()
+        if not lyckad:
+            vanta = self.OMFORSOK_SEKUNDER
+            if self.intervall > 0:
+                vanta = min(vanta, self.intervall)
+            self._nasta = nu + datetime.timedelta(seconds=vanta)
+        elif self.klockslag is not None:
+            self._nasta = self._nasta_klockslag(nu)
+        else:
+            self._nasta = nu + datetime.timedelta(seconds=self.intervall)
+
+    def ar_dags(self):
+        return self.aktiv and self._nasta is not None and self._klocka() >= self._nasta
+
+    @property
+    def nasta(self):
+        return self._nasta
 
 
 def _dispatch_notification_error(channel, db_label, schema_name, error, notifier, transient=False):
@@ -2447,7 +2542,7 @@ def _dispatch_notification_error(channel, db_label, schema_name, error, notifier
 
 def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None, notifier=None,
                 all_pg_schemas=None, reconcile_interval=0, all_db_configs=None,
-                cleanup_mode=CLEANUP_OFF):
+                cleanup_mode=CLEANUP_OFF, reconcile_time=None):
     """Huvudloop som lyssnar på pg_notify och hanterar notifieringar för en databas.
 
     Args:
@@ -2462,25 +2557,36 @@ def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None, notifier
         reconcile_interval: Sekunder mellan periodiska avstämningar (0 = avaktiverat).
         all_db_configs:     Samtliga övervakade databaser (se _reconcile_geoserver_schemas).
         cleanup_mode:       Uppstädningsläge för föräldralösa workspaces.
+        reconcile_time:     datetime.time för daglig avstämning, eller None.
+                            Ersätter reconcile_interval när det är satt.
     """
     db_label = db_config["dbname"]
     was_disconnected = False  # Sparar om vi tappat anslutning för återhämtningsnotifiering
 
-    # Normalisera stop_event – _periodic_reconcile_loop kräver ett riktigt Event
     if stop_event is None:
         stop_event = threading.Event()
 
-    # Starta periodisk avstämning som bakgrundstråd om det är konfigurerat.
-    # Tråden startas en gång här och lever oberoende av reconnect-cykeln.
-    if reconcile_interval > 0:
-        t = threading.Thread(
-            target=_periodic_reconcile_loop,
-            args=(db_config, gs_client, stop_event, reconcile_interval, db_label, all_pg_schemas),
-            kwargs={"all_db_configs": all_db_configs, "cleanup_mode": cleanup_mode},
-            name=f"reconcile-{db_label}",
-            daemon=True,
+    # Den periodiska avstämningen körs här i lyssnartråden, på LISTEN-
+    # anslutningen, i stället för i en egen tråd med egen anslutning. Den egna
+    # anslutningen gick inte att öppna när PostgreSQL hade fyllt
+    # max_connections, och då väntade tråden ett helt intervall innan nästa
+    # försök. Notifieringar som kommer under avstämningen köas av PostgreSQL
+    # och hanteras direkt efteråt, precis som vid avstämningen vid anslutning.
+    schema = Avstamningsschema(reconcile_interval, reconcile_time)
+    if schema.aktiv:
+        log.info("[%s] Periodisk avstämning: %s.", db_label, schema.beskrivning())
+
+    def avstam(cur):
+        ok = _reconcile_geoserver_schemas(
+            cur, db_config, gs_client, db_label, all_pg_schemas,
+            all_db_configs=all_db_configs, cleanup_mode=cleanup_mode,
         )
-        t.start()
+        schema.efter_korning(ok)
+        if schema.nasta is not None:
+            log.info(
+                "[%s] Nästa periodiska avstämning: %s",
+                db_label, schema.nasta.strftime("%Y-%m-%d %H:%M"),
+            )
 
     while not (stop_event and stop_event.is_set()):
         conn = None
@@ -2512,10 +2618,7 @@ def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None, notifier
 
             # Startavstämning – körs vid varje (åter)anslutning för att fånga upp
             # scheman som skapades medan lyssnaren var nere.
-            _reconcile_geoserver_schemas(
-                cur, db_config, gs_client, db_label, all_pg_schemas,
-                all_db_configs=all_db_configs, cleanup_mode=cleanup_mode,
-            )
+            avstam(cur)
 
             # Skicka återhämtningsnotifiering om vi tappat anslutning tidigare
             if was_disconnected:
@@ -2524,9 +2627,15 @@ def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None, notifier
                 was_disconnected = False
 
             while not (stop_event and stop_event.is_set()):
-                # Vänta på notifiering med 5s timeout
-                # Kort timeout så att stop_event kontrolleras regelbundet
-                if select.select([conn], [], [], 5) == ([], [], []):
+                if schema.ar_dags():
+                    log.info("[%s] Periodisk avstämning: startar kontroll...", db_label)
+                    # Ladda om mönstret så att ändrad konfiguration slår igenom.
+                    _load_schema_pattern(cur)
+                    avstam(cur)
+
+                # Vänta på notifiering med kort timeout så att stop_event och
+                # schemat för den periodiska avstämningen kontrolleras regelbundet
+                if select.select([conn], [], [], LISTEN_TIMEOUT_SEKUNDER) == ([], [], []):
                     # Timeout - skicka keepalive
                     cur.execute("SELECT 1")
                     continue
@@ -2663,6 +2772,7 @@ def run_all_listeners(config, dry_run=False, stop_event=None):
             databases[0], config["reconnect_delay"], gs_client, stop_event, notifier,
             all_pg_schemas, config.get("reconcile_interval", 0),
             all_db_configs=databases, cleanup_mode=cleanup_mode,
+            reconcile_time=config.get("reconcile_time"),
         )
         return
 
@@ -2680,7 +2790,8 @@ def run_all_listeners(config, dry_run=False, stop_event=None):
         t = threading.Thread(
             target=listen_loop,
             args=(db_config, config["reconnect_delay"], gs_client, stop_event, notifier, all_pg_schemas, config.get("reconcile_interval", 0)),
-            kwargs={"all_db_configs": databases, "cleanup_mode": cleanup_mode},
+            kwargs={"all_db_configs": databases, "cleanup_mode": cleanup_mode,
+                    "reconcile_time": config.get("reconcile_time")},
             name=f"listener-{db_config['dbname']}",
             daemon=True,
         )
@@ -2732,6 +2843,8 @@ def main():
         log.info("  [%s] %s@%s:%d/%s",
                  db["dbname"], db["user"], db["host"], db["port"], db["dbname"])
     log.info("Uppstädning: %s (HEX_ORPHAN_CLEANUP)", config["orphan_cleanup"])
+    log.info("Avstämning: %s", Avstamningsschema(
+        config["reconcile_interval"], config["reconcile_time"]).beskrivning())
     if config["smtp"]["enabled"]:
         log.info("E-post:     %s -> %s", config["smtp"]["host"], config["smtp"]["to_addr"])
     else:

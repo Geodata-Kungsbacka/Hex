@@ -222,7 +222,8 @@ Saknas en rad efter återställningen – t.ex. för ett schema vars roll skapad
 utan att raden sparades – backfyller `hex_underhall()` den som tidigare: nytt
 lösenord via `gen_random_bytes()`, `ALTER ROLE ... PASSWORD` och en ny rad.
 GeoServers datastore för just det schemat får då de nya uppgifterna vid nästa
-avstämning (uppstart eller efter `HEX_RECONCILE_INTERVAL`, standard 12 h), eller
+avstämning (uppstart, eller periodiskt enligt `HEX_RECONCILE_INTERVAL`/
+`HEX_RECONCILE_TIME`, standard var 12:e timme), eller
 direkt om lyssnaren startas om:
 
 ```cmd

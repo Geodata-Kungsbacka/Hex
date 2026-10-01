@@ -1521,24 +1521,30 @@ class TestAclRollordning(unittest.TestCase):
 
 class TestCreatePgDatastore(unittest.TestCase):
     """
-    Enhetstester för GeoServerClient.create_pg_datastore som verifierar att
-    direkta PostgreSQL-anslutningsparametrar skickas korrekt till GeoServer.
+    Enhetstester för GeoServerClient.create_pg_datastore.
 
-    Täcker specifikt regressionsfallet (lösenordsförnyelse efter ominstallation):
-    när en datastore redan finns med SAMMA pg_user men ett förnyat lösenord
-    (hex_underhall 'lösenord backfyllt') ska ett PUT skickas – inte hoppas över.
+    En befintlig datastore skrivs bara om (PUT) när något skiljer. Varje PUT
+    får GeoServer att kasta datastorens anslutningspool, och när avstämningen
+    skrev om allt varje gång fyllde det max_connections i dev.
+
+    Regressionsfallet från ominstallation finns kvar: samma pg_user men ett
+    förnyat lösenord (hex_underhall 'lösenord backfyllt') ska ge en PUT.
     """
 
     WORKSPACE   = "sk0_kba_testschema"
     STORE       = "sk0_kba_testschema"
     PG_USER     = "gs_r_sk0_kba_testschema"
     PG_PASSWORD = "brand_new_password_after_reinstall"
+    HOST        = "db-host"
+    PORT        = 5432
+    DBNAME      = "geodata_sk0_oppen"
 
     def _make_client(self):
         return gl.GeoServerClient(
             base_url="http://geoserver.example.com",
             user="admin",
             password="secret",
+            namespace_uri_base="https://gis.example.se",
         )
 
     def _mock_response(self, status_code, text=""):
@@ -1551,56 +1557,168 @@ class TestCreatePgDatastore(unittest.TestCase):
         return client.create_pg_datastore(
             workspace=self.WORKSPACE,
             store_name=self.STORE,
-            host="db-host",
-            port=5432,
-            dbname="geodata_sk0_oppen",
+            host=self.HOST,
+            port=self.PORT,
+            dbname=self.DBNAME,
             schema_name=self.WORKSPACE,
             pg_user=self.PG_USER,
             pg_password=self.PG_PASSWORD,
         )
 
-    # ------------------------------------------------------------------
-    # Regression: befintlig datastore med SAMMA användare – ska alltid PUT
-    # ------------------------------------------------------------------
-    def test_existing_store_same_user_refreshes_password(self):
+    def _befintlig(self, client, losenord=None, user=None, krypterat=True, **andrade):
         """
-        Regression: befintlig datastore med samma pg_user ska ändå PUT:as
-        med det nya lösenordet.
+        Bygger en datastore som GeoServer skulle returnera den efter att Hex
+        skrivit den med losenord/user. GeoServer returnerar lösenordet
+        krypterat, så passwd byts mot ett crypt1-värde när krypterat=True.
+        andrade skriver över enskilda parametrar.
+        """
+        losenord = self.PG_PASSWORD if losenord is None else losenord
+        user = self.PG_USER if user is None else user
+        ds = client._datastore_payload(
+            self.WORKSPACE, self.STORE, self.HOST, self.PORT, self.DBNAME,
+            self.WORKSPACE, user, losenord,
+        )["dataStore"]
+        entries = []
+        for e in ds["connectionParameters"]["entry"]:
+            varde = e["$"]
+            if e["@key"] == "passwd" and krypterat:
+                varde = "crypt1:KWhO7jrTz/Gi0oTQRKsVeCmWIZY5VZaD"
+            entries.append({"@key": e["@key"], "$": andrade.get(e["@key"], varde)})
+        # GeoServer lägger själv till parametrar; de ska inte räknas som avvikelser.
+        entries.append({"@key": "Batch insert size", "$": "1"})
+        return {
+            "name": ds["name"],
+            "type": ds["type"],
+            "enabled": True,
+            "description": ds["description"],
+            "connectionParameters": {"entry": entries},
+        }
 
-        Simulerar 'before state' efter ominstallation: hex_underhall har
-        genererat ett nytt lösenord ('lösenord backfyllt') men GeoServer
-        har fortfarande det gamla. Utan denna fix returnerades True direkt
-        och GeoServer fick aldrig det nya lösenordet → 'null'-fel vid
-        listning av lager.
-        """
+    def _kor_mot(self, befintlig):
         client = self._make_client()
-
-        with patch.object(client, "_get_datastore_user", return_value=self.PG_USER):
+        with patch.object(client, "_get_datastore", return_value=befintlig(client)):
             with patch.object(client, "_update_pg_datastore", return_value=True) as mock_put:
-                result = self._call_create(client)
-
+                with patch.object(client, "_request_with_retry") as mock_req:
+                    result = self._call_create(client)
         self.assertTrue(result)
+        mock_req.assert_not_called()   # ingen POST
+        return mock_put
+
+    # ------------------------------------------------------------------
+    # I synk – ingen PUT
+    # ------------------------------------------------------------------
+    def test_datastore_i_synk_skrivs_inte_om(self):
+        """Allt lika (lösenordet krypterat, avtrycket stämmer) → ingen PUT."""
+        mock_put = self._kor_mot(lambda c: self._befintlig(c))
+        mock_put.assert_not_called()
+
+    def test_lösenord_i_klartext_jamfors_direkt(self):
+        """Returnerar GeoServer lösenordet i klartext räcker det, även utan avtryck."""
+        def befintlig(c):
+            ds = self._befintlig(c, krypterat=False)
+            ds["description"] = None
+            return ds
+        self._kor_mot(befintlig).assert_not_called()
+
+    # ------------------------------------------------------------------
+    # Avvikelser – exakt en PUT
+    # ------------------------------------------------------------------
+    def test_nytt_losenord_samma_anvandare_ger_put(self):
+        """
+        Regression: efter ominstallation har hex_underhall backfyllt ett nytt
+        lösenord men GeoServer har det gamla. Avtrycket skiljer → PUT.
+        """
+        mock_put = self._kor_mot(lambda c: self._befintlig(c, losenord="gammalt"))
         mock_put.assert_called_once_with(
-            self.WORKSPACE, self.STORE,
-            "db-host", 5432, "geodata_sk0_oppen",
+            self.WORKSPACE, self.STORE, self.HOST, self.PORT, self.DBNAME,
             self.WORKSPACE, self.PG_USER, self.PG_PASSWORD,
         )
 
-    def test_existing_store_different_user_updates_via_put(self):
-        """Befintlig datastore med annan pg_user (r_* → gs_r_* migration) → PUT."""
+    def test_datastore_utan_avtryck_skrivs_om_en_gang(self):
+        """En datastore skapad före avtrycket (krypterat lösenord, ingen description) → PUT."""
+        def befintlig(c):
+            ds = self._befintlig(c)
+            del ds["description"]
+            return ds
+        self._kor_mot(befintlig).assert_called_once()
+
+    def test_annan_anvandare_ger_put(self):
+        """Befintlig datastore med annan pg_user (r_* → gs_r_*) → PUT."""
+        self._kor_mot(
+            lambda c: self._befintlig(c, user=f"r_{self.WORKSPACE}")
+        ).assert_called_once()
+
+    def test_varje_jamford_parameter_ger_put(self):
+        """Ändrad värd, port, databas, schema eller poolparameter → en PUT var."""
+        for nyckel, varde in [
+            ("host", "annan-host"),
+            ("port", "5433"),
+            ("database", "annan_db"),
+            ("schema", "sk0_kba_annat"),
+            ("namespace", "http://sk0_kba_testschema"),
+            ("max connections", "8"),
+            ("min connections", "1"),
+            ("Max connection idle time", "60"),
+        ]:
+            with self.subTest(nyckel=nyckel):
+                self._kor_mot(
+                    lambda c: self._befintlig(c, **{nyckel: varde})
+                ).assert_called_once()
+
+    def test_saknad_parameter_ger_put(self):
+        """En parameter Hex sätter men som saknas i GeoServer → PUT."""
+        def befintlig(c):
+            ds = self._befintlig(c)
+            ds["connectionParameters"]["entry"] = [
+                e for e in ds["connectionParameters"]["entry"]
+                if e["@key"] != "Evictor tests per run"
+            ]
+            return ds
+        self._kor_mot(befintlig).assert_called_once()
+
+    def test_avaktiverad_datastore_ger_put(self):
+        def befintlig(c):
+            ds = self._befintlig(c)
+            ds["enabled"] = False
+            return ds
+        self._kor_mot(befintlig).assert_called_once()
+
+    def test_avvikelseloggen_innehaller_inte_losenordet(self):
         client = self._make_client()
-        old_user = f"r_{self.WORKSPACE}"
+        befintlig = self._befintlig(client, losenord="gammalt", krypterat=False)
+        with patch.object(client, "_get_datastore", return_value=befintlig):
+            with patch.object(client, "_update_pg_datastore", return_value=True):
+                with self.assertLogs("geoserver_listener", level="INFO") as cm:
+                    self._call_create(client)
+        logg = "\n".join(cm.output)
+        self.assertIn("passwd", logg)
+        self.assertNotIn(self.PG_PASSWORD, logg)
+        self.assertNotIn("gammalt", logg)
 
-        with patch.object(client, "_get_datastore_user", return_value=old_user):
-            with patch.object(client, "_update_pg_datastore", return_value=True) as mock_put:
-                result = self._call_create(client)
+    def test_avtrycket_skiljer_pa_anvandare_och_losenord(self):
+        a = gl.GeoServerClient._losenordsavtryck("gs_r_x", "pw")
+        self.assertEqual(a, gl.GeoServerClient._losenordsavtryck("gs_r_x", "pw"))
+        self.assertNotEqual(a, gl.GeoServerClient._losenordsavtryck("gs_r_x", "pw2"))
+        self.assertNotEqual(a, gl.GeoServerClient._losenordsavtryck("gs_w_x", "pw"))
+        self.assertRegex(a, r"^Hex-lösenordsavtryck sha256:[0-9a-f]{64}$")
 
-        self.assertTrue(result)
-        mock_put.assert_called_once_with(
-            self.WORKSPACE, self.STORE,
-            "db-host", 5432, "geodata_sk0_oppen",
-            self.WORKSPACE, self.PG_USER, self.PG_PASSWORD,
-        )
+    def test_put_och_post_bar_avtrycket(self):
+        """Både ny och omskriven datastore får avtrycket, annars skrivs den om igen nästa gång."""
+        client = self._make_client()
+        forvantat = client._losenordsavtryck(self.PG_USER, self.PG_PASSWORD)
+        with patch.object(client, "_request_with_retry", side_effect=[
+            self._mock_response(404), self._mock_response(201),
+        ]) as mock_req:
+            self._call_create(client)
+        self.assertEqual(mock_req.call_args_list[1][1]["json"]["dataStore"]["description"], forvantat)
+
+        with patch.object(client, "_request_with_retry",
+                          return_value=self._mock_response(200)) as mock_req:
+            client._update_pg_datastore(
+                self.WORKSPACE, self.STORE, self.HOST, self.PORT, self.DBNAME,
+                self.WORKSPACE, self.PG_USER, self.PG_PASSWORD,
+            )
+        self.assertEqual(mock_req.call_args[1]["json"]["dataStore"]["description"], forvantat)
 
     # ------------------------------------------------------------------
     # Ny datastore (finns inte sedan tidigare) – POST
@@ -1610,7 +1728,7 @@ class TestCreatePgDatastore(unittest.TestCase):
         client = self._make_client()
 
         with patch.object(client, "_request_with_retry", side_effect=[
-            self._mock_response(404),  # _get_datastore_user → 404 = finns inte
+            self._mock_response(404),  # _get_datastore → 404 = finns inte
             self._mock_response(201),  # POST /datastores → 201
         ]) as mock_req:
             result = client.create_pg_datastore(
@@ -1651,7 +1769,7 @@ class TestCreatePgDatastore(unittest.TestCase):
         client = self._make_client()
 
         with patch.object(client, "_request_with_retry", side_effect=[
-            self._mock_response(404),  # _get_datastore_user → finns inte
+            self._mock_response(404),  # _get_datastore → finns inte
             self._mock_response(500),  # POST → failure
         ]):
             result = client.create_pg_datastore(
@@ -1669,12 +1787,12 @@ class TestCreatePgDatastore(unittest.TestCase):
 
     def test_post_conflict_falls_back_to_put(self):
         """
-        POST 409/500 'already exists' (datastore finns men _get_datastore_user
+        POST 409/500 'already exists' (datastore finns men _get_datastore
         misslyckades att läsa) ska falla tillbaka till _update_pg_datastore.
         """
         client = self._make_client()
 
-        with patch.object(client, "_get_datastore_user", return_value=None):
+        with patch.object(client, "_get_datastore", return_value=None):
             with patch.object(client, "_request_with_retry",
                               return_value=self._mock_response(409, "already exists")):
                 with patch.object(client, "_update_pg_datastore", return_value=True) as mock_put:
@@ -1751,12 +1869,10 @@ class TestReconcileGeoServerSchemas(_Standardmonster, unittest.TestCase):
 
     def test_existing_schema_refreshes_datastore_credentials(self):
         """
-        Schema finns i både PG och GeoServer → workspaces skapas inte igen men
-        create_pg_datastore anropas för att uppdatera lösenordet.
-
-        Förut hoppades befintliga scheman över helt under startavstämning.
-        Nu körs handle_schema_notification för alla scheman (idempotent) så att
-        lösenordsändringar efter ominstallation slår igenom vid omstart av tjänsten.
+        Schema finns i både PG och GeoServer → create_pg_datastore anropas
+        ändå, så att ett ändrat lösenord slår igenom. Om datastoren faktiskt
+        skrivs om avgör create_pg_datastore (se TestCreatePgDatastore och
+        TestAvstamningISynkSkriverInget).
         """
         cur = self._make_cur_mock(["sk0_kba_testschema"])
         gs  = self._make_gs_mock(existing_workspaces=["sk0_kba_testschema"])
@@ -1770,7 +1886,7 @@ class TestReconcileGeoServerSchemas(_Standardmonster, unittest.TestCase):
         # create_workspace anropas (idempotent – verkliga implementationen
         # kontrollerar att workspace finns innan den försöker skapa)
         gs.create_workspace.assert_any_call("sk0_kba_testschema")
-        # create_pg_datastore anropas för att synka lösenord (minst läs-datastore)
+        # create_pg_datastore anropas för att jämföra (minst läs-datastore)
         self.assertGreaterEqual(gs.create_pg_datastore.call_count, 1)
 
     def test_in_sync_logs_ok(self):
@@ -1963,6 +2079,205 @@ class TestReconcileGeoServerSchemas(_Standardmonster, unittest.TestCase):
         gs.create_workspace.assert_not_called()
 
 
+class _TillstandsGeoServer:
+    """
+    GeoServer på HTTP-nivå med eget tillstånd, för GeoServerClient.session.request.
+
+    Den riktiga klienten körs mot den, så att hela kedjan från avstämningen
+    till REST-anropen prövas. Lösenord lagras och returneras krypterade, som
+    GeoServer gör, så att jämförelsen inte kan luta sig mot klartext.
+    """
+
+    def __init__(self, rest_url):
+        self.rest = rest_url
+        self.workspaces = set()
+        self.namespaces = {}
+        self.datastores = {}       # (ws, namn) -> dataStore-dict
+        self.roller = set()
+        self.acl = {}
+        self.anrop = []            # (metod, sökväg)
+
+    @staticmethod
+    def _svar(status, data=None):
+        resp = MagicMock()
+        resp.status_code = status
+        resp.text = "" if data is None else str(data)
+        resp.json.return_value = data if data is not None else {}
+        return resp
+
+    def __call__(self, method, url, **kwargs):
+        path = url[len(self.rest):].split("?")[0]
+        self.anrop.append((method, path))
+        body = kwargs.get("json")
+        delar = path.strip("/").split("/")
+
+        if method == "GET" and path == "/workspaces.json":
+            return self._svar(200, {"workspaces": {"workspace": [
+                {"name": n} for n in sorted(self.workspaces)]}})
+        if method == "POST" and path == "/workspaces":
+            self.workspaces.add(body["workspace"]["name"])
+            return self._svar(201)
+        if method == "GET" and delar[0] == "workspaces" and len(delar) == 2:
+            return self._svar(200 if delar[1][:-5] in self.workspaces else 404)
+        if delar[0] == "namespaces":
+            namn = delar[1].removesuffix(".json")
+            if method == "GET":
+                if namn not in self.namespaces:
+                    return self._svar(404)
+                return self._svar(200, {"namespace": {"uri": self.namespaces[namn]}})
+            self.namespaces[namn] = body["namespace"]["uri"]
+            return self._svar(200)
+        if delar[0] == "workspaces" and len(delar) >= 3 and delar[2] == "datastores":
+            ws = delar[1]
+            if method == "POST":
+                self.datastores[(ws, body["dataStore"]["name"])] = self._lagra(body)
+                return self._svar(201)
+            namn = delar[3].removesuffix(".json")
+            if method == "GET":
+                ds = self.datastores.get((ws, namn))
+                return self._svar(404) if ds is None else self._svar(200, {"dataStore": ds})
+            if method == "PUT":
+                self.datastores[(ws, namn)] = self._lagra(body)
+                return self._svar(200)
+        if path.startswith("/security/roles/role/") and method == "POST":
+            roll = delar[-1]
+            if roll in self.roller:
+                return self._svar(409)
+            self.roller.add(roll)
+            return self._svar(201)
+        if path == "/security/acl/layers.json" and method == "GET":
+            return self._svar(200, dict(self.acl))
+        if path == "/security/acl/layers" and method == "POST":
+            self.acl.update(body)
+            return self._svar(200)
+        return self._svar(404)
+
+    @staticmethod
+    def _lagra(body):
+        """Lagrar en datastore som GeoServer: lösenordet krypterat, plus egna parametrar."""
+        import copy
+        ds = copy.deepcopy(body["dataStore"])
+        entries = ds["connectionParameters"]["entry"]
+        for e in entries:
+            if e["@key"] == "passwd":
+                e["$"] = "crypt1:" + __import__("hashlib").md5(e["$"].encode()).hexdigest()
+        entries.append({"@key": "Batch insert size", "$": "1"})
+        return ds
+
+    def skrivningar(self):
+        """Anrop som ändrar GeoServer, utom rollskapande som avvisats med 409."""
+        return [(m, p) for m, p in self.anrop
+                if m in ("PUT", "POST", "DELETE")
+                and not p.startswith("/security/roles/role/")]
+
+
+class TestAvstamningISynkSkriverInget(_Standardmonster, unittest.TestCase):
+    """
+    En avstämning mot ett bestånd som redan är i synk gör ingen PUT och
+    ändrar inga lösenord.
+
+    Bakgrund: avstämningen skrev om varje datastore varje gång. GeoServer
+    kastar datastorens anslutningspool vid varje PUT, och i dev kostade det
+    ett par PostgreSQL-anslutningar per schema och avstämning – nog för att
+    fylla max_connections.
+
+    Körs mot en riktig databas med Hex installerat: schemat skapas på riktigt,
+    så att tjänstekontona och hex_rolluppgifter kommer från Hex egna triggers.
+    """
+
+    SCHEMA = "sk0_kba_isynk"
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            cls.conn = make_conn()
+        except Exception as e:
+            raise unittest.SkipTest(f"ingen databasanslutning: {e}")
+        with cls.conn.cursor() as cur:
+            cur.execute("SELECT to_regclass('public.hex_rolluppgifter') IS NOT NULL")
+            if not cur.fetchone()[0]:
+                cls.conn.close()
+                raise unittest.SkipTest("Hex är inte installerat i måldatabasen")
+            cur.execute("SELECT rolsuper FROM pg_roles WHERE rolname = current_user")
+            cls.superanvandare = cur.fetchone()[0]
+            cur.execute(f"DROP SCHEMA IF EXISTS {cls.SCHEMA} CASCADE")
+            cur.execute(f"CREATE SCHEMA {cls.SCHEMA}")
+
+    @classmethod
+    def tearDownClass(cls):
+        with cls.conn.cursor() as cur:
+            cur.execute(f"DROP SCHEMA IF EXISTS {cls.SCHEMA} CASCADE")
+        cls.conn.close()
+
+    def setUp(self):
+        super().setUp()
+        self.client = gl.GeoServerClient(
+            base_url="http://geoserver.example.com/geoserver",
+            user="admin", password="secret",
+            namespace_uri_base="https://gis.example.se",
+        )
+        self.gs = _TillstandsGeoServer(self.client.rest_url)
+        self.client.session.request = self.gs
+
+    def _avstam(self):
+        with self.conn.cursor() as cur:
+            return gl._reconcile_geoserver_schemas(cur, DB_CONFIG, self.client)
+
+    def _losenord(self):
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "SELECT rollnamn, losenord, skapad_tidpunkt FROM public.hex_rolluppgifter"
+                " WHERE rollnamn LIKE %s ORDER BY rollnamn",
+                (f"%{self.SCHEMA}",),
+            )
+            rader = cur.fetchall()
+            if self.superanvandare:
+                cur.execute(
+                    "SELECT rolname, rolpassword FROM pg_authid"
+                    " WHERE rolname LIKE %s ORDER BY rolname",
+                    (f"%{self.SCHEMA}",),
+                )
+                rader += cur.fetchall()
+        return rader
+
+    def test_andra_avstamningen_skriver_inget(self):
+        fore = self._losenord()
+        self.assertTrue(self._avstam())
+        self.assertIn((self.SCHEMA, self.SCHEMA), self.gs.datastores)
+        self.assertIn((f"{self.SCHEMA}_w", f"{self.SCHEMA}_w"), self.gs.datastores)
+
+        self.gs.anrop.clear()
+        self.assertTrue(self._avstam())
+
+        self.assertEqual(self.gs.skrivningar(), [])
+        self.assertNotIn("PUT", {m for m, _ in self.gs.anrop})
+        self.assertEqual(self._losenord(), fore, "avstämningen ändrade lösenord")
+
+    def test_andrat_losenord_ger_en_put_for_den_datastoren(self):
+        self.assertTrue(self._avstam())
+        roll = f"gs_r_{self.SCHEMA}"
+        with self.conn.cursor() as cur:
+            cur.execute("SELECT losenord FROM public.hex_rolluppgifter WHERE rollnamn = %s", (roll,))
+            gammalt = cur.fetchone()[0]
+            cur.execute(
+                "UPDATE public.hex_rolluppgifter SET losenord = 'nytt_losenord' WHERE rollnamn = %s",
+                (roll,),
+            )
+        try:
+            self.gs.anrop.clear()
+            self.assertTrue(self._avstam())
+            self.assertEqual(
+                self.gs.skrivningar(),
+                [("PUT", f"/workspaces/{self.SCHEMA}/datastores/{self.SCHEMA}.json")],
+            )
+        finally:
+            with self.conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE public.hex_rolluppgifter SET losenord = %s WHERE rollnamn = %s",
+                    (gammalt, roll),
+                )
+
+
 class TestLoadSchemaPattern(unittest.TestCase):
     """
     Enhetstester för _load_schema_pattern – verifierar att det trådlokala
@@ -2078,218 +2393,210 @@ class TestOkantSchemamonster(unittest.TestCase):
         gs.delete_workspace.assert_not_called()
 
 
-class TestPeriodicReconcileLoop(unittest.TestCase):
+class _Klocka:
+    """Styrbar väggklocka för Avstamningsschema (tidszonsmedveten datetime)."""
+
+    def __init__(self, nu):
+        self.nu = nu
+
+    def __call__(self):
+        return self.nu
+
+    def fram(self, **kw):
+        self.nu = self.nu + __import__("datetime").timedelta(**kw)
+
+
+def _lokal(*args):
+    """Lokal tidszonsmedveten datetime, som datetime.now().astimezone() ger."""
+    import datetime as dt
+    return dt.datetime(*args).astimezone()
+
+
+class TestAvstamningsschema(unittest.TestCase):
     """
-    Enhetstester för _periodic_reconcile_loop – verifierar att periodisk
-    avstämning anropar _reconcile_geoserver_schemas, hanterar fel gracefully
-    och avslutar omedelbart när stop_event sätts.
+    När den periodiska avstämningen körs: ANTINGEN ett intervall ELLER ett
+    dagligt klockslag (HEX_RECONCILE_INTERVAL respektive HEX_RECONCILE_TIME).
     """
 
-    DB_CONFIG = {
-        "host": "localhost",
-        "port": 5432,
-        "dbname": "geodata",
-        "user": "hex_listener",
-        "password": "pw",
-    }
+    def test_avaktiverad(self):
+        s = gl.Avstamningsschema(0, None)
+        self.assertFalse(s.aktiv)
+        s.efter_korning(True)
+        self.assertFalse(s.ar_dags())
+        self.assertIsNone(s.nasta)
 
-    def _make_conn_mock(self):
-        conn = MagicMock()
-        conn.cursor.return_value.__enter__.return_value = MagicMock()
-        return conn
+    def test_intervall_raknas_fran_senaste_korning(self):
+        klocka = _Klocka(_lokal(2026, 10, 1, 9, 0))
+        s = gl.Avstamningsschema(3600, None, klocka=klocka)
+        self.assertFalse(s.ar_dags(), "inget planerat före första körningen")
+        s.efter_korning(True)
+        klocka.fram(minutes=59)
+        self.assertFalse(s.ar_dags())
+        klocka.fram(minutes=1)
+        self.assertTrue(s.ar_dags())
 
-    def test_laddar_monstret_fore_avstamningen(self):
-        """Den periodiska tråden har ett eget trådlokalt mönster och måste ladda det."""
-        called = threading.Event()
-        ordning = []
+    def test_klockslag_samma_dag_om_det_inte_passerats(self):
+        import datetime as dt
+        klocka = _Klocka(_lokal(2026, 10, 1, 1, 30))
+        s = gl.Avstamningsschema(0, dt.time(3, 0), klocka=klocka)
+        s.efter_korning(True)
+        self.assertEqual(s.nasta, _lokal(2026, 10, 1, 3, 0))
 
-        def fake_load(cur):
-            ordning.append("load")
+    def test_klockslag_nasta_dag_om_det_passerats(self):
+        import datetime as dt
+        klocka = _Klocka(_lokal(2026, 10, 1, 9, 0))
+        s = gl.Avstamningsschema(0, dt.time(3, 0), klocka=klocka)
+        s.efter_korning(True)
+        self.assertEqual(s.nasta, _lokal(2026, 10, 2, 3, 0))
+        klocka.nu = _lokal(2026, 10, 2, 2, 59)
+        self.assertFalse(s.ar_dags())
+        klocka.nu = _lokal(2026, 10, 2, 3, 0)
+        self.assertTrue(s.ar_dags())
 
-        def fake_reconcile(*args, **kwargs):
-            ordning.append("reconcile")
-            called.set()
+    def test_klockslag_glider_inte(self):
+        """En körning som tar tid flyttar inte nästa dags klockslag."""
+        import datetime as dt
+        klocka = _Klocka(_lokal(2026, 10, 1, 3, 0))
+        s = gl.Avstamningsschema(0, dt.time(3, 0), klocka=klocka)
+        for dag in range(2, 6):
+            klocka.fram(minutes=7)            # körningen tar sju minuter
+            s.efter_korning(True)
+            self.assertEqual(s.nasta, _lokal(2026, 10, dag, 3, 0))
+            klocka.nu = s.nasta
 
-        with patch.object(gl, "_load_schema_pattern", side_effect=fake_load):
-            with patch.object(gl, "_reconcile_geoserver_schemas", side_effect=fake_reconcile):
-                with patch("psycopg2.connect", return_value=self._make_conn_mock()):
-                    stop = threading.Event()
-                    t = threading.Thread(
-                        target=gl._periodic_reconcile_loop,
-                        args=({"host": "h", "port": 5432, "dbname": "d", "user": "u",
-                               "password": "p"}, MagicMock(), stop, 0.01),
-                        daemon=True,
-                    )
-                    t.start()
-                    called.wait(timeout=2)
-                    stop.set()
-                    t.join(timeout=2)
-        self.assertEqual(ordning[:2], ["load", "reconcile"])
+    def test_klockslag_har_foretrade_framfor_intervall(self):
+        import datetime as dt
+        s = gl.Avstamningsschema(60, dt.time(3, 0))
+        self.assertEqual(s.intervall, 0)
+        self.assertIn("03:00", s.beskrivning())
 
-    def test_calls_reconcile_after_interval(self):
-        """Anropar _reconcile_geoserver_schemas efter interval_seconds."""
+    def test_misslyckad_korning_forsoks_igen_snart(self):
+        """GeoServer nere vid klockslaget → nytt försök efter OMFORSOK_SEKUNDER, inte nästa dygn."""
+        import datetime as dt
+        klocka = _Klocka(_lokal(2026, 10, 1, 3, 0))
+        s = gl.Avstamningsschema(0, dt.time(3, 0), klocka=klocka)
+        s.efter_korning(False)
+        klocka.fram(seconds=s.OMFORSOK_SEKUNDER)
+        self.assertTrue(s.ar_dags())
+        s.efter_korning(True)
+        self.assertEqual(s.nasta, _lokal(2026, 10, 2, 3, 0))
+
+    def test_omforsok_overstiger_inte_intervallet(self):
+        klocka = _Klocka(_lokal(2026, 10, 1, 9, 0))
+        s = gl.Avstamningsschema(60, None, klocka=klocka)
+        s.efter_korning(False)
+        klocka.fram(seconds=60)
+        self.assertTrue(s.ar_dags())
+
+    @unittest.skipUnless(hasattr(time, "tzset"), "time.tzset finns bara på Unix")
+    def test_sommartid_flyttar_inte_klockslaget(self):
+        """Natten då sommartiden slutar är 25 timmar lång; 03:00 ska ändå bli 03:00."""
+        import datetime as dt
+        sparad = os.environ.get("TZ")
+        os.environ["TZ"] = "Europe/Stockholm"
+        time.tzset()
+        try:
+            klocka = _Klocka(_lokal(2026, 10, 24, 3, 0))
+            s = gl.Avstamningsschema(0, dt.time(3, 0), klocka=klocka)
+            s.efter_korning(True)
+            self.assertEqual(s.nasta, _lokal(2026, 10, 25, 3, 0))
+            self.assertEqual(s.nasta - klocka.nu, dt.timedelta(hours=25))
+            self.assertEqual(s.nasta.hour, 3)
+        finally:
+            if sparad is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = sparad
+            time.tzset()
+
+
+class TestPeriodiskAvstamningILyssnartraden(unittest.TestCase):
+    """
+    Den periodiska avstämningen körs i lyssnartråden på LISTEN-anslutningen.
+
+    Tidigare öppnade den en egen anslutning per körning. När PostgreSQL hade
+    fyllt max_connections misslyckades det ("remaining connection slots are
+    reserved ..."), och tråden väntade sedan ett helt intervall. Testerna kör
+    listen_loop mot en riktig databas och räknar anslutningarna.
+    """
+
+    def setUp(self):
+        try:
+            make_conn().close()
+        except Exception as e:
+            self.skipTest(f"ingen databasanslutning: {e}")
+
+    def _kor(self, villkor, reconcile_interval=0, reconcile_time=None,
+             reconcile_side_effect=None, timeout=10, efterdrojning=0):
+        anslutningar = []
+        verklig_connect = psycopg2.connect
+
+        def raknande_connect(*a, **k):
+            conn = verklig_connect(*a, **k)
+            anslutningar.append(conn)
+            return conn
+
+        anrop = []
+
+        def fake_reconcile(cur, *a, **k):
+            anrop.append(cur.connection)
+            if reconcile_side_effect:
+                return reconcile_side_effect(len(anrop))
+            return True
+
         stop = threading.Event()
-        gs = MagicMock()
-        called = threading.Event()
-
-        def fake_reconcile(*args, **kwargs):
-            called.set()
-
-        with patch.object(gl, "_reconcile_geoserver_schemas", side_effect=fake_reconcile):
-            with patch("psycopg2.connect", return_value=self._make_conn_mock()):
-                t = threading.Thread(
-                    target=gl._periodic_reconcile_loop,
-                    args=(self.DB_CONFIG, gs, stop, 0.05, "test"),
-                    daemon=True,
-                )
-                t.start()
-                called.wait(timeout=3)
-                stop.set()
-                t.join(timeout=3)
-
-        self.assertTrue(called.is_set(), "_reconcile_geoserver_schemas anropades aldrig")
-
-    def test_stops_when_stop_event_set(self):
-        """stop_event redan satt → loop-body körs aldrig och tråden avslutas."""
-        stop = threading.Event()
-        stop.set()
-        gs = MagicMock()
-
-        with patch.object(gl, "_reconcile_geoserver_schemas") as mock_rec:
+        with patch.object(gl, "LISTEN_TIMEOUT_SEKUNDER", 0.05), \
+             patch.object(gl.psycopg2, "connect", side_effect=raknande_connect), \
+             patch.object(gl, "_reconcile_geoserver_schemas", side_effect=fake_reconcile):
             t = threading.Thread(
-                target=gl._periodic_reconcile_loop,
-                args=(self.DB_CONFIG, gs, stop, 60, "test"),
+                target=gl.listen_loop,
+                args=(DB_CONFIG, 1, MagicMock(), stop),
+                kwargs={"reconcile_interval": reconcile_interval,
+                        "reconcile_time": reconcile_time},
                 daemon=True,
             )
             t.start()
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline and not villkor(anrop):
+                time.sleep(0.05)
+            # Ge loopen tid att göra något den inte borde, innan den stoppas.
+            time.sleep(efterdrojning)
+            stop.set()
             t.join(timeout=3)
-
-        mock_rec.assert_not_called()
         self.assertFalse(t.is_alive())
+        return anrop, anslutningar
 
-    def test_pg_connection_error_is_handled(self):
-        """OperationalError vid PG-anslutning loggas som WARNING – ingen krasch."""
-        stop = threading.Event()
-        gs = MagicMock()
-        attempt = {"n": 0}
+    def test_periodisk_avstamning_anvander_listen_anslutningen(self):
+        anrop, anslutningar = self._kor(lambda a: len(a) >= 3, reconcile_interval=1)
+        self.assertGreaterEqual(len(anrop), 3, "start + minst två periodiska körningar")
+        self.assertEqual(len(anslutningar), 1, "periodisk avstämning öppnade egen anslutning")
+        for conn in anrop:
+            self.assertIs(conn, anslutningar[0])
 
-        def fail_connect(*args, **kwargs):
-            attempt["n"] += 1
-            if attempt["n"] >= 2:
-                stop.set()
-            raise psycopg2.OperationalError("connection refused")
+    def test_avaktiverad_kor_bara_vid_anslutning(self):
+        anrop, _ = self._kor(lambda a: len(a) >= 1, reconcile_interval=0, efterdrojning=1.5)
+        self.assertEqual(len(anrop), 1)
 
-        with patch("psycopg2.connect", side_effect=fail_connect):
-            t = threading.Thread(
-                target=gl._periodic_reconcile_loop,
-                args=(self.DB_CONFIG, gs, stop, 0.05, "test"),
-                daemon=True,
+    def test_misslyckad_avstamning_forsoks_igen_fore_klockslaget(self):
+        """Klockslaget ligger ett dygn bort, men en misslyckad körning görs om efter omförsöksfristen."""
+        import datetime as dt
+        om_en_timme = (dt.datetime.now() + dt.timedelta(hours=1)).time().replace(second=0, microsecond=0)
+        with patch.object(gl.Avstamningsschema, "OMFORSOK_SEKUNDER", 0.2):
+            anrop, anslutningar = self._kor(
+                lambda a: len(a) >= 2,
+                reconcile_time=om_en_timme,
+                reconcile_side_effect=lambda n: n >= 2,   # första misslyckas
             )
-            t.start()
-            t.join(timeout=5)
+        self.assertEqual(len(anrop), 2)
+        self.assertEqual(len(anslutningar), 1)
 
-        self.assertFalse(t.is_alive())
-        self.assertGreaterEqual(attempt["n"], 1)
-
-    def test_unexpected_error_is_handled(self):
-        """RuntimeError under avstämning loggas som ERROR – tråden fortsätter och kraschar inte."""
-        stop = threading.Event()
-        gs = MagicMock()
-        call_count = {"n": 0}
-
-        def fail_reconcile(*args, **kwargs):
-            call_count["n"] += 1
-            if call_count["n"] >= 2:
-                stop.set()
-            raise RuntimeError("unexpected")
-
-        with patch.object(gl, "_reconcile_geoserver_schemas", side_effect=fail_reconcile):
-            with patch("psycopg2.connect", return_value=self._make_conn_mock()):
-                t = threading.Thread(
-                    target=gl._periodic_reconcile_loop,
-                    args=(self.DB_CONFIG, gs, stop, 0.05, "test"),
-                    daemon=True,
-                )
-                t.start()
-                t.join(timeout=5)
-
-        self.assertFalse(t.is_alive())
-        self.assertGreaterEqual(call_count["n"], 1)
-
-    def test_opens_own_pg_connection(self):
-        """Öppnar en egen kortlivad PG-anslutning per körning med rätt parametrar."""
-        stop = threading.Event()
-        gs = MagicMock()
-        called = threading.Event()
-
-        with patch.object(gl, "_reconcile_geoserver_schemas", side_effect=lambda *a, **k: called.set()):
-            with patch("psycopg2.connect", return_value=self._make_conn_mock()) as mock_connect:
-                t = threading.Thread(
-                    target=gl._periodic_reconcile_loop,
-                    args=(self.DB_CONFIG, gs, stop, 0.05, "test"),
-                    daemon=True,
-                )
-                t.start()
-                called.wait(timeout=3)
-                stop.set()
-                t.join(timeout=3)
-
-        mock_connect.assert_called_with(
-            host=self.DB_CONFIG["host"],
-            port=self.DB_CONFIG["port"],
-            dbname=self.DB_CONFIG["dbname"],
-            user=self.DB_CONFIG["user"],
-            password=self.DB_CONFIG["password"],
-            connect_timeout=10,
-            client_encoding="utf8",
-        )
-
-    def test_reconcile_interval_zero_does_not_spawn_thread(self):
-        """listen_loop med reconcile_interval=0 startar ingen reconcile-bakgrundstråd."""
-        gs = MagicMock()
-        stop = threading.Event()
-        stop.set()  # Avsluta listen_loop omedelbart utan PG-anslutning
-
-        with patch.object(gl, "_periodic_reconcile_loop") as mock_periodic:
-            gl.listen_loop(
-                DB_CONFIG,
-                reconnect_delay=1,
-                gs_client=gs,
-                stop_event=stop,
-                reconcile_interval=0,
-            )
-
-        mock_periodic.assert_not_called()
-
-    def test_reconcile_interval_positive_spawns_thread(self):
-        """listen_loop med reconcile_interval>0 startar _periodic_reconcile_loop som bakgrundstråd."""
-        gs = MagicMock()
-        gs.create_workspace.return_value = True
-        gs.create_pg_datastore.return_value = True
-        gs.create_gs_role.return_value = True
-        gs.create_workspace_acl.return_value = True
-        stop = threading.Event()
-        periodic_called = threading.Event()
-
-        def fake_periodic(db_config, gs_client, stop_event, interval_seconds, db_label="",
-                          all_pg_schemas=None, **kwargs):
-            periodic_called.set()
-            stop_event.wait()
-
-        with patch.object(gl, "_periodic_reconcile_loop", side_effect=fake_periodic):
-            with patch.object(gl, "_fetch_role_credentials",
-                              return_value=(TEST_ROLE_NAME, TEST_ROLE_PASSWORD)):
-                t = threading.Thread(
-                    target=gl.listen_loop,
-                    args=(DB_CONFIG, 1, gs, stop, None, None, 30),
-                    daemon=True,
-                )
-                t.start()
-                periodic_called.wait(timeout=3)
-                stop.set()
-                t.join(timeout=3)
-
-        self.assertTrue(periodic_called.is_set(), "_periodic_reconcile_loop startades aldrig")
+    def test_laddar_monstret_fore_periodisk_avstamning(self):
+        ordning = []
+        with patch.object(gl, "_load_schema_pattern",
+                          side_effect=lambda cur: ordning.append("load")):
+            self._kor(lambda a: len(a) >= 2, reconcile_interval=1)
+        # Ett load före startavstämningen och ett före varje periodisk.
+        self.assertGreaterEqual(ordning.count("load"), 2)
 
 
 class TestEmailNotifier(unittest.TestCase):
@@ -2637,6 +2944,39 @@ class TestLoadConfig(unittest.TestCase):
         with patch.dict(os.environ, env, clear=True):
             config = gl.load_config()
         self.assertEqual(config["reconcile_interval"], 0)
+        self.assertIsNone(config["reconcile_time"])
+
+    def test_reconcile_time(self):
+        """HEX_RECONCILE_TIME=03:00 → dagligt klockslag, intervallet av."""
+        import datetime as dt
+        env = {**self._MIN_ENV, "HEX_RECONCILE_TIME": "03:00"}
+        with patch.dict(os.environ, env, clear=True):
+            config = gl.load_config()
+        self.assertEqual(config["reconcile_time"], dt.time(3, 0))
+        self.assertEqual(config["reconcile_interval"], 0)
+
+    def test_reconcile_time_utan_inledande_nolla(self):
+        import datetime as dt
+        env = {**self._MIN_ENV, "HEX_RECONCILE_TIME": "2:30"}
+        with patch.dict(os.environ, env, clear=True):
+            config = gl.load_config()
+        self.assertEqual(config["reconcile_time"], dt.time(2, 30))
+
+    def test_reconcile_time_ogiltigt_avbryter(self):
+        for varde in ("25:00", "03:60", "3", "kl 3", "03:00:00"):
+            with self.subTest(varde=varde):
+                env = {**self._MIN_ENV, "HEX_RECONCILE_TIME": varde}
+                with patch.dict(os.environ, env, clear=True):
+                    with self.assertRaises(SystemExit):
+                        gl.load_config()
+
+    def test_intervall_och_klockslag_samtidigt_avbryter(self):
+        """Antingen intervall eller klockslag – båda satta är ett konfigurationsfel."""
+        env = {**self._MIN_ENV, "HEX_RECONCILE_TIME": "03:00",
+               "HEX_RECONCILE_INTERVAL": "3600"}
+        with patch.dict(os.environ, env, clear=True):
+            with self.assertRaises(SystemExit):
+                gl.load_config()
 
 
 # ---------------------------------------------------------------------------
@@ -3317,7 +3657,7 @@ class TestRestWireKontrakt(unittest.TestCase):
         - inklusive felstavningen 'Estimated extends', som måste behållas.
         """
         client = self._make_client()
-        with patch.object(client, "_get_datastore_user", return_value=None):
+        with patch.object(client, "_get_datastore", return_value=None):
             with self._patcha_session(client, status=201) as req:
                 client.create_pg_datastore(
                     "sk0_kba_test", "sk0_kba_test", "db.example.se", 5432,
@@ -3365,7 +3705,7 @@ class TestRestWireKontrakt(unittest.TestCase):
             return {k: v for k, v in entries.items() if k in forvantat}
 
         client = self._make_client()
-        with patch.object(client, "_get_datastore_user", return_value=None):
+        with patch.object(client, "_get_datastore", return_value=None):
             with self._patcha_session(client, status=201) as req:
                 client.create_pg_datastore(
                     "sk0_kba_test", "sk0_kba_test", "db.example.se", 5432,

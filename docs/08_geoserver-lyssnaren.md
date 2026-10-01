@@ -177,14 +177,19 @@ Lyssnaren kör automatiskt en periodisk avstämning mot GeoServer för att repar
 avvikelser — t.ex. om ett workspace eller en datastore försvunnit, eller om ACL-regler
 är felaktiga. Samma logik körs alltid vid tjänstens uppstart.
 
-Intervallet styrs av miljövariabeln `HEX_RECONCILE_INTERVAL` (sekunder, standard `43200`).
-Sätt till `0` för att inaktivera periodisk avstämning (uppstartsavstämningen körs ändå):
+Avstämningen schemaläggs med **antingen** ett intervall **eller** ett klockslag.
+Båda satta samtidigt är ett konfigurationsfel och stoppar uppstarten.
 
 ```env
-HEX_RECONCILE_INTERVAL=43200  # Kontrollera var tolfte timme (standard)
-HEX_RECONCILE_INTERVAL=3600   # Kontrollera varje timme
-HEX_RECONCILE_INTERVAL=0      # Ingen periodisk avstämning
+HEX_RECONCILE_INTERVAL=43200  # Var tolfte timme (standard när inget är satt)
+HEX_RECONCILE_INTERVAL=3600   # Varje timme
+HEX_RECONCILE_INTERVAL=0      # Ingen periodisk avstämning (uppstartsavstämningen körs ändå)
+HEX_RECONCILE_TIME=03:00      # En gång per dygn kl. 03:00 lokal tid
 ```
+
+Intervallet räknas från senaste avstämningen, inklusive den vid
+(åter)anslutning, och glider därför över dygnet. Klockslaget räknas om mot
+väggklockan inför varje körning och ligger kvar även över sommartidsbyten.
 
 Intervallet är långt med flit. Avstämningen är ett skyddsnät, inte huvudvägen:
 publiceringen sker via `pg_notify` i samma transaktion som `CREATE SCHEMA`, och
@@ -192,11 +197,27 @@ det troliga sättet att missa en notifiering är att lyssnaren varit nere — vi
 uppstartsavstämningen redan täcker. Kvar blir notifieringar som missats medan
 lyssnaren varit både uppe och ansluten, vilket är sällsynt.
 
-Varje avstämning kostar dessutom något: den kör om hela publiceringen för
-*samtliga* scheman, och varje datastore skrivs om med en PUT som bygger om
-GeoServers anslutningspool för den datastoren. Intervallet räknas från
-tjänstestart och inte från klockslag, så med 12 timmar hamnar minst en av
-dygnets två körningar utanför kontorstid oavsett när tjänsten startades om.
+Avstämningen kör om hela publiceringen för *samtliga* scheman, men skriver
+bara när något avviker. En datastore jämförs mot det Hex skulle skriva – värd,
+port, databas, schema, användare, poolparametrar och lösenord – och får en PUT
+bara om något skiljer. Det spelar roll: GeoServer kastar datastorens
+anslutningspool vid varje PUT, och de gamla anslutningarna ligger kvar i
+PostgreSQL tills de stängs. När varje datastore skrevs om vid varje avstämning
+räckte det för att fylla `max_connections` i en miljö med ett 40-tal scheman.
+
+GeoServer returnerar lösenordet krypterat (`crypt1:`/`crypt2:`), så det går
+inte att jämföra direkt. Hex skriver därför ett avtryck – sha256 av användare
+och lösenord – i datastorens beskrivning (`description`) och jämför det.
+Lösenorden är 18 slumpade byte och kan inte räknas fram ur avtrycket. En
+datastore som skapats före avtrycket skrivs om en gång.
+
+Avstämningen körs i lyssnartråden på samma anslutning som `LISTEN`, och
+öppnar alltså ingen extra anslutning mot den egna databasen. Den fungerar
+därför även när PostgreSQL har fyllt `max_connections`. I flerdatabasläge
+öppnas korta anslutningar mot de övriga databaserna för kontrollen av
+föräldralösa workspaces; misslyckas de hoppas uppstädningen över.
+Misslyckas avstämningen (GeoServer svarar inte, databasfel) görs ett nytt
+försök efter fem minuter i stället för vid nästa ordinarie tillfälle.
 
 Vid varje avstämning jämförs GeoServers befintliga workspaces mot scheman i PostgreSQL.
 Både läs- och skriv-workspaces skapas om de saknas, och avvikande ACL-regler korrigeras.

@@ -1038,14 +1038,18 @@ mot PostgreSQL och väntar på `pg_notify`-meddelanden på **två kanaler**.
 > och läs-workspacet skapas ändå.
 >
 > Utöver notifieringarna kör lyssnaren en **avstämning** vid uppstart och
-> därefter var `HEX_RECONCILE_INTERVAL` sekund (standard 43200 = 12 h, `0` = av). Den
+> därefter var `HEX_RECONCILE_INTERVAL` sekund (standard 43200 = 12 h, `0` = av)
+> eller dagligen vid `HEX_RECONCILE_TIME` (`HH:MM`) – det ena eller det andra.
+> Den körs i lyssnartråden på LISTEN-anslutningen (`Avstamningsschema`) och
 > kör samma `handle_schema_notification` för *alla* scheman i databasen, vilket
-> återskapar saknade workspaces/datastores, korrigerar ACL-regler och skriver om
-> datastorens autentiseringsuppgifter från `hex_rolluppgifter`.
+> återskapar saknade workspaces/datastores och korrigerar ACL-regler. En
+> befintlig datastore skrivs bara om när den avviker
+> (`GeoServerClient._datastore_avvikelser`); lösenordet jämförs via ett avtryck
+> i datastorens `description`, eftersom GeoServer returnerar det krypterat.
 >
 > Åt andra hållet letar avstämningen efter **föräldralösa workspaces**: namn som
 > matchar schemamönstret men vars schema saknas i samtliga övervakade databaser.
-> Mönstret laddas före varje avstämning, även i den periodiska tråden. Kan det
+> Mönstret laddas före varje avstämning, även den periodiska. Kan det
 > inte laddas hoppas kontrollen över med en varning.
 > Ägarskapet avgörs av `hex_standardiserade_skyddsnivaer` (publicerbara prefix),
 > inte av vilka scheman som råkar finnas — annars tystnar kontrollen i en tömd
@@ -1175,8 +1179,8 @@ flowchart TD
 │       → 201 Created                                                 │
 │                                                                     │
 │  3. GET  /rest/workspaces/sk0_kba_bygg/datastores/sk0_kba_bygg.json│
-│       200 = datakälla finns redan → PUT med aktuella uppgifter     │
-│              (så att roterade lösenord slår igenom)                │
+│       200 = datakälla finns → jämför; PUT bara vid avvikelse       │
+│              (PUT kastar GeoServers anslutningspool)               │
 │       404 = finns inte → skapa                                     │
 │                                                                     │
 │  4. POST /rest/workspaces/sk0_kba_bygg/datastores                  │

@@ -105,9 +105,11 @@ läs-workspacet får `ROLE_ANONYMOUS` i sin ACL-regel (standard `true` för `sk0
 Se `docs/08_geoserver-lyssnaren.md`.
 
 **Avstämning:** lyssnaren stämmer av GeoServer mot databasen vid uppstart och
-därefter periodiskt (`HEX_RECONCILE_INTERVAL`, standard 43200 s = 12 h). Saknade workspaces
-och datastores återskapas, avvikande ACL-regler korrigeras, och datastorens
-autentiseringsuppgifter skrivs om från `hex_rolluppgifter`.
+därefter periodiskt – antingen med intervall (`HEX_RECONCILE_INTERVAL`, standard
+43200 s = 12 h) eller vid ett klockslag per dygn (`HEX_RECONCILE_TIME`, t.ex.
+`03:00`). Saknade workspaces och datastores återskapas och avvikande ACL-regler
+korrigeras. En datastore skrivs bara om när den avviker från
+`hex_rolluppgifter` eller standardparametrarna.
 
 Avstämningen rapporterar också workspaces vars PostgreSQL-schema saknas i
 samtliga övervakade databaser. Standard är att bara varna; `HEX_ORPHAN_CLEANUP`

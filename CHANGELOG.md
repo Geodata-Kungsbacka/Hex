@@ -18,6 +18,11 @@ merge-datum.
 
 ### Tillagt
 
+- **`HEX_RECONCILE_TIME`** – lyssnarens periodiska avstämning kan köras vid ett
+  fast klockslag per dygn (t.ex. `03:00`, lokal tid) i stället för med
+  `HEX_RECONCILE_INTERVAL`. Klockslaget räknas om mot väggklockan inför varje
+  körning och glider inte. Båda satta samtidigt, eller ett ogiltigt klockslag,
+  stoppar uppstarten.
 - **`hex_installningar`** – enradig tabell för databasövergripande
   inställningar. Bevaras över `--upgrade` och ominstallation.
   - `srid` (standard 3007): förväntat koordinatsystem, läses via `hex_srid()`.
@@ -41,6 +46,20 @@ merge-datum.
 
 ### Ändrat
 
+- **Avstämningen skriver bara om datastores som avviker.** Tidigare fick varje
+  befintlig datastore en PUT vid varje avstämning, även när inget ändrats.
+  GeoServer kastar datastorens anslutningspool vid varje PUT, och i dev kostade
+  det ett par PostgreSQL-anslutningar per schema och avstämning – nog för att
+  fylla `max_connections`. Nu jämförs värd, port, databas, schema, användare,
+  poolparametrar och lösenord först. GeoServer returnerar lösenordet krypterat,
+  så Hex skriver ett avtryck (sha256 av användare och lösenord) i datastorens
+  `description` och jämför det. Datastores skapade före ändringen saknar
+  avtrycket och skrivs om **en gång** vid första avstämningen.
+- **Den periodiska avstämningen körs i lyssnartråden** på LISTEN-anslutningen
+  i stället för i en egen tråd med egen anslutning. Den fungerar därmed även
+  när PostgreSQL har fyllt `max_connections`. En avstämning som misslyckas
+  (t.ex. GeoServer svarar inte) görs om efter fem minuter i stället för efter
+  ett helt intervall.
 - **`--upgrade` roterar inte längre `gs_r_`/`gs_w_`-lösenorden.**
   Underhållet körs först efter att inställningar och drifttillstånd lagts
   tillbaka. GeoServers datastores fortsätter fungera utan omstart av lyssnaren.
