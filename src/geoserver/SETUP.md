@@ -894,6 +894,18 @@ Kontrollera GeoServer:
 
 ---
 
+## Steg 11 (rekommenderas): Sätt ett tak för GeoServers anslutningar
+
+Varje datastore har ett eget tak (7 anslutningar för läs, 2 för skriv), men
+inget tak för hela GeoServer. Under last med många scheman kan GeoServer
+därför fylla PostgreSQL:s `max_connections`, som delas av alla databaser och
+klienter på servern. Installera GeoServers tillägg **control-flow** och sätt
+`ows.global` i `controlflow.properties`, så köas anrop över gränsen i
+GeoServer i stället. Installation, utgångsvärden och hur gränsen räknas fram
+står i [docs/08](../../docs/08_geoserver-lyssnaren.md#tak-för-hela-geoserver-control-flow).
+
+---
+
 ## Hantera tjänsten
 
 | Kommando | Beskrivning |

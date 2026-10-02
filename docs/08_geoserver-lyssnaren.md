@@ -338,10 +338,46 @@ Varje publicerat schema har två datastores, så taket per schema är 9
 anslutningar: 7 för läs-storen, som tar emot kakelskurar, och 2 för
 skriv-storen, som bara används för WFS-T. Taket per datastore begränsar inte
 beståndets total – med ett 40-tal scheman blir det i teorin 360 – utan bara
-hur många frågor en enskild datastore kör samtidigt. Ett verkligt tak för hela
-GeoServer sätts med control-flow-modulen (`ows.global` i
-`controlflow.properties`), som köar anrop i GeoServer i stället för att öppna
-fler anslutningar i PostgreSQL.
+hur många frågor en enskild datastore kör samtidigt. Ett tak för hela
+GeoServer sätts med control-flow, se nästa avsnitt.
+
+### Tak för hela GeoServer (control-flow)
+
+`max_connections` gäller hela PostgreSQL-servern, och alla databaser,
+GeoServer, lyssnaren, FME och QGIS delar på platserna. Poolinställningarna
+ovan styr bara varje datastore för sig. Under last – många lager i många
+scheman samtidigt – kan GeoServer därför fortfarande fylla servern.
+
+GeoServers tillägg **control-flow** begränsar hur många OWS-anrop (WMS, WFS,
+WCS …) som körs samtidigt. Anrop över gränsen köas i GeoServer i stället för
+att öppna fler anslutningar mot PostgreSQL. Ett pågående anrop håller
+ungefär en anslutning per lager det läser, så taket på anropen blir i
+praktiken ett tak på anslutningarna.
+
+Tillägget ingår inte i standardinstallationen. Ladda ned
+`geoserver-<version>-control-flow-plugin.zip` för exakt den GeoServer-version
+som körs, packa upp jar-filerna i `webapps\geoserver\WEB-INF\lib` och starta
+om GeoServer. Lägg sedan `controlflow.properties` i roten av GeoServers
+datakatalog:
+
+```properties
+# Högsta antal samtidiga OWS-anrop i hela GeoServer.
+ows.global=60
+# Sekunder ett köat anrop väntar innan det avvisas.
+timeout=60
+```
+
+Utgångsvärdet 60 är en startpunkt, inte ett uppmätt värde. Räkna bakåt från
+`max_connections`: dra av platserna som är reserverade för superanvändare
+(`superuser_reserved_connections`, standard 3), lyssnaren (en anslutning per
+övervakad databas plus korta anslutningar under avstämningen) och övriga
+klienter (FME, QGIS, pgAdmin). Med `max_connections = 200` blir det ungefär
+150–160 platser för GeoServer, och 60 samtidiga anrop lämnar marginal för
+anrop som läser flera lager. Mät med `log_connections` under ett lasttest och
+justera.
+
+Control-flow omfattar bara OWS-anrop. Lyssnarens anrop mot REST-gränssnittet
+köas inte och påverkas inte av gränsen.
 
 ---
 
