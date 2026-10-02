@@ -993,8 +993,9 @@ class GeoServerClient:
                     # (backend-start ~27 ms plus SCRAM ~6 ms, enstaka utfall
                     # på flera hundra ms), och det blir normalfallet för lager
                     # som ses mer sällan än en gång i minuten. Evictor run
-                    # periodicity är 60 s, så en oanvänd anslutning stängs
-                    # inom 60-120 s.
+                    # periodicity är 30 s, så en oanvänd anslutning stängs
+                    # inom 60-90 s. Gallringen är billig: den prövar bara
+                    # lediga anslutningar i en datastores egen pool.
                     #
                     # max connections är 10, inte 8. Det var golvet som fick
                     # beståndet att äta max_connections oberoende av last, och
@@ -1022,7 +1023,7 @@ class GeoServerClient:
                         {"@key": "min connections",          "$": "0"},
                         {"@key": "Connection timeout",       "$": "10"},
                         {"@key": "Test while idle",          "$": "true"},
-                        {"@key": "Evictor run periodicity",  "$": "60"},
+                        {"@key": "Evictor run periodicity",  "$": "30"},
                         {"@key": "Max connection idle time", "$": "60"},
                         {"@key": "Evictor tests per run",    "$": "10"},
                     ]

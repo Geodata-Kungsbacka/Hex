@@ -3692,7 +3692,7 @@ class TestRestWireKontrakt(unittest.TestCase):
             "min connections": "0",
             "Connection timeout": "10",
             "Test while idle": "true",
-            "Evictor run periodicity": "60",
+            "Evictor run periodicity": "30",
             "Max connection idle time": "60",
             "Evictor tests per run": "10",
         }

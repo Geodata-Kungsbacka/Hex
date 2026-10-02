@@ -328,8 +328,8 @@ nästa avstämning.
 |---|---|---|
 | `max connections` | 10 | Tak per datastore |
 | `min connections` | 0 | Inga anslutningar hålls öppna när lagret inte används |
-| `Max connection idle time` | 60 s | Oanvända anslutningar stängs inom 60–120 s (beroende på gallringen) |
-| `Evictor run periodicity` | 60 s | Hur ofta poolen gallras |
+| `Max connection idle time` | 60 s | Oanvända anslutningar stängs inom 60–90 s (beroende på gallringen) |
+| `Evictor run periodicity` | 30 s | Hur ofta poolen gallras |
 | `Evictor tests per run` | 10 | Anslutningar som prövas per gallring |
 | `Connection timeout` | 10 s | Väntan på en ledig anslutning |
 | `validate connections`, `Test while idle` | `true` | Döda anslutningar upptäcks innan de lämnas ut |
