@@ -982,17 +982,19 @@ class GeoServerClient:
                     # Evictor tests per run måste vara minst max connections
                     # för att en körning ska hinna gå igenom hela poolen.
                     #
-                    # Max connection idle time är 300 s, inte 60. Att öppna en
-                    # ny anslutning mättes till ~33 ms serverarbete mot
-                    # PostgreSQL på Windows (backend-start ~27 ms plus SCRAM
-                    # ~6 ms), med enstaka utfall på flera hundra ms. Med 60 s
-                    # blev den kostnaden normalfallet för varje lager som ses
-                    # mer sällan än en gång i minuten. 300 s är GeoTools
-                    # standard och håller poolen varm genom vanliga pauser i
-                    # kartbläddring; golvet på 0 är kvar, så en datastore som
-                    # står helt oanvänd släpper ändå alla sina anslutningar.
-                    # Evictor run periodicity ligger kvar på 60 s så att
-                    # gallringen sker inom 300-360 s i stället för 300-600 s.
+                    # Max connection idle time är 60 s. Med ett 40-tal scheman
+                    # och två datastores per schema håller varje datastore som
+                    # använts inom idle-tiden kvar minst en anslutning, så
+                    # idle-tiden styr hur många anslutningar beståndet håller
+                    # mot max_connections vid spridd, gles användning. 300 s
+                    # (GeoTools standard) höll poolerna varmare men band fler
+                    # anslutningar. Priset för 60 s: en ny anslutning kostar
+                    # ~33 ms serverarbete mot PostgreSQL på Windows
+                    # (backend-start ~27 ms plus SCRAM ~6 ms, enstaka utfall
+                    # på flera hundra ms), och det blir normalfallet för lager
+                    # som ses mer sällan än en gång i minuten. Evictor run
+                    # periodicity är 60 s, så en oanvänd anslutning stängs
+                    # inom 60-120 s.
                     #
                     # max connections är 10, inte 8. Det var golvet som fick
                     # beståndet att äta max_connections oberoende av last, och
@@ -1021,7 +1023,7 @@ class GeoServerClient:
                         {"@key": "Connection timeout",       "$": "10"},
                         {"@key": "Test while idle",          "$": "true"},
                         {"@key": "Evictor run periodicity",  "$": "60"},
-                        {"@key": "Max connection idle time", "$": "300"},
+                        {"@key": "Max connection idle time", "$": "60"},
                         {"@key": "Evictor tests per run",    "$": "10"},
                     ]
                 },

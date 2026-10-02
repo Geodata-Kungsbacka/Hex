@@ -55,6 +55,11 @@ merge-datum.
   så Hex skriver ett avtryck (sha256 av användare och lösenord) i datastorens
   `description` och jämför det. Datastores skapade före ändringen saknar
   avtrycket och skrivs om **en gång** vid första avstämningen.
+- **`Max connection idle time` sänkt från 300 s till 60 s** på alla
+  datastores, så att beståndet binder färre PostgreSQL-anslutningar vid spridd,
+  gles användning. Lager som ses mer sällan än en gång i minuten får öppna en
+  ny anslutning (~33 ms). Befintliga datastores får värdet vid första
+  avstämningen.
 - **Den periodiska avstämningen körs i lyssnartråden** på LISTEN-anslutningen
   i stället för i en egen tråd med egen anslutning. Den fungerar därmed även
   när PostgreSQL har fyllt `max_connections`. En avstämning som misslyckas

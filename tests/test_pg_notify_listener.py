@@ -1658,7 +1658,7 @@ class TestCreatePgDatastore(unittest.TestCase):
             ("namespace", "http://sk0_kba_testschema"),
             ("max connections", "8"),
             ("min connections", "1"),
-            ("Max connection idle time", "60"),
+            ("Max connection idle time", "300"),
         ]:
             with self.subTest(nyckel=nyckel):
                 self._kor_mot(
@@ -3682,10 +3682,9 @@ class TestRestWireKontrakt(unittest.TestCase):
         beståndet två olika konfigurationer beroende på när schemat skapades,
         vilket inte syns förrän en avstämning skriver om datastorerna.
 
-        Max connection idle time är medvetet 300 och inte 60: en ny anslutning
-        kostar ~33 ms serverarbete mot PostgreSQL på Windows, och med 60 s blev
-        den kostnaden normalfallet för lager som ses mer sällan än en gång i
-        minuten.
+        Max connection idle time är 60 s för att hålla nere antalet anslutningar
+        beståndet binder vid gles användning. Priset är ~33 ms för en ny
+        anslutning för lager som ses mer sällan än en gång i minuten.
         """
         forvantat = {
             "validate connections": "true",
@@ -3694,7 +3693,7 @@ class TestRestWireKontrakt(unittest.TestCase):
             "Connection timeout": "10",
             "Test while idle": "true",
             "Evictor run periodicity": "60",
-            "Max connection idle time": "300",
+            "Max connection idle time": "60",
             "Evictor tests per run": "10",
         }
 

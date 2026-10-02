@@ -1196,7 +1196,7 @@ flowchart TD
 │         Estimated extends:  true                                    │
 │         encode functions:   true                                    │
 │         Anslutningspool:    max 10 · min 0 · timeout 10 s ·         │
-│                             idle 300 s · evictor 60 s ·             │
+│                             idle 60 s · evictor 60 s ·              │
 │                             validate/test while idle                │
 │       → 201 Created                                                 │
 │                                                                     │
