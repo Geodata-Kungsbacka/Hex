@@ -1195,7 +1195,7 @@ flowchart TD
 │         Loose bbox:         true                                    │
 │         Estimated extends:  true                                    │
 │         encode functions:   true                                    │
-│         Anslutningspool:    max 10 · min 0 · timeout 10 s ·         │
+│         Anslutningspool:    max 7 (skriv 2) · min 0 · timeout 10 s ·│
 │                             idle 60 s · evictor 30 s ·              │
 │                             validate/test while idle                │
 │       → 201 Created                                                 │

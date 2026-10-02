@@ -518,6 +518,7 @@ class TestHandlerLogicWithMockGeoServer(_Standardmonster, unittest.TestCase):
             schema_name=VALID_CREATE_SCHEMA,
             pg_user=TEST_W_ROLE_NAME,
             pg_password=TEST_W_ROLE_PASSWORD,
+            skriv=True,
         )
 
         # GeoServer-roller skapas
@@ -1631,7 +1632,7 @@ class TestCreatePgDatastore(unittest.TestCase):
         mock_put = self._kor_mot(lambda c: self._befintlig(c, losenord="gammalt"))
         mock_put.assert_called_once_with(
             self.WORKSPACE, self.STORE, self.HOST, self.PORT, self.DBNAME,
-            self.WORKSPACE, self.PG_USER, self.PG_PASSWORD,
+            self.WORKSPACE, self.PG_USER, self.PG_PASSWORD, skriv=False,
         )
 
     def test_datastore_utan_avtryck_skrivs_om_en_gang(self):
@@ -2244,6 +2245,12 @@ class TestAvstamningISynkSkriverInget(_Standardmonster, unittest.TestCase):
         self.assertTrue(self._avstam())
         self.assertIn((self.SCHEMA, self.SCHEMA), self.gs.datastores)
         self.assertIn((f"{self.SCHEMA}_w", f"{self.SCHEMA}_w"), self.gs.datastores)
+        tak = {
+            nyckel: {e["@key"]: e["$"] for e in ds["connectionParameters"]["entry"]}["max connections"]
+            for nyckel, ds in self.gs.datastores.items()
+        }
+        self.assertEqual(tak[(self.SCHEMA, self.SCHEMA)], "7")
+        self.assertEqual(tak[(f"{self.SCHEMA}_w", f"{self.SCHEMA}_w")], "2")
 
         self.gs.anrop.clear()
         self.assertTrue(self._avstam())
@@ -3688,7 +3695,7 @@ class TestRestWireKontrakt(unittest.TestCase):
         """
         forvantat = {
             "validate connections": "true",
-            "max connections": "10",
+            "max connections": "7",
             "min connections": "0",
             "Connection timeout": "10",
             "Test while idle": "true",
@@ -3726,6 +3733,33 @@ class TestRestWireKontrakt(unittest.TestCase):
             int(forvantat["Evictor tests per run"]),
             int(forvantat["max connections"]),
         )
+
+    def test_skrivstoren_har_lagre_tak_i_bada_payloaderna(self):
+        """
+        Skriv-stores används bara för WFS-T och har taket 2, läs-stores 7.
+        Taket styrs av skriv-flaggan och inte av namnet: ett schema kan
+        heta något som slutar på '_w'.
+        """
+        def tak(payload):
+            return {e["@key"]: e["$"] for e in
+                    payload["dataStore"]["connectionParameters"]["entry"]}["max connections"]
+
+        client = self._make_client()
+        args = ("sk0_kba_test_w", "sk0_kba_test_w", "db.example.se", 5432,
+                "geodata_sk0", "sk0_kba_test", "gs_w_sk0_kba_test", "hemligt")
+        with patch.object(client, "_get_datastore", return_value=None):
+            with self._patcha_session(client, status=201) as req:
+                client.create_pg_datastore(*args, skriv=True)
+        self.assertEqual(tak(req.call_args[1]["json"]), "2")
+
+        with self._patcha_session(client, status=200) as req:
+            client._update_pg_datastore(*args, skriv=True)
+        self.assertEqual(tak(req.call_args[1]["json"]), "2")
+
+        with patch.object(client, "_get_datastore", return_value=None):
+            with self._patcha_session(client, status=201) as req:
+                client.create_pg_datastore(*args)
+        self.assertEqual(tak(req.call_args[1]["json"]), "7")
 
     def test_workspace_borttagning_anvander_recurse(self):
         client = self._make_client()

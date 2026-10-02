@@ -965,9 +965,28 @@ class GeoServerClient:
         data = f"{pg_user}\n{pg_password}".encode("utf-8")
         return f"{GeoServerClient.AVTRYCK_PREFIX} sha256:{hashlib.sha256(data).hexdigest()}"
 
+    # Tak för samtidiga anslutningar per datastore. Läs-stores tar emot
+    # kakelskurar: en webbläsare skickar ~6 parallella anrop per värd, och
+    # under det får anrop vänta i poolen och slår lättare i Connection timeout.
+    # Skriv-stores används bara för WFS-T (redigering) och behöver sällan mer
+    # än en anslutning åt gången.
+    #
+    # Taket begränsar inte beståndets totala antal anslutningar – det blir
+    # antalet samtidigt aktiva datastores gånger taket. Ett 40-tal scheman ger
+    # i teorin 40 × (7 + 2) = 360, mot max_connections 200 för hela servern.
+    # Ett verkligt tak sätts i GeoServer (control-flow, ows.global).
+    MAX_ANSLUTNINGAR_LAS = 7
+    MAX_ANSLUTNINGAR_SKRIV = 2
+
     def _datastore_payload(self, workspace, store_name, host, port, dbname, schema_name,
-                           pg_user, pg_password):
-        """Bygger payloaden för en PostGIS-datastore (samma för POST och PUT)."""
+                           pg_user, pg_password, skriv=False):
+        """Bygger payloaden för en PostGIS-datastore (samma för POST och PUT).
+
+        skriv=True ger skriv-storens lägre anslutningstak (se
+        MAX_ANSLUTNINGAR_SKRIV). Det anges explicit och härleds inte ur
+        namnet, eftersom ett schemanamn kan sluta på '_w'.
+        """
+        max_anslutningar = self.MAX_ANSLUTNINGAR_SKRIV if skriv else self.MAX_ANSLUTNINGAR_LAS
         return {
             "dataStore": {
                 "name": store_name,
@@ -997,13 +1016,7 @@ class GeoServerClient:
                     # inom 60-90 s. Gallringen är billig: den prövar bara
                     # lediga anslutningar i en datastores egen pool.
                     #
-                    # max connections är 10, inte 8. Det var golvet som fick
-                    # beståndet att äta max_connections oberoende av last, och
-                    # det är borta med min connections = 0. Taket styr bara hur
-                    # många samtidiga frågor en enskild datastore klarar, så
-                    # att sänka det köper nästan ingenting mot max_connections
-                    # men gör att en kakelskur lättare slår i Connection
-                    # timeout.
+                    # max connections: se MAX_ANSLUTNINGAR_LAS/_SKRIV.
                     "entry": [
                         {"@key": "dbtype",                   "$": "postgis"},
                         {"@key": "namespace",                "$": f"{self.namespace_uri_base}/{workspace}"},
@@ -1019,7 +1032,7 @@ class GeoServerClient:
                         {"@key": "Estimated extends",        "$": "true"},
                         {"@key": "encode functions",         "$": "true"},
                         {"@key": "validate connections",     "$": "true"},
-                        {"@key": "max connections",          "$": "10"},
+                        {"@key": "max connections",          "$": str(max_anslutningar)},
                         {"@key": "min connections",          "$": "0"},
                         {"@key": "Connection timeout",       "$": "10"},
                         {"@key": "Test while idle",          "$": "true"},
@@ -1098,14 +1111,16 @@ class GeoServerClient:
             avvikelser.append("passwd")
         return avvikelser
 
-    def _update_pg_datastore(self, workspace, store_name, host, port, dbname, schema_name, pg_user, pg_password):
+    def _update_pg_datastore(self, workspace, store_name, host, port, dbname, schema_name, pg_user, pg_password,
+                             skriv=False):
         """Skriver om en befintlig PostGIS-datastore (PUT).
 
         Anropas bara när något skiljer (se create_pg_datastore). En PUT får
         GeoServer att kasta datastorens anslutningspool.
         """
         payload = self._datastore_payload(
-            workspace, store_name, host, port, dbname, schema_name, pg_user, pg_password
+            workspace, store_name, host, port, dbname, schema_name, pg_user, pg_password,
+            skriv=skriv,
         )
 
         if self.dry_run:
@@ -1131,7 +1146,8 @@ class GeoServerClient:
             )
             return False
 
-    def create_pg_datastore(self, workspace, store_name, host, port, dbname, schema_name, pg_user, pg_password):
+    def create_pg_datastore(self, workspace, store_name, host, port, dbname, schema_name, pg_user, pg_password,
+                            skriv=False):
         """Skapar en PostGIS-datastore, eller skriver om en befintlig som avviker.
 
         Finns datastoren jämförs den mot det Hex skulle skriva (se
@@ -1149,9 +1165,11 @@ class GeoServerClient:
             schema_name: PostgreSQL-schemanamn att exponera
             pg_user:     PostgreSQL-användare (gs_r_-rollen för schemat)
             pg_password: Lösenord för pg_user
+            skriv:       True för skriv-storen (lägre anslutningstak)
         """
         payload = self._datastore_payload(
-            workspace, store_name, host, port, dbname, schema_name, pg_user, pg_password
+            workspace, store_name, host, port, dbname, schema_name, pg_user, pg_password,
+            skriv=skriv,
         )
         befintlig = self._get_datastore(workspace, store_name)
 
@@ -1164,7 +1182,10 @@ class GeoServerClient:
                 "  Datastore '%s' avviker (%s) – uppdaterar",
                 store_name, ", ".join(avvikelser),
             )
-            return self._update_pg_datastore(workspace, store_name, host, port, dbname, schema_name, pg_user, pg_password)
+            return self._update_pg_datastore(
+                workspace, store_name, host, port, dbname, schema_name, pg_user, pg_password,
+                skriv=skriv,
+            )
 
         if self.dry_run:
             log.info("  [DRY-RUN] Skulle skapa PG-datastore: %s", store_name)
@@ -1187,7 +1208,8 @@ class GeoServerClient:
                 store_name,
             )
             return self._update_pg_datastore(
-                workspace, store_name, host, port, dbname, schema_name, pg_user, pg_password
+                workspace, store_name, host, port, dbname, schema_name, pg_user, pg_password,
+                skriv=skriv,
             )
         else:
             log.error(
@@ -1824,6 +1846,7 @@ def handle_schema_notification(schema_name, db_config, pg_conn, gs_client, db_la
             schema_name=schema_name,
             pg_user=w_role,
             pg_password=w_password,
+            skriv=True,
         ):
             log.error("%s  Avbryter - skriv-datastore kunde inte skapas", tag)
             return False

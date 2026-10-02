@@ -55,6 +55,9 @@ merge-datum.
   så Hex skriver ett avtryck (sha256 av användare och lösenord) i datastorens
   `description` och jämför det. Datastores skapade före ändringen saknar
   avtrycket och skrivs om **en gång** vid första avstämningen.
+- **`max connections` per datastore sänkt från 10 till 7 för läs-stores och 2
+  för skriv-stores.** Skriv-stores används bara för WFS-T. Befintliga
+  datastores får värdena vid första avstämningen.
 - **`Max connection idle time` sänkt från 300 s till 60 s och `Evictor run
   periodicity` från 60 s till 30 s** på alla datastores. En oanvänd anslutning
   stängs inom 60–90 s, så att beståndet binder färre PostgreSQL-anslutningar

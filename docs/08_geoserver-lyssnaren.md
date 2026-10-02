@@ -326,7 +326,7 @@ nästa avstämning.
 
 | Parameter | Värde | Effekt |
 |---|---|---|
-| `max connections` | 10 | Tak per datastore |
+| `max connections` | 7 (läs), 2 (skriv) | Tak per datastore |
 | `min connections` | 0 | Inga anslutningar hålls öppna när lagret inte används |
 | `Max connection idle time` | 60 s | Oanvända anslutningar stängs inom 60–90 s (beroende på gallringen) |
 | `Evictor run periodicity` | 30 s | Hur ofta poolen gallras |
@@ -334,8 +334,14 @@ nästa avstämning.
 | `Connection timeout` | 10 s | Väntan på en ledig anslutning |
 | `validate connections`, `Test while idle` | `true` | Döda anslutningar upptäcks innan de lämnas ut |
 
-Varje publicerat schema har två datastores (läs och skriv), så taket per schema
-är 20 anslutningar. Räkna med det mot `max_connections` i PostgreSQL.
+Varje publicerat schema har två datastores, så taket per schema är 9
+anslutningar: 7 för läs-storen, som tar emot kakelskurar, och 2 för
+skriv-storen, som bara används för WFS-T. Taket per datastore begränsar inte
+beståndets total – med ett 40-tal scheman blir det i teorin 360 – utan bara
+hur många frågor en enskild datastore kör samtidigt. Ett verkligt tak för hela
+GeoServer sätts med control-flow-modulen (`ows.global` i
+`controlflow.properties`), som köar anrop i GeoServer i stället för att öppna
+fler anslutningar i PostgreSQL.
 
 ---
 
