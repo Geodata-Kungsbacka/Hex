@@ -1396,6 +1396,6 @@ ryms. Namnbyten valideras på samma sätt som nya tabeller.
 
 `--upgrade` normaliserar äldre triggerfunktionsnamn via katalogkopplingar,
 återkopplar saknade triggers och synkar historiken. Befintliga historikrader
-bevaras. Om en funktion redan delas mellan två tabeller avbryts uppgraderingen
-med ett tydligt fel; de felkopplade funktionerna måste utredas innan den körs
-igen. Ett redan misslyckat namnbyte rullas tillbaka i sin helhet.
+bevaras. Om en funktion redan delas mellan två tabeller avbryts underhållstransaktionen
+med ett tydligt fel och installern rapporterar en varning. De felkopplade
+funktionerna måste utredas innan underhållet körs igen. Ett redan misslyckat namnbyte rullas tillbaka i sin helhet.

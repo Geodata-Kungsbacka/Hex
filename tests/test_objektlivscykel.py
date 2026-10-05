@@ -173,6 +173,14 @@ class TestUppgraderingObjektnamn(unittest.TestCase):
             c.execute('UPDATE hex_metadata SET trigger_funktion=NULL WHERE parent_schema=%s',(s,))
             c.execute(sql.SQL('DROP TRIGGER {} ON {}.{}').format(sql.Identifier('trg_'+namn+'_qa'),sql.Identifier(s),sql.Identifier(namn)))
             c.execute(sql.SQL('DROP TRIGGER hex_tvinga_anvandarvarden ON {}.{}').format(sql.Identifier(s),sql.Identifier(namn)))
+            # Återskapa det äldre namnbytesfelet: tabell och historik fick
+            # nytt namn men sekvens, index och funktioner behöll det gamla.
+            c.execute(sql.SQL('CREATE TABLE {}.alfa (namn text)').format(sql.Identifier(s)))
+            c.execute(sql.SQL("INSERT INTO {}.alfa (namn) VALUES ('äldre namnbyte')").format(sql.Identifier(s)))
+            c.execute('ALTER EVENT TRIGGER hex_hantera_ny_kolumn_trigger DISABLE')
+            c.execute(sql.SQL('ALTER TABLE {}.alfa RENAME TO beta; ALTER TABLE {}.alfa_h RENAME TO beta_h').format(sql.Identifier(s),sql.Identifier(s)))
+            c.execute('ALTER EVENT TRIGGER hex_hantera_ny_kolumn_trigger ENABLE')
+            c.execute("UPDATE hex_metadata SET parent_table='beta', history_table='beta_h' WHERE parent_schema=%s AND parent_table='alfa'", (s,))
             conn.commit(); conn.close(); conn=None
             install_hex.upgrade(cfg, base_path=ROOT)
             conn=psycopg2.connect(**{k:v for k,v in cfg.items() if k!='owner_role'}); c=conn.cursor()
@@ -181,7 +189,11 @@ class TestUppgraderingObjektnamn(unittest.TestCase):
             self.assertEqual(c.fetchone()[0], 'bevarad')
             c.execute('SELECT trigger_funktion=hex_objektnamn(parent_table,\'qa\') FROM hex_metadata WHERE parent_schema=%s',(s,))
             self.assertTrue(c.fetchone()[0])
-            c.execute(sql.SQL('DROP TABLE {}.{}; DROP SCHEMA {}').format(sql.Identifier(s),sql.Identifier(namn),sql.Identifier(s)))
+            c.execute(sql.SQL('CREATE TABLE {}.alfa (annan integer)').format(sql.Identifier(s)))
+            c.execute(sql.SQL("UPDATE {}.beta SET namn='efter upgrade'").format(sql.Identifier(s)))
+            c.execute(sql.SQL('SELECT namn FROM {}.beta_h').format(sql.Identifier(s)))
+            self.assertEqual(c.fetchone()[0], 'äldre namnbyte')
+            c.execute(sql.SQL('DROP TABLE {}.{}, {}.alfa, {}.beta; DROP SCHEMA {}').format(sql.Identifier(s),sql.Identifier(namn),sql.Identifier(s),sql.Identifier(s),sql.Identifier(s)))
             conn.commit()
         finally:
             if conn is not None: conn.close()

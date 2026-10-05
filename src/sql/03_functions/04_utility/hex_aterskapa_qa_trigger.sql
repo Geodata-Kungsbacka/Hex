@@ -43,9 +43,8 @@ DECLARE
     trigger_satser        text := '';
     i                     integer;
 BEGIN
-    -- Bygg om den funktion som triggern faktiskt anropar. Efter ALTER TABLE
-    -- RENAME TO heter den fortfarande trg_fn_<gammalt namn>_qa, och det
-    -- härledda namnet skulle skapa en ny funktion som ingen trigger använder.
+    -- Bygg om den funktion som triggern faktiskt anropar. Katalogkopplingen
+    -- fungerar även för äldre namn som ännu inte har normaliserats.
     SELECT p.proname INTO trigger_funktionsnamn
     FROM pg_trigger t
     JOIN pg_proc p ON p.oid = t.tgfoid

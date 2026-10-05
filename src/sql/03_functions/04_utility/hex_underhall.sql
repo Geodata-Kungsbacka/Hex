@@ -581,7 +581,7 @@ BEGIN
         WHERE c.relkind = 'r' AND c.relname !~ '_h$' AND n.nspname ~ schema_regex
         ORDER BY n.nspname, c.relname
     LOOP
-        -- Härleda föräldertabellnamn från funktionsnamnet.
+        -- Tabellnamnet kommer från pg_class, även för hashade funktionsnamn.
         tabell := r.t;
 
         -- Hoppa över om föräldertabellen inte längre existerar under det namnet.

@@ -177,8 +177,23 @@ BEGIN
                 END IF;
 
                 CONTINUE WHEN meta_rad.parent_table = tabell_namn;
-                -- Samma namnkrav som vid CREATE TABLE, innan något hjälpnamn ändras.
-                PERFORM public.hex_validera_tabell(schema_namn, tabell_namn);
+                -- Samma namnkrav som CREATE TABLE, inklusive FME:s tvåsteg.
+                -- En registrerad afvaktande tabell saknar avsiktligt geom.
+                IF EXISTS (
+                    SELECT 1 FROM public.hex_afvaktande_geometri ag
+                    WHERE ag.schema_namn = meta_rad.parent_schema
+                      AND ag.tabell_namn = meta_rad.parent_table
+                ) AND NOT EXISTS (
+                    SELECT 1 FROM pg_attribute a
+                    WHERE a.attrelid = kommando.objid AND a.attname = 'geom'
+                      AND NOT a.attisdropped
+                ) THEN
+                    IF length(tabell_namn) > 54 OR octet_length(tabell_namn) > 61 THEN
+                        RAISE EXCEPTION 'Tabellnamnet "%" är för långt (max 54 tecken och 61 byte).', tabell_namn;
+                    END IF;
+                ELSE
+                    PERFORM public.hex_validera_tabell(schema_namn, tabell_namn);
+                END IF;
 
                 -- hex_dummy_geometrier, hex_afvaktande_geometri och
                 -- hex_avvikande_srid nycklas på namn och måste följa med
