@@ -46,6 +46,8 @@ merge-datum.
 
 ### Ändrat
 
+- **Namnbyte av tabell valideras som en ny tabell** (#176–#179), inklusive
+  geometrisuffixet. Ett namnbyte som tidigare gick igenom kan nu nekas.
 - **Avstämningen skriver bara om datastores som avviker.** Tidigare fick varje
   befintlig datastore en PUT vid varje avstämning, även när inget ändrats.
   GeoServer stänger datastorens anslutningspool vid varje PUT, så varje
@@ -89,6 +91,19 @@ merge-datum.
 
 ### Rättat
 
+- Namnbyte av tabell flyttar nu gid-sekvens, historikindex, GiST-index,
+  primärnyckel, triggerfunktioner och QA-trigger till det nya namnet, så att
+  det gamla namnet kan återanvändas (#176–#179). Tidigare fick en ny
+  geometritabell med en omdöpt tabells gamla namn inget GiST-index:
+  `CREATE INDEX IF NOT EXISTS` hoppade tyst över namnet som ägdes av den
+  omdöpta tabellen. `hex_underhall()` skapar nu saknade GiST-index.
+- Långa tabellnamn ger deterministiska objektnamn inom 63 byte via
+  `hex_objektnamn()`; två namn med samma första 50 tecken delar inte längre
+  GiST- eller historikindexnamn.
+- `DROP TABLE` tar bort båda triggerfunktionerna. Funktioner som äldre
+  versioner lämnat kvar tas bort när ett namnbyte behöver namnet.
+- `hex_underhall()` skriver inte om `hex_metadata` för tabeller vars namn
+  redan stämmer.
 - `--upgrade` nollställde `registrerad` i `hex_avvikande_srid`.
 - Den periodiska avstämningen i lyssnaren laddade aldrig schemanamnsmönstret
   och letade föräldralösa workspaces med reservmönstret.
