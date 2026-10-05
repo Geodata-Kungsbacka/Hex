@@ -4,8 +4,9 @@ name: Hex statiska kontroller
 # Regressionstesterna mot PostgreSQL ligger i test_hex.yml.
 on:
   push:
-    branches: [main, 'fix/**']
+    branches: [main]
   pull_request:
+    branches: [main]
   workflow_dispatch:
 permissions:
   contents: read
