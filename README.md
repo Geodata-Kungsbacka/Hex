@@ -367,6 +367,7 @@ inte över filer och byt inte plats på dem.
 -- 0. Konfiguration (MÅSTE köras först, redigera filen innan!)
 src/sql/00_config/hex_systemagare.sql
 src/sql/00_config/hex_geoserver_roller.sql
+src/sql/00_config/hex_objektnamn.sql
 
 -- 1. Skapa anpassade datatyper
 src/sql/01_types/hex_geom_info.sql
@@ -398,7 +399,6 @@ src/sql/02_tables/hex_avvikande_srid.sql
 src/sql/02_tables/hex_rolluppgifter.sql
 
 -- 3. Skapa funktioner (i beroendeordning)
-src/sql/00_config/hex_objektnamn.sql
 -- 3.1 Strukturhantering
 src/sql/03_functions/01_structure/hex_hamta_geometri_definition.sql
 src/sql/03_functions/01_structure/hex_kolumntyp.sql
@@ -426,6 +426,7 @@ src/sql/03_functions/04_utility/hex_komplettera_metadata.sql
 src/sql/03_functions/04_utility/hex_uppdatera_metadata_namn.sql
 src/sql/03_functions/04_utility/hex_rensa_metadata.sql
 src/sql/03_functions/04_utility/hex_synka_objektnamn.sql
+src/sql/03_functions/04_utility/hex_sakerstall_geomindex.sql
 src/sql/03_functions/04_utility/hex_skapa_historik_qa.sql
 src/sql/03_functions/04_utility/hex_aterskapa_qa_trigger.sql
 src/sql/03_functions/04_utility/hex_synka_historik.sql
@@ -532,7 +533,7 @@ skedd räcker det inte med `hex_underhall()` — rollerna skapas bara vid
 **Livscykel**:
 - *Registreras* av `hex_hantera_ny_tabell()` för varje ny tabell, via `hex_registrera_metadata()`. `hex_skapa_historik_qa()` fyller i historikkolumnerna när historiken skapas — direkt, eller när FME-tvåsteget slutförs
 - *Efterregistreras* av `hex_underhall()` för tabeller som saknar rad (skapade förbi event-triggrarna, eller utan historik från före den här versionen), via `hex_komplettera_metadata()`. `created_by` blir då NULL
-- *Uppdateras* av `hex_hantera_ny_kolumn()` vid `ALTER TABLE RENAME TO` (parent_table, och history_table om tabellen har historik), via `hex_uppdatera_metadata_namn()` och `hex_synka_objektnamn()`; sekvens, historikindex, triggerfunktioner och QA-trigger följer med
+- *Uppdateras* av `hex_hantera_ny_kolumn()` vid `ALTER TABLE RENAME TO` (parent_table, och history_table om tabellen har historik), via `hex_uppdatera_metadata_namn()` och `hex_synka_objektnamn()`; sekvens, historikindex, GiST-index, primärnyckel, triggerfunktioner och QA-trigger följer med
 - *Raderas* av `hex_hantera_borttagen_tabell()` vid `DROP TABLE` och `DROP SCHEMA ... CASCADE`, via `hex_rensa_metadata()`
 
 **Rättigheter**: Alla kan läsa, men bara ägaren kan skriva direkt. Event-triggrarna
@@ -1392,9 +1393,21 @@ För frågor och support, kontakta databasadministratören eller skapa en issue 
 Korta namn behålls. Namn som annars skulle överskrida PostgreSQL:s gräns på
 63 byte kortas med en deterministisk hash och ett bevarat suffix. Tabellnamn
 får fortfarande ha högst 54 tecken, och dessutom högst 61 byte så att `_h`
-ryms. Namnbyten valideras på samma sätt som nya tabeller.
+ryms. Namnbyten valideras på samma sätt som nya tabeller, inklusive
+geometrisuffixet: ett namnbyte som tidigare gick igenom kan nu nekas.
 
-`--upgrade` normaliserar äldre triggerfunktionsnamn via katalogkopplingar,
+Är målnamnet för en triggerfunktion upptaget av en funktion som ingen trigger
+använder (äldre versioner lämnade `insert_audit`-funktionen kvar vid
+`DROP TABLE`) tas den kvarlämnade funktionen bort. Används den av en annan
+tabell avbryts namnbytet med ett Hex-fel. Är namnet på ett index eller en
+sekvens upptaget lämnas objektet med sitt gamla namn och en varning skrivs.
+GiST-index skapas av `hex_sakerstall_geomindex()`; är namnet upptaget får
+indexet ett namn från PostgreSQL i stället för att utebli.
+
+`--upgrade` normaliserar äldre objektnamn (triggerfunktioner, sekvens,
+historikindex, GiST-index och primärnyckel) via katalogkopplingar i två varv,
+så att en omdöpt tabell först frigör namn som en ny tabell med det gamla
+namnet behöver. Saknade GiST-index på `geom` skapas (steg `geom_index`). Den
 återkopplar saknade triggers och synkar historiken. Befintliga historikrader
 bevaras. Om en funktion redan delas mellan två tabeller avbryts underhållstransaktionen
 med ett tydligt fel och installern rapporterar en varning. De felkopplade

@@ -14,6 +14,8 @@ BEGIN
         WHEN 'qa_trigger' THEN prefix := 'trg_'; suffix := '_qa';
         WHEN 'history_index' THEN prefix := ''; suffix := '_h_idx';
         WHEN 'gid_sequence' THEN prefix := ''; suffix := '_gid_seq';
+        WHEN 'geom_index' THEN prefix := ''; suffix := '_geom_gidx';
+        WHEN 'pkey' THEN prefix := ''; suffix := '_pkey';
         ELSE RAISE EXCEPTION 'Okänd Hex-objekttyp: %', p_typ;
     END CASE;
     IF octet_length(prefix || stam || suffix) <= 63 THEN
@@ -29,4 +31,4 @@ DO $$ BEGIN
     EXECUTE format('ALTER FUNCTION public.hex_objektnamn(text, text) OWNER TO %I', public.hex_systemagare());
 END $$;
 COMMENT ON FUNCTION public.hex_objektnamn(text, text) IS
-    'Gemensamma härledda objektnamn, högst 63 byte med bevarat suffix.';
+    'Gemensamma härledda objektnamn (funktioner, QA-trigger, gid-sekvens, historikindex, GiST-index och primärnyckel), högst 63 byte med bevarat suffix.';

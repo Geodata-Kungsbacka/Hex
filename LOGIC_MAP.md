@@ -742,11 +742,11 @@ flowchart TD
     GAML --> FLYTT["hex_flytta_registerposter<br/>hex_dummy_geometrier · hex_afvaktande_geometri<br/>· hex_avvikande_srid → nytt namn"]
     FLYTT --> HIST{"history_table<br/>IS NOT NULL?"}
     HIST --> |nej| UPD0["hex_uppdatera_metadata_namn(oid)<br/>parent_table = fastigheter_y"]
-    UPD0 --> NAMN["hex_synka_objektnamn<br/>sekvens, index, funktioner och QA-trigger"]
+    UPD0 --> NAMN["hex_synka_objektnamn<br/>sekvens, index, PK, funktioner och QA-trigger"]
     NAMN --> FLAG
     HIST --> |ja| REN["ALTER TABLE byggnader_y_h<br/>RENAME TO fastigheter_y_h<br/>(trunkeras till 63 byte)"]
     REN --> UPD["hex_uppdatera_metadata_namn(oid)<br/>parent_table = fastigheter_y<br/>history_table = fastigheter_y_h"]
-    UPD --> NAMNH["hex_synka_objektnamn<br/>sekvens, index, funktioner och QA-trigger"]
+    UPD --> NAMNH["hex_synka_objektnamn<br/>sekvens, index, PK, funktioner och QA-trigger"]
     NAMNH --> SYNK["hex_synka_historik<br/>QA-triggerns kropp byggs om<br/>med de nya tabellnamnen"]
     SYNK --> FLAG["Nollställer<br/>temp.reorganization_in_progress"]
     FLAG --> DONE(["klar – ingen kolumnomordning"])
@@ -796,7 +796,7 @@ hex_hantera_ny_kolumn()
 ```
 
 `hex_synka_objektnamn()` döper om den ägda gid-sekvensen, historikindexet,
-båda triggerfunktionerna och QA-triggern. Metadata uppdateras och QA-kroppen
+GiST-indexet, primärnyckeln, båda triggerfunktionerna och QA-triggern. Metadata uppdateras och QA-kroppen
 byggs om. `hex_objektnamn()` ger samma namn vid skapande, underhåll och DROP,
 med högst 63 byte även för långa namn.
 

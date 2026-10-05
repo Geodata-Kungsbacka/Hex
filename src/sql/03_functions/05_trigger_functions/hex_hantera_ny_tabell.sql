@@ -370,31 +370,12 @@ BEGIN
             RAISE NOTICE 'Steg 8/11: Kontrollerar GiST-index';
             RAISE NOTICE '  Debug: geometriinfo.kolumnnamn = %', geometriinfo.kolumnnamn;
             IF geometriinfo IS NOT NULL AND geometriinfo.kolumnnamn IS NOT NULL THEN
+                -- Namn och dubblettrensning sköts av hex_sakerstall_geomindex()
                 DECLARE
-                    -- Cap at 60 chars to prevent collision with history table name
-                    -- (history table = left(tabell_namn,61)+'_h' = 63 chars after PG truncation)
-                    index_namn text := left(tabell_namn, 50) || '_geom_gidx';
-                    r          record;
+                    index_namn text;
                 BEGIN
-                    -- Ta bort GiST-index med annat namn (t.ex. FME-skapade) för att undvika dubbletter
-                    FOR r IN
-                        SELECT indexname FROM pg_indexes
-                        WHERE schemaname = schema_namn
-                          AND tablename  = tabell_namn
-                          AND indexdef   LIKE '%USING gist%'
-                          AND indexname  <> index_namn
-                    LOOP
-                        EXECUTE format('DROP INDEX %I.%I', schema_namn, r.indexname);
-                        RAISE NOTICE '  ✓ Dubblerat GiST-index borttaget: %', r.indexname;
-                    END LOOP;
-                    EXECUTE format(
-                        'CREATE INDEX IF NOT EXISTS %I ON %I.%I USING GIST (%I)',
-                        index_namn,
-                        schema_namn,
-                        tabell_namn,
-                        geometriinfo.kolumnnamn
-                    );
-                    RAISE NOTICE '  ✓ GiST-index skapat (eller fanns redan): %', index_namn;
+                    index_namn := public.hex_sakerstall_geomindex(schema_namn, tabell_namn, geometriinfo.kolumnnamn);
+                    RAISE NOTICE '  ✓ GiST-index: %', index_namn;
                 END;
             ELSE
                 RAISE NOTICE '  - Ingen geometri, GiST-index ej relevant';

@@ -145,6 +145,96 @@ class TestObjektlivscykel(unittest.TestCase):
         self.assertIsNotNone(self.ett('SELECT to_regclass(%s)', (SCHEMA+'.beta_gid_seq',)))
 
 
+    # --- GiST-index, primärnyckel, namnkrockar och rättigheter -------------
+
+    def skapa_geom(self, namn, typ='Point'):
+        srid = self.ett('SELECT public.hex_srid()')
+        self.kor('CREATE TABLE {}.{} (namn text, geom geometry(' + typ + ', ' + str(int(srid)) + '))', SCHEMA, namn)
+
+    def index_pa(self, tabell):
+        self.cur.execute("""SELECT c.relname, am.amname FROM pg_index i
+            JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_am am ON am.oid = c.relam
+            WHERE i.indrelid = to_regclass(%s) ORDER BY 1""", (f'{SCHEMA}.{tabell}',))
+        return dict(self.cur.fetchall())
+
+    def test_namnbyte_flyttar_gistindex_och_primarnyckel(self):
+        self.skapa_geom('q_p')
+        self.kor('ALTER TABLE {}.{} RENAME TO {}', SCHEMA, 'q_p', 'r_p')
+        self.skapa_geom('q_p')
+        self.assertEqual(self.index_pa('r_p'), {'r_p_geom_gidx': 'gist', 'r_p_pkey': 'btree'})
+        self.assertEqual(self.index_pa('q_p'), {'q_p_geom_gidx': 'gist', 'q_p_pkey': 'btree'})
+        self.assertEqual(self.ett("SELECT conname FROM pg_constraint WHERE conrelid=to_regclass(%s) AND contype='p'",
+                                  (SCHEMA+'.r_p',)), 'r_p_pkey')
+
+    def test_langa_namn_med_samma_prefix_far_var_sitt_gistindex(self):
+        for namn in ['a'*51+'b_p', 'a'*51+'c_p']:
+            self.skapa_geom(namn)
+            index = self.index_pa(namn)
+            self.assertEqual(list(index.values()).count('gist'), 1, namn)
+            self.assertIn(self.fn(namn, 'geom_index'), index)
+
+    def test_upptaget_indexnamn_ger_index_anda(self):
+        # Ett annat objekt äger namnet: tabellen ska ändå få ett spatialt index.
+        self.kor('CREATE SEQUENCE {}.{}', SCHEMA, 's_p_geom_gidx')
+        self.skapa_geom('s_p')
+        self.assertEqual(list(self.index_pa('s_p').values()).count('gist'), 1)
+
+    def test_underhall_skapar_saknat_gistindex(self):
+        self.skapa_geom('u_p')
+        self.kor('DROP INDEX {}.{}', SCHEMA, 'u_p_geom_gidx')
+        self.cur.execute("SELECT atgard FROM hex_underhall() WHERE schema_namn=%s AND trigger_namn='geom_index'", (SCHEMA,))
+        self.assertEqual(self.cur.fetchall(), [('skapad: u_p_geom_gidx',)])
+        self.assertIn('u_p_geom_gidx', self.index_pa('u_p'))
+
+    def test_namnbyte_tar_bort_kvarlamnad_funktion(self):
+        # Äldre DROP TABLE lämnade insert_audit-funktionen kvar.
+        self.skapa('alfa')
+        self.kor('CREATE FUNCTION {}.{}() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN RETURN NULL; END$$',
+                 SCHEMA, 'trg_fn_gamma_insert_audit')
+        self.kor('ALTER TABLE {}.{} RENAME TO {}', SCHEMA, 'alfa', 'gamma')
+        self.kor("INSERT INTO {}.{} (namn, skapad_av) VALUES ('x', 'förfalskad') RETURNING skapad_av", SCHEMA, 'gamma')
+        self.assertEqual(self.cur.fetchone()[0], self.ett('SELECT session_user'))
+
+    def test_namnbyte_avbryts_om_funktionsnamnet_anvands(self):
+        self.skapa('alfa')
+        self.skapa('delta')
+        self.kor('CREATE FUNCTION {}.{}() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN RETURN NEW; END$$',
+                 SCHEMA, 'trg_fn_gamma_qa')
+        self.kor('CREATE TRIGGER annan BEFORE UPDATE ON {}.{} FOR EACH ROW EXECUTE FUNCTION {}.{}()',
+                 SCHEMA, 'delta', SCHEMA, 'trg_fn_gamma_qa')
+        self.cur.execute('SAVEPOINT namnbyte')
+        with self.assertRaisesRegex(psycopg2.Error, 'upptaget'):
+            self.kor('ALTER TABLE {}.{} RENAME TO {}', SCHEMA, 'alfa', 'gamma')
+        self.cur.execute('ROLLBACK TO SAVEPOINT namnbyte')
+        self.assertIsNotNone(self.ett('SELECT to_regclass(%s)', (SCHEMA+'.alfa',)))
+
+    def test_namnbyte_som_vanlig_medlem_i_agarrollen(self):
+        # Superanvändare kringgår ägarkontroller; namnbytet görs i drift av
+        # en vanlig medlem i hex_systemagare().
+        self.skapa_geom('v_p')
+        self.kor("INSERT INTO {}.{} (namn) VALUES ('före')", SCHEMA, 'v_p')
+        self.cur.execute('CREATE ROLE hex_test_redigerare NOLOGIN')
+        self.cur.execute(sql.SQL('GRANT {} TO hex_test_redigerare').format(
+            sql.Identifier(self.ett('SELECT public.hex_systemagare()'))))
+        self.cur.execute('SET ROLE hex_test_redigerare')
+        self.assertFalse(self.ett("SELECT rolsuper FROM pg_roles WHERE rolname = current_user"))
+        self.kor('ALTER TABLE {}.{} RENAME TO {}', SCHEMA, 'v_p', 'w_p')
+        self.kor("UPDATE {}.{} SET namn='efter'", SCHEMA, 'w_p')
+        self.cur.execute('RESET ROLE')
+        self.kor("SELECT namn FROM {}.{} WHERE h_typ='U'", SCHEMA, 'w_p_h')
+        self.assertEqual(self.cur.fetchone()[0], 'före')
+        self.assertEqual(self.index_pa('w_p'), {'w_p_geom_gidx': 'gist', 'w_p_pkey': 'btree'})
+        self.assertEqual(self.ett('SELECT trigger_funktion FROM hex_metadata WHERE parent_oid=to_regclass(%s)',
+                                  (SCHEMA+'.w_p',)), 'trg_fn_w_p_qa')
+
+    def test_underhall_skriver_inte_om_metadata_i_onodan(self):
+        self.skapa('alfa')
+        fore = self.ett('SELECT ctid::text FROM hex_metadata WHERE parent_oid=to_regclass(%s)', (SCHEMA+'.alfa',))
+        self.cur.execute('SELECT * FROM hex_underhall()')
+        self.assertEqual(self.ett('SELECT ctid::text FROM hex_metadata WHERE parent_oid=to_regclass(%s)',
+                                  (SCHEMA+'.alfa',)), fore)
+
+
 class TestUppgraderingObjektnamn(unittest.TestCase):
     """HEX-MIGRERING 2026-10: tas bort med normaliseringen av äldre namn.
 
@@ -185,6 +275,31 @@ class TestUppgraderingObjektnamn(unittest.TestCase):
             c.execute(sql.SQL('ALTER TABLE {}.alfa RENAME TO beta; ALTER TABLE {}.alfa_h RENAME TO beta_h').format(sql.Identifier(s),sql.Identifier(s)))
             c.execute('ALTER EVENT TRIGGER hex_hantera_ny_kolumn_trigger ENABLE')
             c.execute("UPDATE hex_metadata SET parent_table='beta', history_table='beta_h' WHERE parent_schema=%s AND parent_table='alfa'", (s,))
+            # Äldre DROP TABLE lämnade insert_audit-funktionen kvar; här på
+            # det namn som alfa:s funktion ska få efter uppgraderingen.
+            c.execute(sql.SQL('CREATE FUNCTION {}.trg_fn_beta_insert_audit() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN RETURN NEW; END$$').format(sql.Identifier(s)))
+            # Geometritabell som döptes om i äldre version: GiST-index och
+            # primärnyckel behöll det gamla namnet. Det gamla namnet har
+            # sedan återanvänts, och den nya tabellen kunde inte ta namnen.
+            c.execute('SELECT public.hex_srid()')
+            srid = int(c.fetchone()[0])
+            c.execute(sql.SQL('CREATE TABLE {}.gammal_p (namn text, geom geometry(Point, %s))' % srid).format(sql.Identifier(s)))
+            c.execute(sql.SQL("INSERT INTO {}.gammal_p (namn, geom) VALUES ('punkt', ST_SetSRID(ST_MakePoint(1, 1), %s))" % srid).format(sql.Identifier(s)))
+            c.execute('ALTER EVENT TRIGGER hex_hantera_ny_kolumn_trigger DISABLE')
+            c.execute(sql.SQL('ALTER TABLE {}.gammal_p RENAME TO ny_p; ALTER TABLE {}.gammal_p_h RENAME TO ny_p_h').format(sql.Identifier(s),sql.Identifier(s)))
+            c.execute('ALTER EVENT TRIGGER hex_hantera_ny_kolumn_trigger ENABLE')
+            c.execute("UPDATE hex_metadata SET parent_table='ny_p', history_table='ny_p_h' WHERE parent_schema=%s AND parent_table='gammal_p'", (s,))
+            # Som efter en version där sekvens, historikindex, funktioner och
+            # QA-trigger följde med vid namnbytet men inte GiST-index och
+            # primärnyckel. Annars går det gamla namnet inte att återanvända.
+            for sats in ('ALTER SEQUENCE {s}.gammal_p_gid_seq RENAME TO ny_p_gid_seq',
+                         'ALTER INDEX {s}.gammal_p_h_idx RENAME TO ny_p_h_idx',
+                         'ALTER FUNCTION {s}.trg_fn_gammal_p_qa() RENAME TO trg_fn_ny_p_qa',
+                         'ALTER FUNCTION {s}.trg_fn_gammal_p_insert_audit() RENAME TO trg_fn_ny_p_insert_audit',
+                         'ALTER TRIGGER trg_gammal_p_qa ON {s}.ny_p RENAME TO trg_ny_p_qa'):
+                c.execute(sql.SQL(sats).format(s=sql.Identifier(s)))
+            c.execute("UPDATE hex_metadata SET trigger_funktion='trg_fn_ny_p_qa' WHERE parent_schema=%s AND parent_table='ny_p'", (s,))
+            c.execute(sql.SQL('CREATE TABLE {}.gammal_p (namn text, geom geometry(Point, %s))' % srid).format(sql.Identifier(s)))
             conn.commit()
             conn.close()
             conn = None
@@ -201,7 +316,19 @@ class TestUppgraderingObjektnamn(unittest.TestCase):
             c.execute(sql.SQL("UPDATE {}.beta SET namn='efter upgrade'").format(sql.Identifier(s)))
             c.execute(sql.SQL('SELECT namn FROM {}.beta_h').format(sql.Identifier(s)))
             self.assertEqual(c.fetchone()[0], 'äldre namnbyte')
-            c.execute(sql.SQL('DROP TABLE {}.{}, {}.alfa, {}.beta; DROP SCHEMA {}').format(sql.Identifier(s),sql.Identifier(namn),sql.Identifier(s),sql.Identifier(s),sql.Identifier(s)))
+            c.execute(sql.SQL("INSERT INTO {}.beta (namn, skapad_av) VALUES ('ny', 'förfalskad') RETURNING skapad_av").format(sql.Identifier(s)))
+            skapad_av = c.fetchone()[0]
+            c.execute('SELECT session_user')
+            self.assertEqual(skapad_av, c.fetchone()[0])
+            def index_pa(tabell):
+                c.execute("""SELECT c.relname FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+                    WHERE i.indrelid = to_regclass(%s) ORDER BY 1""", (f'{s}.{tabell}',))
+                return [r[0] for r in c.fetchall()]
+            self.assertEqual(index_pa('ny_p'), ['ny_p_geom_gidx', 'ny_p_pkey'])
+            self.assertEqual(index_pa('gammal_p'), ['gammal_p_geom_gidx', 'gammal_p_pkey'])
+            c.execute(sql.SQL('SELECT namn, ST_AsText(geom) FROM {}.ny_p').format(sql.Identifier(s)))
+            self.assertEqual(c.fetchone(), ('punkt', 'POINT(1 1)'))
+            c.execute(sql.SQL('DROP TABLE {}.{}, {}.alfa, {}.beta, {}.ny_p, {}.gammal_p; DROP SCHEMA {}').format(sql.Identifier(s),sql.Identifier(namn),sql.Identifier(s),sql.Identifier(s),sql.Identifier(s),sql.Identifier(s),sql.Identifier(s)))
             conn.commit()
         finally:
             if conn is not None:

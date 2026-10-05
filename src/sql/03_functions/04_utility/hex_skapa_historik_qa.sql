@@ -269,7 +269,8 @@ BEGIN
         public.hex_objektnamn(p_tabell_namn, 'qa_trigger'), p_schema_namn, p_tabell_namn,
         p_schema_namn, trigger_funktionsnamn
     );
-    RAISE NOTICE '[hex_skapa_historik_qa]   ✓ Trigger skapad: trg_%_qa', p_tabell_namn;
+    RAISE NOTICE '[hex_skapa_historik_qa]   ✓ Trigger skapad: %',
+        public.hex_objektnamn(p_tabell_namn, 'qa_trigger');
     
     -- Steg 8.5: Skapa INSERT-trigger för kolumner med anvandare_kan_redigera = false
     -- Kolumner utan default_varde (t.ex. gid) hoppas över – de hanteras av egna triggers.
