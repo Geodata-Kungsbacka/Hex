@@ -57,13 +57,13 @@ BEGIN
     THEN
         h_tabell := NULL;  -- Ingen historik (ännu)
     ELSE
-        -- Triggerfunktionen skapas före registreringen men triggern efter, så
-        -- namnet hämtas ur pg_proc och inte ur pg_trigger.
+        -- Vid skapande finns funktionen före triggern. Efter namnbyte och
+        -- underhåll används samma gemensamma objektnamn.
         SELECT p.proname INTO trigger_fn
         FROM pg_catalog.pg_proc p
         JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
         WHERE n.nspname = p_schema_namn
-          AND p.proname = 'trg_fn_' || p_tabell_namn || '_qa';
+          AND p.proname = public.hex_objektnamn(p_tabell_namn, 'qa');
     END IF;
 
     INSERT INTO public.hex_metadata AS m

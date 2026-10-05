@@ -47,10 +47,10 @@ BEGIN
     valideringssteg := 'namnlängdskontroll';
     RAISE NOTICE '[hex_validera_tabell] Steg 1: Kontrollerar namnlängd';
 
-    IF length(p_tabell_namn) > 54 THEN
+    IF length(p_tabell_namn) > 54 OR octet_length(p_tabell_namn) > 61 THEN
         RAISE EXCEPTION
-            E'[hex_validera_tabell] Tabellnamnet "%" är för långt (%s tecken, max 54).\n'
-            'Historiktabellen (%_h) måste rymmas inom PostgreSQL-gränsen på 63 tecken.',
+            E'[hex_validera_tabell] Tabellnamnet "%" är för långt (% tecken, max 54 och 61 byte).\n'
+            'Historiktabellen (%_h) måste rymmas inom PostgreSQL-gränsen på 63 byte.',
             p_tabell_namn, length(p_tabell_namn), p_tabell_namn;
     END IF;
     RAISE NOTICE '[hex_validera_tabell]   ✓ Namnlängd OK: % tecken', length(p_tabell_namn);

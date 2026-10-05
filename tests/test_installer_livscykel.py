@@ -32,7 +32,6 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 try:
     import psycopg2
-    from psycopg2 import sql as pgsql
 except ImportError:  # pragma: no cover
     psycopg2 = None
 

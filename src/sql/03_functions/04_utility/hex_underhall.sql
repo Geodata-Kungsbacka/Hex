@@ -49,6 +49,10 @@ AS $BODY$
  *                        rapporteras som 'dubbletter: N' och lämnas orörda –
  *                        kör public.hex_reparera_gid_dubbletter() på dem.
  *
+ *   geom_index           GiST-index på geom för alla Hex-tabeller med
+ *                        geometrikolumn. Saknade index skapas via
+ *                        hex_sakerstall_geomindex().
+ *
  *   hex_kontrollera_geom BEFORE INSERT OR UPDATE på geometritabeller vars
  *                        datakategori har hex_validera_geometri = true.
  *                        Validerar OGC-giltighet.
@@ -289,6 +293,28 @@ BEGIN
         RETURN NEXT;
     END LOOP;
 
+    -- HEX-MIGRERING 2026-10: äldre namn kan vara trunkerade eller bära ett
+    -- tidigare tabellnamn. Tas bort när alla driftmiljöer uppgraderats.
+    -- Två varv: döptes en tabell om i en äldre version och dess gamla namn
+    -- sedan återanvändes, håller den omdöpta tabellens index det namn som den
+    -- nya behöver. Första varvet frigör namnet, andra varvet tar det. Bara
+    -- andra varvet varnar för namn som fortfarande är upptagna.
+    FOR varv IN 1..2 LOOP
+        FOR r IN
+            SELECT n.nspname::text AS s, c.relname::text AS t
+            FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE c.relkind = 'r' AND n.nspname ~ schema_regex AND c.relname !~ '_h$'
+            ORDER BY 1, 2
+        LOOP
+            antal_andringar := public.hex_synka_objektnamn(r.s, r.t, NULL, varv = 2);
+            IF antal_andringar > 0 THEN
+                schema_namn := r.s; tabell_namn := r.t;
+                trigger_namn := 'objektnamn'; atgard := 'synkade: ' || antal_andringar;
+                RETURN NEXT;
+            END IF;
+        END LOOP;
+    END LOOP;
+
     -- -------------------------------------------------------------------------
     -- 1. hex_tvinga_gid
     --    Alla tabeller i Hex-scheman med en gid IDENTITY-kolumn.
@@ -346,14 +372,15 @@ BEGIN
     --     andrad_av, andrad_tidpunkt) vid INSERT.
     -- -------------------------------------------------------------------------
     FOR r IN
-        SELECT n.nspname AS s, p.proname AS fn
-        FROM   pg_proc      p
-        JOIN   pg_namespace n ON n.oid = p.pronamespace
-        WHERE  n.nspname ~ schema_regex
-          AND  p.proname  ~ '^trg_fn_.+_insert_audit$'
-        ORDER BY n.nspname, p.proname
+        SELECT n.nspname AS s, c.relname AS t, p.proname AS fn
+        FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        JOIN pg_proc p ON p.pronamespace = n.oid
+                      AND p.proname = public.hex_objektnamn(c.relname, 'insert_audit')
+                      AND p.pronargs = 0 AND p.prorettype = 'trigger'::regtype
+        WHERE c.relkind = 'r' AND c.relname !~ '_h$' AND n.nspname ~ schema_regex
+        ORDER BY n.nspname, c.relname
     LOOP
-        tabell := substring(r.fn FROM '^trg_fn_(.+)_insert_audit$');
+        tabell := r.t;
 
         IF NOT EXISTS (
             SELECT 1
@@ -426,6 +453,49 @@ BEGIN
         trigger_namn := 'gid_primarnyckel';
         atgard       := public.hex_sakerstall_gid_primarnyckel(r.s, r.t);
 
+        RETURN NEXT;
+    END LOOP;
+
+    -- -------------------------------------------------------------------------
+    -- 1d. geom_index
+    --     GiST-index på geom för alla Hex-tabeller med en geometrikolumn.
+    --     Ett index som saknas skapas; ett som finns rörs inte (namnet sköts
+    --     av hex_synka_objektnamn). Historiktabeller (har h_typ) undantas.
+    --     Fångar både index som en DBA tagit bort och tabeller som aldrig fick
+    --     något: tidigare hoppade CREATE INDEX IF NOT EXISTS tyst över när
+    --     namnet ägdes av en omdöpt tabells index.
+    -- -------------------------------------------------------------------------
+    FOR r IN
+        SELECT n.nspname AS s, c.relname AS t,
+               EXISTS (
+                   SELECT 1
+                   FROM   pg_index     i
+                   JOIN   pg_class     ic ON ic.oid = i.indexrelid
+                   JOIN   pg_am        am ON am.oid = ic.relam AND am.amname = 'gist'
+                   JOIN   pg_attribute ia ON ia.attrelid = i.indrelid AND ia.attnum = i.indkey[0]
+                   WHERE  i.indrelid = c.oid AND ia.attname = 'geom'
+               ) AS har_index
+        FROM   pg_class     c
+        JOIN   pg_namespace n ON n.oid = c.relnamespace
+        JOIN   pg_attribute a ON a.attrelid = c.oid AND a.attname = 'geom' AND NOT a.attisdropped
+        WHERE  c.relkind = 'r'
+          AND  n.nspname ~ schema_regex
+          AND  EXISTS (SELECT 1 FROM pg_type ty
+                       WHERE ty.oid = a.atttypid AND ty.typname = 'geometry')
+          AND  NOT EXISTS (
+                   SELECT 1 FROM pg_attribute h
+                   WHERE  h.attrelid = c.oid AND h.attname = 'h_typ' AND NOT h.attisdropped
+               )
+        ORDER BY n.nspname, c.relname
+    LOOP
+        schema_namn  := r.s;
+        tabell_namn  := r.t;
+        trigger_namn := 'geom_index';
+        IF r.har_index THEN
+            atgard := 'redan finns';
+        ELSE
+            atgard := 'skapad: ' || public.hex_sakerstall_geomindex(r.s, r.t, 'geom');
+        END IF;
         RETURN NEXT;
     END LOOP;
 
@@ -552,20 +622,20 @@ BEGIN
     --    lever i användarscheman och överlever en oinstallation av Hex, vilket
     --    gör dem till en pålitlig källa även när hex_metadata är tom.
     --
-    --    Obs: Om föräldertabellen har döpts om efter att historiken skapades
-    --    matchar inte det härledda tabellnamnet längre – dessa tabeller hoppas
-    --    över tyst (tabellen existerar inte under det gamla namnet).
+    --    Tabellerna är källan för uppslaget; namnet tolkas aldrig tillbaka
+    --    från ett eventuellt förkortat funktionsnamn.
     -- -------------------------------------------------------------------------
     FOR r IN
-        SELECT n.nspname AS s, p.proname AS fn
-        FROM   pg_proc      p
-        JOIN   pg_namespace n ON n.oid = p.pronamespace
-        WHERE  n.nspname ~ schema_regex
-          AND  p.proname  ~ '^trg_fn_.+_qa$'
-        ORDER BY n.nspname, p.proname
+        SELECT n.nspname AS s, c.relname AS t, p.proname AS fn
+        FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        JOIN pg_proc p ON p.pronamespace = n.oid
+                      AND p.proname = public.hex_objektnamn(c.relname, 'qa')
+                      AND p.pronargs = 0 AND p.prorettype = 'trigger'::regtype
+        WHERE c.relkind = 'r' AND c.relname !~ '_h$' AND n.nspname ~ schema_regex
+        ORDER BY n.nspname, c.relname
     LOOP
-        -- Härleda föräldertabellnamn från funktionsnamnet.
-        tabell := substring(r.fn FROM '^trg_fn_(.+)_qa$');
+        -- Tabellnamnet kommer från pg_class, även för hashade funktionsnamn.
+        tabell := r.t;
 
         -- Hoppa över om föräldertabellen inte längre existerar under det namnet.
         IF NOT EXISTS (
@@ -586,19 +656,19 @@ BEGIN
             JOIN   pg_namespace n ON n.oid = c.relnamespace
             WHERE  n.nspname = r.s
               AND  c.relname = tabell
-              AND  t.tgname  = 'trg_' || tabell || '_qa'
+              AND  t.tgname  = public.hex_objektnamn(tabell, 'qa_trigger')
         ) INTO trig_exists;
 
         schema_namn  := r.s;
         tabell_namn  := tabell;
-        trigger_namn := 'trg_' || tabell || '_qa';
+        trigger_namn := public.hex_objektnamn(tabell, 'qa_trigger');
 
         IF NOT trig_exists THEN
             EXECUTE format(
-                'CREATE TRIGGER trg_%s_qa'
+                'CREATE TRIGGER %I'
                 ' BEFORE UPDATE OR DELETE ON %I.%I'
                 ' FOR EACH ROW EXECUTE FUNCTION %I.%I()',
-                tabell, r.s, tabell, r.s, r.fn
+                public.hex_objektnamn(tabell, 'qa_trigger'), r.s, tabell, r.s, r.fn
             );
             atgard := 'skapad';
         ELSE
@@ -1303,6 +1373,7 @@ COMMENT ON FUNCTION public.hex_underhall()
 Återkopplar saknade rad-nivå-triggers (hex_tvinga_gid, hex_tvinga_anvandarvarden, hex_kontrollera_geom,
 hex_ta_bort_dummy, trg_<tabell>_qa).
 Lägger PRIMARY KEY (gid) på tabeller som saknar den (dubbletter rapporteras, rörs inte).
+Skapar saknade GiST-index på geom.
 Slutför afvaktande FME-tabeller som redan har geom, och synkar varje
 historiktabell med sin modertabell via hex_synka_historik().
 Verifierar och reparerar alla fyra roller per schema:
