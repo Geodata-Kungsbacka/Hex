@@ -18,6 +18,15 @@ merge-datum.
 
 ### Tillagt
 
+- **Uppgraderingsjobb i CI** – jobbet `uppgradering` i
+  `.github/workflows/test_hex.yml` installerar basversionen (PR:ens bas,
+  commiten före pushen eller `bas_ref` vid manuell körning), lägger in
+  användardata, kör `upgrade()` med den nya versionen och jämför
+  användarobjekten med en ny installation
+  (`.github/scripts/kontrollera_uppgradering.py`). Därefter körs samtliga
+  sviter mot den uppgraderade databasen. En ändring som saknar
+  `HEX-MIGRERING` går därmed rött i CI.
+
 - **Statiska kontroller i CI** – `.github/workflows/test_statisk.yml` kör
   `ruff` och `shellcheck`, SQL-checklistan i `CLAUDE.md` och namnkonventionen
   för `src/sql/` och `tests/` vid push till och PR mot `main`. Daterade

@@ -193,6 +193,46 @@ vakten.
 
 ---
 
+## Testa via CI när du saknar en lokal databas
+
+Sviterna kräver PostgreSQL med PostGIS. Finns den inte i din miljö (och
+SessionStart-hooken i `.claude/hooks/` inte gått att köra) testar du ändringen
+genom arbetsflödena i stället. Båda körs automatiskt bara vid push till och PR
+mot `main`, men har `workflow_dispatch` och går att starta på vilken branch som
+helst:
+
+1. Committa och pusha din branch.
+2. Starta `test_hex.yml` och `test_statisk.yml` på branchen (GitHub-verktyget
+   `actions_run_trigger` med `method: run_workflow`, `workflow_id` och
+   `ref: <din branch>`). `test_hex.yml` tar valfritt `bas_ref`, versionen
+   uppgraderingsjobbet utgår från (standard `main`).
+3. Hitta körningen med `actions_list` (`list_workflow_runs`, filtrerat på
+   branch och `workflow_dispatch`) och vänta tills den är klar.
+4. Läs felen med `get_job_logs` (`run_id` och `failed_only: true`). Sista
+   raderna i loggen är sammanfattningstabellen och de underkända sviternas
+   felrader – `test_run_all.py` skriver den fullständiga utdatan före
+   tabellen, inte efter.
+
+Vad jobben täcker:
+
+| Arbetsflöde / jobb | Täcker |
+| --- | --- |
+| `test_hex.yml` / `test` | Ny installation och samtliga sviter med `--strikt`, PostgreSQL 16 och 17 |
+| `test_hex.yml` / `uppgradering` | Installation av basversionen, användardata, `upgrade()` med din version, jämförelse mot en ny installation och därefter samtliga sviter mot den uppgraderade databasen |
+| `test_statisk.yml` | `ruff`, `shellcheck`, SQL-checklistan ovan, namnkonventionen och inventering av `HEX-MIGRERING` |
+
+Går `uppgradering` rött i jämförelsesteget skiljer sig en uppgraderad databas
+från en ny – oftast en saknad migrering (se avsnittet ovan). Diffen i loggen
+visar vilka objekt det gäller: `-` finns bara i den nya installationen, `+`
+bara i den uppgraderade. Samma kontroll går att köra lokalt:
+
+```bash
+git worktree add ../hex-bas origin/main
+python3 .github/scripts/kontrollera_uppgradering.py --bas ../hex-bas
+```
+
+---
+
 ## Allmänna kodfakta
 
 - All SQL riktar sig mot PostgreSQL **16 eller senare** — inga MySQL/SQLite-idiom, och inga bakåtkompatibilitetshänsyn till äldre PostgreSQL-versioner. Installern avbryter mot äldre servrar. Testsviten körs mot både 16 och 17.

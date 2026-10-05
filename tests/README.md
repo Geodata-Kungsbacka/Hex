@@ -118,6 +118,22 @@ Anslutningen styrs med libpq:s standardvariabler (`PGDATABASE`, `PGUSER`,
 `PGHOST`, `PGPORT`, `PGPASSWORD`). Utan dem används `hex_test` på `localhost`
 som `postgres`.
 
+Med `-v` skrivs den fullständiga utdatan från varje svit **före**
+sammanfattningstabellen. Tabellen och de underkända sviternas felrader står
+alltså alltid sist, där den som bara läser slutet av en CI-logg hittar dem.
+
+### I CI
+
+`.github/workflows/test_hex.yml` kör sviterna två gånger per PostgreSQL-version:
+jobbet `test` mot en nyinstallerad databas, och jobbet `uppgradering` mot en
+databas som installerats med basversionen, fått användardata
+(`.github/scripts/uppgradering_seed.sql`) och uppgraderats med
+`install_hex.upgrade()`. Före sviterna jämför
+`.github/scripts/kontrollera_uppgradering.py` den uppgraderade databasens
+användarobjekt med en ny installation. Saknas en dator med PostgreSQL går
+arbetsflödet att starta manuellt på valfri branch — se *Testa via CI* i
+[CLAUDE.md](../CLAUDE.md).
+
 ---
 
 ## Kör en enskild svit
