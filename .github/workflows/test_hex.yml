@@ -1,0 +1,70 @@
+name: Hex regressionstester
+on:
+  push:
+    branches: [main, 'fix/**']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - postgres: '16'
+            image: postgis/postgis:16-3.5
+          - postgres: '17'
+            image: postgis/postgis:17-3.5
+    services:
+      postgres:
+        image: ${{ matrix.image }}
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: hex_ci_ephemeral
+          POSTGRES_DB: hex_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      PGHOST: localhost
+      PGPORT: '5432'
+      PGUSER: postgres
+      PGPASSWORD: hex_ci_ephemeral
+      PGDATABASE: hex_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Installera testberoenden
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+          python -m pip install psycopg2-binary requests
+      - name: Installera Hex i engångsdatabasen
+        run: |
+          python - <<'PY'
+          import os
+          import install_hex
+          cfg = dict(host=os.environ['PGHOST'], port=os.environ['PGPORT'],
+                     dbname=os.environ['PGDATABASE'], user=os.environ['PGUSER'],
+                     password=os.environ['PGPASSWORD'], owner_role='gis_admin')
+          assert install_hex.install(cfg)
+          PY
+      - name: Kör samtliga sviter och underkänn överhoppade tester
+        shell: bash
+        run: |
+          set -o pipefail
+          python tests/test_run_all.py --strikt -v 2>&1 | tee hex-tests.log
+      - name: Spara testloggen
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hex-tests-pg${{ matrix.postgres }}
+          path: hex-tests.log

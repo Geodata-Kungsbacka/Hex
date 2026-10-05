@@ -44,6 +44,7 @@ DECLARE
     tabell_namn text;
     historik_tabell text;
     trigger_funktion text;
+    fn record;
 BEGIN
     -- Hoppa över under omstrukturering (hex_byt_ut_tabell droppar tabeller internt)
     IF current_setting('temp.tabellstrukturering_pagar', true) = 'true' THEN
@@ -101,17 +102,22 @@ BEGIN
                 schema_namn, historik_tabell;
         END IF;
 
-        -- Ta bort triggerfunktion om den finns
-        IF EXISTS (
-            SELECT 1 FROM pg_proc p
-            JOIN pg_namespace n ON p.pronamespace = n.oid
-            WHERE n.nspname = schema_namn
-            AND p.proname = trigger_funktion
-        ) THEN
-            EXECUTE format('DROP FUNCTION %I.%I()', schema_namn, trigger_funktion);
-            RAISE NOTICE '[hex_hantera_borttagen_tabell] ✓ Triggerfunktion borttagen: %.%()',
-                schema_namn, trigger_funktion;
-        END IF;
+        -- Bara nollargumentfunktioner med trigger-returtyp. Inga CASCADE:
+        -- oväntade beroenden ska avbryta transaktionen, inte raderas tyst.
+        FOR fn IN
+            SELECT p.oid, p.proname FROM pg_proc p
+            JOIN pg_namespace n ON n.oid = p.pronamespace
+            WHERE n.nspname = schema_namn AND p.pronargs = 0
+              AND p.prorettype = 'trigger'::regtype
+              AND p.proname IN (trigger_funktion,
+                  public.hex_objektnamn(tabell_namn, 'qa'),
+                  public.hex_objektnamn(tabell_namn, 'insert_audit'),
+                  ('trg_fn_' || tabell_namn || '_qa')::name::text,
+                  ('trg_fn_' || tabell_namn || '_insert_audit')::name::text)
+        LOOP
+            EXECUTE format('DROP FUNCTION %s', fn.oid::regprocedure);
+            RAISE NOTICE '[hex_hantera_borttagen_tabell] Funktion borttagen: %.%', schema_namn, fn.proname;
+        END LOOP;
 
         -- Metadataraden rensas efter loopen av hex_rensa_metadata()
 

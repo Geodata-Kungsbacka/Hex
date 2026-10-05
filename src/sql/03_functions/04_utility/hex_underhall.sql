@@ -289,6 +289,22 @@ BEGIN
         RETURN NEXT;
     END LOOP;
 
+    -- HEX-MIGRERING 2026-10: äldre namn kan vara trunkerade eller bära ett
+    -- tidigare tabellnamn. Tas bort när alla driftmiljöer uppgraderats.
+    FOR r IN
+        SELECT n.nspname::text AS s, c.relname::text AS t
+        FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE c.relkind = 'r' AND n.nspname ~ schema_regex AND c.relname !~ '_h$'
+        ORDER BY 1, 2
+    LOOP
+        antal_andringar := public.hex_synka_objektnamn(r.s, r.t);
+        IF antal_andringar > 0 THEN
+            schema_namn := r.s; tabell_namn := r.t;
+            trigger_namn := 'objektnamn'; atgard := 'synkade: ' || antal_andringar;
+            RETURN NEXT;
+        END IF;
+    END LOOP;
+
     -- -------------------------------------------------------------------------
     -- 1. hex_tvinga_gid
     --    Alla tabeller i Hex-scheman med en gid IDENTITY-kolumn.
@@ -346,14 +362,15 @@ BEGIN
     --     andrad_av, andrad_tidpunkt) vid INSERT.
     -- -------------------------------------------------------------------------
     FOR r IN
-        SELECT n.nspname AS s, p.proname AS fn
-        FROM   pg_proc      p
-        JOIN   pg_namespace n ON n.oid = p.pronamespace
-        WHERE  n.nspname ~ schema_regex
-          AND  p.proname  ~ '^trg_fn_.+_insert_audit$'
-        ORDER BY n.nspname, p.proname
+        SELECT n.nspname AS s, c.relname AS t, p.proname AS fn
+        FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        JOIN pg_proc p ON p.pronamespace = n.oid
+                      AND p.proname = public.hex_objektnamn(c.relname, 'insert_audit')
+                      AND p.pronargs = 0 AND p.prorettype = 'trigger'::regtype
+        WHERE c.relkind = 'r' AND c.relname !~ '_h$' AND n.nspname ~ schema_regex
+        ORDER BY n.nspname, c.relname
     LOOP
-        tabell := substring(r.fn FROM '^trg_fn_(.+)_insert_audit$');
+        tabell := r.t;
 
         IF NOT EXISTS (
             SELECT 1
@@ -552,20 +569,20 @@ BEGIN
     --    lever i användarscheman och överlever en oinstallation av Hex, vilket
     --    gör dem till en pålitlig källa även när hex_metadata är tom.
     --
-    --    Obs: Om föräldertabellen har döpts om efter att historiken skapades
-    --    matchar inte det härledda tabellnamnet längre – dessa tabeller hoppas
-    --    över tyst (tabellen existerar inte under det gamla namnet).
+    --    Tabellerna är källan för uppslaget; namnet tolkas aldrig tillbaka
+    --    från ett eventuellt förkortat funktionsnamn.
     -- -------------------------------------------------------------------------
     FOR r IN
-        SELECT n.nspname AS s, p.proname AS fn
-        FROM   pg_proc      p
-        JOIN   pg_namespace n ON n.oid = p.pronamespace
-        WHERE  n.nspname ~ schema_regex
-          AND  p.proname  ~ '^trg_fn_.+_qa$'
-        ORDER BY n.nspname, p.proname
+        SELECT n.nspname AS s, c.relname AS t, p.proname AS fn
+        FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        JOIN pg_proc p ON p.pronamespace = n.oid
+                      AND p.proname = public.hex_objektnamn(c.relname, 'qa')
+                      AND p.pronargs = 0 AND p.prorettype = 'trigger'::regtype
+        WHERE c.relkind = 'r' AND c.relname !~ '_h$' AND n.nspname ~ schema_regex
+        ORDER BY n.nspname, c.relname
     LOOP
         -- Härleda föräldertabellnamn från funktionsnamnet.
-        tabell := substring(r.fn FROM '^trg_fn_(.+)_qa$');
+        tabell := r.t;
 
         -- Hoppa över om föräldertabellen inte längre existerar under det namnet.
         IF NOT EXISTS (
@@ -586,19 +603,19 @@ BEGIN
             JOIN   pg_namespace n ON n.oid = c.relnamespace
             WHERE  n.nspname = r.s
               AND  c.relname = tabell
-              AND  t.tgname  = 'trg_' || tabell || '_qa'
+              AND  t.tgname  = public.hex_objektnamn(tabell, 'qa_trigger')
         ) INTO trig_exists;
 
         schema_namn  := r.s;
         tabell_namn  := tabell;
-        trigger_namn := 'trg_' || tabell || '_qa';
+        trigger_namn := public.hex_objektnamn(tabell, 'qa_trigger');
 
         IF NOT trig_exists THEN
             EXECUTE format(
-                'CREATE TRIGGER trg_%s_qa'
+                'CREATE TRIGGER %I'
                 ' BEFORE UPDATE OR DELETE ON %I.%I'
                 ' FOR EACH ROW EXECUTE FUNCTION %I.%I()',
-                tabell, r.s, tabell, r.s, r.fn
+                public.hex_objektnamn(tabell, 'qa_trigger'), r.s, tabell, r.s, r.fn
             );
             atgard := 'skapad';
         ELSE

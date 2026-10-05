@@ -74,7 +74,7 @@ COMMENT ON COLUMN public.hex_metadata.history_table IS
      trunkerar identifieraren till 63 byte). NULL om tabellen saknar historik.';
 COMMENT ON COLUMN public.hex_metadata.trigger_funktion IS
     'Namn på QA-triggerfunktionen (trg_fn_<originalnamn>_qa).
-     Ändras INTE när föräldertabellen döps om.';
+     Uppdateras när föräldertabellen döps om eller objektnamnen repareras.';
 COMMENT ON COLUMN public.hex_metadata.created_at IS
     'Tidpunkt då posten registrerades i hex_metadata.';
 COMMENT ON COLUMN public.hex_metadata.created_by IS

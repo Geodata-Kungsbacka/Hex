@@ -202,7 +202,9 @@ BEGIN
     JOIN pg_proc p ON p.oid = t.tgfoid
     WHERE t.tgrelid = moder_oid
       AND NOT t.tgisinternal
-      AND p.proname ~ '^trg_fn_.+_qa$'
+      AND (t.tgname = public.hex_objektnamn(p_tabell_namn, 'qa_trigger')
+           OR p.proname = (SELECT m.trigger_funktion FROM public.hex_metadata m
+                            WHERE m.parent_oid = moder_oid))
     LIMIT 1;
 
     IF fn_oid IS NOT NULL THEN

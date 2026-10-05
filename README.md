@@ -398,6 +398,7 @@ src/sql/02_tables/hex_avvikande_srid.sql
 src/sql/02_tables/hex_rolluppgifter.sql
 
 -- 3. Skapa funktioner (i beroendeordning)
+src/sql/00_config/hex_objektnamn.sql
 -- 3.1 Strukturhantering
 src/sql/03_functions/01_structure/hex_hamta_geometri_definition.sql
 src/sql/03_functions/01_structure/hex_kolumntyp.sql
@@ -424,6 +425,7 @@ src/sql/03_functions/04_utility/hex_registrera_metadata.sql
 src/sql/03_functions/04_utility/hex_komplettera_metadata.sql
 src/sql/03_functions/04_utility/hex_uppdatera_metadata_namn.sql
 src/sql/03_functions/04_utility/hex_rensa_metadata.sql
+src/sql/03_functions/04_utility/hex_synka_objektnamn.sql
 src/sql/03_functions/04_utility/hex_skapa_historik_qa.sql
 src/sql/03_functions/04_utility/hex_aterskapa_qa_trigger.sql
 src/sql/03_functions/04_utility/hex_synka_historik.sql
@@ -530,7 +532,7 @@ skedd räcker det inte med `hex_underhall()` — rollerna skapas bara vid
 **Livscykel**:
 - *Registreras* av `hex_hantera_ny_tabell()` för varje ny tabell, via `hex_registrera_metadata()`. `hex_skapa_historik_qa()` fyller i historikkolumnerna när historiken skapas — direkt, eller när FME-tvåsteget slutförs
 - *Efterregistreras* av `hex_underhall()` för tabeller som saknar rad (skapade förbi event-triggrarna, eller utan historik från före den här versionen), via `hex_komplettera_metadata()`. `created_by` blir då NULL
-- *Uppdateras* av `hex_hantera_ny_kolumn()` vid `ALTER TABLE RENAME TO` (parent_table, och history_table om tabellen har historik), via `hex_uppdatera_metadata_namn()`
+- *Uppdateras* av `hex_hantera_ny_kolumn()` vid `ALTER TABLE RENAME TO` (parent_table, och history_table om tabellen har historik), via `hex_uppdatera_metadata_namn()` och `hex_synka_objektnamn()`; sekvens, historikindex, triggerfunktioner och QA-trigger följer med
 - *Raderas* av `hex_hantera_borttagen_tabell()` vid `DROP TABLE` och `DROP SCHEMA ... CASCADE`, via `hex_rensa_metadata()`
 
 **Rättigheter**: Alla kan läsa, men bara ägaren kan skriva direkt. Event-triggrarna
@@ -1383,3 +1385,17 @@ Bidrag välkomnas! Skapa en issue eller pull request på GitHub.
 ## Support
 
 För frågor och support, kontakta databasadministratören eller skapa en issue i projektets GitHub-repository.
+
+### Härledda objektnamn
+
+`hex_objektnamn()` används av skapande, namnbyte, underhåll och borttagning.
+Korta namn behålls. Namn som annars skulle överskrida PostgreSQL:s gräns på
+63 byte kortas med en deterministisk hash och ett bevarat suffix. Tabellnamn
+får fortfarande ha högst 54 tecken, och dessutom högst 61 byte så att `_h`
+ryms. Namnbyten valideras på samma sätt som nya tabeller.
+
+`--upgrade` normaliserar äldre triggerfunktionsnamn via katalogkopplingar,
+återkopplar saknade triggers och synkar historiken. Befintliga historikrader
+bevaras. Om en funktion redan delas mellan två tabeller avbryts uppgraderingen
+med ett tydligt fel; de felkopplade funktionerna måste utredas innan den körs
+igen. Ett redan misslyckat namnbyte rullas tillbaka i sin helhet.

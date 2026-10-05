@@ -76,6 +76,7 @@ INSTALL_ORDER = [
     "src/sql/02_tables/hex_dummy_geometrier.sql",
     "src/sql/02_tables/hex_avvikande_srid.sql",
     "src/sql/02_tables/hex_rolluppgifter.sql",
+    "src/sql/00_config/hex_objektnamn.sql",
     # Funktioner - Struktur
     "src/sql/03_functions/01_structure/hex_hamta_geometri_definition.sql",
     # hex_kolumntyp() används av hex_hamta_kolumnstandard, hex_skapa_historik_qa
@@ -103,6 +104,7 @@ INSTALL_ORDER = [
     "src/sql/03_functions/04_utility/hex_komplettera_metadata.sql",
     "src/sql/03_functions/04_utility/hex_uppdatera_metadata_namn.sql",
     "src/sql/03_functions/04_utility/hex_rensa_metadata.sql",
+    "src/sql/03_functions/04_utility/hex_synka_objektnamn.sql",
     "src/sql/03_functions/04_utility/hex_skapa_historik_qa.sql",
     "src/sql/03_functions/04_utility/hex_aterskapa_qa_trigger.sql",
     # hex_synka_historik anropar hex_aterskapa_qa_trigger; båda används av
@@ -186,6 +188,7 @@ DROP FUNCTION IF EXISTS public.hex_underhall();
 DROP FUNCTION IF EXISTS public.hex_reparera_gid_dubbletter(text, text, boolean);
 DROP FUNCTION IF EXISTS public.hex_sakerstall_gid_primarnyckel(text, text);
 DROP FUNCTION IF EXISTS public.hex_tilldela_rollrattigheter(text, text, text);
+DROP FUNCTION IF EXISTS public.hex_synka_objektnamn(text, text, text);
 DROP FUNCTION IF EXISTS public.hex_skapa_historik_qa(text, text);
 DROP FUNCTION IF EXISTS public.hex_uppdatera_sekvensnamn(text, text, text);
 DROP FUNCTION IF EXISTS public.hex_byt_ut_tabell(text, text, text);
@@ -210,6 +213,7 @@ DROP FUNCTION IF EXISTS public.hex_kolumntyp(text, text, text);
 DROP FUNCTION IF EXISTS public.hex_hamta_geometri_definition(text, text);
 
 -- Konfigurationsfunktioner
+DROP FUNCTION IF EXISTS public.hex_objektnamn(text, text);
 DROP FUNCTION IF EXISTS public.hex_schema_regex();
 DROP FUNCTION IF EXISTS public.hex_srid_namn(integer);
 DROP FUNCTION IF EXISTS public.hex_tabellsuffix(text);

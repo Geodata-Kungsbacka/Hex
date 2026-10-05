@@ -136,12 +136,19 @@ BEGIN
     -- hex_metadata, flytta de namnnycklade registerraderna och – om tabellen
     -- har historik – döpa om historiktabellen.
     -- ----------------------------------------------------------------
-    IF current_query() ~* '\mRENAME\s+TO\M' THEN
+    IF EXISTS (
+        SELECT 1 FROM pg_event_trigger_ddl_commands() k
+        JOIN pg_class c ON c.oid = k.objid
+        JOIN public.hex_metadata m ON m.parent_oid = c.oid
+        WHERE k.command_tag = 'ALTER TABLE' AND k.object_type = 'table'
+          AND m.parent_table IS DISTINCT FROM c.relname::text
+    ) THEN
         FOR kommando IN SELECT * FROM pg_event_trigger_ddl_commands()
             WHERE command_tag = 'ALTER TABLE'
         LOOP
-            schema_namn := replace(split_part(kommando.object_identity, '.', 1), '"', '');
-            tabell_namn := replace(split_part(kommando.object_identity, '.', 2), '"', '');
+            SELECT n.nspname, c.relname INTO schema_namn, tabell_namn
+            FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE c.oid = kommando.objid;
 
             -- Historiktabeller döps om av grenen nedan och hanteras aldrig direkt
             CONTINUE WHEN tabell_namn ~ '_h$' OR kommando.object_type <> 'table';
@@ -169,6 +176,10 @@ BEGIN
                     CONTINUE;
                 END IF;
 
+                CONTINUE WHEN meta_rad.parent_table = tabell_namn;
+                -- Samma namnkrav som vid CREATE TABLE, innan något hjälpnamn ändras.
+                PERFORM public.hex_validera_tabell(schema_namn, tabell_namn);
+
                 -- hex_dummy_geometrier, hex_afvaktande_geometri och
                 -- hex_avvikande_srid nycklas på namn och måste följa med
                 PERFORM hex_flytta_registerposter(schema_namn, meta_rad.parent_table, tabell_namn);
@@ -183,6 +194,7 @@ BEGIN
                         ny_historik);
 
                     PERFORM hex_uppdatera_metadata_namn(kommando.objid);
+                    PERFORM public.hex_synka_objektnamn(schema_namn, tabell_namn, meta_rad.parent_table);
 
                     RAISE NOTICE '[hex_hantera_ny_kolumn] ✓ Historiktabell omdöpt: % → % (tabell omdöpt: % → %)',
                         meta_rad.history_table, ny_historik,
@@ -195,6 +207,7 @@ BEGIN
                     PERFORM hex_synka_historik(schema_namn, tabell_namn);
                 ELSE
                     PERFORM hex_uppdatera_metadata_namn(kommando.objid);
+                    PERFORM public.hex_synka_objektnamn(schema_namn, tabell_namn, meta_rad.parent_table);
                     RAISE NOTICE '[hex_hantera_ny_kolumn] ✓ hex_metadata uppdaterad: % → % (ingen historik)',
                         meta_rad.parent_table, tabell_namn;
                 END IF;
