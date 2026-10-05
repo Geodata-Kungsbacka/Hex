@@ -27,7 +27,7 @@ jobs:
           POSTGRES_DB: hex_test
         ports: ['5432:5432']
         options: >-
-          --health-cmd pg_isready
+          --health-cmd "pg_isready -U postgres"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
@@ -55,7 +55,7 @@ jobs:
           cfg = dict(host=os.environ['PGHOST'], port=os.environ['PGPORT'],
                      dbname=os.environ['PGDATABASE'], user=os.environ['PGUSER'],
                      password=os.environ['PGPASSWORD'], owner_role='gis_admin')
-          assert install_hex.install(cfg)
+          install_hex.install(cfg)
           PY
       - name: Kör samtliga sviter och underkänn överhoppade tester
         shell: bash

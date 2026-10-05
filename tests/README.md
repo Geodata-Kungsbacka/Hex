@@ -179,6 +179,7 @@ och betyder inte att ett test misslyckats.
 | `test_extended_efg.sql`        | Historiksynk, dataöverlevnad, QA-triggersäkerhet               |
 | `test_fme.sql`                 | FME:s tvåstegsmönster för tabellskapande                       |
 | `test_geometry_validation.sql` | `hex_validera_geometri` och geometrikvalitet                    |
+| `test_objektlivscykel.py`      | #176–#179: namnbyte, återanvänt namn, historik, långa namn, DROP och uppgradering |
 | `test_regression.sql`          | Regressionsskydd för tidigare rättade buggar, bl.a. historiksynken (`DROP COLUMN`, typbyten, `RENAME TO`/`RENAME COLUMN`, `AddGeometryColumn()`) och skrivskyddet på `hex_metadata`, och att `RENAME TO` flyttar registerraderna via `hex_metadata` även för tabeller utan historik |
 | `test_role_permissions.sql`    | Roller och rättigheter per schema                              |
 | `test_underhall.sql`           | `hex_underhall()` – reparation av triggers, roller, ägarskap    |
@@ -258,3 +259,10 @@ Windows-tjänst. Den täcker inte tjänstelivscykeln — bara att modulen går a
 importera (den hämtar fem namn ur `geoserver_listener`, och ett namnbyte där
 syns annars först när tjänsten inte startar), att `HEX_LOG_DIR` styr
 loggkatalogen, och att loggfilen kopplas på.
+
+## GitHub Actions
+
+`.github/workflows/test_hex.yml` kör samtliga sviter med `--strikt` mot
+PostgreSQL 16 och 17 med PostGIS. Varje jobb använder en egen engångsdatabas.
+Testloggar sparas som artifacts. Körning startas vid pull requests och push
+till `main` eller `fix/**`; inga produktionsanslutningar används.

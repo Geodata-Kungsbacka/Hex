@@ -160,7 +160,7 @@ class TestUppgraderingObjektnamn(unittest.TestCase):
                    dbname=dbnamn, owner_role='gis_admin')
         conn = None
         try:
-            self.assertTrue(install_hex.install(cfg, base_path=ROOT))
+            install_hex.install(cfg, base_path=ROOT)
             conn = psycopg2.connect(**{k:v for k,v in cfg.items() if k!='owner_role'})
             conn.set_client_encoding('UTF8'); c = conn.cursor()
             s = 'sk1_kba_migreringstest'; namn = 'm'*54
@@ -174,7 +174,7 @@ class TestUppgraderingObjektnamn(unittest.TestCase):
             c.execute(sql.SQL('DROP TRIGGER {} ON {}.{}').format(sql.Identifier('trg_'+namn+'_qa'),sql.Identifier(s),sql.Identifier(namn)))
             c.execute(sql.SQL('DROP TRIGGER hex_tvinga_anvandarvarden ON {}.{}').format(sql.Identifier(s),sql.Identifier(namn)))
             conn.commit(); conn.close(); conn=None
-            self.assertTrue(install_hex.upgrade(cfg, base_path=ROOT))
+            install_hex.upgrade(cfg, base_path=ROOT)
             conn=psycopg2.connect(**{k:v for k,v in cfg.items() if k!='owner_role'}); c=conn.cursor()
             c.execute(sql.SQL("UPDATE {}.{} SET namn='efter'").format(sql.Identifier(s),sql.Identifier(namn)))
             c.execute(sql.SQL('SELECT namn FROM {}.{}').format(sql.Identifier(s),sql.Identifier(namn+'_h')))

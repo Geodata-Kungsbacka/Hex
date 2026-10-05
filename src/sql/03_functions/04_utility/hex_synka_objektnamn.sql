@@ -18,6 +18,11 @@ DECLARE
 BEGIN
     IF moder IS NULL THEN RETURN 0; END IF;
     SELECT * INTO meta FROM public.hex_metadata WHERE parent_oid = moder;
+    -- Ett namnbyte i en äldre version uppdaterade metadata men lämnade
+    -- funktions- och indexnamnet kvar. Det äldre QA-namnet ger då ursprunget.
+    IF p_gammalt_namn IS NULL AND meta.trigger_funktion ~ '^trg_fn_.+_qa$' THEN
+        gammalt := substring(meta.trigger_funktion FROM '^trg_fn_(.+)_qa$');
+    END IF;
 
     FOREACH typ IN ARRAY ARRAY['qa', 'insert_audit'] LOOP
         -- En kvarvarande trigger är den säkraste källan, även när det gamla

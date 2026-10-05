@@ -133,7 +133,7 @@ läsare som gäller historik filtrerar på `history_table IS NOT NULL`.
 | `parent_oid` | OID från pg_class — stabil vid RENAME TO |
 | `parent_schema` / `parent_table` | Aktuella namn (uppdateras vid rename) |
 | `history_schema` / `history_table` | Historiktabellens schema och namn (namnet kan vara trunkerat till 63 byte). NULL utan historik |
-| `trigger_funktion` | Namn på QA-triggerfunktionen — behåller det ursprungliga namnet efter RENAME TO. NULL utan historik |
+| `trigger_funktion` | Namn på QA-triggerfunktionen — följer det nya tabellnamnet efter RENAME TO. NULL utan historik |
 | `created_at` | När posten registrerades |
 | `created_by` | Inloggningen (`session_user`) som skapade tabellen. `NULL` när okänd: poster från före kolumnen och poster som `hex_underhall()` efterregistrerat |
 
@@ -734,7 +734,7 @@ hex_synka_historik(schema, tabell)
 ```mermaid
 flowchart TD
     START(["ALTER TABLE schema.byggnader_y RENAME TO fastigheter_y"])
-    START --> DET["Detekterar RENAME TO<br/>i frågesträngen"]
+    START --> DET["Jämför registrerat namn<br/>med pg_class via OID"]
     DET --> OID{"Finns i hex_metadata<br/>via OID?"}
     OID --> |ja| GAML["Gamla namnet =<br/>hex_metadata.parent_table"]
     OID --> |nej| WARN["WARNING: kör hex_underhall()<br/>(registerrader flyttas inte)"]
@@ -742,10 +742,12 @@ flowchart TD
     GAML --> FLYTT["hex_flytta_registerposter<br/>hex_dummy_geometrier · hex_afvaktande_geometri<br/>· hex_avvikande_srid → nytt namn"]
     FLYTT --> HIST{"history_table<br/>IS NOT NULL?"}
     HIST --> |nej| UPD0["hex_uppdatera_metadata_namn(oid)<br/>parent_table = fastigheter_y"]
-    UPD0 --> FLAG
+    UPD0 --> NAMN["hex_synka_objektnamn<br/>sekvens, index, funktioner och QA-trigger"]
+    NAMN --> FLAG
     HIST --> |ja| REN["ALTER TABLE byggnader_y_h<br/>RENAME TO fastigheter_y_h<br/>(trunkeras till 63 byte)"]
     REN --> UPD["hex_uppdatera_metadata_namn(oid)<br/>parent_table = fastigheter_y<br/>history_table = fastigheter_y_h"]
-    UPD --> SYNK["hex_synka_historik<br/>QA-triggerns kropp byggs om<br/>med de nya tabellnamnen"]
+    UPD --> NAMNH["hex_synka_objektnamn<br/>sekvens, index, funktioner och QA-trigger"]
+    NAMNH --> SYNK["hex_synka_historik<br/>QA-triggerns kropp byggs om<br/>med de nya tabellnamnen"]
     SYNK --> FLAG["Nollställer<br/>temp.reorganization_in_progress"]
     FLAG --> DONE(["klar – ingen kolumnomordning"])
 ```
@@ -758,7 +760,7 @@ ALTER TABLE sk0_kba_bygg.byggnader_y RENAME TO fastigheter_y;
 
 ```
 hex_hantera_ny_kolumn()
-  ├── Detekterar RENAME TO i frågesträngen
+  ├── Jämför hex_metadata.parent_table med pg_class.relname via OID
   │
   ├── Hoppar över _h-tabeller och tabeller utanför Hex-scheman
   │
@@ -793,9 +795,10 @@ hex_hantera_ny_kolumn()
   └── Returnerar — ingen kolumnomordning görs vid rename
 ```
 
-Triggern och triggerfunktionen behåller sina gamla namn (`trg_byggnader_y_qa`,
-`trg_fn_byggnader_y_qa`). Det är den funktionen som byggs om, och
-`hex_metadata.trigger_funktion` ändras inte.
+`hex_synka_objektnamn()` döper om den ägda gid-sekvensen, historikindexet,
+båda triggerfunktionerna och QA-triggern. Metadata uppdateras och QA-kroppen
+byggs om. `hex_objektnamn()` ger samma namn vid skapande, underhåll och DROP,
+med högst 63 byte även för långa namn.
 
 > **Namnnycklade tabeller.** `hex_dummy_geometrier`, `hex_afvaktande_geometri`
 > och `hex_avvikande_srid` nycklas på schema- och tabellnamn. Därför flyttas
@@ -880,7 +883,7 @@ flowchart TD
     META --> |ja| FOUND["Använder lagrade namn:<br/>history_table<br/>trigger_funktion<br/>(namnkonvention om NULL)"]
     META --> |nej| FALL["Fallback namnkonvention:<br/>tabell || '_h'"]
     FOUND & FALL --> DT["DROP TABLE _h-tabell om den finns<br/>rekursivt DROP-event stoppas av guard"]
-    DT --> DF["DROP FUNCTION trg_fn_tabell_qa()<br/>om den finns"]
+    DT --> DF["DROP FUNCTION för QA och INSERT-audit<br/>om de finns"]
     DF --> DELAFV["DELETE FROM hex_afvaktande_geometri,<br/>hex_avvikande_srid, hex_dummy_geometrier<br/>för tabellen"]
     DELAFV --> DEL["efter loopen: hex_rensa_metadata()<br/>tar bort rader vars OID saknas i pg_class"]
     DEL --> DONE(["klar ✓"])
@@ -914,7 +917,7 @@ hex_hantera_borttagen_tabell()
         ├── DROP TABLE <historiktabell>        (om den finns)
         │     (utlöser rekursivt DROP TABLE-event → stoppas av rekursionsskyddet)
         │
-        ├── DROP FUNCTION trg_fn_<tabell>_qa() (om den finns)
+        ├── DROP FUNCTION för både QA och INSERT-audit (om de finns)
         │
         └── DELETE FROM hex_afvaktande_geometri, hex_avvikande_srid,
               hex_dummy_geometrier WHERE schema = … AND tabell = …
