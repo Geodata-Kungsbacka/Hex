@@ -32,6 +32,11 @@ jobs:
             image: postgis/postgis:16-3.5
           - postgres: '17'
             image: postgis/postgis:17-3.5
+    # --log-driver none: annars skriver GitHub ut hela serverloggen när
+    # containern stoppas, sist i jobbloggen. Den som läser loggen bakifrån
+    # (logg-API:et, agenternas get_job_logs) ser då bara checkpoints i stället
+    # för sammanfattningen från test_run_all.py. Serverns meddelanden till
+    # sviterna syns ändå i sviternas egen utdata.
     services:
       postgres:
         image: ${{ matrix.image }}
@@ -45,6 +50,7 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
+          --log-driver none
     env:
       PGHOST: localhost
       PGPORT: '5432'
@@ -114,6 +120,7 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
+          --log-driver none
     env:
       PGHOST: localhost
       PGPORT: '5432'

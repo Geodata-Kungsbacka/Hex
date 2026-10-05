@@ -208,10 +208,13 @@ helst:
    uppgraderingsjobbet utgår från (standard `main`).
 3. Hitta körningen med `actions_list` (`list_workflow_runs`, filtrerat på
    branch och `workflow_dispatch`) och vänta tills den är klar.
-4. Läs felen med `get_job_logs` (`run_id` och `failed_only: true`). Sista
-   raderna i loggen är sammanfattningstabellen och de underkända sviternas
-   felrader – `test_run_all.py` skriver den fullständiga utdatan före
-   tabellen, inte efter.
+4. Läs felen med `get_job_logs` (`run_id`, `failed_only: true`,
+   `return_content: true` och `tail_lines: 150`). Efter testkörningen följer
+   ungefär 60 rader städsteg från GitHub; ovanför dem står
+   sammanfattningstabellen och de underkända sviternas felrader –
+   `test_run_all.py` skriver den fullständiga utdatan före tabellen, inte
+   efter. Varningen `Docker logs fail` är väntad: containerloggen är
+   avstängd med flit (se `test_hex.yml`).
 
 Vad jobben täcker:
 
