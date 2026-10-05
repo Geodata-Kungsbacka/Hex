@@ -1,0 +1,7 @@
+# Konfiguration för ruff, som körs av jobbet lint i
+# .github/workflows/test_statisk.yml.
+
+[lint]
+# Flera satser på en rad med semikolon (t.ex. conn.commit(); conn.close())
+# används medvetet i testerna för att hålla ihop korta steg.
+extend-ignore = ["E702"]

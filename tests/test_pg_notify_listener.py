@@ -2021,7 +2021,7 @@ class TestReconcileGeoServerSchemas(_Standardmonster, unittest.TestCase):
         gs.delete_workspace = MagicMock()
         gs.delete_workspace.assert_not_called()
 
-        warning_lines = [l for l in cm.output if "sk0_kba_orphan" in l]
+        warning_lines = [rad for rad in cm.output if "sk0_kba_orphan" in rad]
         self.assertTrue(warning_lines, "Förväntad WARNING om sk0_kba_orphan saknas i loggen")
 
     def test_extra_non_hex_workspace_not_warned(self):
@@ -2036,7 +2036,7 @@ class TestReconcileGeoServerSchemas(_Standardmonster, unittest.TestCase):
             logging.getLogger("geoserver_listener").warning("_sentinel_")
             gl._reconcile_geoserver_schemas(cur, self.DB_CONFIG, gs)
 
-        non_sentinel = [l for l in cm.output if "_sentinel_" not in l and "WARNING" in l]
+        non_sentinel = [rad for rad in cm.output if "_sentinel_" not in rad and "WARNING" in rad]
         self.assertEqual(non_sentinel, [])
 
     # ------------------------------------------------------------------
