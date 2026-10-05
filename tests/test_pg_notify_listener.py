@@ -1701,7 +1701,7 @@ class TestCreatePgDatastore(unittest.TestCase):
         self.assertEqual(a, gl.GeoServerClient._losenordsavtryck("gs_r_x", "pw"))
         self.assertNotEqual(a, gl.GeoServerClient._losenordsavtryck("gs_r_x", "pw2"))
         self.assertNotEqual(a, gl.GeoServerClient._losenordsavtryck("gs_w_x", "pw"))
-        self.assertRegex(a, r"^Hex-lösenordsavtryck sha256:[0-9a-f]{64}$")
+        self.assertRegex(a, r"^Hex-losenordsavtryck sha256:[0-9a-f]{64}$")
 
     def test_put_och_post_bar_avtrycket(self):
         """Både ny och omskriven datastore får avtrycket, annars skrivs den om igen nästa gång."""
@@ -2603,6 +2603,42 @@ class TestPeriodiskAvstamningILyssnartraden(unittest.TestCase):
             self._kor(lambda a: len(a) >= 2, reconcile_interval=1)
         # Ett load före startavstämningen och ett före varje periodisk.
         self.assertGreaterEqual(ordning.count("load"), 2)
+
+    def test_notifiering_under_avstamningen_hanteras_direkt(self):
+        """En NOTIFY som läses in under avstämningens frågor får inte fastna.
+
+        psycopg2 lägger notifieringar som kommer under en fråga i
+        conn.notifies. Då är de redan lästa från socketen, och select() ser
+        dem inte. Tidigare hanterades de först när en ny notifiering kom.
+        """
+        hanterade = []
+
+        def reconcile_med_notify(cur, *a, **k):
+            avsandare = make_conn()
+            try:
+                avsandare.cursor().execute(
+                    "SELECT pg_notify(%s, %s)", (gl.CHANNEL_SCHEMA_CREATE, "sk0_ext_fastnad"))
+            finally:
+                avsandare.close()
+            # Som avstämningens egna frågor: notifieringen läses in här.
+            cur.execute("SELECT pg_sleep(0.1)")
+            return True
+
+        stop = threading.Event()
+        with patch.object(gl, "LISTEN_TIMEOUT_SEKUNDER", 0.05), \
+             patch.object(gl, "_reconcile_geoserver_schemas", side_effect=reconcile_med_notify), \
+             patch.object(gl, "handle_schema_notification",
+                          side_effect=lambda schema, *a, **k: hanterade.append(schema) or True):
+            t = threading.Thread(
+                target=gl.listen_loop, args=(DB_CONFIG, 1, MagicMock(), stop), daemon=True)
+            t.start()
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and not hanterade:
+                time.sleep(0.05)
+            stop.set()
+            t.join(timeout=3)
+        self.assertFalse(t.is_alive())
+        self.assertEqual(hanterade, ["sk0_ext_fastnad"])
 
 
 class TestEmailNotifier(unittest.TestCase):

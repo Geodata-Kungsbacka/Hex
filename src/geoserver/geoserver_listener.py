@@ -947,8 +947,10 @@ class GeoServerClient:
             )
 
     # Prefix för lösenordsavtrycket i datastorens description. Se
-    # _losenordsavtryck och _datastore_avvikelser.
-    AVTRYCK_PREFIX = "Hex-lösenordsavtryck"
+    # _losenordsavtryck och _datastore_avvikelser. Bara ASCII: requests skickar
+    # JSON utan charset, och läser GeoServer kroppen med annan kodning än UTF-8
+    # matchar description aldrig, så att varje avstämning skriver om storen.
+    AVTRYCK_PREFIX = "Hex-losenordsavtryck"
 
     @staticmethod
     def _losenordsavtryck(pg_user, pg_password):
@@ -2487,7 +2489,7 @@ class Avstamningsschema:
         if self.klockslag is not None:
             return f"dagligen kl. {self.klockslag.strftime('%H:%M')} (lokal tid)"
         if self.intervall > 0:
-            return f"var {self.intervall:g} sekund ({self.intervall / 60:.0f} min)"
+            return f"var {self.intervall:g} sekunder ({self.intervall / 60:.0f} min)"
         return "avaktiverad"
 
     def _nasta_klockslag(self, nu):
@@ -2597,8 +2599,8 @@ def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None, notifier
     # anslutningen, i stället för i en egen tråd med egen anslutning. Den egna
     # anslutningen gick inte att öppna när PostgreSQL hade fyllt
     # max_connections, och då väntade tråden ett helt intervall innan nästa
-    # försök. Notifieringar som kommer under avstämningen köas av PostgreSQL
-    # och hanteras direkt efteråt, precis som vid avstämningen vid anslutning.
+    # försök. Notifieringar som kommer under avstämningen läses in i
+    # conn.notifies och hanteras direkt efteråt (se kontrollen före select).
     schema = Avstamningsschema(reconcile_interval, reconcile_time)
     if schema.aktiv:
         log.info("[%s] Periodisk avstämning: %s.", db_label, schema.beskrivning())
@@ -2661,9 +2663,18 @@ def listen_loop(db_config, reconnect_delay, gs_client, stop_event=None, notifier
                     avstam(cur)
 
                 # Vänta på notifiering med kort timeout så att stop_event och
-                # schemat för den periodiska avstämningen kontrolleras regelbundet
-                if select.select([conn], [], [], LISTEN_TIMEOUT_SEKUNDER) == ([], [], []):
-                    # Timeout - skicka keepalive
+                # schemat för den periodiska avstämningen kontrolleras regelbundet.
+                #
+                # Varje fråga på LISTEN-anslutningen (avstämningen, keepalive)
+                # läser in notifieringar som kommit under frågan till
+                # conn.notifies. Då är de redan lästa från socketen och
+                # select() ser dem inte. Utan kontrollen av conn.notifies här
+                # låg de kvar tills en ny notifiering råkade komma.
+                if not conn.notifies and select.select(
+                    [conn], [], [], LISTEN_TIMEOUT_SEKUNDER
+                ) == ([], [], []):
+                    # Timeout - skicka keepalive. En notifiering som kommer
+                    # under den hanteras i nästa varv via conn.notifies.
                     cur.execute("SELECT 1")
                     continue
 

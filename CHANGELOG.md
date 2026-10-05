@@ -69,6 +69,9 @@ merge-datum.
   när PostgreSQL har fyllt `max_connections`. En avstämning som misslyckas
   (t.ex. GeoServer svarar inte) görs om efter fem minuter i stället för efter
   ett helt intervall.
+  Notifieringar som psycopg2 läser in under avstämningens frågor (eller under
+  keepalive) hanteras direkt efteråt. Tidigare låg de kvar i `conn.notifies`
+  tills nästa notifiering kom, eftersom `select()` inte ser redan lästa data.
 - **`--upgrade` roterar inte längre `gs_r_`/`gs_w_`-lösenorden.**
   Underhållet körs först efter att inställningar och drifttillstånd lagts
   tillbaka. GeoServers datastores fortsätter fungera utan omstart av lyssnaren.
