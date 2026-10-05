@@ -434,6 +434,76 @@ WHERE  trigger_namn = 'gid_primarnyckel'
 
 ---
 
+## Migrering: objektnamn efter namnbyte
+
+Äldre versioner lät triggerfunktioner, QA-trigger, gid-sekvens och index behålla
+det gamla namnet när en tabell döptes om, och kapade namnen på tabeller med
+långa namn. Det gamla namnet gick då inte att återanvända, och en ny
+geometritabell med det namnet kunde bli utan GiST-index.
+
+`--upgrade` rättar detta automatiskt via `hex_underhall()`. Inga data ändras
+och befintliga historikrader bevaras. I installationsloggen syns det som:
+
+```
+✓ sk1_kba_geo.vagar_l → objektnamn (synkade: 5)
+✓ sk1_kba_geo.punkter_p → geom_index (skapad: punkter_p_geom_gidx)
+```
+
+`synkade: N` är antalet objekt som döptes om. En oanvänd triggerfunktion som
+står i vägen för ett nytt namn – äldre versioner lämnade
+`trg_fn_<tabell>_insert_audit` kvar vid `DROP TABLE` – tas bort och räknas med.
+
+### Om underhållet avbryts
+
+Delar två tabeller samma triggerfunktion avbryts underhållstransaktionen med
+`Hex-funktionen ... delas mellan tabeller` eller
+`Flera Hex-funktioner för ...`. Det kan ha uppstått om en tabell skapades med
+ett namn som en omdöpt tabell hade haft. Hitta kopplingarna:
+
+```sql
+SELECT p.oid::regprocedure          AS funktion,
+       array_agg(t.tgrelid::regclass) AS tabeller
+FROM   pg_trigger t
+JOIN   pg_proc    p ON p.oid = t.tgfoid
+WHERE  NOT t.tgisinternal
+  AND  p.proname LIKE 'trg_fn_%'
+GROUP  BY p.oid
+HAVING count(DISTINCT t.tgrelid) > 1;
+```
+
+Funktionen hör till tabellen vars namn den bär (`trg_fn_alfa_qa` → `alfa`).
+Den andra tabellen – i exemplet `beta`, som döptes om från `alfa` i en äldre
+version – har förlorat sin egen funktion. Lös upp kopplingen på den tabellen:
+
+```sql
+-- 1. Ta bort triggern som anropar den andra tabellens funktion.
+--    Funktionen i sig ska INTE tas bort – den används av alfa.
+DROP TRIGGER trg_alfa_qa ON sk1_kba_geo.beta;
+
+-- 2. Bygg en egen QA-funktion för beta (trg_fn_beta_qa)
+SELECT public.hex_aterskapa_qa_trigger('sk1_kba_geo', 'beta', 'beta_h');
+
+-- 3. Underhållet kopplar på triggern och rättar hex_metadata
+SELECT * FROM public.hex_underhall();
+```
+
+Ändringar i `beta` mellan att kopplingen uppstod och att den löstes upp
+loggades i fel historiktabell eller inte alls; det går inte att återskapa i
+efterhand. Kör sedan `--upgrade` igen.
+
+### Varningar om upptagna namn
+
+```
+WARNING: [hex_synka_objektnamn] sk1_kba_geo.gammal_p_pkey kan inte döpas om till ny_p_pkey: namnet är upptaget.
+```
+
+Ett index eller en sekvens kunde inte få sitt nya namn eftersom ett annat objekt
+i schemat redan heter så. Objektet fungerar som förut, bara under det gamla
+namnet. Ta bort eller döp om objektet som står i vägen och kör
+`hex_underhall()` igen.
+
+---
+
 ## Manuell installation (alternativ)
 
 Om du föredrar att köra SQL direkt, se installationsordningen i `README.md`

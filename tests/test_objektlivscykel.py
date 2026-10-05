@@ -227,6 +227,41 @@ class TestObjektlivscykel(unittest.TestCase):
         self.assertEqual(self.ett('SELECT trigger_funktion FROM hex_metadata WHERE parent_oid=to_regclass(%s)',
                                   (SCHEMA+'.w_p',)), 'trg_fn_w_p_qa')
 
+    def test_delad_funktion_kan_losas_upp_enligt_dokumentationen(self):
+        # Äldre tillstånd: alfa döptes om till beta utan att objekten följde
+        # med, och en ny alfa skrev över trg_fn_alfa_qa så att båda delar den.
+        # Stegen följer docs/09_installera-uppdatera-hex.md.
+        self.skapa('alfa')
+        self.cur.execute('ALTER EVENT TRIGGER hex_hantera_ny_kolumn_trigger DISABLE')
+        self.kor('ALTER TABLE {}.alfa RENAME TO beta; ALTER TABLE {}.alfa_h RENAME TO beta_h', SCHEMA, SCHEMA)
+        self.cur.execute('ALTER EVENT TRIGGER hex_hantera_ny_kolumn_trigger ENABLE')
+        self.cur.execute("UPDATE hex_metadata SET parent_table='beta', history_table='beta_h' "
+                         "WHERE parent_schema=%s", (SCHEMA,))
+        self.kor('ALTER INDEX {}.alfa_h_idx RENAME TO beta_h_idx; '
+                 'ALTER SEQUENCE {}.alfa_gid_seq RENAME TO beta_gid_seq; '
+                 'ALTER FUNCTION {}.trg_fn_alfa_insert_audit() RENAME TO trg_fn_beta_insert_audit',
+                 SCHEMA, SCHEMA, SCHEMA)
+        self.skapa('alfa', 'annan integer')
+        self.cur.execute('SAVEPOINT delad')
+        with self.assertRaisesRegex(psycopg2.Error, 'delas mellan tabeller'):
+            self.cur.execute('SELECT * FROM hex_underhall()')
+        self.cur.execute('ROLLBACK TO SAVEPOINT delad')
+
+        self.kor('DROP TRIGGER trg_alfa_qa ON {}.beta', SCHEMA)
+        self.cur.execute('SELECT public.hex_aterskapa_qa_trigger(%s, %s, %s)', (SCHEMA, 'beta', 'beta_h'))
+        self.cur.execute('SELECT * FROM hex_underhall()')
+
+        for tabell, kolumn, varde in [('beta', 'namn', "'före'"), ('alfa', 'annan', '1')]:
+            self.assertEqual(self.ett("SELECT tgfoid::regproc::text FROM pg_trigger WHERE tgrelid=to_regclass(%s) "
+                                      "AND tgname=%s", (f'{SCHEMA}.{tabell}', f'trg_{tabell}_qa')),
+                             f'{SCHEMA}.trg_fn_{tabell}_qa')
+            self.assertEqual(self.ett('SELECT trigger_funktion FROM hex_metadata WHERE parent_oid=to_regclass(%s)',
+                                      (f'{SCHEMA}.{tabell}',)), f'trg_fn_{tabell}_qa')
+            self.kor('INSERT INTO {}.{} (' + kolumn + ') VALUES (' + varde + ')', SCHEMA, tabell)
+            self.kor('UPDATE {}.{} SET ' + kolumn + ' = ' + kolumn, SCHEMA, tabell)
+            self.kor('SELECT count(*) FROM {}.{}', SCHEMA, tabell + '_h')
+            self.assertEqual(self.cur.fetchone()[0], 1, tabell)
+
     def test_underhall_skriver_inte_om_metadata_i_onodan(self):
         self.skapa('alfa')
         fore = self.ett('SELECT ctid::text FROM hex_metadata WHERE parent_oid=to_regclass(%s)', (SCHEMA+'.alfa',))

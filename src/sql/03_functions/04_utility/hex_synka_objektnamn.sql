@@ -43,12 +43,18 @@ BEGIN
             OR (typ = 'qa' AND (p.proname = meta.trigger_funktion
                 OR t.tgname IN (public.hex_objektnamn(gammalt, 'qa_trigger'), public.hex_objektnamn(p_tabell, 'qa_trigger')))));
         IF kandidater IS NULL THEN
+            -- Utan trigger söks på namn. En funktion som en annan tabells
+            -- trigger anropar hör till den tabellen, även om hex_metadata
+            -- fortfarande pekar på den (t.ex. efter att en delad koppling
+            -- lösts upp genom att triggern på den här tabellen togs bort).
             SELECT array_agg(p.oid) INTO kandidater FROM pg_proc p
             WHERE p.pronamespace = schema_oid AND p.pronargs = 0 AND p.prorettype = 'trigger'::regtype
               AND (p.proname IN (public.hex_objektnamn(gammalt, typ), public.hex_objektnamn(p_tabell, typ),
                        ('trg_fn_' || gammalt || '_' || typ)::name::text,
                        ('trg_fn_' || p_tabell || '_' || typ)::name::text)
-                OR (typ = 'qa' AND p.proname = meta.trigger_funktion));
+                OR (typ = 'qa' AND p.proname = meta.trigger_funktion))
+              AND NOT EXISTS (SELECT 1 FROM pg_trigger t
+                              WHERE t.tgfoid = p.oid AND t.tgrelid <> moder);
         END IF;
         IF coalesce(cardinality(kandidater), 0) > 1 THEN
             RAISE EXCEPTION 'Flera Hex-funktioner för %.% (%); rätta kopplingen före underhåll.', p_schema, p_tabell, typ;

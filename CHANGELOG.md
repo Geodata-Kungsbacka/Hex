@@ -119,6 +119,10 @@ merge-datum.
   versioner lämnat kvar tas bort när ett namnbyte behöver namnet.
 - `hex_underhall()` skriver inte om `hex_metadata` för tabeller vars namn
   redan stämmer.
+- En triggerfunktion som anropas av en annan tabells trigger räknas aldrig som
+  tabellens egen, även när `hex_metadata` pekar på den. Tidigare gick en delad
+  funktion inte att lösa upp: underhållet avbröts även sedan triggern tagits
+  bort. Proceduren beskrivs i `docs/09_installera-uppdatera-hex.md`.
 - `--upgrade` nollställde `registrerad` i `hex_avvikande_srid`.
 - Den periodiska avstämningen i lyssnaren laddade aldrig schemanamnsmönstret
   och letade föräldralösa workspaces med reservmönstret.
