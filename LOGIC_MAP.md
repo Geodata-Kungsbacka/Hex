@@ -734,18 +734,20 @@ hex_synka_historik(schema, tabell)
 ```mermaid
 flowchart TD
     START(["ALTER TABLE schema.byggnader_y RENAME TO fastigheter_y"])
-    START --> DET["Detekterar RENAME TO<br/>i frågesträngen"]
-    DET --> OID{"Finns i hex_metadata<br/>via OID?"}
-    OID --> |ja| GAML["Gamla namnet =<br/>hex_metadata.parent_table"]
-    OID --> |nej| WARN["WARNING: kör hex_underhall()<br/>(registerrader flyttas inte)"]
-    WARN --> FLAG
+    START --> OID{"Finns i hex_metadata<br/>via OID?"}
+    OID --> |nej| VANLIG(["Inget namnbyte syns –<br/>vanlig kolumnhantering"])
+    OID --> |ja| DET{"parent_table ≠<br/>namnet i pg_class?"}
+    DET --> |nej| VANLIG
+    DET --> |ja| GAML["Gamla namnet =<br/>hex_metadata.parent_table"]
     GAML --> FLYTT["hex_flytta_registerposter<br/>hex_dummy_geometrier · hex_afvaktande_geometri<br/>· hex_avvikande_srid → nytt namn"]
     FLYTT --> HIST{"history_table<br/>IS NOT NULL?"}
-    HIST --> |nej| UPD0["hex_uppdatera_metadata_namn(oid)<br/>parent_table = fastigheter_y"]
-    UPD0 --> FLAG
+    HIST --> |nej| DOP
     HIST --> |ja| REN["ALTER TABLE byggnader_y_h<br/>RENAME TO fastigheter_y_h<br/>(trunkeras till 63 byte)"]
-    REN --> UPD["hex_uppdatera_metadata_namn(oid)<br/>parent_table = fastigheter_y<br/>history_table = fastigheter_y_h"]
-    UPD --> SYNK["hex_synka_historik<br/>QA-triggerns kropp byggs om<br/>med de nya tabellnamnen"]
+    REN --> DOP["hex_dop_om_harledda_objekt<br/>sekvens · _h_idx · _geom_gidx · validera_geom_<br/>· trg_*_qa · trg_fn_*_qa · trg_fn_*_insert_audit"]
+    DOP --> UPD["hex_uppdatera_metadata_namn(oid)<br/>parent_table = fastigheter_y<br/>history_table = fastigheter_y_h<br/>trigger_funktion = trg_fn_fastigheter_y_qa"]
+    UPD --> HIST2{"history_table<br/>IS NOT NULL?"}
+    HIST2 --> |nej| FLAG
+    HIST2 --> |ja| SYNK["hex_synka_historik<br/>QA-triggerns kropp byggs om<br/>med de nya tabellnamnen"]
     SYNK --> FLAG["Nollställer<br/>temp.reorganization_in_progress"]
     FLAG --> DONE(["klar – ingen kolumnomordning"])
 ```
@@ -758,31 +760,36 @@ ALTER TABLE sk0_kba_bygg.byggnader_y RENAME TO fastigheter_y;
 
 ```
 hex_hantera_ny_kolumn()
-  ├── Detekterar RENAME TO i frågesträngen
-  │
   ├── Hoppar över _h-tabeller och tabeller utanför Hex-scheman
   │
   ├── Slår upp tabellen i hex_metadata via OID (stabilt genom rename)
   │     Hittar: parent_table='byggnader_y', history_table='byggnader_y_h'
-  │     Varje Hex-tabell har en rad, med eller utan historik. Saknas raden
-  │     (skapad förbi event-triggrarna) skrivs en WARNING och inget flyttas
+  │     Namnbyte = parent_table skiljer sig från namnet i pg_class. Avgörs
+  │     per kommando, aldrig på satstexten: current_query() är klientens
+  │     yttersta sats och kan innehålla "rename to" utan att kommandot är
+  │     ett namnbyte. Saknas raden (skapad förbi event-triggrarna) syns
+  │     inget namnbyte och kommandot hanteras som vanlig ALTER TABLE
   │
   ├── → hex_flytta_registerposter(schema, 'byggnader_y', 'fastigheter_y')
   │     Gamla namnet = parent_table ur hex_metadata. Flyttar raderna i
   │     hex_dummy_geometrier, hex_afvaktande_geometri och hex_avvikande_srid
   │     (DELETE ... RETURNING + INSERT, registrerad står kvar)
   │
-  │   Utan historik (history_table IS NULL): hex_uppdatera_metadata_namn(oid)
-  │   och klart.
-  │
   ├── ALTER TABLE byggnader_y_h RENAME TO fastigheter_y_h
-  │     (left(nytt_namn || '_h', 63))
+  │     (left(nytt_namn || '_h', 63); bara om tabellen har historik)
+  │
+  ├── → hex_dop_om_harledda_objekt(oid, 'byggnader_y')
+  │     byggnader_y_gid_seq → fastigheter_y_gid_seq, byggnader_y_h_idx,
+  │     byggnader_y_geom_gidx, validera_geom_byggnader_y, trg_byggnader_y_qa,
+  │     trg_fn_byggnader_y_qa och trg_fn_byggnader_y_insert_audit likaså.
+  │     Upptaget eller för långt nytt namn → det gamla behålls
   │
   ├── → hex_uppdatera_metadata_namn(oid)   (SECURITY DEFINER)
-  │     Läser schema och namn ur pg_class:
-  │     SET parent_table = 'fastigheter_y', history_table = 'fastigheter_y_h'
+  │     Läser schema, namn och QA-triggerfunktion ur katalogen:
+  │     SET parent_table = 'fastigheter_y', history_table = 'fastigheter_y_h',
+  │         trigger_funktion = 'trg_fn_fastigheter_y_qa'
   │
-  ├── → hex_synka_historik(schema, 'fastigheter_y')
+  ├── → hex_synka_historik(schema, 'fastigheter_y')   (bara med historik)
   │     QA-triggerns kropp namnger både modertabellen (%ROWTYPE) och
   │     historiktabellen. Utan ombyggnad kraschar varje UPDATE/DELETE efter
   │     namnbytet med "relation ... does not exist".
@@ -793,9 +800,10 @@ hex_hantera_ny_kolumn()
   └── Returnerar — ingen kolumnomordning görs vid rename
 ```
 
-Triggern och triggerfunktionen behåller sina gamla namn (`trg_byggnader_y_qa`,
-`trg_fn_byggnader_y_qa`). Det är den funktionen som byggs om, och
-`hex_metadata.trigger_funktion` ändras inte.
+Blir de härledda objekten kvar under det gamla namnet går det inte att skapa en
+ny `byggnader_y` (sekvensen och historikindexet finns redan), och lyckas det
+ändå skriver `hex_skapa_historik_qa()` över `trg_fn_byggnader_y_qa`, som
+`fastigheter_y`:s trigger fortfarande anropar.
 
 > **Namnnycklade tabeller.** `hex_dummy_geometrier`, `hex_afvaktande_geometri`
 > och `hex_avvikande_srid` nycklas på schema- och tabellnamn. Därför flyttas
@@ -1327,6 +1335,7 @@ det utlöser i sin tur nya eventutlösare. Tre flaggor förhindrar oändliga ked
 | `hex_uppdatera_metadata_namn(oid)` | `hex_hantera_ny_kolumn` (RENAME TO) | Uppdaterar namnen i `hex_metadata` (`SECURITY DEFINER`) |
 | `hex_rensa_metadata()` | `hex_hantera_borttagen_tabell` | Tar bort `hex_metadata`-rader vars tabell inte finns (`SECURITY DEFINER`) |
 | `hex_flytta_registerposter(schema, gammalt, nytt)` | `hex_hantera_ny_kolumn` (RENAME TO) | Flyttar raderna i `hex_dummy_geometrier`, `hex_afvaktande_geometri` och `hex_avvikande_srid` till tabellens nya namn |
+| `hex_dop_om_harledda_objekt(oid, gammalt)` | `hex_hantera_ny_kolumn` (RENAME TO) | Döper om sekvens, index, geometrivalidering, QA-trigger och triggerfunktioner till tabellens nya namn |
 | `hex_tilldela_rollrattigheter(schema, roll, typ)` | `hex_hantera_std_roller` | GRANT USAGE + SELECT (read) eller GRANT ALL (write) på tabeller |
 | `hex_aterskapa_qa_trigger(schema, tabell, historik_tabell)` | `hex_synka_historik` | Bygger om den triggerfunktion triggern faktiskt anropar, med modertabellens aktuella kolumnlista |
 | `hex_lagg_till_dummy_geometri(schema, tabell, hex_geom_info)` | `hex_hantera_ny_tabell`, `hex_hantera_ny_kolumn` | Lägger in dummy-geometriraden och registrerar den i `hex_dummy_geometrier` |

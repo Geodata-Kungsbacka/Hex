@@ -133,79 +133,95 @@ BEGIN
     -- ----------------------------------------------------------------
     -- Specialfall: ALTER TABLE ... RENAME TO
     -- Använd OID (stabilt genom rename) för att slå upp det gamla namnet i
-    -- hex_metadata, flytta de namnnycklade registerraderna och – om tabellen
-    -- har historik – döpa om historiktabellen.
+    -- hex_metadata, flytta de namnnycklade registerraderna, döpa om
+    -- historiktabellen och de objekt som Hex namngett efter tabellen.
+    --
+    -- Namnbytet avgörs per kommando: registrerat namn i hex_metadata mot
+    -- aktuellt namn i pg_class. Satstexten duger inte – current_query() är
+    -- klientens yttersta sats, så en DEFAULT 'rename to', ett DO-block med
+    -- RENAME TO före ADD COLUMN eller en multisats skulle annars tas för ett
+    -- namnbyte. Ett ALTER TABLE kan inte kombinera RENAME TO med andra
+    -- underkommandon, så ett kommando som är ett namnbyte är bara det.
+    --
+    -- En tabell som inte finns i hex_metadata (skapad förbi event-triggrarna
+    -- och ännu inte registrerad av hex_underhall()) har inget gammalt namn att
+    -- jämföra med. Namnbytet syns då inte här; registerraderna blir kvar på
+    -- det gamla namnet och rensas av underhållet eller får flyttas för hand.
     -- ----------------------------------------------------------------
-    IF current_query() ~* '\mRENAME\s+TO\M' THEN
+    DECLARE
+        meta_rad    record;
+        ny_historik text;
+        ar_namnbyte boolean := false;
+    BEGIN
         FOR kommando IN SELECT * FROM pg_event_trigger_ddl_commands()
-            WHERE command_tag = 'ALTER TABLE'
+            WHERE command_tag = 'ALTER TABLE' AND object_type = 'table'
         LOOP
-            schema_namn := replace(split_part(kommando.object_identity, '.', 1), '"', '');
-            tabell_namn := replace(split_part(kommando.object_identity, '.', 2), '"', '');
+            SELECT n.nspname, c.relname
+            INTO schema_namn, tabell_namn
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE c.oid = kommando.objid;
 
             -- Historiktabeller döps om av grenen nedan och hanteras aldrig direkt
-            CONTINUE WHEN tabell_namn ~ '_h$' OR kommando.object_type <> 'table';
+            CONTINUE WHEN tabell_namn IS NULL OR tabell_namn ~ '_h$';
             -- Tabeller utanför Hex-scheman registreras aldrig och berörs inte
             CONTINUE WHEN schema_namn !~ public.hex_schema_regex();
 
-            DECLARE
-                meta_rad       record;
-                ny_historik    text;
-            BEGIN
-                -- Det gamla namnet finns inte kvar i katalogen, men hex_metadata
-                -- har det: varje Hex-tabell registreras där på sin OID när den
-                -- skapas, oavsett om den har historik.
-                SELECT * INTO meta_rad
-                FROM hex_metadata
-                WHERE parent_oid = kommando.objid;
+            SELECT * INTO meta_rad
+            FROM hex_metadata
+            WHERE parent_oid = kommando.objid;
 
-                IF NOT FOUND THEN
-                    -- Skapad förbi event-triggrarna och ännu inte registrerad
-                    -- av hex_underhall(). Det gamla namnet går inte att få
-                    -- fram; registerraderna blir kvar på det och rensas av
-                    -- underhållet (avvikande SRID) eller får flyttas för hand.
-                    RAISE WARNING '[hex_hantera_ny_kolumn] %.% saknas i hex_metadata – registerrader flyttas inte. Kör SELECT * FROM public.hex_underhall().',
-                        schema_namn, tabell_namn;
-                    CONTINUE;
-                END IF;
+            CONTINUE WHEN NOT FOUND OR meta_rad.parent_table = tabell_namn;
 
-                -- hex_dummy_geometrier, hex_afvaktande_geometri och
-                -- hex_avvikande_srid nycklas på namn och måste följa med
-                PERFORM hex_flytta_registerposter(schema_namn, meta_rad.parent_table, tabell_namn);
+            ar_namnbyte := true;
 
-                IF meta_rad.history_table IS NOT NULL THEN
-                    -- Cap at 63 bytes (PostgreSQL identifier limit)
-                    ny_historik := left(tabell_namn || '_h', 63);
+            -- hex_dummy_geometrier, hex_afvaktande_geometri och
+            -- hex_avvikande_srid nycklas på namn och måste följa med
+            PERFORM hex_flytta_registerposter(schema_namn, meta_rad.parent_table, tabell_namn);
 
-                    EXECUTE format('ALTER TABLE %I.%I RENAME TO %I',
-                        meta_rad.history_schema,
-                        meta_rad.history_table,
-                        ny_historik);
+            IF meta_rad.history_table IS NOT NULL THEN
+                -- Cap at 63 bytes (PostgreSQL identifier limit)
+                ny_historik := left(tabell_namn || '_h', 63);
 
-                    PERFORM hex_uppdatera_metadata_namn(kommando.objid);
+                EXECUTE format('ALTER TABLE %I.%I RENAME TO %I',
+                    meta_rad.history_schema,
+                    meta_rad.history_table,
+                    ny_historik);
 
-                    RAISE NOTICE '[hex_hantera_ny_kolumn] ✓ Historiktabell omdöpt: % → % (tabell omdöpt: % → %)',
-                        meta_rad.history_table, ny_historik,
-                        meta_rad.parent_table, tabell_namn;
+                RAISE NOTICE '[hex_hantera_ny_kolumn] ✓ Historiktabell omdöpt: % → % (tabell omdöpt: % → %)',
+                    meta_rad.history_table, ny_historik,
+                    meta_rad.parent_table, tabell_namn;
+            END IF;
 
-                    -- QA-triggerns kropp namnger både modertabellen (%ROWTYPE)
-                    -- och historiktabellen. Utan ombyggnad kraschar varje
-                    -- UPDATE/DELETE efter namnbytet med "relation ... does not
-                    -- exist".
-                    PERFORM hex_synka_historik(schema_namn, tabell_namn);
-                ELSE
-                    PERFORM hex_uppdatera_metadata_namn(kommando.objid);
-                    RAISE NOTICE '[hex_hantera_ny_kolumn] ✓ hex_metadata uppdaterad: % → % (ingen historik)',
-                        meta_rad.parent_table, tabell_namn;
-                END IF;
-            END;
+            -- Sekvenser, index, trigger och triggerfunktioner bär det gamla
+            -- namnet. Blir de kvar krockar en ny tabell med det gamla namnet
+            -- med dem, och hex_skapa_historik_qa() skriver då över den
+            -- triggerfunktion som den här tabellen anropar.
+            PERFORM hex_dop_om_harledda_objekt(kommando.objid, meta_rad.parent_table);
+
+            -- Efter omdöpningarna, så att trigger_funktion får det nya namnet
+            PERFORM hex_uppdatera_metadata_namn(kommando.objid);
+
+            IF meta_rad.history_table IS NOT NULL THEN
+                -- QA-triggerns kropp namnger både modertabellen (%ROWTYPE)
+                -- och historiktabellen. Utan ombyggnad kraschar varje
+                -- UPDATE/DELETE efter namnbytet med "relation ... does not
+                -- exist".
+                PERFORM hex_synka_historik(schema_namn, tabell_namn);
+            ELSE
+                RAISE NOTICE '[hex_hantera_ny_kolumn] ✓ hex_metadata uppdaterad: % → % (ingen historik)',
+                    meta_rad.parent_table, tabell_namn;
+            END IF;
         END LOOP;
-        -- Flaggan är transaktionslokal. Lämnas den satt hoppas varje senare
-        -- ALTER TABLE i samma transaktion över (QGIS sparar alla fältändringar
-        -- i en transaktion).
-        PERFORM set_config('temp.reorganization_in_progress', 'false', true);
-        RETURN;  -- Inget kolumnarbete behövs vid rename
-    END IF;
+
+        IF ar_namnbyte THEN
+            -- Flaggan är transaktionslokal. Lämnas den satt hoppas varje senare
+            -- ALTER TABLE i samma transaktion över (QGIS sparar alla fältändringar
+            -- i en transaktion).
+            PERFORM set_config('temp.reorganization_in_progress', 'false', true);
+            RETURN;  -- Inget kolumnarbete behövs vid rename
+        END IF;
+    END;
 
     -- ----------------------------------------------------------------
     -- Specialfall: ALTER TABLE ... RENAME COLUMN

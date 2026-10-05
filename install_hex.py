@@ -110,6 +110,7 @@ INSTALL_ORDER = [
     "src/sql/03_functions/04_utility/hex_synka_historik.sql",
     # Används av hex_hantera_ny_kolumn vid RENAME TO
     "src/sql/03_functions/04_utility/hex_flytta_registerposter.sql",
+    "src/sql/03_functions/04_utility/hex_dop_om_harledda_objekt.sql",
     "src/sql/03_functions/04_utility/hex_tilldela_rollrattigheter.sql",
     "src/sql/03_functions/04_utility/hex_tillampa_grupprattigheter.sql",
     "src/sql/03_functions/04_utility/hex_tvinga_gid_fran_sekvens.sql",
@@ -174,6 +175,7 @@ DROP FUNCTION IF EXISTS public.hex_kontrollera_geometri_trigger() CASCADE;
 DROP FUNCTION IF EXISTS public.hex_tillampa_grupprattigheter();
 DROP FUNCTION IF EXISTS public.hex_synka_historik(text, text);
 DROP FUNCTION IF EXISTS public.hex_flytta_registerposter(text, text, text);
+DROP FUNCTION IF EXISTS public.hex_dop_om_harledda_objekt(oid, text);
 DROP FUNCTION IF EXISTS public.hex_registrera_metadata(text, text);
 DROP FUNCTION IF EXISTS public.hex_komplettera_metadata(text, text);
 DROP FUNCTION IF EXISTS public.hex_uppdatera_metadata_namn(oid);

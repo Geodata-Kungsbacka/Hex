@@ -44,7 +44,8 @@ DECLARE
     i                     integer;
 BEGIN
     -- Bygg om den funktion som triggern faktiskt anropar. Efter ALTER TABLE
-    -- RENAME TO heter den fortfarande trg_fn_<gammalt namn>_qa, och det
+    -- RENAME TO kan den heta trg_fn_<gammalt namn>_qa (när det nya namnet
+    -- var upptaget eller för långt för hex_dop_om_harledda_objekt()), och det
     -- härledda namnet skulle skapa en ny funktion som ingen trigger använder.
     SELECT p.proname INTO trigger_funktionsnamn
     FROM pg_trigger t

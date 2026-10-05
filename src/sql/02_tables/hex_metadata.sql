@@ -73,8 +73,9 @@ COMMENT ON COLUMN public.hex_metadata.history_table IS
      parent_table||''_h'' när föräldertabellens namn är 62+ tecken och PostgreSQL
      trunkerar identifieraren till 63 byte). NULL om tabellen saknar historik.';
 COMMENT ON COLUMN public.hex_metadata.trigger_funktion IS
-    'Namn på QA-triggerfunktionen (trg_fn_<originalnamn>_qa).
-     Ändras INTE när föräldertabellen döps om.';
+    'Namn på QA-triggerfunktionen (trg_fn_<tabell>_qa). Döps om och uppdateras
+     tillsammans med föräldertabellen vid RENAME TO, utom när det nya namnet
+     skulle bli längre än 63 tecken – då behålls det gamla.';
 COMMENT ON COLUMN public.hex_metadata.created_at IS
     'Tidpunkt då posten registrerades i hex_metadata.';
 COMMENT ON COLUMN public.hex_metadata.created_by IS

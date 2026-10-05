@@ -426,6 +426,7 @@ src/sql/03_functions/04_utility/hex_skapa_historik_qa.sql
 src/sql/03_functions/04_utility/hex_aterskapa_qa_trigger.sql
 src/sql/03_functions/04_utility/hex_synka_historik.sql
 src/sql/03_functions/04_utility/hex_flytta_registerposter.sql
+src/sql/03_functions/04_utility/hex_dop_om_harledda_objekt.sql
 src/sql/03_functions/04_utility/hex_tilldela_rollrattigheter.sql
 src/sql/03_functions/04_utility/hex_tillampa_grupprattigheter.sql
 src/sql/03_functions/04_utility/hex_tvinga_gid_fran_sekvens.sql
@@ -896,7 +897,8 @@ SELECT public.hex_sakerstall_gid_primarnyckel('sk1_kba_geo', 'vagar_l');
 #### `hex_aterskapa_qa_trigger(schema, tabell, historik_tabell)`
 **Syfte**: Bygger om QA-triggerfunktionen med modertabellens aktuella
 kolumnlista. Bygger om den funktion triggern faktiskt anropar, så att den
-fortfarande träffar rätt efter `ALTER TABLE ... RENAME TO`. Anropas via
+fortfarande träffar rätt om den behållit sitt gamla namn efter
+`ALTER TABLE ... RENAME TO`. Anropas via
 `hex_synka_historik()`.
 
 #### `hex_flytta_registerposter(schema, gammalt_namn, nytt_namn)`
@@ -909,6 +911,19 @@ har historik och oavsett hur satsen är skriven. Saknar tabellen rad (skapad fö
 event-triggrarna och ännu inte efterregistrerad av `hex_underhall()`) flyttas
 inget och en WARNING skrivs; `hex_underhall()` steg 11 bygger om
 `hex_avvikande_srid` oavsett.
+
+#### `hex_dop_om_harledda_objekt(oid, gammalt_namn)`
+**Syfte**: Döper om de objekt Hex namnger efter tabellen när tabellen döps om:
+identitetssekvensen, historikindexet (`_h_idx`), GiST-indexet (`_geom_gidx`),
+`validera_geom_<tabell>`, triggern `trg_<tabell>_qa` och triggerfunktionerna
+`trg_fn_<tabell>_qa` och `trg_fn_<tabell>_insert_audit`. Anropas av
+`hex_hantera_ny_kolumn()` vid `ALTER TABLE ... RENAME TO`.
+
+Utan den går det inte att skapa en ny tabell med det gamla namnet, och lyckas
+det ändå skrivs den omdöpta tabellens QA-triggerfunktion över. Ett objekt som
+inte bär det namn Hex gav det lämnas i fred. Är det nya namnet upptaget, eller
+skulle ett funktions-, trigger- eller constraintnamn bli längre än 63 tecken,
+behålls det gamla.
 
 #### `hex_synka_historik(schema, tabell)`
 **Syfte**: Håller historiktabellen i takt med modertabellen. Invarianten är att

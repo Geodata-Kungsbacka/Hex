@@ -58,6 +58,16 @@ merge-datum.
 
 ### Rättat
 
+- `ALTER TABLE ... RENAME TO` lämnade sekvens, historikindex, GiST-index,
+  geometrivalidering, QA-trigger och triggerfunktioner kvar under det gamla
+  namnet. En ny tabell med det gamla namnet gick inte att skapa, och gick det
+  ändå slutade UPDATE och DELETE fungera på den omdöpta tabellen. Objekten
+  döps nu om av `hex_dop_om_harledda_objekt()` (#176). Tabeller som döpts om
+  före den här versionen behåller sina gamla objektnamn.
+- Namnbyte avgjordes på satstexten, så ett `ALTER TABLE` vars text innehöll
+  "rename to" (ett `DEFAULT`-värde, ett DO-block eller en multisats) avbröts
+  med `relation "<tabell>_h" already exists`. Namnbyte avgörs nu per kommando
+  mot `hex_metadata` (#177).
 - `--upgrade` nollställde `registrerad` i `hex_avvikande_srid`.
 - Den periodiska avstämningen i lyssnaren laddade aldrig schemanamnsmönstret
   och letade föräldralösa workspaces med reservmönstret.
