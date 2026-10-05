@@ -39,6 +39,9 @@ Regler:
 
 Kör de här kontrollerna mot `src/sql/` när du granskar SQL-ändringar.
 
+Kontroll 1–4 körs också automatiskt i CI (`.github/workflows/test_statisk.yml`,
+jobbet `sql-checklista`). Ändras en kontroll här ska steget där följa med.
+
 ### 1. Ogiltiga `format()`-specifierare i PostgreSQL
 
 PostgreSQL:s `format()` stöder bara `%s`, `%I`, `%L` och `%%`.

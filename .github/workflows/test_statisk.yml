@@ -1,0 +1,110 @@
+name: Hex statiska kontroller
+# Kontroller som inte behöver någon databas: lint av Python och skalskript,
+# granskningschecklistan för SQL i CLAUDE.md och namnkonventionen för filer.
+# Regressionstesterna mot PostgreSQL ligger i test_hex.yml.
+on:
+  push:
+    branches: [main, 'fix/**']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # Versionen är låst så att en ny ruff-release med nya regler inte gör
+      # CI röd utan att koden har ändrats.
+      - name: ruff
+        run: |
+          python -m pip install ruff==0.15.20
+          ruff check --output-format=github .
+      # shellcheck finns förinstallerat på GitHubs Ubuntu-runners.
+      - name: shellcheck
+        run: git ls-files -z '*.sh' | xargs -0 --no-run-if-empty shellcheck
+
+  sql-checklista:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      # Punkterna motsvarar avsnittet "Checklista för SQL-granskning" i
+      # CLAUDE.md. Ändras checklistan där ska stegen här följa med.
+      - name: 1. Ogiltiga format()-specifierare
+        run: |
+          if grep -rPn 'format\([^)]*%\.\d+[a-zA-Z]|format\(.*%[dfiuoxeEgGbB]' src/sql/; then
+            echo "::error::format() i PostgreSQL stöder bara %s, %I, %L och %%"
+            exit 1
+          fi
+      - name: 2. EXECUTE med strängkonkatenering
+        run: |
+          if grep -rPn 'EXECUTE\s+.*\|\|' src/sql/; then
+            echo "::error::Bygg dynamisk SQL med format() och EXECUTE ... USING"
+            exit 1
+          fi
+      - name: 3. SECURITY DEFINER utan SET search_path
+        run: |
+          # Kommentarer strippas innan båda fraserna söks, så att varken en
+          # kommentar som nämner SECURITY DEFINER eller en som nämner
+          # SET search_path påverkar utfallet.
+          fel=0
+          while IFS= read -r f; do
+            rensad=$(perl -0777 -pe 's{/\*.*?\*/}{}gs; s{--[^\n]*}{}g' "$f")
+            grep -q 'SECURITY DEFINER' <<<"$rensad" || continue
+            if ! grep -q 'SET search_path' <<<"$rensad"; then
+              echo "::error file=$f::SECURITY DEFINER utan SET search_path"
+              fel=1
+            fi
+          done < <(grep -rl 'SECURITY DEFINER' src/sql/)
+          exit $fel
+      - name: 4. set_client_encoding efter varje psycopg2.connect() i installern
+        run: |
+          python3 - <<'PY'
+          import sys
+          rader = open('install_hex.py', encoding='utf-8').read().splitlines()
+          fel = 0
+          for i, rad in enumerate(rader):
+              kod = rad.split('#', 1)[0]
+              if 'psycopg2.connect(' not in kod:
+                  continue
+              nasta = next((r for r in rader[i + 1:] if r.strip()), '')
+              if 'set_client_encoding' not in nasta:
+                  print(f"::error file=install_hex.py,line={i + 1}::"
+                        "psycopg2.connect() följs inte av conn.set_client_encoding('UTF8')")
+                  fel = 1
+          sys.exit(fel)
+          PY
+
+  namnkonvention:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: hex_-prefix i src/sql/ och test_-prefix i tests/
+        run: |
+          fel=0
+          while IFS= read -r f; do
+            echo "::error file=$f::Filer under src/sql/ ska ha prefixet hex_"
+            fel=1
+          done < <(git ls-files 'src/sql/*.sql' | grep -v '/hex_[^/]*$')
+          while IFS= read -r f; do
+            echo "::error file=$f::Testfiler i tests/ ska ha prefixet test_"
+            fel=1
+          done < <(git ls-files 'tests/*.py' 'tests/*.sql' | grep -v '^tests/test_[^/]*$')
+          exit $fel
+      # Ren information: migreringar ska bort när alla databaser passerat dem,
+      # så inventeringen visas i körningens sammanfattning utan att underkänna.
+      # Bara daterade taggar räknas; prosa som nämner taggen är ingen migrering.
+      - name: Inventering av HEX-MIGRERING
+        run: |
+          {
+            echo "### HEX-MIGRERING"
+            echo '```'
+            git grep -nE 'HEX-MIGRERING [0-9]{4}-[0-9]{2}' -- ':!CLAUDE.md' || echo "(inga träffar)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

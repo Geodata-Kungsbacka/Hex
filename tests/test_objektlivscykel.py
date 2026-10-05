@@ -10,7 +10,7 @@ from psycopg2 import sql
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-import install_hex
+import install_hex  # noqa: E402
 
 SCHEMA = 'sk1_kba_livscykeltest'
 
@@ -98,7 +98,8 @@ class TestObjektlivscykel(unittest.TestCase):
             with self.subTest(langd=langd):
                 namn = 'a' * (langd-2) + str(langd)
                 self.skapa(namn)
-                qa = self.fn(namn,'qa'); audit = self.fn(namn,'insert_audit')
+                qa = self.fn(namn,'qa')
+                audit = self.fn(namn,'insert_audit')
                 self.assertLessEqual(len(qa.encode()),63)
                 self.assertLessEqual(len(audit.encode()),63)
                 self.assertTrue(audit.endswith('_insert_audit'))
@@ -151,7 +152,8 @@ class TestUppgraderingObjektnamn(unittest.TestCase):
     upgrade(); verifierar bevarade data, metadata och triggerkopplingar.
     """
     def test_upgrade_reparerar_aldre_trunkering_utan_dataforlust(self):
-        admin = anslut(); admin.autocommit = True
+        admin = anslut()
+        admin.autocommit = True
         dbnamn = 'hex_test_objektnamn_upgrade'
         cur = admin.cursor()
         cur.execute(sql.SQL('CREATE DATABASE {}').format(sql.Identifier(dbnamn)))
@@ -162,8 +164,10 @@ class TestUppgraderingObjektnamn(unittest.TestCase):
         try:
             install_hex.install(cfg, base_path=ROOT)
             conn = psycopg2.connect(**{k:v for k,v in cfg.items() if k!='owner_role'})
-            conn.set_client_encoding('UTF8'); c = conn.cursor()
-            s = 'sk1_kba_migreringstest'; namn = 'm'*54
+            conn.set_client_encoding('UTF8')
+            c = conn.cursor()
+            s = 'sk1_kba_migreringstest'
+            namn = 'm'*54
             c.execute(sql.SQL('CREATE SCHEMA {}; CREATE TABLE {}.{} (namn text)').format(sql.Identifier(s),sql.Identifier(s),sql.Identifier(namn)))
             c.execute(sql.SQL("INSERT INTO {}.{} (namn) VALUES ('bevarad')").format(sql.Identifier(s),sql.Identifier(namn)))
             for typ in ('qa','insert_audit'):
@@ -181,9 +185,13 @@ class TestUppgraderingObjektnamn(unittest.TestCase):
             c.execute(sql.SQL('ALTER TABLE {}.alfa RENAME TO beta; ALTER TABLE {}.alfa_h RENAME TO beta_h').format(sql.Identifier(s),sql.Identifier(s)))
             c.execute('ALTER EVENT TRIGGER hex_hantera_ny_kolumn_trigger ENABLE')
             c.execute("UPDATE hex_metadata SET parent_table='beta', history_table='beta_h' WHERE parent_schema=%s AND parent_table='alfa'", (s,))
-            conn.commit(); conn.close(); conn=None
+            conn.commit()
+            conn.close()
+            conn = None
             install_hex.upgrade(cfg, base_path=ROOT)
-            conn=psycopg2.connect(**{k:v for k,v in cfg.items() if k!='owner_role'}); c=conn.cursor()
+            conn = psycopg2.connect(**{k:v for k,v in cfg.items() if k!='owner_role'})
+            conn.set_client_encoding('UTF8')
+            c = conn.cursor()
             c.execute(sql.SQL("UPDATE {}.{} SET namn='efter'").format(sql.Identifier(s),sql.Identifier(namn)))
             c.execute(sql.SQL('SELECT namn FROM {}.{}').format(sql.Identifier(s),sql.Identifier(namn+'_h')))
             self.assertEqual(c.fetchone()[0], 'bevarad')
@@ -196,7 +204,8 @@ class TestUppgraderingObjektnamn(unittest.TestCase):
             c.execute(sql.SQL('DROP TABLE {}.{}, {}.alfa, {}.beta; DROP SCHEMA {}').format(sql.Identifier(s),sql.Identifier(namn),sql.Identifier(s),sql.Identifier(s),sql.Identifier(s)))
             conn.commit()
         finally:
-            if conn is not None: conn.close()
+            if conn is not None:
+                conn.close()
             cur.execute(sql.SQL('DROP DATABASE {} WITH (FORCE)').format(sql.Identifier(dbnamn)))
             admin.close()
 

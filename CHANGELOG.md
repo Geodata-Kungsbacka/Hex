@@ -18,6 +18,11 @@ merge-datum.
 
 ### Tillagt
 
+- **Statiska kontroller i CI** – `.github/workflows/test_statisk.yml` kör
+  `ruff` och `shellcheck`, SQL-checklistan i `CLAUDE.md` och namnkonventionen
+  för `src/sql/` och `tests/` vid varje push och PR. Daterade
+  `HEX-MIGRERING`-taggar listas i körningens sammanfattning.
+
 - **`HEX_RECONCILE_TIME`** – lyssnarens periodiska avstämning kan köras vid ett
   fast klockslag per dygn (t.ex. `03:00`, lokal tid) i stället för med
   `HEX_RECONCILE_INTERVAL`. Klockslaget räknas om mot väggklockan inför varje
