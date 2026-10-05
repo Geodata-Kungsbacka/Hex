@@ -78,12 +78,14 @@ grep -rPn 'EXECUTE\s+.*\|\|' src/sql/
 Repots standard är `SET search_path = public, pg_temp`. `pg_temp` sist är medvetet: nämns det inte söks temp-schemat först för tabell- och typnamn, vilket gör skuggning via temporära tabeller möjlig.
 
 ```bash
-# Kommentarer strippas först – annars räcker det att frasen nämns i en kommentar
-# för att filen ska flaggas (samma resonemang som _strip_sql_comments i
-# tests/test_installer.py).
+# Kommentarer strippas innan båda fraserna söks – annars räcker det att
+# SECURITY DEFINER nämns i en kommentar för att filen ska flaggas, och att
+# SET search_path nämns i en kommentar för att den ska klara kontrollen (samma
+# resonemang som _strip_sql_comments i tests/test_installer.py).
 for f in $(grep -rl 'SECURITY DEFINER' src/sql/); do
-  perl -0777 -pe 's{/\*.*?\*/}{}gs; s{--[^\n]*}{}g' "$f" | grep -q 'SECURITY DEFINER' || continue
-  grep -q 'SET search_path' "$f" || echo "Saknar SET search_path: $f"
+  rensad=$(perl -0777 -pe 's{/\*.*?\*/}{}gs; s{--[^\n]*}{}g' "$f")
+  grep -q 'SECURITY DEFINER' <<<"$rensad" || continue
+  grep -q 'SET search_path' <<<"$rensad" || echo "Saknar SET search_path: $f"
 done
 ```
 
