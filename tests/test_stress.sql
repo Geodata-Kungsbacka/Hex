@@ -34,7 +34,9 @@ CREATE SCHEMA IF NOT EXISTS sk0_ext_stress;
 CREATE SCHEMA IF NOT EXISTS sk2_sys_stress;
 
 CREATE ROLE stress_user WITH LOGIN PASSWORD 'testpass';
-GRANT CONNECT ON DATABASE hex_test TO stress_user;
+-- current_database() i stället för ett hårdkodat namn: sviterna körs mot den
+-- databas PGDATABASE pekar ut, i CI:s uppgraderingsjobb t.ex. hex_uppgraderad.
+SELECT format('GRANT CONNECT ON DATABASE %I TO stress_user', current_database()) \gexec
 GRANT CREATE ON SCHEMA sk1_kba_stress TO stress_user;
 GRANT CREATE ON SCHEMA sk0_ext_stress TO stress_user;
 GRANT w_sk1_kba_stress TO stress_user;
@@ -935,7 +937,7 @@ DROP SCHEMA IF EXISTS sk1_kba_stress CASCADE;
 DROP SCHEMA IF EXISTS sk0_ext_stress CASCADE;
 DROP SCHEMA IF EXISTS sk2_sys_stress CASCADE;
 DROP SCHEMA IF EXISTS sk1_kba_norolls CASCADE;
-REVOKE ALL ON DATABASE hex_test FROM stress_user;
+SELECT format('REVOKE ALL ON DATABASE %I FROM stress_user', current_database()) \gexec
 DROP ROLE IF EXISTS stress_user;
 DELETE FROM hex_systemanvandare WHERE anvandare = 'stress_user';
 DROP FUNCTION IF EXISTS _pass(int, text, text);
