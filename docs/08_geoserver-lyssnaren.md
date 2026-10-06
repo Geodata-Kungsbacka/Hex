@@ -177,14 +177,19 @@ Lyssnaren kör automatiskt en periodisk avstämning mot GeoServer för att repar
 avvikelser — t.ex. om ett workspace eller en datastore försvunnit, eller om ACL-regler
 är felaktiga. Samma logik körs alltid vid tjänstens uppstart.
 
-Intervallet styrs av miljövariabeln `HEX_RECONCILE_INTERVAL` (sekunder, standard `43200`).
-Sätt till `0` för att inaktivera periodisk avstämning (uppstartsavstämningen körs ändå):
+Avstämningen schemaläggs med **antingen** ett intervall **eller** ett klockslag.
+Båda satta samtidigt är ett konfigurationsfel och stoppar uppstarten.
 
 ```env
-HEX_RECONCILE_INTERVAL=43200  # Kontrollera var tolfte timme (standard)
-HEX_RECONCILE_INTERVAL=3600   # Kontrollera varje timme
-HEX_RECONCILE_INTERVAL=0      # Ingen periodisk avstämning
+HEX_RECONCILE_INTERVAL=43200  # Var tolfte timme (standard när inget är satt)
+HEX_RECONCILE_INTERVAL=3600   # Varje timme
+HEX_RECONCILE_INTERVAL=0      # Ingen periodisk avstämning (uppstartsavstämningen körs ändå)
+HEX_RECONCILE_TIME=03:00      # En gång per dygn kl. 03:00 lokal tid
 ```
+
+Intervallet räknas från senaste avstämningen, inklusive den vid
+(åter)anslutning, och glider därför över dygnet. Klockslaget räknas om mot
+väggklockan inför varje körning och ligger kvar även över sommartidsbyten.
 
 Intervallet är långt med flit. Avstämningen är ett skyddsnät, inte huvudvägen:
 publiceringen sker via `pg_notify` i samma transaktion som `CREATE SCHEMA`, och
@@ -192,11 +197,28 @@ det troliga sättet att missa en notifiering är att lyssnaren varit nere — vi
 uppstartsavstämningen redan täcker. Kvar blir notifieringar som missats medan
 lyssnaren varit både uppe och ansluten, vilket är sällsynt.
 
-Varje avstämning kostar dessutom något: den kör om hela publiceringen för
-*samtliga* scheman, och varje datastore skrivs om med en PUT som bygger om
-GeoServers anslutningspool för den datastoren. Intervallet räknas från
-tjänstestart och inte från klockslag, så med 12 timmar hamnar minst en av
-dygnets två körningar utanför kontorstid oavsett när tjänsten startades om.
+Avstämningen kör om hela publiceringen för *samtliga* scheman, men skriver
+bara när något avviker. En datastore jämförs mot det Hex skulle skriva – värd,
+port, databas, schema, användare, poolparametrar och lösenord – och får en PUT
+bara om något skiljer. Det spelar roll: GeoServer stänger datastorens
+anslutningspool vid varje PUT (PUT och disconnect syns i samma sekund med
+`log_connections`). Pågående frågor bryts och nästa förfrågan får öppna en ny
+anslutning. När varje datastore skrevs om vid varje avstämning återställdes
+samtliga pooler i onödan.
+
+GeoServer returnerar lösenordet krypterat (`crypt1:`/`crypt2:`), så det går
+inte att jämföra direkt. Hex skriver därför ett avtryck – sha256 av användare
+och lösenord – i datastorens beskrivning (`description`) och jämför det.
+Lösenorden är 18 slumpade byte och kan inte räknas fram ur avtrycket. En
+datastore som skapats före avtrycket skrivs om en gång.
+
+Avstämningen körs i lyssnartråden på samma anslutning som `LISTEN`, och
+öppnar alltså ingen extra anslutning mot den egna databasen. Den fungerar
+därför även när PostgreSQL har fyllt `max_connections`. I flerdatabasläge
+öppnas korta anslutningar mot de övriga databaserna för kontrollen av
+föräldralösa workspaces; misslyckas de hoppas uppstädningen över.
+Misslyckas avstämningen (GeoServer svarar inte, databasfel) görs ett nytt
+försök efter fem minuter i stället för vid nästa ordinarie tillfälle.
 
 Vid varje avstämning jämförs GeoServers befintliga workspaces mot scheman i PostgreSQL.
 Både läs- och skriv-workspaces skapas om de saknas, och avvikande ACL-regler korrigeras.
@@ -304,16 +326,58 @@ nästa avstämning.
 
 | Parameter | Värde | Effekt |
 |---|---|---|
-| `max connections` | 10 | Tak per datastore |
+| `max connections` | 7 (läs), 2 (skriv) | Tak per datastore |
 | `min connections` | 0 | Inga anslutningar hålls öppna när lagret inte används |
-| `Max connection idle time` | 300 s | Oanvända anslutningar stängs efter fem minuter |
-| `Evictor run periodicity` | 60 s | Hur ofta poolen gallras |
+| `Max connection idle time` | 60 s | Oanvända anslutningar stängs inom 60–90 s (beroende på gallringen) |
+| `Evictor run periodicity` | 30 s | Hur ofta poolen gallras |
 | `Evictor tests per run` | 10 | Anslutningar som prövas per gallring |
 | `Connection timeout` | 10 s | Väntan på en ledig anslutning |
 | `validate connections`, `Test while idle` | `true` | Döda anslutningar upptäcks innan de lämnas ut |
 
-Varje publicerat schema har två datastores (läs och skriv), så taket per schema
-är 20 anslutningar. Räkna med det mot `max_connections` i PostgreSQL.
+Varje publicerat schema har två datastores, så taket per schema är 9
+anslutningar: 7 för läs-storen, som tar emot kakelskurar, och 2 för
+skriv-storen, som bara används för WFS-T. Taket per datastore begränsar inte
+beståndets total – med ett 40-tal scheman blir det i teorin 360 – utan bara
+hur många frågor en enskild datastore kör samtidigt. Ett tak för hela
+GeoServer sätts med control-flow, se nästa avsnitt.
+
+### Tak för hela GeoServer (control-flow)
+
+`max_connections` gäller hela PostgreSQL-servern, och alla databaser,
+GeoServer, lyssnaren, FME och QGIS delar på platserna. Poolinställningarna
+ovan styr bara varje datastore för sig. Under last – många lager i många
+scheman samtidigt – kan GeoServer därför fortfarande fylla servern.
+
+GeoServers tillägg **control-flow** begränsar hur många OWS-anrop (WMS, WFS,
+WCS …) som körs samtidigt. Anrop över gränsen köas i GeoServer i stället för
+att öppna fler anslutningar mot PostgreSQL. Ett pågående anrop håller
+ungefär en anslutning per lager det läser, så taket på anropen blir i
+praktiken ett tak på anslutningarna.
+
+Tillägget ingår inte i standardinstallationen. Ladda ned
+`geoserver-<version>-control-flow-plugin.zip` för exakt den GeoServer-version
+som körs, packa upp jar-filerna i `webapps\geoserver\WEB-INF\lib` och starta
+om GeoServer. Lägg sedan `controlflow.properties` i roten av GeoServers
+datakatalog:
+
+```properties
+# Högsta antal samtidiga OWS-anrop i hela GeoServer.
+ows.global=60
+# Sekunder ett köat anrop väntar innan det avvisas.
+timeout=60
+```
+
+Utgångsvärdet 60 är en startpunkt, inte ett uppmätt värde. Räkna bakåt från
+`max_connections`: dra av platserna som är reserverade för superanvändare
+(`superuser_reserved_connections`, standard 3), lyssnaren (en anslutning per
+övervakad databas plus korta anslutningar under avstämningen) och övriga
+klienter (FME, QGIS, pgAdmin). Med `max_connections = 200` blir det ungefär
+150–160 platser för GeoServer, och 60 samtidiga anrop lämnar marginal för
+anrop som läser flera lager. Mät med `log_connections` under ett lasttest och
+justera.
+
+Control-flow omfattar bara OWS-anrop. Lyssnarens anrop mot REST-gränssnittet
+köas inte och påverkas inte av gränsen.
 
 ---
 

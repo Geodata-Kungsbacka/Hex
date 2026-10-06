@@ -18,6 +18,26 @@ merge-datum.
 
 ### Tillagt
 
+- **Uppgraderingsjobb i CI** – jobbet `uppgradering` i
+  `.github/workflows/test_hex.yml` installerar basversionen (PR:ens bas,
+  commiten före pushen eller `bas_ref` vid manuell körning), lägger in
+  användardata, kör `upgrade()` med den nya versionen och jämför
+  användarobjekten med en ny installation
+  (`.github/scripts/kontrollera_uppgradering.py`). Därefter körs samtliga
+  sviter mot den uppgraderade databasen. En ändring som saknar
+  `HEX-MIGRERING` går därmed rött i CI.
+
+- **Statiska kontroller i CI** – `.github/workflows/test_statisk.yml` kör
+  `ruff` och `shellcheck`, SQL-checklistan i `CLAUDE.md` och namnkonventionen
+  för `src/sql/` och `tests/` vid push till och PR mot `main`. Daterade
+  `HEX-MIGRERING`-taggar listas i körningens sammanfattning. Ruff
+  konfigureras i `ruff.toml`.
+
+- **`HEX_RECONCILE_TIME`** – lyssnarens periodiska avstämning kan köras vid ett
+  fast klockslag per dygn (t.ex. `03:00`, lokal tid) i stället för med
+  `HEX_RECONCILE_INTERVAL`. Klockslaget räknas om mot väggklockan inför varje
+  körning och glider inte. Båda satta samtidigt, eller ett ogiltigt klockslag,
+  stoppar uppstarten.
 - **`hex_installningar`** – enradig tabell för databasövergripande
   inställningar. Bevaras över `--upgrade` och ominstallation.
   - `srid` (standard 3007): förväntat koordinatsystem, läses via `hex_srid()`.
@@ -41,6 +61,34 @@ merge-datum.
 
 ### Ändrat
 
+- **Namnbyte av tabell valideras som en ny tabell** (#176–#179), inklusive
+  geometrisuffixet. Ett namnbyte som tidigare gick igenom kan nu nekas.
+- **Avstämningen skriver bara om datastores som avviker.** Tidigare fick varje
+  befintlig datastore en PUT vid varje avstämning, även när inget ändrats.
+  GeoServer stänger datastorens anslutningspool vid varje PUT, så varje
+  avstämning bröt samtliga pooler i onödan: pågående frågor avbröts och nästa
+  förfrågan fick öppna en ny anslutning. Nu jämförs värd, port, databas, schema, användare,
+  poolparametrar och lösenord först. GeoServer returnerar lösenordet krypterat,
+  så Hex skriver ett avtryck (sha256 av användare och lösenord) i datastorens
+  `description` och jämför det. Datastores skapade före ändringen saknar
+  avtrycket och skrivs om **en gång** vid första avstämningen.
+- **`max connections` per datastore sänkt från 10 till 7 för läs-stores och 2
+  för skriv-stores.** Skriv-stores används bara för WFS-T. Befintliga
+  datastores får värdena vid första avstämningen.
+- **`Max connection idle time` sänkt från 300 s till 60 s och `Evictor run
+  periodicity` från 60 s till 30 s** på alla datastores. En oanvänd anslutning
+  stängs inom 60–90 s, så att beståndet binder färre PostgreSQL-anslutningar
+  vid spridd, gles användning. Lager som ses mer sällan än en gång i minuten
+  får öppna en ny anslutning (~33 ms). Befintliga datastores får värdena vid
+  första avstämningen.
+- **Den periodiska avstämningen körs i lyssnartråden** på LISTEN-anslutningen
+  i stället för i en egen tråd med egen anslutning. Den fungerar därmed även
+  när PostgreSQL har fyllt `max_connections`. En avstämning som misslyckas
+  (t.ex. GeoServer svarar inte) görs om efter fem minuter i stället för efter
+  ett helt intervall.
+  Notifieringar som psycopg2 läser in under avstämningens frågor (eller under
+  keepalive) hanteras direkt efteråt. Tidigare låg de kvar i `conn.notifies`
+  tills nästa notifiering kom, eftersom `select()` inte ser redan lästa data.
 - **`--upgrade` roterar inte längre `gs_r_`/`gs_w_`-lösenorden.**
   Underhållet körs först efter att inställningar och drifttillstånd lagts
   tillbaka. GeoServers datastores fortsätter fungera utan omstart av lyssnaren.
@@ -58,6 +106,23 @@ merge-datum.
 
 ### Rättat
 
+- Namnbyte av tabell flyttar nu gid-sekvens, historikindex, GiST-index,
+  primärnyckel, triggerfunktioner och QA-trigger till det nya namnet, så att
+  det gamla namnet kan återanvändas (#176–#179). Tidigare fick en ny
+  geometritabell med en omdöpt tabells gamla namn inget GiST-index:
+  `CREATE INDEX IF NOT EXISTS` hoppade tyst över namnet som ägdes av den
+  omdöpta tabellen. `hex_underhall()` skapar nu saknade GiST-index.
+- Långa tabellnamn ger deterministiska objektnamn inom 63 byte via
+  `hex_objektnamn()`; två namn med samma första 50 tecken delar inte längre
+  GiST- eller historikindexnamn.
+- `DROP TABLE` tar bort båda triggerfunktionerna. Funktioner som äldre
+  versioner lämnat kvar tas bort när ett namnbyte behöver namnet.
+- `hex_underhall()` skriver inte om `hex_metadata` för tabeller vars namn
+  redan stämmer.
+- En triggerfunktion som anropas av en annan tabells trigger räknas aldrig som
+  tabellens egen, även när `hex_metadata` pekar på den. Tidigare gick en delad
+  funktion inte att lösa upp: underhållet avbröts även sedan triggern tagits
+  bort. Proceduren beskrivs i `docs/09_installera-uppdatera-hex.md`.
 - `--upgrade` nollställde `registrerad` i `hex_avvikande_srid`.
 - Den periodiska avstämningen i lyssnaren laddade aldrig schemanamnsmönstret
   och letade föräldralösa workspaces med reservmönstret.

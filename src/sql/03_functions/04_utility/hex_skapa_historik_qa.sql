@@ -186,10 +186,10 @@ BEGIN
     -- table name when p_tabell_namn is 61+ characters long.
     EXECUTE format(
         'CREATE INDEX %I ON %I.%I (gid, h_tidpunkt DESC)',
-        left(p_tabell_namn, 50) || '_h_idx',
+        public.hex_objektnamn(p_tabell_namn, 'history_index'),
         p_schema_namn, p_tabell_namn || '_h'
     );
-    RAISE NOTICE '[hex_skapa_historik_qa]   ✓ Index skapat: %', left(p_tabell_namn, 50) || '_h_idx';
+    RAISE NOTICE '[hex_skapa_historik_qa]   ✓ Index skapat: %', public.hex_objektnamn(p_tabell_namn, 'history_index');
     
     -- Steg 6: Bygg trigger-satser
     op_steg := 'bygg trigger-satser';
@@ -206,7 +206,7 @@ BEGIN
     -- Steg 7: Skapa triggerfunktion
     -- ÄNDRING: Använder session_user istället för current_user
     op_steg := 'skapa triggerfunktion';
-    trigger_funktionsnamn := 'trg_fn_' || p_tabell_namn || '_qa';
+    trigger_funktionsnamn := public.hex_objektnamn(p_tabell_namn, 'qa');
     RAISE NOTICE '[hex_skapa_historik_qa] Steg 7: Skapar triggerfunktion %', trigger_funktionsnamn;
     
     EXECUTE format($TRIG$
@@ -263,13 +263,14 @@ BEGIN
     RAISE NOTICE '[hex_skapa_historik_qa] Steg 8: Skapar trigger på modertabell';
     
     EXECUTE format(
-        'CREATE TRIGGER trg_%s_qa 
+        'CREATE TRIGGER %I
         BEFORE UPDATE OR DELETE ON %I.%I
         FOR EACH ROW EXECUTE FUNCTION %I.%I()',
-        p_tabell_namn, p_schema_namn, p_tabell_namn,
+        public.hex_objektnamn(p_tabell_namn, 'qa_trigger'), p_schema_namn, p_tabell_namn,
         p_schema_namn, trigger_funktionsnamn
     );
-    RAISE NOTICE '[hex_skapa_historik_qa]   ✓ Trigger skapad: trg_%_qa', p_tabell_namn;
+    RAISE NOTICE '[hex_skapa_historik_qa]   ✓ Trigger skapad: %',
+        public.hex_objektnamn(p_tabell_namn, 'qa_trigger');
     
     -- Steg 8.5: Skapa INSERT-trigger för kolumner med anvandare_kan_redigera = false
     -- Kolumner utan default_varde (t.ex. gid) hoppas över – de hanteras av egna triggers.
@@ -303,7 +304,7 @@ BEGIN
             );
         END LOOP;
 
-        insert_funktionsnamn := 'trg_fn_' || p_tabell_namn || '_insert_audit';
+        insert_funktionsnamn := public.hex_objektnamn(p_tabell_namn, 'insert_audit');
 
         EXECUTE format($TRIG$
             CREATE OR REPLACE FUNCTION %I.%I()

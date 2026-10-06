@@ -549,18 +549,27 @@ per databas om de skiljer sig från standardvärdena ovan (t.ex. `HEX_DB_2_HOST=
 
 Lyssnaren kör automatiskt en periodisk kontroll av GeoServer mot PostgreSQL. Om
 en workspace eller datastore saknas (t.ex. för att någon manuellt tagit bort dem)
-skapas de om automatiskt, och autentiseringsuppgifterna uppdateras alltid med
-aktuella värden från `hex_rolluppgifter`.
+skapas de om automatiskt. En befintlig datastore skrivs bara om när den avviker
+från `hex_rolluppgifter` eller Hex standardparametrar – en datastore i synk
+lämnas orörd, så att GeoServer inte kastar dess anslutningspool.
 
-Standardintervallet är **43200 sekunder (12 timmar)**. Ändra eller avaktivera med:
+Ange **antingen** ett intervall **eller** ett klockslag. Utan någon av dem gäller
+intervallet 43200 sekunder (12 timmar).
 
 ```env
 HEX_RECONCILE_INTERVAL=43200   # sekunder mellan kontroller; 0 = avaktiverat
+# eller
+HEX_RECONCILE_TIME=03:00       # en gång per dygn, lokal tid (HH:MM)
 ```
 
 | Variabel | Standard | Beskrivning |
 |---|---|---|
-| `HEX_RECONCILE_INTERVAL` | `43200` | Intervall i sekunder (0 avaktiverar) |
+| `HEX_RECONCILE_INTERVAL` | `43200` | Intervall i sekunder från senaste avstämning (0 avaktiverar) |
+| `HEX_RECONCILE_TIME` | – | Dagligt klockslag `HH:MM`. Kan inte kombineras med `HEX_RECONCILE_INTERVAL` – båda satta stoppar uppstarten |
+
+Avstämningen körs i lyssnartråden på samma anslutning som `LISTEN` och öppnar
+ingen egen anslutning mot den egna databasen. Misslyckas den (t.ex. GeoServer
+svarar inte) görs ett nytt försök efter fem minuter.
 
 > **OBS:** Periodisk avstämning skapar aldrig om publicerade lager (feature types)
 > – enbart workspaces, datastores, GeoServer-roller och ACL-regler. Lager måste
@@ -882,6 +891,18 @@ Kontrollera GeoServer:
   - `sk1_kba_parkering.*.r = r_sk1_kba_parkering`
   - `sk1_kba_parkering_w.*.r = w_sk1_kba_parkering`
   - `sk1_kba_parkering_w.*.w = w_sk1_kba_parkering`
+
+---
+
+## Steg 11 (rekommenderas): Sätt ett tak för GeoServers anslutningar
+
+Varje datastore har ett eget tak (7 anslutningar för läs, 2 för skriv), men
+inget tak för hela GeoServer. Under last med många scheman kan GeoServer
+därför fylla PostgreSQL:s `max_connections`, som delas av alla databaser och
+klienter på servern. Installera GeoServers tillägg **control-flow** och sätt
+`ows.global` i `controlflow.properties`, så köas anrop över gränsen i
+GeoServer i stället. Installation, utgångsvärden och hur gränsen räknas fram
+står i [docs/08](../../docs/08_geoserver-lyssnaren.md#tak-för-hela-geoserver-control-flow).
 
 ---
 

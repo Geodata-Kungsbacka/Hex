@@ -136,12 +136,19 @@ BEGIN
     -- hex_metadata, flytta de namnnycklade registerraderna och – om tabellen
     -- har historik – döpa om historiktabellen.
     -- ----------------------------------------------------------------
-    IF current_query() ~* '\mRENAME\s+TO\M' THEN
+    IF EXISTS (
+        SELECT 1 FROM pg_event_trigger_ddl_commands() k
+        JOIN pg_class c ON c.oid = k.objid
+        JOIN public.hex_metadata m ON m.parent_oid = c.oid
+        WHERE k.command_tag = 'ALTER TABLE' AND k.object_type = 'table'
+          AND m.parent_table IS DISTINCT FROM c.relname::text
+    ) THEN
         FOR kommando IN SELECT * FROM pg_event_trigger_ddl_commands()
             WHERE command_tag = 'ALTER TABLE'
         LOOP
-            schema_namn := replace(split_part(kommando.object_identity, '.', 1), '"', '');
-            tabell_namn := replace(split_part(kommando.object_identity, '.', 2), '"', '');
+            SELECT n.nspname, c.relname INTO schema_namn, tabell_namn
+            FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE c.oid = kommando.objid;
 
             -- Historiktabeller döps om av grenen nedan och hanteras aldrig direkt
             CONTINUE WHEN tabell_namn ~ '_h$' OR kommando.object_type <> 'table';
@@ -169,6 +176,25 @@ BEGIN
                     CONTINUE;
                 END IF;
 
+                CONTINUE WHEN meta_rad.parent_table = tabell_namn;
+                -- Samma namnkrav som CREATE TABLE, inklusive FME:s tvåsteg.
+                -- En registrerad afvaktande tabell saknar avsiktligt geom.
+                IF EXISTS (
+                    SELECT 1 FROM public.hex_afvaktande_geometri ag
+                    WHERE ag.schema_namn = meta_rad.parent_schema
+                      AND ag.tabell_namn = meta_rad.parent_table
+                ) AND NOT EXISTS (
+                    SELECT 1 FROM pg_attribute a
+                    WHERE a.attrelid = kommando.objid AND a.attname = 'geom'
+                      AND NOT a.attisdropped
+                ) THEN
+                    IF length(tabell_namn) > 54 OR octet_length(tabell_namn) > 61 THEN
+                        RAISE EXCEPTION 'Tabellnamnet "%" är för långt (max 54 tecken och 61 byte).', tabell_namn;
+                    END IF;
+                ELSE
+                    PERFORM public.hex_validera_tabell(schema_namn, tabell_namn);
+                END IF;
+
                 -- hex_dummy_geometrier, hex_afvaktande_geometri och
                 -- hex_avvikande_srid nycklas på namn och måste följa med
                 PERFORM hex_flytta_registerposter(schema_namn, meta_rad.parent_table, tabell_namn);
@@ -183,6 +209,7 @@ BEGIN
                         ny_historik);
 
                     PERFORM hex_uppdatera_metadata_namn(kommando.objid);
+                    PERFORM public.hex_synka_objektnamn(schema_namn, tabell_namn, meta_rad.parent_table);
 
                     RAISE NOTICE '[hex_hantera_ny_kolumn] ✓ Historiktabell omdöpt: % → % (tabell omdöpt: % → %)',
                         meta_rad.history_table, ny_historik,
@@ -195,6 +222,7 @@ BEGIN
                     PERFORM hex_synka_historik(schema_namn, tabell_namn);
                 ELSE
                     PERFORM hex_uppdatera_metadata_namn(kommando.objid);
+                    PERFORM public.hex_synka_objektnamn(schema_namn, tabell_namn, meta_rad.parent_table);
                     RAISE NOTICE '[hex_hantera_ny_kolumn] ✓ hex_metadata uppdaterad: % → % (ingen historik)',
                         meta_rad.parent_table, tabell_namn;
                 END IF;
@@ -741,26 +769,12 @@ BEGIN
             -- Steg 5b.3: Skapa GiST-index för geometrikolumnen
             IF geometriinfo IS NOT NULL AND geometriinfo.kolumnnamn IS NOT NULL THEN
                 DECLARE
-                    index_namn text := left(tabell_namn, 50) || '_geom_gidx';
-                    r          record;
+                    index_namn text;
                 BEGIN
                     op_steg := 'skapar GiST-index (afvaktande tabell)';
-                    -- Ta bort GiST-index med annat namn (t.ex. FME-skapade) för att undvika dubbletter
-                    FOR r IN
-                        SELECT indexname FROM pg_indexes
-                        WHERE schemaname = schema_namn
-                          AND tablename  = tabell_namn
-                          AND indexdef   LIKE '%USING gist%'
-                          AND indexname  <> index_namn
-                    LOOP
-                        EXECUTE format('DROP INDEX %I.%I', schema_namn, r.indexname);
-                        RAISE NOTICE '[hex_hantera_ny_kolumn]   ✓ Dubblerat GiST-index borttaget: %', r.indexname;
-                    END LOOP;
-                    EXECUTE format(
-                        'CREATE INDEX IF NOT EXISTS %I ON %I.%I USING GIST (%I)',
-                        index_namn, schema_namn, tabell_namn, geometriinfo.kolumnnamn
-                    );
-                    RAISE NOTICE '[hex_hantera_ny_kolumn]   ✓ GiST-index skapat: %', index_namn;
+                    -- Namn och dubblettrensning sköts av hex_sakerstall_geomindex()
+                    index_namn := public.hex_sakerstall_geomindex(schema_namn, tabell_namn, geometriinfo.kolumnnamn);
+                    RAISE NOTICE '[hex_hantera_ny_kolumn]   ✓ GiST-index: %', index_namn;
                 END;
             END IF;
 
@@ -896,26 +910,12 @@ BEGIN
 
                 -- GiST-index
                 DECLARE
-                    index_namn text := left(tabell_namn, 50) || '_geom_gidx';
-                    r          record;
+                    index_namn text;
                 BEGIN
                     op_steg := 'skapar GiST-index (ny geom utan afvaktande)';
-                    -- Ta bort GiST-index med annat namn (t.ex. FME-skapade) för att undvika dubbletter
-                    FOR r IN
-                        SELECT indexname FROM pg_indexes
-                        WHERE schemaname = schema_namn
-                          AND tablename  = tabell_namn
-                          AND indexdef   LIKE '%USING gist%'
-                          AND indexname  <> index_namn
-                    LOOP
-                        EXECUTE format('DROP INDEX %I.%I', schema_namn, r.indexname);
-                        RAISE NOTICE '[hex_hantera_ny_kolumn]   ✓ Dubblerat GiST-index borttaget: %', r.indexname;
-                    END LOOP;
-                    EXECUTE format(
-                        'CREATE INDEX IF NOT EXISTS %I ON %I.%I USING GIST (%I)',
-                        index_namn, schema_namn, tabell_namn, geometriinfo.kolumnnamn
-                    );
-                    RAISE NOTICE '[hex_hantera_ny_kolumn]   ✓ GiST-index skapat: %', index_namn;
+                    -- Namn och dubblettrensning sköts av hex_sakerstall_geomindex()
+                    index_namn := public.hex_sakerstall_geomindex(schema_namn, tabell_namn, geometriinfo.kolumnnamn);
+                    RAISE NOTICE '[hex_hantera_ny_kolumn]   ✓ GiST-index: %', index_namn;
                 END;
 
                 -- Geometrivalidering (datakategorier med hex_validera_geometri = true)

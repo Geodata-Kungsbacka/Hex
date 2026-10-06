@@ -53,7 +53,7 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from geoserver_listener import (
+from geoserver_listener import (  # noqa: E402
     load_config,
     resolve_env_path,
     GeoServerClient,

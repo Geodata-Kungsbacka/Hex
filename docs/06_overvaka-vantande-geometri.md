@@ -17,12 +17,17 @@ funktion.
 När geometrikolumnen väl läggs till:
 1. Suffixet kontrolleras mot geometritypen — fel suffix avbryter `ALTER TABLE`
 2. SRID ≠ `hex_srid()` (standard 3007) ger en `WARNING` och en rad i `hex_avvikande_srid`
-3. GiST-index skapas
+3. GiST-index skapas (`hex_sakerstall_geomindex()`)
 4. Geometrivalidering aktiveras – för scheman vars datakategori har
    `hex_validera_geometri = true` i `hex_standardiserade_datakategorier`
    (standardkonfiguration: `_kba_`)
 5. Raden tas bort från `hex_afvaktande_geometri`
 6. En dummy-geometrirad läggs in, och `geom` läggs till i historiktabellen
+
+Byter tabellen namn innan geometrikolumnen lagts till följer raden i
+`hex_afvaktande_geometri` med till det nya namnet. Då kontrolleras bara
+namnlängden (högst 54 tecken och 61 byte); suffixet kontrolleras när `geom`
+läggs till.
 
 En rad som **ligger kvar länge** för en tabell **utan** `geom` indikerar att
 verktyget **aldrig slutförde sitt andra steg**.

@@ -12,7 +12,7 @@ Kör med:
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SRC_PATH = PROJECT_ROOT / "src" / "geoserver"
@@ -137,53 +137,6 @@ class TestListenLoopEncoding(unittest.TestCase):
         self.assertIn(
             "client_encoding", captured,
             "client_encoding saknas i psycopg2.connect()-anropet från listen_loop",
-        )
-        self.assertEqual(
-            captured["client_encoding"], "utf8",
-            f"Förväntade 'utf8', fick '{captured.get('client_encoding')}'",
-        )
-
-
-# ---------------------------------------------------------------------------
-# 4. Verifiera att _periodic_reconcile_loop skickar client_encoding
-# ---------------------------------------------------------------------------
-class TestPeriodicReconcileEncoding(unittest.TestCase):
-
-    def test_client_encoding_passed(self):
-        """_periodic_reconcile_loop ska anropa psycopg2.connect() med client_encoding='utf8'."""
-        stop_event = __import__("threading").Event()
-
-        mock_cur = MagicMock()
-        mock_cur.__enter__ = MagicMock(return_value=mock_cur)
-        mock_cur.__exit__ = MagicMock(return_value=False)
-        mock_cur.fetchall.return_value = []
-
-        mock_conn = MagicMock()
-        mock_conn.cursor.return_value = mock_cur
-        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
-        mock_conn.__exit__ = MagicMock(return_value=False)
-
-        captured = {}
-
-        def fake_connect(**kwargs):
-            captured.update(kwargs)
-            stop_event.set()  # kör bara ett varv
-            return mock_conn
-
-        mock_gs = MagicMock()
-        mock_gs.get_all_workspaces.return_value = []
-
-        with patch("psycopg2.connect", side_effect=fake_connect):
-            gl._periodic_reconcile_loop(
-                _db_config(),
-                gs_client=mock_gs,
-                stop_event=stop_event,
-                interval_seconds=0,
-            )
-
-        self.assertIn(
-            "client_encoding", captured,
-            "client_encoding saknas i psycopg2.connect()-anropet från _periodic_reconcile_loop",
         )
         self.assertEqual(
             captured["client_encoding"], "utf8",

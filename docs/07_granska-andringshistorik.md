@@ -122,7 +122,7 @@ Historiktabellen följer med automatiskt vid `ALTER TABLE`:
 | Kolumnen läggs tillbaka med samma typ | Den befintliga kolumnen återanvänds |
 | `ALTER COLUMN TYPE`, eller tillbaka med annan typ | Konverteras om inget värde ändras, annars arkiveras den gamla kolumnen som `<kolumn>_arkiv_<ÅÅÅÅMMDD>` |
 | `RENAME COLUMN` | Kolumnen döps om i `_h` |
-| `RENAME TO` | `_h` döps om och QA-triggern byggs om |
+| `RENAME TO` | `_h`, sekvens, historikindex, GiST-index, primärnyckel, triggerfunktioner och QA-trigger döps om; QA-kroppen byggs om. Det gamla namnet kan återanvändas med egen historik |
 | Ändring direkt i `_h` (t.ex. `DROP COLUMN`) | Saknade kolumner läggs tillbaka, triggern byggs om. Värdena i en borttagen `_h`-kolumn är borta — den läggs tillbaka tom |
 | `SET SCHEMA` | Blockeras. Skapa tabellen i målschemat och flytta datan med `INSERT ... SELECT` |
 

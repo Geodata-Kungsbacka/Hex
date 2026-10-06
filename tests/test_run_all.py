@@ -280,6 +280,16 @@ def main():
     for r in resultat:
         r.strikt = args.strikt
 
+    # Fullständig utdata skrivs före sammanfattningen, inte efter. I CI läses
+    # loggen ofta bara från slutet (GitHubs logg-API och agenternas verktyg
+    # returnerar de sista raderna), och då ska tabellen och felraderna stå sist
+    # i stället för att trängas undan av tusentals rader NOTICE.
+    if args.verbose:
+        for r in resultat:
+            print()
+            print(f"--- Fullständig utdata: {r.namn} ---")
+            print(r.utdata)
+
     print()
     print("=" * 72)
     print(f"{'SVIT':<34}{'PASS':>7}{'XFAIL':>7}{'SKIP':>7}{'FAIL':>7}   STATUS")
@@ -300,18 +310,11 @@ def main():
     print("=" * 72)
 
     misslyckade = [r for r in resultat if not r.ok]
-    if args.verbose or misslyckade:
-        for r in misslyckade:
-            print()
-            print(f"--- Utdata från {r.namn} (exitkod {r.exitkod}) ---")
-            for rad in _felrader(r):
-                print(f"  {rad}")
-
-    if args.verbose:
-        for r in resultat:
-            print()
-            print(f"--- Fullständig utdata: {r.namn} ---")
-            print(r.utdata)
+    for r in misslyckade:
+        print()
+        print(f"--- Utdata från {r.namn} (exitkod {r.exitkod}) ---")
+        for rad in _felrader(r):
+            print(f"  {rad}")
 
     if misslyckade:
         print(f"\n{len(misslyckade)} svit(er) misslyckades.")

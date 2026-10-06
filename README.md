@@ -46,6 +46,11 @@ Systemet kräver specifika suffix baserat på geometrityp:
 - `_y` för ytgeometrier (POLYGON, MULTIPOLYGON)
 - `_g` för generiska eller blandade geometrier
 - Tabeller utan geometri får inte använda dessa suffix
+- Namnet får vara högst 54 tecken och högst 61 byte, så att historiktabellens
+  `_h` ryms inom PostgreSQL:s gräns på 63 byte (å, ä och ö tar 2 byte var)
+
+Samma regler gäller vid `ALTER TABLE ... RENAME TO`. Ett namnbyte som bryter
+mot dem avbryts och rullas tillbaka i sin helhet.
 
 Suffixen ovan är standardvärden och ställs in i `hex_installningar`
 (`suffix_punkt`, `suffix_linje`, `suffix_yta`, `suffix_ovrigt`). Samma suffix
@@ -105,9 +110,11 @@ läs-workspacet får `ROLE_ANONYMOUS` i sin ACL-regel (standard `true` för `sk0
 Se `docs/08_geoserver-lyssnaren.md`.
 
 **Avstämning:** lyssnaren stämmer av GeoServer mot databasen vid uppstart och
-därefter periodiskt (`HEX_RECONCILE_INTERVAL`, standard 43200 s = 12 h). Saknade workspaces
-och datastores återskapas, avvikande ACL-regler korrigeras, och datastorens
-autentiseringsuppgifter skrivs om från `hex_rolluppgifter`.
+därefter periodiskt – antingen med intervall (`HEX_RECONCILE_INTERVAL`, standard
+43200 s = 12 h) eller vid ett klockslag per dygn (`HEX_RECONCILE_TIME`, t.ex.
+`03:00`). Saknade workspaces och datastores återskapas och avvikande ACL-regler
+korrigeras. En datastore skrivs bara om när den avviker från
+`hex_rolluppgifter` eller standardparametrarna.
 
 Avstämningen rapporterar också workspaces vars PostgreSQL-schema saknas i
 samtliga övervakade databaser. Standard är att bara varna; `HEX_ORPHAN_CLEANUP`
@@ -365,6 +372,7 @@ inte över filer och byt inte plats på dem.
 -- 0. Konfiguration (MÅSTE köras först, redigera filen innan!)
 src/sql/00_config/hex_systemagare.sql
 src/sql/00_config/hex_geoserver_roller.sql
+src/sql/00_config/hex_objektnamn.sql
 
 -- 1. Skapa anpassade datatyper
 src/sql/01_types/hex_geom_info.sql
@@ -422,6 +430,8 @@ src/sql/03_functions/04_utility/hex_registrera_metadata.sql
 src/sql/03_functions/04_utility/hex_komplettera_metadata.sql
 src/sql/03_functions/04_utility/hex_uppdatera_metadata_namn.sql
 src/sql/03_functions/04_utility/hex_rensa_metadata.sql
+src/sql/03_functions/04_utility/hex_synka_objektnamn.sql
+src/sql/03_functions/04_utility/hex_sakerstall_geomindex.sql
 src/sql/03_functions/04_utility/hex_skapa_historik_qa.sql
 src/sql/03_functions/04_utility/hex_aterskapa_qa_trigger.sql
 src/sql/03_functions/04_utility/hex_synka_historik.sql
@@ -528,7 +538,7 @@ skedd räcker det inte med `hex_underhall()` — rollerna skapas bara vid
 **Livscykel**:
 - *Registreras* av `hex_hantera_ny_tabell()` för varje ny tabell, via `hex_registrera_metadata()`. `hex_skapa_historik_qa()` fyller i historikkolumnerna när historiken skapas — direkt, eller när FME-tvåsteget slutförs
 - *Efterregistreras* av `hex_underhall()` för tabeller som saknar rad (skapade förbi event-triggrarna, eller utan historik från före den här versionen), via `hex_komplettera_metadata()`. `created_by` blir då NULL
-- *Uppdateras* av `hex_hantera_ny_kolumn()` vid `ALTER TABLE RENAME TO` (parent_table, och history_table om tabellen har historik), via `hex_uppdatera_metadata_namn()`
+- *Uppdateras* av `hex_hantera_ny_kolumn()` vid `ALTER TABLE RENAME TO` (parent_table, och history_table om tabellen har historik), via `hex_uppdatera_metadata_namn()` och `hex_synka_objektnamn()`; sekvens, historikindex, GiST-index, primärnyckel, triggerfunktioner och QA-trigger följer med
 - *Raderas* av `hex_hantera_borttagen_tabell()` vid `DROP TABLE` och `DROP SCHEMA ... CASCADE`, via `hex_rensa_metadata()`
 
 **Rättigheter**: Alla kan läsa, men bara ägaren kan skriva direkt. Event-triggrarna
@@ -686,11 +696,17 @@ härleda i efterhand, och därför bevaras de över `--upgrade`.
 **Syfte**: Säkerställer att tabeller följer namngivningsstandarden.
 
 **Validering omfattar**:
+- Namnlängd: högst 54 tecken och högst 61 byte
 - Kontroll av geometrisuffix enligt `hex_installningar` (standard _p, _l, _y, _g)
 - Verifiering att endast en geometrikolumn finns
 - Kontroll att geometrikolumnen heter 'geom'
 
 **Returvärde**: Geometriinformation om tabellen har geometri, annars NULL.
+
+**Anropas av**: `hex_hantera_ny_tabell()` vid `CREATE TABLE` och
+`hex_hantera_ny_kolumn()` vid `RENAME TO`. En FME-tabell som byter namn innan
+geometrikolumnen lagts till kontrolleras bara mot namnlängden; suffixet
+kontrolleras när `geom` läggs till.
 
 **Praktisk nytta**: Förhindrar förvirrande tabellnamn och säkerställer konsekvent namngivning i hela databasen.
 
@@ -780,7 +796,13 @@ härleda i efterhand, och därför bevaras de över `--upgrade`.
 2. Triggerfunktion som loggar UPDATE och DELETE
 3. Trigger som automatiskt uppdaterar QA-kolumner
 4. Index för snabb sökning på gid och tidpunkt
-5. Historikkolumnerna på tabellens rad i `hex_metadata`, via `hex_registrera_metadata()`
+5. INSERT-triggerfunktion (`hex_tvinga_anvandarvarden`) för kolumner som
+   användaren inte får sätta själv
+6. Historikkolumnerna på tabellens rad i `hex_metadata`, via `hex_registrera_metadata()`
+
+Namnen på triggerfunktionerna, triggern och indexet kommer från
+`hex_objektnamn()`, så att långa tabellnamn ger samma namn vid skapande,
+namnbyte, underhåll och borttagning.
 
 Historiktabellen och triggerfunktionen ägs av rollen som körde `CREATE TABLE`
 tills nästa `hex_underhall()` för över dem till `hex_systemagare()`.
@@ -803,15 +825,17 @@ SELECT * FROM public.hex_underhall();
 `redan finns`, `redan synkad`, `synkad: N ändringar`, `slutförd`,
 `dubbletter: N` eller `fel: <meddelande>`.
 
-**Sjutton åtgärdstyper**, i körordning:
+**Nitton åtgärdstyper**, i körordning:
 
 | Åtgärd | Vad som repareras |
 |---|---|
 | ägarskapsöverföring | Scheman, tabeller, sekvenser, funktioner och vyer i Hex-scheman ägs av `hex_systemagare()` |
 | `hex_metadata` | Rad i `hex_metadata` för varje Hex-tabell, via `hex_komplettera_metadata()` (`created_by` NULL). Utan raden flyttas inte registerraderna vid `RENAME TO` |
+| `objektnamn` | Döper om triggerfunktioner, QA-trigger, gid-sekvens, historikindex, GiST-index och primärnyckel till namnen från `hex_objektnamn()`, via `hex_synka_objektnamn()` i två varv. Rättar namn som kapats eller blivit kvar efter namnbyten i äldre versioner. Rapporterar `synkade: N`. Märkt `HEX-MIGRERING` |
 | `hex_tvinga_gid` | BEFORE INSERT som hindrar klienter från att välja eget `gid` med `OVERRIDING SYSTEM VALUE` |
 | `hex_tvinga_anvandarvarden` | BEFORE INSERT för kolumner med `anvandare_kan_redigera = false` |
 | `gid_primarnyckel` | `PRIMARY KEY (gid)` på tabeller som saknar unikt index på `gid`, plus framflyttning av sekvensen till `max(gid)` |
+| `geom_index` | GiST-index på `geom` för varje Hex-tabell med geometrikolumn. Saknade skapas via `hex_sakerstall_geomindex()` (`skapad: <indexnamn>`) |
 | `hex_kontrollera_geom` | BEFORE INSERT/UPDATE med OGC-validering på tabeller i datakategorier med `hex_validera_geometri = true` |
 | `hex_ta_bort_dummy` | AFTER INSERT som tar bort dummy-raden — återkopplas bara om raden står i `hex_dummy_geometrier` |
 | `trg_<tabell>_qa` | BEFORE UPDATE/DELETE på tabeller med historik |
@@ -910,6 +934,93 @@ event-triggrarna och ännu inte efterregistrerad av `hex_underhall()`) flyttas
 inget och en WARNING skrivs; `hex_underhall()` steg 11 bygger om
 `hex_avvikande_srid` oavsett.
 
+#### `hex_objektnamn(tabell, typ)`
+**Syfte**: Ger namnet på ett objekt som hör till en Hex-tabell. Skapar inget
+själv; alla som skapar, döper om, reparerar eller tar bort objekten frågar
+funktionen och får samma svar.
+
+| `typ` | Namn för `vag_l` |
+|---|---|
+| `qa` | `trg_fn_vag_l_qa` |
+| `insert_audit` | `trg_fn_vag_l_insert_audit` |
+| `qa_trigger` | `trg_vag_l_qa` |
+| `history_index` | `vag_l_h_idx` |
+| `gid_sequence` | `vag_l_gid_seq` |
+| `geom_index` | `vag_l_geom_gidx` |
+| `pkey` | `vag_l_pkey` |
+
+**Långa namn**: Ryms namnet inom 63 byte returneras det oförändrat. Annars
+kortas tabelldelen och de första 12 tecknen av tabellnamnets MD5-hash läggs in
+före suffixet, t.ex. `trg_fn_llll…llll_9f1a7c9a5e0d_insert_audit`. Samma
+tabellnamn ger alltid samma objektnamn (`IMMUTABLE`), två långa namn med samma
+början får olika namn, och suffixet bevaras.
+
+**Problem som löses**: Tidigare byggde varje funktion namnet själv. PostgreSQL
+kapar identifierare över 63 byte tyst, så objekt skapades under ett kapat namn
+men söktes under det fullständiga, och långa namn med samma början krockade.
+
+En okänd `typ` ger ett fel.
+
+#### `hex_synka_objektnamn(schema, tabell, gammalt_namn, varna)`
+**Syfte**: Döper om en tabells härledda objekt till namnen från
+`hex_objektnamn()`: båda triggerfunktionerna, QA-triggern, gid-sekvensen,
+historikindexet, GiST-indexet på `geom` och primärnyckeln på `gid`.
+
+**Hur objekten hittas**: Via katalogkopplingar, inte via namn – triggern som
+anropar funktionen, sekvensen som ägs av `gid`, indexet på `_h`-tabellen,
+GiST-indexet på `geom` (bara om det är ensamt) och primärnyckeln på `gid`.
+Därför hittas även objekt med kapade eller gamla namn. Saknar tabellen trigger
+söks funktionen på namn; en funktion som en annan tabells trigger anropar räknas
+då aldrig som tabellens egen.
+
+**Upptagna namn**:
+- Triggerfunktion: används målnamnet av en funktion som ingen trigger anropar
+  (äldre versioner lämnade `insert_audit`-funktionen kvar vid `DROP TABLE`) tas
+  den bort, utan CASCADE. Används den av en annan tabell, eller är den ingen
+  triggerfunktion, avbryts med ett Hex-fel.
+- Delar två tabeller samma triggerfunktion avbryts med ett fel som kräver att
+  kopplingen rättas för hand.
+- Sekvens, index och primärnyckel: lämnas med sitt gamla namn. `varna = true`
+  ger WARNING, `false` ger NOTICE.
+
+**Metadata**: `hex_registrera_metadata()` anropas bara när något döptes om eller
+`hex_metadata.trigger_funktion` pekar fel.
+
+**Returvärde**: antal omdöpta (och borttagna) objekt.
+
+**Anropas av**: `hex_hantera_ny_kolumn()` vid `RENAME TO` och `hex_underhall()`
+(åtgärden `objektnamn`).
+
+#### `hex_sakerstall_geomindex(schema, tabell, kolumn)`
+**Syfte**: Säkerställer ett GiST-index på geometrikolumnen, med namn från
+`hex_objektnamn(tabell, 'geom_index')`. Andra GiST-index på tabellen (t.ex.
+FME:s egna) tas bort.
+
+**Problem som löses**: Tidigare användes `CREATE INDEX IF NOT EXISTS` med ett
+härlett namn. Ägdes namnet av en annan tabells index – typiskt en tabell som
+döpts om, vars index behöll det gamla namnet – hoppades skapandet över tyst och
+tabellen saknade spatialt index. Är namnet upptaget skapas nu indexet med ett
+namn från PostgreSQL och en WARNING skrivs; `hex_underhall()` döper om det när
+namnet blivit ledigt.
+
+**Returvärde**: namnet på indexet tabellen fick.
+
+**Anropas av**: `hex_hantera_ny_tabell()` (steg 8), `hex_hantera_ny_kolumn()`
+(geometri som anländer i efterhand) och `hex_underhall()` (åtgärden `geom_index`).
+
+#### Härledda objektnamn vid uppgradering
+
+Databaser från äldre versioner kan ha kapade objektnamn och objekt som behöll
+det gamla namnet när tabellen döptes om. `--upgrade` rättar dem utan manuella
+steg: `hex_underhall()` kör `hex_synka_objektnamn()` på varje tabell i två varv,
+så att en omdöpt tabell först frigör namn som en ny tabell med det gamla namnet
+behöver, och skapar sedan saknade GiST-index. Befintliga historikrader bevaras.
+
+Delar två tabeller redan samma triggerfunktion avbryts underhållstransaktionen
+med ett tydligt fel och installern rapporterar en varning. Kopplingen måste då
+rättas för hand innan underhållet körs igen. Se
+[docs/09_installera-uppdatera-hex.md](docs/09_installera-uppdatera-hex.md#migrering-objektnamn-efter-namnbyte).
+
 #### `hex_synka_historik(schema, tabell)`
 **Syfte**: Håller historiktabellen i takt med modertabellen. Invarianten är att
 historiken innehåller allt modertabellen innehåller och allt den har innehållit:
@@ -978,7 +1089,7 @@ meddelandena följer med när inställningen ändras.
 7. Återskapar alla egenskaper
 7.4. Skapar `PRIMARY KEY (gid)` (`hex_sakerstall_gid_primarnyckel`)
 7.5. Skapar triggern `hex_tvinga_gid`
-8. Skapar GiST-index för geometrikolumn
+8. Skapar GiST-index för geometrikolumn via `hex_sakerstall_geomindex()`
 9. Lägger till geometrivalidering för scheman vars datakategori har `hex_validera_geometri = true` i `hex_standardiserade_datakategorier` (standardkonfiguration: `_kba_`)
 10. Skapar historik/QA om konfigurerat
 
@@ -993,7 +1104,7 @@ meddelandena följer med när inställningen ändras.
 
 **Process**, beroende på vad satsen gör:
 1. `SET SCHEMA` till ett Hex-schema, eller på en Hex-hanterad tabell → blockeras med `EXCEPTION`
-2. `RENAME TO` → historiktabellen döps om, `hex_metadata` uppdateras, QA-triggern byggs om, och raderna i `hex_dummy_geometrier`, `hex_afvaktande_geometri` och `hex_avvikande_srid` flyttas till det nya namnet
+2. `RENAME TO` → det nya namnet valideras med `hex_validera_tabell()`, historiktabellen döps om, `hex_metadata` uppdateras, `hex_synka_objektnamn()` döper om tabellens härledda objekt, QA-triggern byggs om, och raderna i `hex_dummy_geometrier`, `hex_afvaktande_geometri` och `hex_avvikande_srid` flyttas till det nya namnet. Namnbytet känns igen genom att tabellens namn i `pg_class` skiljer sig från det i `hex_metadata` (via OID), inte genom att söka efter `RENAME TO` i satsen – så det fungerar i DO-block, via `EXECUTE` och i flera satser i samma anrop
 3. `RENAME COLUMN` → kolumnen döps om i historiktabellen, QA-triggern byggs om
 4. Övriga ändringar utom kolumntillägg → `hex_synka_historik()`
 5. `ADD COLUMN`, även via `AddGeometryColumn()` (via `EXECUTE` i en funktion känns tillägget bara igen när en afvaktande tabell får `geom`):
@@ -1047,7 +1158,7 @@ meddelandena följer med när inställningen ändras.
 **Syfte**: Städar upp när bastabeller tas bort.
 
 **Process**: Identifierar borttagna tabeller och tar bort:
-- Motsvarande historiktabell (`_h`) och QA-triggerfunktion (om tabellen hade historik)
+- Motsvarande historiktabell (`_h`) och båda triggerfunktionerna (QA och `insert_audit`). Bara funktioner utan argument som returnerar `trigger` tas bort, och utan CASCADE: ett oväntat beroende avbryter `DROP TABLE` i stället för att raderas tyst. Ett schema vars tabeller tagits bort kan därför tas bort utan CASCADE
 - Raderna i `hex_afvaktande_geometri`, `hex_avvikande_srid` och `hex_dummy_geometrier`
 - Raden i `hex_metadata`, via `hex_rensa_metadata()` (som tar bort varje rad vars tabell inte längre finns)
 

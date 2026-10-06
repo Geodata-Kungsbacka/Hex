@@ -43,17 +43,18 @@ DECLARE
     trigger_satser        text := '';
     i                     integer;
 BEGIN
-    -- Bygg om den funktion som triggern faktiskt anropar. Efter ALTER TABLE
-    -- RENAME TO heter den fortfarande trg_fn_<gammalt namn>_qa, och det
-    -- härledda namnet skulle skapa en ny funktion som ingen trigger använder.
+    -- Bygg om den funktion som triggern faktiskt anropar. Katalogkopplingen
+    -- fungerar även för äldre namn som ännu inte har normaliserats.
     SELECT p.proname INTO trigger_funktionsnamn
     FROM pg_trigger t
     JOIN pg_proc p ON p.oid = t.tgfoid
     WHERE t.tgrelid = to_regclass(format('%I.%I', p_schema_namn, p_tabell_namn))
       AND NOT t.tgisinternal
-      AND p.proname ~ '^trg_fn_.+_qa$'
+      AND (t.tgname = public.hex_objektnamn(p_tabell_namn, 'qa_trigger')
+           OR p.proname = (SELECT m.trigger_funktion FROM public.hex_metadata m
+                            WHERE m.parent_oid = t.tgrelid))
     LIMIT 1;
-    trigger_funktionsnamn := coalesce(trigger_funktionsnamn, 'trg_fn_' || p_tabell_namn || '_qa');
+    trigger_funktionsnamn := coalesce(trigger_funktionsnamn, public.hex_objektnamn(p_tabell_namn, 'qa'));
 
     -- Aktuell kolumnlista från modertabellen. pg_attribute i stället för
     -- information_schema.columns: den senare visar bara kolumner som den

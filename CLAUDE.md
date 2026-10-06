@@ -39,6 +39,9 @@ Regler:
 
 Kör de här kontrollerna mot `src/sql/` när du granskar SQL-ändringar.
 
+Kontroll 1–4 körs också automatiskt i CI (`.github/workflows/test_statisk.yml`,
+jobbet `sql-checklista`). Ändras en kontroll här ska steget där följa med.
+
 ### 1. Ogiltiga `format()`-specifierare i PostgreSQL
 
 PostgreSQL:s `format()` stöder bara `%s`, `%I`, `%L` och `%%`.
@@ -75,12 +78,14 @@ grep -rPn 'EXECUTE\s+.*\|\|' src/sql/
 Repots standard är `SET search_path = public, pg_temp`. `pg_temp` sist är medvetet: nämns det inte söks temp-schemat först för tabell- och typnamn, vilket gör skuggning via temporära tabeller möjlig.
 
 ```bash
-# Kommentarer strippas först – annars räcker det att frasen nämns i en kommentar
-# för att filen ska flaggas (samma resonemang som _strip_sql_comments i
-# tests/test_installer.py).
+# Kommentarer strippas innan båda fraserna söks – annars räcker det att
+# SECURITY DEFINER nämns i en kommentar för att filen ska flaggas, och att
+# SET search_path nämns i en kommentar för att den ska klara kontrollen (samma
+# resonemang som _strip_sql_comments i tests/test_installer.py).
 for f in $(grep -rl 'SECURITY DEFINER' src/sql/); do
-  perl -0777 -pe 's{/\*.*?\*/}{}gs; s{--[^\n]*}{}g' "$f" | grep -q 'SECURITY DEFINER' || continue
-  grep -q 'SET search_path' "$f" || echo "Saknar SET search_path: $f"
+  rensad=$(perl -0777 -pe 's{/\*.*?\*/}{}gs; s{--[^\n]*}{}g' "$f")
+  grep -q 'SECURITY DEFINER' <<<"$rensad" || continue
+  grep -q 'SET search_path' <<<"$rensad" || echo "Saknar SET search_path: $f"
 done
 ```
 
@@ -185,6 +190,49 @@ Frågan som skiljer dem: *kan tillståndet uppstå igen efter att alla databaser
 därför aldrig en invariant med `HEX-MIGRERING` — och när en vakt bara
 motiveras med sin historia, skriv om motiveringen i stället för att ta bort
 vakten.
+
+---
+
+## Testa via CI när du saknar en lokal databas
+
+Sviterna kräver PostgreSQL med PostGIS. Finns den inte i din miljö (och
+SessionStart-hooken i `.claude/hooks/` inte gått att köra) testar du ändringen
+genom arbetsflödena i stället. Båda körs automatiskt bara vid push till och PR
+mot `main`, men har `workflow_dispatch` och går att starta på vilken branch som
+helst:
+
+1. Committa och pusha din branch.
+2. Starta `test_hex.yml` och `test_statisk.yml` på branchen (GitHub-verktyget
+   `actions_run_trigger` med `method: run_workflow`, `workflow_id` och
+   `ref: <din branch>`). `test_hex.yml` tar valfritt `bas_ref`, versionen
+   uppgraderingsjobbet utgår från (standard `main`).
+3. Hitta körningen med `actions_list` (`list_workflow_runs`, filtrerat på
+   branch och `workflow_dispatch`) och vänta tills den är klar.
+4. Läs felen med `get_job_logs` (`run_id`, `failed_only: true`,
+   `return_content: true` och `tail_lines: 150`). Efter testkörningen följer
+   ungefär 60 rader städsteg från GitHub; ovanför dem står
+   sammanfattningstabellen och de underkända sviternas felrader –
+   `test_run_all.py` skriver den fullständiga utdatan före tabellen, inte
+   efter. Varningen `Docker logs fail` är väntad: containerloggen är
+   avstängd med flit (se `test_hex.yml`).
+
+Vad jobben täcker:
+
+| Arbetsflöde / jobb | Täcker |
+| --- | --- |
+| `test_hex.yml` / `test` | Ny installation och samtliga sviter med `--strikt`, PostgreSQL 16 och 17 |
+| `test_hex.yml` / `uppgradering` | Installation av basversionen, användardata, `upgrade()` med din version, jämförelse mot en ny installation och därefter samtliga sviter mot den uppgraderade databasen |
+| `test_statisk.yml` | `ruff`, `shellcheck`, SQL-checklistan ovan, namnkonventionen och inventering av `HEX-MIGRERING` |
+
+Går `uppgradering` rött i jämförelsesteget skiljer sig en uppgraderad databas
+från en ny – oftast en saknad migrering (se avsnittet ovan). Diffen i loggen
+visar vilka objekt det gäller: `-` finns bara i den nya installationen, `+`
+bara i den uppgraderade. Samma kontroll går att köra lokalt:
+
+```bash
+git worktree add ../hex-bas origin/main
+python3 .github/scripts/kontrollera_uppgradering.py --bas ../hex-bas
+```
 
 ---
 
